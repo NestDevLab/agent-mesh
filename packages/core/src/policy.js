@@ -1115,9 +1115,26 @@ export function formatMeshV1Envelope({ to, from, meshId, turn, final, seen = [],
   return `${headers.join("\n")}\n\n${String(body ?? "")}`;
 }
 
+export function formatCompactMeshV1Envelope({ from, meshId, turn, final, seen = [], hopLimit, body = "" } = {}) {
+  const fields = [
+    ["id", optionalString(meshId)],
+    ["from", optionalString(from)],
+    ["turn", optionalString(turn)],
+    ["final", typeof final === "boolean" ? (final ? "1" : "0") : optionalString(final)],
+    ["seen", formatMeshList(seen)],
+    ["hop", Number.isInteger(hopLimit) ? String(hopLimit) : optionalString(hopLimit)]
+  ]
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}=${value}`);
+  return `ccm:v1 ${fields.join(" ")}\n\n${String(body ?? "")}`;
+}
+
 export function parseMeshV1Envelope(text = "") {
   const raw = String(text ?? "");
   const lines = raw.split(/\r?\n/);
+  const compact = parseCompactMeshV1Envelope(lines);
+  if (compact) return compact;
+
   const headers = new Map();
   const errors = [];
   let bodyStart = 0;
@@ -1270,6 +1287,89 @@ function normalizeMeshV1State(value = {}) {
     }
   }
   return { records: normalizedRecords };
+}
+
+function parseCompactMeshV1Envelope(lines) {
+  const compactLineIndex = lines.findIndex((line, index) => {
+    if (/^\s*ccm:v1\b/i.test(line)) return true;
+    if (index < 3 && /^\s*<@!?(\d+)>\s*$/.test(line)) return false;
+    if (index < 3 && !line.trim()) return false;
+    return false;
+  });
+  if (compactLineIndex < 0) return undefined;
+
+  const errors = [];
+  const fields = new Map();
+  const rawFields = lines[compactLineIndex].replace(/^\s*ccm:v1\s*/i, "").trim();
+  for (const token of rawFields.split(/\s+/).filter(Boolean)) {
+    const match = token.match(/^([a-z][a-z0-9_-]*)=(.*?)$/i);
+    if (!match) {
+      errors.push("malformed_ccm_v1_field");
+      continue;
+    }
+    const key = normalizeCompactMeshKey(match[1]);
+    if (!key) {
+      errors.push("unknown_ccm_v1_field");
+      continue;
+    }
+    if (fields.has(key)) errors.push(`duplicate_ccm_v1_${key}`);
+    else fields.set(key, match[2]);
+  }
+
+  let bodyStart = compactLineIndex + 1;
+  if (lines[bodyStart] !== undefined && !lines[bodyStart].trim()) bodyStart += 1;
+
+  const meshId = optionalString(fields.get("id"));
+  const from = optionalString(fields.get("from"));
+  const turn = optionalString(fields.get("turn"));
+  const finalHeader = optionalString(fields.get("final"));
+  const final = parseCompactBoolean(finalHeader);
+  const seen = splitMeshList(fields.get("seen"));
+  const hopLimit = parseMeshInteger(fields.get("hop"));
+  const to = splitMeshList(fields.get("to"));
+  if (!to.length && turn) to.push(turn);
+
+  if (!meshId) errors.push("missing_cc_mesh_id");
+  if (!from) errors.push("missing_cc_mesh_from");
+  if (!turn) errors.push("missing_cc_mesh_turn");
+  if (!finalHeader) errors.push("missing_cc_mesh_final");
+  if (finalHeader && final === undefined) errors.push("invalid_cc_mesh_final");
+  if (fields.has("hop") && !Number.isInteger(hopLimit)) errors.push("invalid_hop_limit");
+  if (!to.length) errors.push("missing_cc_mesh");
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    to,
+    from,
+    meshId,
+    turn,
+    final: final === true,
+    seen,
+    hopLimit,
+    body: lines.slice(bodyStart).join("\n"),
+    headers: Object.fromEntries(fields),
+    format: "ccm:v1"
+  };
+}
+
+function normalizeCompactMeshKey(value) {
+  const key = String(value ?? "").toLowerCase();
+  if (["id", "from", "turn", "final", "seen", "hop", "to"].includes(key)) return key;
+  if (key === "i") return "id";
+  if (key === "f") return "from";
+  if (key === "t") return "turn";
+  if (key === "ok") return "final";
+  if (key === "s") return "seen";
+  if (key === "h") return "hop";
+  return undefined;
+}
+
+function parseCompactBoolean(value) {
+  const normalized = optionalString(value)?.toLowerCase();
+  if (["1", "true", "yes", "y"].includes(normalized)) return true;
+  if (["0", "false", "no", "n"].includes(normalized)) return false;
+  return undefined;
 }
 
 function splitMeshList(value) {

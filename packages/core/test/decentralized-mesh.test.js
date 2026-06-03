@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  formatCompactMeshV1Envelope,
   formatMeshV1Envelope,
+  parseMeshV1Envelope,
   planMeshV1Dispatch
 } from "../src/policy.js";
 
@@ -144,4 +146,61 @@ test("mesh envelope formatter emits parseable headers and validates destination 
 
   const beta = processMessage("beta", text, { records: {} }, "fmt-1-beta");
   assert.equal(beta.plan.reason, "mesh_v1_not_local_turn");
+});
+
+test("compact ccm:v1 envelope parses after Discord mention and dispatches like legacy headers", () => {
+  const text = `<@222>\nccm:v1 id=compact-1 from=alpha turn=beta final=1 seen=alpha hop=3\n\ncompact body`;
+  const envelope = parseMeshV1Envelope(text);
+
+  assert.equal(envelope.valid, true);
+  assert.equal(envelope.format, "ccm:v1");
+  assert.deepEqual(envelope.to, ["beta"]);
+  assert.equal(envelope.from, "alpha");
+  assert.equal(envelope.meshId, "compact-1");
+  assert.equal(envelope.turn, "beta");
+  assert.equal(envelope.final, true);
+  assert.deepEqual(envelope.seen, ["alpha"]);
+  assert.equal(envelope.hopLimit, 3);
+  assert.equal(envelope.body, "compact body");
+
+  const beta = processMessage("beta", text, { records: {} }, "compact-msg-1");
+  assert.equal(beta.plan.reason, "mesh_v1_final_dispatch_ready");
+  assert.equal(beta.plan.dispatchText, "compact body");
+});
+
+test("compact formatter emits one ccm:v1 line and supports partial/final dedupe", () => {
+  let state = { records: {} };
+  const partial = formatCompactMeshV1Envelope({
+    from: "alpha",
+    meshId: "compact-2",
+    turn: "beta",
+    final: false,
+    seen: ["alpha"],
+    hopLimit: 3,
+    body: "part one"
+  });
+  const final = formatCompactMeshV1Envelope({
+    from: "alpha",
+    meshId: "compact-2",
+    turn: "beta",
+    final: true,
+    seen: ["alpha"],
+    hopLimit: 3,
+    body: "part two"
+  });
+
+  assert.match(partial, /^ccm:v1 id=compact-2 from=alpha turn=beta final=0 seen=alpha hop=3\n\npart one$/);
+
+  let result = processMessage("beta", partial, state, "compact-2-p");
+  state = result.state;
+  assert.equal(result.plan.reason, "mesh_v1_partial_buffered");
+  assert.equal(result.plan.nextAction, "buffer_only");
+
+  result = processMessage("beta", final, state, "compact-2-f");
+  state = result.state;
+  assert.equal(result.plan.reason, "mesh_v1_final_dispatch_ready");
+  assert.equal(result.plan.dispatchText, "part one\npart two");
+
+  const duplicate = processMessage("beta", final, state, "compact-2-f");
+  assert.equal(duplicate.plan.reason, "mesh_v1_duplicate_suppressed");
 });
