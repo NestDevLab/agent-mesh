@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# Run on a throwaway, isolated tmux socket so this test can never touch live
+# mesh sessions, and so the bridge scripts it invokes use the same server.
+export MESH_TMUX_SOCKET="mesh-cli-smoke-$$"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_DIR="$BRIDGE_DIR/bin"
@@ -24,9 +28,9 @@ TARGET=""
 
 fail() {
     echo "FAIL: $*" >&2
-    if [[ -n "${TARGET:-}" ]] && tmux has-session -t "$TARGET" 2>/dev/null; then
+    if [[ -n "${TARGET:-}" ]] && tmux -L "$MESH_TMUX_SOCKET" has-session -t "$TARGET" 2>/dev/null; then
         echo "--- tmux pane: $TARGET ---" >&2
-        tmux capture-pane -t "$TARGET" -p >&2 || true
+        tmux -L "$MESH_TMUX_SOCKET" capture-pane -t "$TARGET" -p >&2 || true
         echo "--- end pane ---" >&2
     fi
     exit 1
@@ -36,11 +40,16 @@ cleanup() {
     local status=$?
     trap - EXIT INT TERM
 
-    if [[ -n "${TARGET:-}" ]] && tmux has-session -t "$TARGET" 2>/dev/null; then
+    if [[ -n "${TARGET:-}" ]] && tmux -L "$MESH_TMUX_SOCKET" has-session -t "$TARGET" 2>/dev/null; then
         "$SESSION_BIN" --agent "$AGENT_NAME" kill "$TARGET" >/dev/null 2>&1 \
-            || tmux kill-session -t "$TARGET" 2>/dev/null \
+            || tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$TARGET" 2>/dev/null \
             || true
     fi
+
+    # exit-empty is off on the mesh socket, so the empty server would persist;
+    # tear down our isolated socket entirely.
+    tmux -L "$MESH_TMUX_SOCKET" kill-server 2>/dev/null || true
+    rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$MESH_TMUX_SOCKET" 2>/dev/null || true
 
     rm -f "$SMOKE_CONF"
     rm -rf "$WORKDIR"
@@ -90,7 +99,7 @@ export MESH_REGISTRY="$REGISTRY"
 # ── start the disposable bash session ──────────────────────────────────────────
 TARGET="$("$SESSION_BIN" --agent "$AGENT_NAME" new "$WORKDIR" "$TARGET_NAME")"
 [[ "$TARGET" == "$TARGET_NAME" ]] || fail "expected target '$TARGET_NAME', got '$TARGET'"
-tmux has-session -t "$TARGET" 2>/dev/null || fail "tmux session was not created: $TARGET"
+tmux -L "$MESH_TMUX_SOCKET" has-session -t "$TARGET" 2>/dev/null || fail "tmux session was not created: $TARGET"
 
 # ── mesh-list-agents.sh shows the agent (table + --json) ───────────────────────
 table="$("$LIST_BIN")"

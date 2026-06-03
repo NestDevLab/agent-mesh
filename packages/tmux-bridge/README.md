@@ -51,9 +51,28 @@ $BIN/agent-session.sh --agent codex list
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `MESH_TMUX_SOCKET` | `mesh` | Dedicated tmux socket (`tmux -L`) for all bridge sessions |
 | `TMUX_SESSION_PREFIX` | `mesh` | Prefix for tmux session names |
 | `AGENT_POLL_INTERVAL` | `2` | Seconds between output polls |
 | `AGENT_IDLE_ROUNDS` | `3` | Stable-output rounds before declaring idle |
+
+## Session isolation & durability
+
+The bridge never uses the default tmux server. All sessions run on a **dedicated
+socket** (`MESH_TMUX_SOCKET`, default `mesh`) and the server is set to
+`exit-empty off`. This is deliberate and load-bearing:
+
+- **Isolation** — the user's own `tmux`, and concurrent smoke tests, cannot race
+  against or kill live agent sessions. Tests run on throwaway sockets
+  (`MESH_TMUX_SOCKET=mesh-…-$$`) and tear them down with `kill-server`.
+- **Durability** — with tmux's default `exit-empty on`, a server self-destructs
+  the instant it has zero sessions, taking every resumable agent session with it.
+  `exit-empty off` keeps the mesh server alive across transient emptiness.
+
+`exit-empty off` can only be applied **after** the first session exists (an empty
+default-mode server exits before any option can be set), so `mesh_tmux_harden`
+runs immediately after `new-session`. Regression test:
+`scripts/socket-isolation-test.sh`.
 
 ## Agent Differences
 
