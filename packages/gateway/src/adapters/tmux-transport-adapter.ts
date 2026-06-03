@@ -138,7 +138,23 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       };
     }
 
-    // 6. Real send through the injected sender.
+    // 6. Atomic claim — prevents concurrent same-key dispatches from double
+    // sending. The step-3 lookup only catches an already-completed send; this
+    // closes the check-then-send window for in-flight concurrency.
+    const claimed = await this.store.claim(envelope.idempotency_key);
+    if (!claimed) {
+      return {
+        status: "stubbed",
+        details: {
+          deduplicated: true,
+          reason: "concurrent_dispatch_in_flight",
+          tmux_target: route.tmux_target,
+          ...correlation
+        }
+      };
+    }
+
+    // 7. Real send through the injected sender.
     let result: TmuxSendResult;
     try {
       result = await this.sender.send({
@@ -149,6 +165,8 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
         idempotency_key: envelope.idempotency_key
       });
     } catch (error) {
+      // Release the claim so a retry of this failed send is allowed.
+      await this.store.releaseClaim(envelope.idempotency_key);
       const reason = error instanceof Error ? error.message : String(error);
       const record = await this.record(
         delivery,
@@ -167,6 +185,10 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
 
     const status = result.ok ? "delivered" : "failed";
     const reason = result.ok ? "delivered" : result.error ?? "send_failed";
+    if (status === "failed") {
+      // Release the claim so a retry of this failed send is allowed.
+      await this.store.releaseClaim(envelope.idempotency_key);
+    }
     const record = await this.record(
       delivery,
       envelope,

@@ -1,3 +1,5 @@
+import { mkdir, unlink, writeFile } from "fs/promises";
+import { dirname } from "path";
 import {
   appendStoreEvent,
   replayStoreEvents,
@@ -61,4 +63,48 @@ export class TmuxDispatchStore {
     const records = await this.list();
     return records.filter((record) => record.idempotency_key === key);
   }
+
+  /**
+   * Atomically claim an idempotency key before a real send. Returns true if this
+   * caller won the claim, false if another dispatch already holds it. Uses an
+   * exclusive file create (O_EXCL), which is atomic on a local filesystem and so
+   * is safe across concurrent dispatches and across processes — closing the
+   * check-then-send race that a plain listByIdempotencyKey lookup leaves open.
+   */
+  async claim(key: string): Promise<boolean> {
+    const path = this.claimPath(key);
+    await mkdir(dirname(path), { recursive: true });
+    try {
+      await writeFile(path, "", { flag: "wx" });
+      return true;
+    } catch (error) {
+      if (isAlreadyExists(error)) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  /** Release a claim so a failed send can be retried. */
+  async releaseClaim(key: string): Promise<void> {
+    try {
+      await unlink(this.claimPath(key));
+    } catch {
+      // No claim to release is fine.
+    }
+  }
+
+  private claimPath(key: string): string {
+    const safe = key.replace(/[^a-zA-Z0-9_.-]/g, "_");
+    return `${this.filePath}.claims/${safe}.claim`;
+  }
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "EEXIST"
+  );
 }
