@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { formatMeshV1Envelope, planMeshV1Dispatch } from "../packages/core/src/policy.js";
+import { formatCompactMeshV1Envelope, planMeshV1Dispatch } from "../packages/core/src/policy.js";
 
 const participants = ["alpha", "beta", "gamma"];
 const states = Object.fromEntries(participants.map((participant) => [participant, { records: {} }]));
@@ -26,7 +26,7 @@ function deliver(participant, envelope) {
 }
 
 function envelope(fields) {
-  return formatMeshV1Envelope(fields);
+  return formatCompactMeshV1Envelope(fields);
 }
 
 const betaPartial = envelope({

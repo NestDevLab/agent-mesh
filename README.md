@@ -48,4 +48,17 @@ npm run mesh:readiness
 npm run mesh:harness -- --participant runtime-a --state-file /tmp/agent-mesh-state.json --pretty
 ```
 
+## Mesh v1 compact Discord header
+
+Preferred live Discord shape:
+
+```text
+<@bot>
+ccm:v1 id=live-peer-20260603-a from=runtime-a turn=nestdev final=1 seen=runtime-b,runtime-a hop=3
+
+body...
+```
+
+The legacy multi-line `cc-mesh-*` headers are still accepted for compatibility. In the compact form, `turn` is also treated as the single recipient unless an explicit `to=` field is present.
+
 See `docs/mesh-v0.9-live-testing.md` before any live Discord test.
