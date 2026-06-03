@@ -1,0 +1,21 @@
+{
+  "name": "@openclaw-agent-mesh/tmux-bridge",
+  "version": "0.9.0",
+  "private": true,
+  "description": "Agnostic tmux bridge for CLI-to-CLI agent intercommunication (Codex, Claude Code, and others).",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "echo 'tmux-bridge: shell-only package, no build step'",
+    "test": "echo 'tmux-bridge: no automated tests yet'",
+    "postinstall": "chmod +x bin/*.sh 2>/dev/null || true"
+  },
+  "bin": {
+    "agent-session": "./bin/agent-session.sh",
+    "agent-send": "./bin/agent-send.sh",
+    "agent-read": "./bin/agent-read.sh"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
