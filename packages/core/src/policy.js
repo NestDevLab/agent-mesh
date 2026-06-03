@@ -1098,6 +1098,23 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+export function formatMeshV1Envelope({ to, from, meshId, turn, final, seen = [], hopLimit, body = "" } = {}) {
+  const toList = formatMeshList(to);
+  const seenList = formatMeshList(seen);
+  const headers = [
+    ["cc-mesh", toList],
+    ["cc-mesh-from", optionalString(from)],
+    ["cc-mesh-id", optionalString(meshId)],
+    ["cc-mesh-turn", optionalString(turn)],
+    ["cc-mesh-final", typeof final === "boolean" ? String(final) : optionalString(final)],
+    ["cc-mesh-seen", seenList],
+    ["hop-limit", Number.isInteger(hopLimit) ? String(hopLimit) : optionalString(hopLimit)]
+  ]
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}: ${value}`);
+  return `${headers.join("\n")}\n\n${String(body ?? "")}`;
+}
+
 export function parseMeshV1Envelope(text = "") {
   const raw = String(text ?? "");
   const lines = raw.split(/\r?\n/);
@@ -1258,6 +1275,12 @@ function normalizeMeshV1State(value = {}) {
 function splitMeshList(value) {
   if (typeof value !== "string") return [];
   return value.split(/[\s,]+/).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function formatMeshList(value) {
+  if (Array.isArray(value)) return value.map((entry) => optionalString(entry)).filter(Boolean).join(",");
+  if (typeof value === "string") return splitMeshList(value).join(",");
+  return "";
 }
 
 function parseMeshInteger(value) {
