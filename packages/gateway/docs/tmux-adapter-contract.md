@@ -103,21 +103,33 @@ export interface TmuxDispatchRecord {
 `TmuxDispatchStore` (NDJSON, file `tmux-dispatch-events.ndjson`) exposes:
 `append(record)`, `list()`, `listByIdempotencyKey(key)`.
 
-## Known limitations
+## Concurrency & idempotency
 
-- **Idempotency is not atomic across concurrent dispatches.** The check
-  (`listByIdempotencyKey`) → `sender.send` → `append` sequence is not a single
-  atomic claim. Two dispatches with the same `idempotency_key` running
-  concurrently can both observe no prior non-failed record and both send. A
-  correct fix needs a store-level claim/lock (a local mutex would only cover one
-  adapter instance, not cross-process dispatch). Until then, callers must not
-  fan out concurrent same-key dispatches to this adapter.
+- **Atomic claim before real send.** The real-send path takes a store-level
+  atomic claim (`TmuxDispatchStore.claim`, an O_EXCL file create) on the
+  `idempotency_key` before calling the sender. Concurrent same-key dispatches
+  cannot both send: the loser returns `{ status:"stubbed",
+  details.deduplicated:true, reason:"concurrent_dispatch_in_flight" }`. The claim
+  is atomic on a local filesystem, so this also holds across processes. (This
+  closed the check-then-send race surfaced in the cross-agent review.)
+- **Claim released on failure.** A failed send (`{ok:false}` or a throw) releases
+  the claim so a later retry can send again — consistent with failed records not
+  deduplicating.
 - **Idempotency runs before the dry-run gate (intentional).** A prior *stubbed*
   record for a key suppresses a later real send with the same key. This is
   contract-consistent and pinned by a test; re-issue with a fresh
   `idempotency_key` to actually send after a dry run.
 
-(Both items surfaced in the cross-agent review of the implementation.)
+## Real sender (host-side)
+
+`ShellTmuxSender` (`src/adapters/shell-tmux-sender.ts`) is the concrete,
+opt-in `TmuxSessionSender` that drives the bridge by spawning
+`packages/tmux-bridge/bin/agent-send.sh`. It is the only place the gateway shells
+out; the adapter stays pure. Options: `agentSendPath`, `agentType`
+(`codex`/`claude`/…), `timeoutSeconds`, `meshSocket` (forwarded as
+`MESH_TMUX_SOCKET`), and an injectable `run` (tests pass a fake; default uses
+`execFile`). Exit 0 → `{ok:true, reply:<stdout>}`; non-zero/throw →
+`{ok:false, error}`.
 
 ## Discord-compatibility invariants honored
 

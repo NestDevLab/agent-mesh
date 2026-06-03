@@ -11,11 +11,29 @@ declare module "fs/promises" {
   export function mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
   export function readFile(path: string, encoding: "utf8"): Promise<string>;
   export function rename(from: string, to: string): Promise<void>;
+  export function unlink(path: string): Promise<void>;
   export function writeFile(
     path: string,
     data: string,
     options?: "utf8" | { flag?: string }
   ): Promise<void>;
+}
+
+declare module "child_process" {
+  export function execFile(
+    file: string,
+    args: readonly string[],
+    options: { env?: Record<string, string | undefined>; maxBuffer?: number },
+    callback: (
+      error: (Error & { code?: number }) | null,
+      stdout: string,
+      stderr: string
+    ) => void
+  ): unknown;
+}
+
+declare module "process" {
+  export const env: Record<string, string | undefined>;
 }
 
 declare module "path" {

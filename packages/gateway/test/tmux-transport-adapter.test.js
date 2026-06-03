@@ -331,6 +331,61 @@ test("renders prompt as JSON when neither text nor summary present", async () =>
   assert.equal(sender.calls[0].prompt, JSON.stringify({ foo: "bar" }));
 });
 
+test("concurrent same-key dispatches send exactly once (atomic claim)", async () => {
+  const stateDir = await freshStateDir();
+  // Sender that defers, so both dispatches overlap in-flight.
+  let calls = 0;
+  const sender = {
+    async send() {
+      calls += 1;
+      await new Promise((r) => setTimeout(r, 20));
+      return { ok: true, reply: "ok" };
+    }
+  };
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const [a, b] = await Promise.all([
+    adapter.dispatch(baseDelivery(), baseEnvelope()),
+    adapter.dispatch(baseDelivery(), baseEnvelope())
+  ]);
+
+  assert.equal(calls, 1, "sender must be called exactly once");
+  const statuses = [a.status, b.status].sort();
+  // one real send + one deduped/suppressed concurrent attempt
+  assert.ok(a.details.deduplicated === true || b.details.deduplicated === true);
+  assert.ok(statuses.includes("delivered") || statuses.includes("stubbed"));
+});
+
+test("claim is released on failure so a later retry can send again", async () => {
+  const stateDir = await freshStateDir();
+  let calls = 0;
+  const sender = {
+    async send() {
+      calls += 1;
+      // fail the first attempt, succeed the second
+      return calls === 1 ? { ok: false, error: "pane_busy" } : { ok: true, reply: "ok" };
+    }
+  };
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const first = await adapter.dispatch(baseDelivery(), baseEnvelope());
+  const second = await adapter.dispatch(baseDelivery(), baseEnvelope());
+
+  assert.equal(first.status, "failed");
+  assert.equal(second.status, "delivered");
+  assert.equal(calls, 2, "retry after a failed send must reach the sender again");
+});
+
 test("a prior STUBBED record dedups a later enabled send (contract-consistent)", async () => {
   const stateDir = await freshStateDir();
   const sender = fakeSender();
