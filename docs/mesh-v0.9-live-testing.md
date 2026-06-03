@@ -4,6 +4,8 @@ Status: **v0.9 preview**, not v1.0.
 
 v0.9 is intended for serious live testing in controlled Discord/OpenClaw/runtime-b surfaces. v1.0 should wait until the protocol has been used live for a while and has shown stable behavior.
 
+This plan is Discord-only: it tests message ingestion, Mesh headers, pre-wake gating, state persistence, dedupe, and loop guards. It does not include execution backends.
+
 ## What v0.9 guarantees locally
 
 - Mesh v1 envelope parsing is runtime-neutral.

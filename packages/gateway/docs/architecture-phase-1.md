@@ -39,7 +39,7 @@ Accepted envelope audit records include a `bridge_alignment` view, `route_policy
 
 The Discord adapter remains stub-only. It emits an internal-to-Discord correlation object with internal message identifiers, intended Discord target identifiers when supplied in envelope metadata, and `no_external_send: true`.
 
-The Codex runner adapter remains stub-only. It records `execution_job` entries with workspace/domain/project/task correlation, source message/conversation/correlation ids, policy and approval metadata, governance decision state, and pause/cancel intent statuses. It does not contact CAS, start Codex, spawn child processes, or perform network I/O.
+The execution adapter remains stub-only. It records `execution_job` entries with workspace/domain/project/task correlation, source message/conversation/correlation ids, policy and approval metadata, governance decision state, and pause/cancel intent statuses. It does not start workers, spawn child processes, or perform network I/O.
 
 The approval facade is also stub-only. For each governed execution job it records an `ApprovalGateEvaluation` with:
 

@@ -2,7 +2,7 @@
 
 Phase 1 implementation slice for a sidecar Agent Mesh gateway.
 
-This package is intentionally separate from OpenClaw core. It currently covers envelope validation, context and agent registries, gateway routing, delivery lifecycle, append-only audit/storage replay, Discord transcript mapping stubs, a governed Codex runner stub, and injectable CAS/Discord runtime boundaries.
+This package is intentionally separate from OpenClaw core. It currently covers envelope validation, context and agent registries, gateway routing, delivery lifecycle, append-only audit/storage replay, Discord transcript mapping stubs, a governed Codex runner stub, and injectable Discord runtime boundaries.
 
 It is also intentionally separate from `openclaw-federation-bridge`. The federation bridge is a request routing and policy boundary between OpenClaw instances or bridge peers. This package is the higher-level orchestration mesh: it coordinates logical agents and records how their messages map onto bridge-style request, correlation, reply-parent, idempotency, policy, and adapter concepts.
 
@@ -11,7 +11,6 @@ It is also intentionally separate from `openclaw-federation-bridge`. The federat
 Phase 1 is stub-first:
 
 - no real Discord writes;
-- no real Codex/CAS jobs;
 - no external tool execution;
 - no memory commits;
 - no OpenClaw core changes;
@@ -21,13 +20,9 @@ Implemented safety guards include persisted pause/kill-switch state, startup rec
 
 Phase 1 also rejects unknown or inactive domains, unknown sender/recipient agents, agents not enabled for the target context, unapproved `from === to` messages, and agent-only attempts to reopen terminal conversations/tasks. The terminal reopen guard is intentionally narrow: it only acts on explicit metadata flags (`agent_only` plus `reopens_terminal_conversation` or `reopens_terminal_task`) unless `allow_terminal_reopen` is also explicit.
 
-The Codex runner is record-only by default. Execution jobs persist workspace/domain/project/task correlation, approval and policy metadata, stub governance decisions, and pause/cancel intent state without contacting CAS or launching child processes.
-
-The controlled CAS rollout path now has two injected boundaries. `StrictCasRunnerDispatchAdapter` still owns policy/scope persistence and never calls OpenClaw tools directly. `CasHostBindingFacade` adapts that dispatcher interface to a host-provided invocation function, translating payloads into `{ endpointId, workspaceDir, threadName, prompt, safety }`. Its default is temp-workspace smoke mode: non-`/tmp` workspaces are rejected unless the caller explicitly opts into non-temp workspaces. The generated prompt includes these guardrails exactly: `workspace-only`, `no push/publish/deploy/restart/delete`, `no secrets`, and `report files/test output`.
-
 Discord runtime binding is host-owned. The package provides `OpenClawHostMessageSender`, a facade that adapts the existing `DiscordMessageSender` interface to an injected host function shaped like OpenClaw `message/send`. It translates mesh Discord send requests into strict dry-run host requests with `channel: "discord"`, deterministic channel/thread targets, content, idempotency key, and smoke metadata. It does not import or call the OpenClaw message tool, and real sends are rejected unless the facade is explicitly constructed with real-send allowance.
 
-Phase 2 model/reasoning policy is documented in `docs/model-reasoning-policy.md`, including role-aware profile selection and the rule that non-trivial code implementation should be orchestrated through CAS teams sized to task complexity.
+Phase 2 model/reasoning policy is documented in `docs/model-reasoning-policy.md`, including role-aware profile selection for advisory policy.
 
 Current architecture direction: do not introduce a central memory broker by default. Use a Memory Fabric instead: cross-host prompt/artifact/synced-folder handoffs, same-host local-folder and mem0 sharing through OpenClaw config, and gateway-enforced mem0 scopes per logical agent/team/domain. The Phase 2 policy design is documented in `docs/memory-fabric-policy.md`.
 
@@ -41,7 +36,7 @@ Accepted envelope audit events include package-local bridge-alignment details. T
 
 ```text
 config/   Initial context and logical agent records
-docs/     Phase 1 architecture, bridge alignment, Memory Fabric policy, Proactivity Engine, model/reasoning policy, real-adapter boundaries, policy roadmap, CAS team notes, and sidecar rollout notes
+docs/     Phase 1 architecture, bridge alignment, Memory Fabric policy, Proactivity Engine, model/reasoning policy, real-adapter boundaries, policy roadmap, and sidecar rollout notes
 src/      Schema, core, adapters, persistence, and demos
 test/     Node test coverage for validation, persistence, and gateway behavior
 ```
@@ -58,7 +53,7 @@ Do not install dependencies unless explicitly assigned. If TypeScript is not ava
 
 ## Rollout Status
 
-The selected safe rollout path is sidecar-first. The package remains separate from OpenClaw core and exposes governed facades for host-owned CAS and Discord calls. See `docs/rollout-sidecar.md` for the final rollout notes, allow-once smoke policy, and 2026-05-11 real smoke evidence.
+The selected safe rollout path is sidecar-first. The package remains separate from OpenClaw core and exposes governed facades for host-owned Discord calls. See `docs/rollout-sidecar.md` for the final rollout notes, allow-once smoke policy, and 2026-05-11 real smoke evidence.
 
 ## Phase 1 Demo And Verification
 
@@ -109,7 +104,7 @@ Phase 2 policy/demo command:
 node --import ./test/ts-extension-resolver.mjs -e 'import("./src/demo/demo-phase2-policy.ts").then((m) => console.log(JSON.stringify(m.buildPhase2PolicyDemo(), null, 2)))'
 ```
 
-It returns deterministic local-only decisions for Memory Fabric, stale backlog proactivity, model selection, and CAS team sizing with all real-adapter guardrails still enabled.
+It returns deterministic local-only decisions for Memory Fabric, stale backlog proactivity, and model selection with all real-adapter guardrails still enabled.
 
 Phase 2/3 policy completion demo command:
 
@@ -117,7 +112,7 @@ Phase 2/3 policy completion demo command:
 node --import ./test/ts-extension-resolver.mjs -e 'import("./src/demo/demo-phase2-policy.ts").then(async (m) => console.log(JSON.stringify(await m.buildPhase2PolicyCompletionDemo(), null, 2)))'
 ```
 
-It returns deterministic local-only JSON with common `openclaw.agent.policy_decision.v1` records for Memory Fabric, Proactivity, model selection, CAS runner plan/dispatch, and Discord delivery/send planning. CAS dispatch and Discord send use injected fake dispatcher/sender boundaries only; no direct OpenClaw message tool, `codex_workers`, real CAS, real Discord, memory, cron, or runtime-config side effect is performed.
+It returns deterministic local-only JSON with common `openclaw.agent.policy_decision.v1` records for Memory Fabric, Proactivity, model selection, and Discord delivery/send planning. Discord send uses injected fake sender boundaries only; no direct OpenClaw message tool, real Discord, memory, cron, or runtime-config side effect is performed.
 
 Runtime host-binding smoke command:
 
@@ -125,7 +120,7 @@ Runtime host-binding smoke command:
 node --import ./test/ts-extension-resolver.mjs -e 'import("./src/demo/runtime-host-binding-smoke.ts").then(async (m) => console.log(JSON.stringify(await m.buildRuntimeHostBindingSmokeDemo(), null, 2)))'
 ```
 
-It returns deterministic dry-run JSON containing a sample CAS host invocation request and a sample Discord host message request built through `CasHostBindingFacade` / `createHostCasInvocationRequest` and `OpenClawHostMessageSender` / `toHostMessageSendRequest`. The demo uses injected fake host functions only and reports `no_core_config_change`, `no_direct_tool_calls`, `dry_run`, `temp_workspace_required`, `temp_workspace_required_default`, and `real_send_enabled: false`.
+It returns deterministic dry-run JSON containing a sample Discord host message request built through `OpenClawHostMessageSender` / `toHostMessageSendRequest`. The demo uses injected fake host functions only and reports `no_core_config_change`, `no_direct_tool_calls`, `dry_run`, and `real_send_enabled: false`.
 
 Verification run recorded on 2026-05-11 after authorized real smoke tests:
 
@@ -141,5 +136,4 @@ $ /root/.local/lib/node_modules/openclaw/node_modules/.bin/tsc -p tsconfig.json 
 
 Authorized real smoke evidence:
 
-- CAS smoke: Codex worker thread `019e1591-d969-7db0-b537-99986583fb80`, workspace `/tmp/openclaw-agent-mesh-real-cas-smoke-20260511T0545Z`, touched `smoke-result.json` only.
 - Discord smoke: one visible message in approved thread/channel `DISCORD_ID_PLACEHOLDER`, message id `DISCORD_ID_PLACEHOLDER`, no channel/thread mutation.

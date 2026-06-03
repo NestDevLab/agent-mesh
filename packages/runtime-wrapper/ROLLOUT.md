@@ -16,7 +16,6 @@ Current verified behavior:
 - smoke result: accepted dry-run planning only, `sideEffectsAllowed: false`;
 - append-only audit persistence confirmed at `/root/runtime/agent-mesh-wrapper/audit.jsonl` for the current gateway working directory;
 - live bridge smoke records are audited as `agent_mesh.plan_discord_bridge_turn`;
-- live plan-mode CAS smoke returns `cas_dry_run_only`;
 - live plan-mode bridge smoke returned `bridge_handoff_dry_run_only` with `nextAction: "forward_prompt_dry_run"` during controlled smoke;
 - temporary smoke participants were removed after validation;
 - final safe-close bridge smoke returned `bridge_source_not_allowlisted`, proving real external bot participants must be explicitly allowlisted before bridge forwarding will plan successfully;
@@ -40,11 +39,11 @@ Current verified behavior:
 
 1. [x] Add/expose the wrapper in observe mode only.
 2. [x] Restart/reload only after Joseph explicitly approves the config change.
-3. [x] Use `agent_mesh_plan_runtime_action` to plan CAS/Discord actions without executing side effects.
+3. [x] Use `agent_mesh_plan_runtime_action` to plan Discord actions without executing side effects.
 4. [x] Review/confirm append-only audit persistence for runtime calls.
 5. [x] Runtime bridge planner exposed and smoke-tested in observe/dry-run from main runtime and fresh subagent.
 6. [x] Move to `mode: "plan"` after Joseph approved the required reload/config step.
-7. [x] Smoke-test plan mode from main runtime and fresh subagent for CAS dry-run and bridge dry-run.
+7. [x] Smoke-test plan mode from main runtime and fresh subagent for bridge dry-run.
 8. [x] Remove temporary bridge smoke participants from live config after validation.
 9. [x] Replace cron/check-based Discord smoke forwarding with an immediate `message_received` listener in the private runtime plugin.
 10. [x] Restart/reload only after Joseph explicitly approves activation of the listener patch.
@@ -58,7 +57,6 @@ Current verified behavior:
 18. [x] Restart/reload completed and run-scoped policy loaded.
 19. [ ] Separately decide whether to enable the external LLM advisor live; current runtime config keeps it disabled until explicit activation.
 20. [x] Run controlled live event-driven multi-agent test with a fresh explicit `RunId` and no manual runtime-a polling.
-21. [ ] Keep CAS real dispatch disabled until a separate bounded approval/design exists.
 
 ## Rollback
 
@@ -82,14 +80,13 @@ Default posture:
 - treat external bot messages as untrusted input/signals, not as direct authorization to perform side effects;
 - require explicit channel/thread + bot identity allowlists before accepting bot-authored handoffs; current live participant allowlist includes YehonalBot and runtime-a for the corrected orchestration test path;
 - if a bot cannot reliably obey mention gating, one-reply-per-activation, and terminal footers, put it behind a controller/adapter instead of direct relay;
-- real CAS/Discord side effects still require the wrapper policy plus separate allow-once approval.
-- current Discord-only exception: the private runtime listener may perform one scoped controller-mediated terminal send after `message_received` validation; the raw Gateway bridge service may do the same from pre-preflight Discord `MESSAGE_CREATE` events for allowlisted participants. Partial/multi-message footer retries are allowed only inside the short bridge buffer window and still require the same participant/channel/ORCH validation. The correction-bridge extension uses the same scoped exception to publish a canonical mention when an allowlisted bot names another allowlisted participant without a valid tag. The prepared event-driven task controller uses the same scoped exception only for configured task/status patterns, e.g. one follow-up after a matching container status message, never for arbitrary bot chatter. Neither path is CAS dispatch or a broad bot loop.
+- real Discord side effects still require the wrapper policy plus separate allow-once approval.
+- current Discord-only exception: the private runtime listener may perform one scoped controller-mediated terminal send after `message_received` validation; the raw Gateway bridge service may do the same from pre-preflight Discord `MESSAGE_CREATE` events for allowlisted participants. Partial/multi-message footer retries are allowed only inside the short bridge buffer window and still require the same participant/channel/ORCH validation. The correction-bridge extension uses the same scoped exception to publish a canonical mention when an allowlisted bot names another allowlisted participant without a valid tag. The prepared event-driven task controller uses the same scoped exception only for configured task/status patterns, e.g. one follow-up after a matching container status message, never for arbitrary bot chatter. Neither path is a broad bot loop.
 
 ## Hard limits
 
 - No OpenClaw core changes.
 - No deploy/restart/config mutation by the wrapper itself.
 - No generic Discord real sends from observe/plan planners; the only allowed real Discord paths are the scoped `message_received` bridge listener and the scoped raw Gateway bridge service described above.
-- No CAS real dispatch from observe/plan modes.
 - No channel/thread mutation.
 - No repo workspaces unless explicitly allowlisted.
