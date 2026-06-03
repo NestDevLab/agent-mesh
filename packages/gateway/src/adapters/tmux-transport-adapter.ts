@@ -161,7 +161,7 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       return {
         status: "failed",
         external_id: record.id,
-        details: { reason, ...correlation }
+        details: { reason, tmux_target: route.tmux_target, ...correlation }
       };
     }
 
@@ -181,6 +181,7 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       external_id: record.id,
       details: {
         tmux_target: route.tmux_target,
+        ...(status === "failed" ? { reason } : {}),
         ...(result.reply !== undefined ? { reply: result.reply } : {}),
         ...correlation
       }

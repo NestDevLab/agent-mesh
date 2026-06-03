@@ -57,7 +57,23 @@ mtmux paste-buffer -b "$BUFFER_NAME" -t "$TARGET"
 mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
 trap - EXIT
 sleep 0.2
-mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
+
+# Submit and CONFIRM submission. A large paste is ingested asynchronously by the
+# TUI (shown as a collapsed "[Pasted Content N chars]" placeholder); a submit key
+# sent during ingestion is dropped, leaving the prompt unsent. So we send the
+# submit key, then verify the turn actually started (working spinner appears or
+# the pane changes); if not, re-send the submit key a few times.
+_pre_submit="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
+submitted=0
+for _attempt in 1 2 3 4; do
+    mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
+    sleep 1
+    _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
+    if echo "$_now" | grep -qE "$AGENT_WORKING_PATTERN" || [[ "$_now" != "$_pre_submit" ]]; then
+        submitted=1; break
+    fi
+done
+[[ "$submitted" -eq 1 ]] || echo "WARN: submission may not have registered for '$TARGET'" >&2
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0
