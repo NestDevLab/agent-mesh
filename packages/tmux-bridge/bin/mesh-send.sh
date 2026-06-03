@@ -31,6 +31,10 @@ BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MESH_REGISTRY="${MESH_REGISTRY:-$BRIDGE_DIR/mesh/registry.json}"
 SEND_BIN="$BIN_DIR/agent-send.sh"
 
+# Dedicated tmux socket (see _mesh-tmux.sh) — must match the bridge scripts.
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-tmux.sh"
+
 TO=""
 CAPABILITY=""
 INTENT="request"
@@ -105,7 +109,7 @@ IFS=$'\t' read -r R_NAME R_TYPE R_TARGET R_STATUS <<<"$RESOLVED"
 [[ -n "$R_TYPE" ]] || { echo "ERROR: agent '$R_NAME' has no agent_type in registry" >&2; exit 1; }
 [[ -n "$R_TARGET" ]] || { echo "ERROR: agent '$R_NAME' has no tmux_target in registry" >&2; exit 1; }
 
-if ! tmux has-session -t "$R_TARGET" 2>/dev/null; then
+if ! mtmux has-session -t "$R_TARGET" 2>/dev/null; then
     echo "ERROR: tmux session '$R_TARGET' for agent '$R_NAME' is not running." >&2
     echo "       Start it first, e.g.:" >&2
     echo "         $BIN_DIR/agent-session.sh --agent $R_TYPE new <CWD> $R_TARGET" >&2

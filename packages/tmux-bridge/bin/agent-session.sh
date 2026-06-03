@@ -21,6 +21,10 @@ AGENT_MESH_ROOT="${AGENT_MESH_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 AGENTS_DIR="$SCRIPT_DIR/../agents"
 TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 
+# Dedicated tmux socket + exit-empty off (see _mesh-tmux.sh).
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-tmux.sh"
+
 # ── parse --agent flag ────────────────────────────────────────────────────────
 AGENT_NAME="codex"
 ARGS=()
@@ -51,15 +55,15 @@ _wait_for_ready() {
     local target="$1" max_wait="${2:-30}" elapsed=0 out
     while [[ $elapsed -lt $max_wait ]]; do
         sleep 1; elapsed=$(( elapsed + 1 ))
-        out=$(tmux capture-pane -t "$target" -p 2>/dev/null)
+        out=$(mtmux capture-pane -t "$target" -p 2>/dev/null)
         # Auto-confirm cwd picker if the agent shows one
         if [[ "$AGENT_HAS_CWD_PICKER" == "true" ]] && echo "$out" | grep -q "$AGENT_PICKER_PATTERN"; then
-            tmux send-keys -t "$target" "" Enter
+            mtmux send-keys -t "$target" "" Enter
             continue
         fi
         # Trust dialog (Claude Code) — confirm with Enter
         if echo "$out" | grep -q "Is this a project you trust"; then
-            tmux send-keys -t "$target" "" Enter
+            mtmux send-keys -t "$target" "" Enter
             continue
         fi
         # Idle prompt visible → ready
@@ -80,13 +84,14 @@ case "$cmd" in
         [[ -z "$SESSION_ID" ]] && { echo "ERROR: SESSION_ID required" >&2; exit 1; }
         TARGET=$(_tmux_target "${TMUX_NAME:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
 
-        if tmux has-session -t "$TARGET" 2>/dev/null; then
+        if mtmux has-session -t "$TARGET" 2>/dev/null; then
             echo "$TARGET"; exit 0
         fi
 
         RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}"
-        tmux new-session -d -s "$TARGET"
-        tmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
+        mtmux new-session -d -s "$TARGET"
+        mesh_tmux_harden
+        mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
         echo "$TARGET"
@@ -97,12 +102,13 @@ case "$cmd" in
         TMUX_NAME="${2:-}"
         TARGET=$(_tmux_target "$TMUX_NAME")
 
-        if tmux has-session -t "$TARGET" 2>/dev/null; then
+        if mtmux has-session -t "$TARGET" 2>/dev/null; then
             echo "$TARGET"; exit 0
         fi
 
-        tmux new-session -d -s "$TARGET" -c "$CWD"
-        tmux send-keys -t "$TARGET" "$AGENT_NEW_CMD" Enter
+        mtmux new-session -d -s "$TARGET" -c "$CWD"
+        mesh_tmux_harden
+        mtmux send-keys -t "$TARGET" "$AGENT_NEW_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
         echo "$TARGET"
@@ -110,7 +116,7 @@ case "$cmd" in
 
     list)
         echo "=== Running tmux sessions (${AGENT_NAME}) ==="
-        tmux list-sessions 2>/dev/null \
+        mtmux list-sessions 2>/dev/null \
             | grep "^${TMUX_SESSION_PREFIX}-${AGENT_NAME}" || echo "(none)"
         echo ""
         echo "=== On-disk sessions — last 10 (${AGENT_NAME}) ==="
@@ -129,7 +135,7 @@ case "$cmd" in
     kill)
         TARGET="${1:-}"
         [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_NAME required" >&2; exit 1; }
-        tmux kill-session -t "$TARGET" && echo "Killed $TARGET"
+        mtmux kill-session -t "$TARGET" && echo "Killed $TARGET"
         ;;
 
     *)

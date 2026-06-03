@@ -14,6 +14,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENTS_DIR="$SCRIPT_DIR/../agents"
+# Dedicated tmux socket (see _mesh-tmux.sh).
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-tmux.sh"
 
 AGENT_NAME="codex"
 ARGS=()
@@ -32,10 +35,10 @@ source "$CONF"
 
 TARGET="${1:-}"; MODE="${2:---full}"
 [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_TARGET required" >&2; exit 1; }
-tmux has-session -t "$TARGET" 2>/dev/null \
+mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
 
-output=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null)
+output=$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)
 
 case "$MODE" in
     --full)

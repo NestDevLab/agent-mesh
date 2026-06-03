@@ -15,6 +15,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENTS_DIR="$SCRIPT_DIR/../agents"
+# Dedicated tmux socket (see _mesh-tmux.sh).
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-tmux.sh"
 
 AGENT_NAME="codex"
 ARGS=()
@@ -37,24 +40,24 @@ IDLE_NEEDED="${AGENT_IDLE_ROUNDS:-3}"
 
 [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_TARGET required" >&2; exit 1; }
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
-tmux has-session -t "$TARGET" 2>/dev/null \
+mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
 
 # Clear any partial input, then load prompt via paste-buffer to safely handle
 # special characters and multiline text (tmux send-keys would misinterpret them).
-tmux send-keys -t "$TARGET" "" 2>/dev/null || true
+mtmux send-keys -t "$TARGET" "" 2>/dev/null || true
 sleep 0.3
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
-trap 'rm -f "$TMPFILE"; tmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
+trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
 printf '%s' "$PROMPT" > "$TMPFILE"
-tmux load-buffer -b "$BUFFER_NAME" "$TMPFILE"
+mtmux load-buffer -b "$BUFFER_NAME" "$TMPFILE"
 rm -f "$TMPFILE"
-tmux paste-buffer -b "$BUFFER_NAME" -t "$TARGET"
-tmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
+mtmux paste-buffer -b "$BUFFER_NAME" -t "$TARGET"
+mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
 trap - EXIT
 sleep 0.2
-tmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
+mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0
@@ -63,7 +66,7 @@ last_output=""
 while true; do
     [[ $(date +%s) -ge $deadline ]] && { echo "TIMEOUT: no reply in ${TIMEOUT}s" >&2; exit 2; }
     sleep "$POLL"
-    output=$(tmux capture-pane -t "$TARGET" -p 2>/dev/null)
+    output=$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)
 
     if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
         idle_rounds=0; last_output="$output"; continue
