@@ -1,0 +1,20 @@
+{
+  "name": "@openclaw-agent-mesh/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Controlled Agent Mesh gateway sidecar: policy, CAS dispatch boundary, Discord boundary, proactivity, and host binding facades.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

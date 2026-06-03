@@ -1,0 +1,60 @@
+[
+  {
+    "id": "agent.chief_of_staff",
+    "name": "Chief of Staff",
+    "role": "orchestration",
+    "status": "simulated",
+    "phase_1_active": true,
+    "capabilities": ["route_request", "summarize_task"],
+    "enabled_contexts": ["workspace.joseph", "domain.personal", "domain.itermodus", "domain.nestdev", "domain.tirrenia", "domain.drassil"]
+  },
+  {
+    "id": "agent.software_engineer",
+    "name": "Software Engineer",
+    "role": "software_engineering",
+    "status": "simulated",
+    "phase_1_active": true,
+    "capabilities": ["propose_codex_execution_job_stub"],
+    "enabled_contexts": ["domain.nestdev"]
+  },
+  {
+    "id": "agent.security",
+    "name": "Security",
+    "role": "security_review",
+    "status": "placeholder",
+    "phase_1_active": false,
+    "capabilities": ["policy_dry_run"]
+  },
+  {
+    "id": "agent.memory_curator",
+    "name": "Memory Curator",
+    "role": "memory_curation",
+    "status": "placeholder",
+    "phase_1_active": false,
+    "capabilities": ["propose_memory"]
+  },
+  {
+    "id": "agent.research",
+    "name": "Research",
+    "role": "research",
+    "status": "placeholder",
+    "phase_1_active": false,
+    "capabilities": ["research_summary"]
+  },
+  {
+    "id": "agent.backoffice",
+    "name": "Backoffice",
+    "role": "backoffice",
+    "status": "placeholder",
+    "phase_1_active": false,
+    "capabilities": ["document_workflow"]
+  },
+  {
+    "id": "agent.designer",
+    "name": "Designer",
+    "role": "design",
+    "status": "placeholder",
+    "phase_1_active": false,
+    "capabilities": ["design_brief"]
+  }
+]
