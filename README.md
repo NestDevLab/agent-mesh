@@ -1,5 +1,7 @@
 # Agent Mesh
 
+Current status: **v0.9 preview**. This repository is ready for serious controlled live testing, not yet a v1.0 stability release.
+
 Agent Mesh is a consolidated monorepo for bounded multi-agent workflows around OpenClaw/runtime-b-style agent teams.
 
 It merges the previously separate policy/plugin package, the Claude/CAS gateway sidecar prototype, and the runtime wrapper integration into one testable tree.
@@ -30,13 +32,18 @@ See:
 ## Development
 
 ```bash
-npm install
-npm run build
-npm test
-```
-
-Or run the combined verifier:
-
-```bash
+npm ci
 npm run verify
 ```
+
+`npm run verify` runs build, tests, local Mesh harness smoke, and readiness privacy checks.
+
+Useful Mesh commands:
+
+```bash
+npm run mesh:smoke
+npm run mesh:readiness
+npm run mesh:harness -- --participant runtime-a --state-file /tmp/agent-mesh-state.json --pretty
+```
+
+See `docs/mesh-v0.9-live-testing.md` before any live Discord test.

@@ -1,6 +1,6 @@
 {
   "name": "@nestdevlab/agent-mesh",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": false,
   "type": "module",
   "description": "Consolidated Agent Mesh monorepo: policy core, OpenClaw plugin, gateway sidecar, and runtime wrapper.",
@@ -8,9 +8,11 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "verify": "npm run build && npm test",
+    "verify": "npm run build && npm test && npm run mesh:smoke && npm run mesh:readiness",
     "lint": "npm run build",
-    "mesh:readiness": "node scripts/mesh-readiness.mjs"
+    "mesh:readiness": "node scripts/mesh-readiness.mjs",
+    "mesh:harness": "node scripts/mesh-dispatch-harness.mjs",
+    "mesh:smoke": "node scripts/mesh-dispatch-smoke.mjs"
   },
   "workspaces": [
     "packages/*"

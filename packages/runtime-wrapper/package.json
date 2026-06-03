@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-agent-mesh/runtime-wrapper",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "OpenClaw runtime wrapper/plugin for Agent Mesh sidecar routing, dry-run safety, and rollout integration.",

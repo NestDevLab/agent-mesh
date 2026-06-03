@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-agent-mesh/core",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "Runtime-agnostic Agent Mesh policy, task-turn, run-scope, and replay-control primitives.",
@@ -19,4 +19,3 @@
   ],
   "license": "UNLICENSED"
 }
-
