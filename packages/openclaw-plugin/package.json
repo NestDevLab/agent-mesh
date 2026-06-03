@@ -1,0 +1,33 @@
+{
+  "name": "@openclaw-agent-mesh/openclaw-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw plugin adapter for Agent Mesh planning tools.",
+  "scripts": {
+    "build": "node --check src/index.js"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.js"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "dependencies": {
+    "@openclaw-agent-mesh/core": "file:../core"
+  },
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "examples",
+    "openclaw.plugin.json",
+    "README.md"
+  ],
+  "license": "UNLICENSED"
+}
+

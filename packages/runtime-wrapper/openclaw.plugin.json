@@ -1,0 +1,59 @@
+{
+  "id": "agent-mesh-wrapper",
+  "name": "Agent Mesh Wrapper",
+  "description": "Private dry-run wrapper for the Agent Mesh sidecar.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": { "type": "boolean", "default": true },
+      "mode": { "type": "string", "enum": ["observe", "plan", "enforce"], "default": "observe" },
+      "statePath": { "type": "string", "default": "runtime/agent-mesh-wrapper" },
+      "sidecarPath": { "type": "string", "default": "../openclaw-agent-mesh-gateway" },
+      "killSwitch": { "type": "boolean", "default": false },
+      "paused": { "type": "boolean", "default": false },
+      "dryRun": { "type": "boolean", "default": true },
+      "allowRealCasDispatch": { "type": "boolean", "default": false },
+      "allowRealDiscordSend": { "type": "boolean", "default": false },
+      "discordAllowlist": {
+        "type": "array",
+        "default": [],
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "guildId": { "type": "string" },
+            "channelId": { "type": "string" },
+            "categoryId": { "type": "string" },
+            "threadId": { "type": "string" }
+          },
+          "anyOf": [
+            { "required": ["channelId"] },
+            { "required": ["categoryId"] }
+          ]
+        }
+      },
+      "casAllowlist": {
+        "type": "array",
+        "default": [{ "tempOnly": true, "workspacePrefix": "/tmp/" }],
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "tempOnly": { "type": "boolean", "default": true },
+            "workspacePrefix": { "type": "string" },
+            "repoScope": { "type": "string" }
+          }
+        }
+      },
+      "audit": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": { "type": "boolean", "default": true },
+          "path": { "type": "string", "default": "runtime/agent-mesh-wrapper/audit.jsonl" }
+        }
+      }
+    }
+  }
+}

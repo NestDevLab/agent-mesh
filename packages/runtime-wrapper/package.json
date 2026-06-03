@@ -1,0 +1,33 @@
+{
+  "name": "@openclaw-agent-mesh/runtime-wrapper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "OpenClaw runtime wrapper/plugin for Agent Mesh sidecar routing, dry-run safety, and rollout integration.",
+  "scripts": {
+    "build": "node --check index.js && node --check policy.js",
+    "test": "node --test",
+    "lint": "npm run build"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "files": [
+    "index.js",
+    "policy.js",
+    "openclaw.plugin.json",
+    "README.md",
+    "ROLLOUT.md",
+    "examples"
+  ],
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./policy": "./policy.js"
+  }
+}
