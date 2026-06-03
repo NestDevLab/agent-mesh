@@ -103,6 +103,22 @@ export interface TmuxDispatchRecord {
 `TmuxDispatchStore` (NDJSON, file `tmux-dispatch-events.ndjson`) exposes:
 `append(record)`, `list()`, `listByIdempotencyKey(key)`.
 
+## Known limitations
+
+- **Idempotency is not atomic across concurrent dispatches.** The check
+  (`listByIdempotencyKey`) → `sender.send` → `append` sequence is not a single
+  atomic claim. Two dispatches with the same `idempotency_key` running
+  concurrently can both observe no prior non-failed record and both send. A
+  correct fix needs a store-level claim/lock (a local mutex would only cover one
+  adapter instance, not cross-process dispatch). Until then, callers must not
+  fan out concurrent same-key dispatches to this adapter.
+- **Idempotency runs before the dry-run gate (intentional).** A prior *stubbed*
+  record for a key suppresses a later real send with the same key. This is
+  contract-consistent and pinned by a test; re-issue with a fresh
+  `idempotency_key` to actually send after a dry run.
+
+(Both items surfaced in the cross-agent review of the implementation.)
+
 ## Discord-compatibility invariants honored
 
 - Injected sender — no host tool calls from the package.

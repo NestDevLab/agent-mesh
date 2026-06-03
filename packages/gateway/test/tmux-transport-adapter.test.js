@@ -215,3 +215,146 @@ test("preserves trace and correlation ids in the dispatch result", async () => {
   assert.equal(result.details.correlation_id, "corr-1");
   assert.equal(result.details.target_agent_id, "agent.software_engineer");
 });
+
+// ── Regression coverage from Codex's review (failure paths + gaps) ───────────
+
+test("sender result {ok:false} returns failed WITH reason and tmux_target", async () => {
+  const stateDir = await freshStateDir();
+  const sender = fakeSender({ ok: false, error: "pane_busy" });
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const result = await adapter.dispatch(baseDelivery(), baseEnvelope());
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.details.reason, "pane_busy");
+  assert.equal(result.details.tmux_target, "mesh-codex-main");
+});
+
+test("sender throwing returns failed WITH reason and tmux_target", async () => {
+  const stateDir = await freshStateDir();
+  const sender = {
+    calls: [],
+    async send() {
+      throw new Error("tmux socket gone");
+    }
+  };
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const result = await adapter.dispatch(baseDelivery(), baseEnvelope());
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.details.reason, "tmux socket gone");
+  assert.equal(result.details.tmux_target, "mesh-codex-main");
+});
+
+test("failure paths still record an audit event (anti-loop and no-route)", async () => {
+  const stateDir = await freshStateDir();
+  const adapter = new TmuxTransportAdapter({
+    sender: fakeSender(),
+    routes: [],
+    stateDir,
+    clock: fixedClock
+  });
+
+  await adapter.dispatch(baseDelivery(), baseEnvelope()); // no route -> failed
+
+  const store = new TmuxDispatchStore({ stateDir });
+  const records = await store.list();
+  assert.equal(records.length, 1);
+  assert.equal(records[0].status, "failed");
+  assert.equal(records[0].reason, "no_route_for_target");
+  assert.equal(records[0].sender_called, false);
+});
+
+test("preserves causation_id through to result and audit", async () => {
+  const stateDir = await freshStateDir();
+  const adapter = new TmuxTransportAdapter({
+    sender: fakeSender(),
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const result = await adapter.dispatch(
+    baseDelivery(),
+    baseEnvelope({ causation_id: "cause-1" })
+  );
+
+  assert.equal(result.details.causation_id, "cause-1");
+  const records = await new TmuxDispatchStore({ stateDir }).list();
+  assert.equal(records[0].causation_id, "cause-1");
+});
+
+test("renders prompt from content.summary when text is absent", async () => {
+  const stateDir = await freshStateDir();
+  const sender = fakeSender();
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  await adapter.dispatch(
+    baseDelivery(),
+    baseEnvelope({ content: { summary: "fallback summary text" } })
+  );
+
+  assert.equal(sender.calls[0].prompt, "fallback summary text");
+});
+
+test("renders prompt as JSON when neither text nor summary present", async () => {
+  const stateDir = await freshStateDir();
+  const sender = fakeSender();
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  await adapter.dispatch(
+    baseDelivery(),
+    baseEnvelope({ content: { foo: "bar" } })
+  );
+
+  assert.equal(sender.calls[0].prompt, JSON.stringify({ foo: "bar" }));
+});
+
+test("a prior STUBBED record dedups a later enabled send (contract-consistent)", async () => {
+  const stateDir = await freshStateDir();
+  const sender = fakeSender();
+  // First dispatch on a stub route records a stubbed entry for idem-1.
+  const stubAdapter = new TmuxTransportAdapter({
+    sender,
+    routes: stubRoute,
+    stateDir,
+    clock: fixedClock
+  });
+  const stubbed = await stubAdapter.dispatch(baseDelivery(), baseEnvelope());
+  assert.equal(stubbed.status, "stubbed");
+
+  // A later enabled route with the SAME idempotency_key must NOT send: the
+  // stubbed record (non-failed) suppresses it. This pins the documented
+  // ordering (idempotency runs before the dry-run gate).
+  const enabledAdapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+  const second = await enabledAdapter.dispatch(baseDelivery(), baseEnvelope());
+
+  assert.equal(sender.calls.length, 0);
+  assert.equal(second.details.deduplicated, true);
+});
