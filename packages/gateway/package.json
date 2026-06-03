@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-agent-mesh/gateway",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Controlled Agent Mesh gateway sidecar: policy, CAS dispatch boundary, Discord boundary, proactivity, and host binding facades.",
   "type": "module",

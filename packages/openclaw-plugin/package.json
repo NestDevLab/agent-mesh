@@ -1,6 +1,6 @@
 {
   "name": "@openclaw-agent-mesh/openclaw-plugin",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "OpenClaw plugin adapter for Agent Mesh planning tools.",
@@ -30,4 +30,3 @@
   ],
   "license": "UNLICENSED"
 }
-
