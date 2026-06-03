@@ -7,8 +7,9 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "echo 'tmux-bridge: shell-only package, no build step'",
-    "test": "echo 'tmux-bridge: no automated tests yet'",
-    "postinstall": "chmod +x bin/*.sh 2>/dev/null || true"
+    "test": "scripts/smoke-test.sh",
+    "smoke": "scripts/smoke-test.sh",
+    "postinstall": "chmod +x bin/*.sh scripts/*.sh 2>/dev/null || true"
   },
   "bin": {
     "agent-session": "./bin/agent-session.sh",
