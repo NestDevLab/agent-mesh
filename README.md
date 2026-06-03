@@ -12,6 +12,7 @@ It merges the previously separate policy/plugin package, Discord gateway sidecar
 - `@openclaw-agent-mesh/openclaw-plugin` — OpenClaw plugin adapter exposing planning tools backed by the core package.
 - `@openclaw-agent-mesh/gateway` — controlled Discord gateway sidecar with policy decisions, proactivity, model selection, and host binding facades.
 - `@openclaw-agent-mesh/runtime-wrapper` — OpenClaw runtime wrapper/plugin integration for sidecar rollout and dry-run safety.
+- `@openclaw-agent-mesh/tmux-bridge` — agnostic tmux bridge for CLI-to-CLI agent intercommunication, surfaced in the gateway as the `tmux-transport` adapter (a peer of the Discord adapter). See `docs/transports.md`.
 
 ## Design rules
 

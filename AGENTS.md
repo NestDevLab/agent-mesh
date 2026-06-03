@@ -20,6 +20,14 @@ Rules specific to this package:
 - Scripts must derive the repo root from their own location (`$(dirname "$0")/...`) rather than hardcoding it.
 - Adding a new agent config is sufficient to support a new CLI; no changes to the shared scripts are needed.
 
+## tmux transport adapter
+
+The gateway exposes a `tmux-transport` adapter (`TmuxTransportAdapter`), a peer of the controlled Discord adapter behind the same `MeshTransportAdapter` interface. It reuses the shared envelope, anti-loop, idempotency, dry-run-first, and audit patterns; it adds no Discord changes.
+
+- The gateway package never shells out — real sends go through an injected `TmuxSessionSender` (host-side, backed by `packages/tmux-bridge/bin/agent-send.sh`).
+- Dry-run-first: a route is stubbed unless it sets `enable_real_send: true`. No session auto-start or discovery.
+- See `packages/gateway/docs/tmux-adapter-boundary.md` (boundary), `packages/gateway/docs/tmux-adapter-contract.md` (source of truth), `docs/transports.md` (overview), and `docs/discord-agent-knowledge.md` (what Discord agents need to know).
+
 ## Skills
 
 `skills/` contains Claude/Codex skill definitions (`SKILL.md` + `ASSISTANT.md`) for the tmux bridge.
