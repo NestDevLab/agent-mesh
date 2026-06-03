@@ -4,7 +4,7 @@
 
 The Agent Mesh must choose model and reasoning settings by role, task type, complexity, risk, latency, and cost. A single global default is not enough for a multi-agent system.
 
-This document defines the Phase 2 policy design. It does not enable real model switching, launch CAS jobs, or modify OpenClaw runtime configuration.
+This document defines the Phase 2 policy design. It does not enable real model switching or modify OpenClaw runtime configuration.
 
 ## Principles
 
@@ -39,8 +39,8 @@ A model decision should consider:
 | `routine_fast` | Low-risk triage, formatting, summaries, checklist maintenance | low cost, low/medium reasoning |
 | `balanced` | Normal planning, coordination, domain handoffs | balanced cost/reasoning |
 | `deep_reasoning` | Ambiguous planning, architecture, complex debugging, security analysis | stronger model, high reasoning |
-| `specialist_coding` | Code implementation/review through CAS/Codex-style workers | CAS-backed, scoped workspace, approval-aware |
-| `safety_review` | Approval, security, sensitive memory/tool/CAS decisions | stronger review policy, conservative defaults |
+| `specialist_coding` | Code implementation/review through explicitly configured workers | scoped workspace, approval-aware |
+| `safety_review` | Approval, security, sensitive memory/tool decisions | stronger review policy, conservative defaults |
 | `local_private` | Private/local-only recall/summarization where supported | local model preference, no external provider by default |
 
 ## Agent defaults
@@ -58,7 +58,6 @@ A model decision should consider:
 - implementation: `specialist_coding`
 - small routine summaries: `balanced`
 - risky repo operations: approval required
-- real code development should be orchestrated through CAS teams appropriate to task complexity
 
 ### `agent.security`
 
@@ -99,24 +98,24 @@ A model decision should consider:
 | low complexity + low risk + no external side effects | `routine_fast` or agent default |
 | normal domain planning | `balanced` |
 | high ambiguity or architecture | `deep_reasoning` |
-| code implementation | `specialist_coding` via CAS team |
+| code implementation | `specialist_coding` via configured worker/team |
 | code review/security review | `deep_reasoning` or `safety_review` |
 | high-risk external write | `safety_review` + ask-human |
 | private/secret context | `local_private` when available, otherwise approval-aware stronger policy |
 | repeated failures/flaky behavior | escalate one tier and create improvement proposal |
 
-## CAS team sizing rule
+## Worker sizing rule
 
-When code implementation is needed, the mesh should not default to a single ad-hoc worker. It should choose a CAS team size appropriate to complexity:
+When code implementation is needed, the mesh should not default to a single ad-hoc worker. It should choose a worker/team size appropriate to complexity:
 
-| Complexity | CAS orchestration |
+| Complexity | Worker orchestration |
 | --- | --- |
-| small | one CAS worker or direct edit if truly trivial and explicitly safe |
-| medium | two CAS roles: implementer + reviewer/QA |
+| small | one worker or direct edit if truly trivial and explicitly safe |
+| medium | two roles: implementer + reviewer/QA |
 | high | three or more roles: architect, implementer(s), reviewer/QA/security |
 | integration with external side effects | design/review first, then implementation only after required approvals |
 
-CAS workers must receive guardrails:
+Workers must receive guardrails:
 
 - no OpenClaw core changes;
 - no external writes unless explicitly approved;
@@ -132,7 +131,7 @@ Require human approval or safety-review escalation for:
 - external writes, sends, posts, deploys, pushes, or publishes;
 - sensitive memory commits;
 - deleting/forgetting/archive actions with user impact;
-- real CAS/Codex execution that can modify files outside the approved package/workspace scope;
+- real execution that can modify files outside the approved package/workspace scope;
 - model/provider choices that would expose private or secret context externally.
 
 ## Selection record
@@ -153,7 +152,7 @@ Future implementation should record model choices as audit-friendly events:
   "reasoning_effort": "medium",
   "fallback_profiles": ["deep_reasoning", "balanced"],
   "approval_required": false,
-  "reason": "Medium implementation task should use CAS implementer plus reviewer."
+  "reason": "Medium implementation task should use implementer plus reviewer."
 }
 ```
 
@@ -164,7 +163,7 @@ A stub-safe implementation can add:
 - model profile schema;
 - model profile config;
 - deterministic profile selector;
-- CAS team-sizing helper;
+- worker-sizing helper;
 - model-selection audit records;
 - tests for role/task/complexity/risk routing.
 

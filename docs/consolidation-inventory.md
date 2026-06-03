@@ -45,7 +45,7 @@ The source tree had local modifications in:
 
 Those modifications are preserved in this consolidation branch.
 
-### Claude/CAS legacy implementation
+### Legacy gateway sidecar implementation
 
 Source:
 
@@ -84,7 +84,7 @@ The repo keeps the reusable code/artifacts, not private raw session dumps.
 ```text
 packages/core/              Runtime-agnostic policy primitives
 packages/openclaw-plugin/   OpenClaw plugin adapter from existing package repo
-packages/gateway/           Claude/CAS gateway sidecar implementation
+packages/gateway/           Discord gateway sidecar implementation
 packages/runtime-wrapper/   Runtime wrapper/plugin integration
 ```
 

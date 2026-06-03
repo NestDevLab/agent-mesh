@@ -4,6 +4,8 @@
 
 Purpose: close public/runtime-neutral gaps so the mesh can be tested seriously in live controlled environments.
 
+Scope: Discord Mesh transport, pre-wake gating, state persistence, dedupe, loop/hop guards, and controlled live-smoke evidence. Execution backends are intentionally out of roadmap scope.
+
 Included:
 
 - Mesh v1 parser and pre-dispatch state machine.

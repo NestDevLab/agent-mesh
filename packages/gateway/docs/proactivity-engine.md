@@ -21,7 +21,7 @@ Phase 2 remains design/stub-first:
 - no Discord messages are sent;
 - no external tools are called;
 - no OpenClaw runtime configuration is modified;
-- no Codex/CAS jobs are launched from proactivity;
+- no worker jobs are launched from proactivity;
 - no memory commits are executed without the Memory Fabric policy gate and approval rules.
 
 The engine may model schedules, triggers, policies, and audit records locally. Real adapters require a later explicit approval.
@@ -139,7 +139,7 @@ Improvement loop:
 - update repo playbooks after repeated failures;
 - propose better test/build gates;
 - detect missing automation or flaky workflows;
-- improve handoff format to CAS/Codex runners.
+- improve handoff format to configured workers.
 
 ### `agent.security`
 
@@ -216,7 +216,7 @@ Default policy:
 | Checklist/playbook update proposal | `allow-once` proposal-only |
 | Durable memory update | Memory Fabric policy gate |
 | External write/post/send | `ask-human` or `deny` until adapter approval |
-| Codex/CAS execution | Approval gate + Codex runner policy |
+| Worker execution | Approval gate + worker policy |
 | Deletion/archive/drop | `ask-human` unless explicitly configured |
 | High-cost model/tool run | model policy approval gate |
 
@@ -271,4 +271,4 @@ This design block is complete when:
 - agent-specific loop expectations are recorded;
 - backlog hygiene outcomes are explicit;
 - approval boundaries are clear;
-- no real scheduler/cron/Discord/tool/CAS side effects are introduced.
+- no real scheduler/cron/Discord/tool side effects are introduced.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This roadmap tracks the broader policy layer that should evolve after the first real adapters exist. It keeps the mesh safe while moving from local stubs to controlled real CAS and Discord integrations.
+This roadmap tracks the broader policy layer that should evolve after the first real adapters exist. It keeps the mesh safe while moving from local stubs to controlled Discord integrations.
 
 ## Current policy pieces
 
@@ -13,8 +13,7 @@ Implemented or designed:
 - local Guardian-style approval facade for execution jobs;
 - Memory Fabric policy gate;
 - Proactivity Engine approval boundaries;
-- model/reasoning profile policy and CAS team sizing;
-- CAS runner integration boundary;
+- model/reasoning profile policy and worker sizing;
 - Discord adapter boundary.
 
 ## Refinement layers
@@ -82,11 +81,9 @@ Before a real adapter is enabled, require:
 
 Recommended order:
 
-1. Stub planner for CAS runner records.
 2. Stub planner for Discord delivery records.
 3. Unified policy decision type.
 4. Shared risk classifier.
-5. Controlled single real CAS demo after approval.
 6. Controlled single real Discord dry-run-to-send demo after approval.
 7. Broader adapter rollout only after audit review.
 

@@ -19,7 +19,7 @@ Raw session files are intentionally **not** committed into this repo by default.
 - Federation bridge route for external OpenClaw gateways where exposed.
 - Discord mention fallback only for unmanaged or not-yet-routable participants.
 - Reply/thread linkage and visible-state minimization: natural public messages first; machine state in runtime metadata where possible.
-- Safety defaults: dry-run, allow-once gates, no direct Discord/CAS side effects without explicit host-provided adapters and approval.
+- Safety defaults: dry-run, allow-once gates, no direct Discord side effects without explicit host-provided adapters and approval.
 
 ## Privacy rule
 
