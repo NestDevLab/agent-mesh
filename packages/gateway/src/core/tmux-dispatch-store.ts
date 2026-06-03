@@ -1,3 +1,4 @@
+import { createHash } from "crypto";
 import { mkdir, unlink, writeFile } from "fs/promises";
 import { dirname } from "path";
 import {
@@ -89,14 +90,18 @@ export class TmuxDispatchStore {
   async releaseClaim(key: string): Promise<void> {
     try {
       await unlink(this.claimPath(key));
-    } catch {
-      // No claim to release is fine.
+    } catch (error) {
+      if (isNotFound(error)) {
+        // No claim to release is fine.
+        return;
+      }
+      throw error;
     }
   }
 
   private claimPath(key: string): string {
-    const safe = key.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return `${this.filePath}.claims/${safe}.claim`;
+    const digest = createHash("sha256").update(key).digest("hex");
+    return `${this.filePath}.claims/${digest}.claim`;
   }
 }
 
@@ -106,5 +111,14 @@ function isAlreadyExists(error: unknown): boolean {
     error !== null &&
     "code" in error &&
     (error as { code?: string }).code === "EEXIST"
+  );
+}
+
+function isNotFound(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: string }).code === "ENOENT"
   );
 }

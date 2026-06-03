@@ -197,6 +197,11 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       true,
       reason
     );
+    if (status === "delivered") {
+      // The delivered record is now the durable dedup source; the claim was only
+      // needed to guard the in-flight send window.
+      await this.store.releaseClaim(envelope.idempotency_key);
+    }
 
     return {
       status,
