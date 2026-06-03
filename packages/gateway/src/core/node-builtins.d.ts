@@ -23,7 +23,7 @@ declare module "child_process" {
   export function execFile(
     file: string,
     args: readonly string[],
-    options: { env?: Record<string, string | undefined>; maxBuffer?: number },
+    options: { env?: Record<string, string | undefined>; maxBuffer?: number; timeout?: number },
     callback: (
       error: (Error & { code?: number }) | null,
       stdout: string,

@@ -15,7 +15,7 @@ export interface ShellRunResult {
 export type ShellRun = (
   command: string,
   args: readonly string[],
-  options: { env: Record<string, string | undefined> }
+  options: { env: Record<string, string | undefined>; timeoutMs?: number }
 ) => Promise<ShellRunResult>;
 
 export interface ShellTmuxSenderOptions {
@@ -65,8 +65,12 @@ export class ShellTmuxSender implements TmuxSessionSender {
       env.MESH_TMUX_SOCKET = this.meshSocket;
     }
 
+    // Hard wall-clock ceiling for the child, slightly above the bridge's own
+    // timeout, so a wedged agent-send.sh cannot hang the host indefinitely.
+    const timeoutMs = (this.timeoutSeconds + 15) * 1000;
+
     try {
-      const result = await this.run(this.agentSendPath, args, { env });
+      const result = await this.run(this.agentSendPath, args, { env, timeoutMs });
       if (result.code === 0) {
         return { ok: true, reply: result.stdout.trim() };
       }
@@ -84,19 +88,25 @@ export class ShellTmuxSender implements TmuxSessionSender {
 function defaultRun(
   command: string,
   args: readonly string[],
-  options: { env: Record<string, string | undefined> }
+  options: { env: Record<string, string | undefined>; timeoutMs?: number }
 ): Promise<ShellRunResult> {
   return new Promise((resolve) => {
     execFile(
       command,
       args,
-      { env: options.env, maxBuffer: 10 * 1024 * 1024 },
+      {
+        env: options.env,
+        maxBuffer: 10 * 1024 * 1024,
+        ...(options.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {})
+      },
       (error, stdout, stderr) => {
         const code = error && typeof error.code === "number" ? error.code : error ? 1 : 0;
+        const errorMessage = error instanceof Error ? error.message : "";
+        const stderrText = typeof stderr === "string" ? stderr : "";
         resolve({
           code,
           stdout: typeof stdout === "string" ? stdout : "",
-          stderr: typeof stderr === "string" ? stderr : ""
+          stderr: stderrText || errorMessage
         });
       }
     );

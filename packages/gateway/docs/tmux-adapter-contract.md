@@ -119,6 +119,15 @@ export interface TmuxDispatchRecord {
   record for a key suppresses a later real send with the same key. This is
   contract-consistent and pinned by a test; re-issue with a fresh
   `idempotency_key` to actually send after a dry run.
+- **The in-flight loser gets a provisional result (known design choice).** When
+  `claim()` returns false, the loser returns `stubbed`/`deduplicated:true`
+  *before* the winning send's outcome is known. This guarantees no double-send,
+  but it is not a true "return the prior result" dedup. A stronger design would
+  wait for the winner's record or return a distinct `in_flight` status — that is
+  a future contract/API decision, not a bug.
+- **Sender hard timeout.** `ShellTmuxSender` applies an `execFile` wall-clock
+  ceiling slightly above the bridge timeout, so a wedged `agent-send.sh` cannot
+  hang the host indefinitely.
 
 ## Real sender (host-side)
 

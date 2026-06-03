@@ -590,6 +590,16 @@ export class GatewayService implements AgentMeshGateway {
         ? ["discord-transcript-stub", "codex-runner-stub"]
         : ["simulated-agent", "discord-transcript-stub"];
 
+    // Additively activate the tmux transport for agent-to-agent intents, but
+    // ONLY when a host has registered it. The default gateway (and all existing
+    // tests) never register "tmux-transport", so their selection is unchanged.
+    if (
+      this.adaptersById.has("tmux-transport") &&
+      (envelope.intent === "request" || envelope.intent === "reply")
+    ) {
+      ids.push("tmux-transport");
+    }
+
     return ids.map((id) => {
       const adapter = this.adaptersById.get(id);
       if (adapter === undefined) {
