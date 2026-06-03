@@ -43,6 +43,7 @@ Useful Mesh commands:
 
 ```bash
 npm run mesh:smoke
+npm run mesh:decentralized
 npm run mesh:readiness
 npm run mesh:harness -- --participant runtime-a --state-file /tmp/agent-mesh-state.json --pretty
 ```
