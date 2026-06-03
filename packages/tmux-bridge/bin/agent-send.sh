@@ -40,10 +40,19 @@ IDLE_NEEDED="${AGENT_IDLE_ROUNDS:-3}"
 tmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
 
-# Clear any partial input, type the prompt, submit
+# Clear any partial input, then load prompt via paste-buffer to safely handle
+# special characters and multiline text (tmux send-keys would misinterpret them).
 tmux send-keys -t "$TARGET" "" 2>/dev/null || true
 sleep 0.3
-tmux send-keys -t "$TARGET" "$PROMPT"
+TMPFILE=$(mktemp)
+BUFFER_NAME="_agent_send_$$"
+trap 'rm -f "$TMPFILE"; tmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
+printf '%s' "$PROMPT" > "$TMPFILE"
+tmux load-buffer -b "$BUFFER_NAME" "$TMPFILE"
+rm -f "$TMPFILE"
+tmux paste-buffer -b "$BUFFER_NAME" -t "$TARGET"
+tmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
+trap - EXIT
 sleep 0.2
 tmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
 
@@ -69,9 +78,13 @@ while true; do
     [[ $idle_rounds -ge $IDLE_NEEDED ]] && break
 done
 
-# Extract reply: lines between the echoed prompt and the next prompt character
+# Extract reply: lines between the echoed prompt and the next prompt character.
+# Multiline prompts are echoed over multiple pane lines, so anchor on the first
+# submitted line instead of requiring the whole prompt to appear on one line.
+PROMPT_HEAD="${PROMPT%%$'\n'*}"
+[[ -n "$PROMPT_HEAD" ]] || PROMPT_HEAD="$PROMPT"
 echo "$last_output" \
-    | awk -v prompt="$PROMPT" -v pc="$AGENT_PROMPT_CHAR" '
+    | awk -v prompt="$PROMPT_HEAD" -v pc="$AGENT_PROMPT_CHAR" '
         $0 ~ pc && index($0, prompt) { found=1; next }
         found && $0 ~ pc { exit }
         found { print }
