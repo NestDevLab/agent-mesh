@@ -1,0 +1,50 @@
+{
+  "owner": "synthetic-staff-community-domain",
+  "boundary_class": "staff-community-boundary",
+  "threat": "staff or community operational context leaks into publishable manifest artifacts, generated runtime config, audit output, or fallback summaries",
+  "surfaces": [
+    "generated_prompt",
+    "generated_config",
+    "repo_artifact",
+    "audit_log",
+    "public_channel",
+    "terminal_adapter",
+    "fallback_summary"
+  ],
+  "data_boundary": {
+    "forbidden": [
+      "real community names",
+      "staff structure",
+      "organization-internal roles",
+      "ownership details",
+      "runtime topology",
+      "numeric platform IDs",
+      "host paths",
+      "secrets"
+    ]
+  },
+  "egress_policy": "staff/community data must be synthetic only and must not expose real community, staff, organization, runtime, ownership, routing, ID, path, topology, transcript, or log details",
+  "expected_result": "fail validation with deterministic staff-community-boundary error; include field/path, never raw private value",
+  "negative_cases": [
+    {
+      "id": "staff_context_in_repo_artifact",
+      "surface": "repo_artifact",
+      "failure_mode": "staff/community context appears in a repo-facing artifact",
+      "expected": "fail"
+    },
+    {
+      "id": "community_runtime_id_in_generated_config",
+      "surface": "generated_config",
+      "failure_mode": "community runtime identifier appears in generated config",
+      "expected": "fail"
+    }
+  ],
+  "artifact": {
+    "repo_artifact": {
+      "notes": "load staff context from /private/community/staff"
+    },
+    "generated_config": {
+      "community_route_marker": "synthetic-live-route"
+    }
+  }
+}

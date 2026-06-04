@@ -1,0 +1,37 @@
+{
+  "owner": "public-fixture-suite",
+  "boundary_class": "core-neutral",
+  "threat": "public repo fixtures accidentally include private or live operational identifiers",
+  "surfaces": [
+    "repo_fixture",
+    "generated_prompt",
+    "generated_config",
+    "ci_log"
+  ],
+  "data_boundary": {
+    "forbidden": [
+      "live platform IDs",
+      "host paths",
+      "token-shaped strings",
+      "local deployment identifiers"
+    ]
+  },
+  "egress_policy": "repo fixtures and CI output must remain synthetic and runtime-neutral",
+  "expected_result": "pass when fixture and generated artifact contain only synthetic runtime-neutral data",
+  "negative_cases": [
+    {
+      "id": "public_fixture_contains_live_identifier",
+      "surface": "repo_fixture",
+      "failure_mode": "fixture contains live identifier, host path, token-shaped string, or local deployment identifier",
+      "expected": "fail"
+    }
+  ],
+  "artifact": {
+    "schema": "agent-manifest/v0",
+    "owner": "public-fixture-suite",
+    "generated_config": {
+      "transport": "runtime-neutral",
+      "route": "synthetic-example"
+    }
+  }
+}

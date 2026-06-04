@@ -1,0 +1,49 @@
+{
+  "owner": "synthetic-development-agent-domain",
+  "boundary_class": "development-agent-boundary",
+  "threat": "development-agent runtime details, routing metadata, or local workspace state leak into publishable manifest artifacts",
+  "surfaces": [
+    "generated_prompt",
+    "generated_config",
+    "repo_artifact",
+    "audit_log",
+    "public_channel",
+    "terminal_adapter",
+    "fallback_summary"
+  ],
+  "data_boundary": {
+    "forbidden": [
+      "runtime-specific agent names",
+      "routing metadata",
+      "local workspace paths",
+      "live terminal/session identifiers",
+      "numeric platform IDs",
+      "host paths",
+      "secrets"
+    ]
+  },
+  "egress_policy": "development-agent manifests must stay runtime-neutral and must not expose local routing, workspace, terminal, or live-operation details",
+  "expected_result": "fail validation with deterministic development-agent-boundary error; include field/path, never raw private value",
+  "negative_cases": [
+    {
+      "id": "local_workspace_path_in_generated_config",
+      "surface": "generated_config",
+      "failure_mode": "local workspace path appears in generated runtime config",
+      "expected": "fail"
+    },
+    {
+      "id": "live_route_identifier_in_audit_log",
+      "surface": "audit_log",
+      "failure_mode": "live route or platform identifier appears in audit log",
+      "expected": "fail"
+    }
+  ],
+  "artifact": {
+    "generated_config": {
+      "workspace_root": "/private/workspace/development-agent"
+    },
+    "audit_log": {
+      "route_marker": "synthetic-live-route"
+    }
+  }
+}

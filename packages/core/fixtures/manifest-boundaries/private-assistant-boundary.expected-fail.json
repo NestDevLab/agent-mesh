@@ -1,0 +1,45 @@
+{
+  "owner": "synthetic-private-assistant-domain",
+  "boundary_class": "private-assistant-boundary",
+  "threat": "private assistant persona, memory, or personal context leaks into publishable manifest artifacts or runtime outputs",
+  "surfaces": [
+    "generated_prompt",
+    "generated_config",
+    "repo_artifact",
+    "audit_log",
+    "public_channel",
+    "terminal_adapter",
+    "fallback_summary"
+  ],
+  "data_boundary": {
+    "forbidden": [
+      "private assistant memory",
+      "persona-private context",
+      "personal relationship context",
+      "live runtime bindings",
+      "numeric platform IDs",
+      "host paths",
+      "secrets"
+    ]
+  },
+  "egress_policy": "private assistant data must not appear in repo fixtures, generated prompts/configs, logs, public/terminal surfaces, or fallback summaries",
+  "expected_result": "fail validation with deterministic private-assistant-boundary error; include field/path, never raw private value",
+  "negative_cases": [
+    {
+      "id": "private_assistant_memory_in_generated_prompt",
+      "surface": "generated_prompt",
+      "failure_mode": "private assistant memory appears in a generated prompt",
+      "expected": "fail"
+    },
+    {
+      "id": "persona_context_in_fallback_summary",
+      "surface": "fallback_summary",
+      "failure_mode": "persona-private context is summarized into an unauthorized fallback surface",
+      "expected": "fail"
+    }
+  ],
+  "artifact": {
+    "generated_prompt": "load assistant context from /private/assistant/memory",
+    "fallback_summary": "private_key: synthetic-secret-token"
+  }
+}

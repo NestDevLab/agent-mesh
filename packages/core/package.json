@@ -5,13 +5,15 @@
   "type": "module",
   "description": "Runtime-agnostic Agent Mesh policy, task-turn, run-scope, and replay-control primitives.",
   "scripts": {
-    "build": "node --check src/policy.js",
-    "test": "node --test"
+    "build": "node --check src/policy.js && node --check src/manifest.js",
+    "test": "node --test",
+    "manifest:fixtures": "node scripts/verify-manifest-fixtures.mjs"
   },
   "main": "./src/policy.js",
   "exports": {
     ".": "./src/policy.js",
-    "./policy": "./src/policy.js"
+    "./policy": "./src/policy.js",
+    "./manifest": "./src/manifest.js"
   },
   "files": [
     "src",

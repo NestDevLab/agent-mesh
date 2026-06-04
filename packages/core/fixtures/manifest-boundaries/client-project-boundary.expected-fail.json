@@ -1,0 +1,46 @@
+{
+  "owner": "synthetic-client-domain",
+  "boundary_class": "client-project-boundary",
+  "threat": "client-project internal context leaks into publishable/runtime-neutral artifacts, generated runtime config, audit output, or unauthorized fallback summaries",
+  "surfaces": [
+    "generated_prompt",
+    "generated_config",
+    "repo_artifact",
+    "audit_log",
+    "public_channel",
+    "terminal_adapter",
+    "fallback_summary"
+  ],
+  "data_boundary": {
+    "forbidden": [
+      "client_internal_context",
+      "customer/project-private names",
+      "internal repository details",
+      "live runtime bindings",
+      "numeric platform IDs",
+      "host paths/secrets"
+    ]
+  },
+  "egress_policy": "private client-project data must not appear in repo fixtures, generated prompts/configs, logs, public/terminal surfaces, or fallback summaries",
+  "expected_result": "fail validation with deterministic client-project-boundary error; include field/path, never raw private value",
+  "negative_cases": [
+    {
+      "id": "client_internal_context_in_generated_config",
+      "surface": "generated_config",
+      "failure_mode": "client_internal_context appears in generated runtime config",
+      "expected": "fail"
+    },
+    {
+      "id": "unauthorized_fallback_summary",
+      "surface": "fallback_summary",
+      "failure_mode": "client-project details are summarized to an unauthorized domain agent through fallback",
+      "expected": "fail"
+    }
+  ],
+  "artifact": {
+    "generated_config": {
+      "client_context_path": "C:\\private\\client\\runtime.json"
+    },
+    "fallback_summary": "credential: synthetic-secret-token"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "owner": "synthetic-business-domain",
+  "boundary_class": "sensitive-business-domain-boundary",
+  "threat": "sensitive business context leaks into generated runtime artifacts or audit outputs",
+  "surfaces": [
+    "generated_prompt",
+    "generated_config",
+    "public_channel",
+    "terminal_adapter",
+    "audit_log",
+    "fallback_summary"
+  ],
+  "data_boundary": {
+    "forbidden": [
+      "private_business_memory",
+      "raw business context",
+      "live runtime bindings",
+      "numeric platform IDs",
+      "host paths",
+      "secrets"
+    ]
+  },
+  "egress_policy": "private business data must not appear in generated prompts/configs, logs, public channels, terminal adapters, or fallback summaries",
+  "expected_result": "fail validation with deterministic sensitive-business-domain-boundary error; include field/path, never raw private value",
+  "negative_cases": [
+    {
+      "id": "sensitive_business_memory_in_generated_prompt",
+      "surface": "generated_prompt",
+      "failure_mode": "private_business_memory appears in generated prompt",
+      "expected": "fail"
+    },
+    {
+      "id": "raw_business_context_in_audit_log",
+      "surface": "audit_log",
+      "failure_mode": "raw private business context appears in audit log instead of sanitized reason code",
+      "expected": "fail"
+    }
+  ],
+  "artifact": {
+    "generated_prompt": "load context from /private/business/context",
+    "audit_log": {
+      "reason": "live-secret-token"
+    }
+  }
+}
