@@ -44,7 +44,9 @@ Only `nextAction=dispatch_once` may wake the runtime. `buffer_only`, `none`, and
 
 ## Required live matrix
 
-Run these in a disposable test thread with placeholder participants, no production channel IDs in the repo, and a single explicit run id:
+Run these in a disposable test thread with placeholder participants, no production channel IDs in the repo, and a single explicit run id.
+
+Legacy header form:
 
 1. Partial chunk only
    - Send `cc-mesh-final: false`.
@@ -64,6 +66,25 @@ Run these in a disposable test thread with placeholder participants, no producti
 6. Hop exhaustion
    - Use `hop-limit: 0`.
    - Expected: fail closed.
+
+Compact `ccm:v1` form:
+
+- Complete peer handoffs use `final=1`.
+- Partial context chunks use `final=0` and must not dispatch.
+- `turn=<local-participant>` is the current-turn gate; when `to=` is omitted, `turn=` is also the recipient list.
+- Real Discord mentions still wake the bot; the compact header only tells the Mesh planner whether to dispatch, buffer, or drop after wake.
+
+## Sanitized live smoke note
+
+A complete three-peer Discord smoke has passed with raw Discord mentions plus compact `ccm:v1` headers across this shape:
+
+```text
+alpha -> beta -> gamma -> observer
+```
+
+Observed result: the observer received a final acknowledgement marker and the round closed without code/config/deploy changes. The important regression note from that run is finality discipline: a peer-to-peer handoff that contains a complete message should emit `final=1`; reserve `final=0` for deliberate partials only.
+
+Do not store live thread ids, Discord user ids, or raw transcripts in this public repo. Keep live evidence in private ops notes and keep this document as the sanitized protocol/runbook memory.
 
 ## Runtime adapter contract
 
