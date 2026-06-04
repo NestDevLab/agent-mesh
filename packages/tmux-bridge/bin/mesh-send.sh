@@ -1,26 +1,27 @@
 #!/bin/bash
 # mesh-send.sh — Ergonomic mesh send: resolve a logical agent name (or capability)
-# from the registry, then dispatch a prompt via agent-send.sh.
+# from agent configs + live tmux sessions, then dispatch via agent-send.sh.
 #
 # Usage:
-#   mesh-send.sh --to <NAME> [--intent request|reply|notification] [--from <NAME>] <BODY> [TIMEOUT]
-#   mesh-send.sh --capability <CAP> [--intent ...] [--from <NAME>] <BODY> [TIMEOUT]
+#   mesh-send.sh --to <NAME> [--target <TMUX_TARGET>] [--intent request|reply|notification] [--from <NAME>] <BODY> [TIMEOUT]
+#   mesh-send.sh --capability <CAP> [--target <TMUX_TARGET>] [--intent ...] [--from <NAME>] <BODY> [TIMEOUT]
 #
 # Resolution:
-#   --to <NAME>          look up the agent by logical name in the registry
-#   --capability <CAP>   pick the first online agent whose capabilities include CAP
+#   --to <NAME>          look up the agent by agents/*.conf metadata
+#   --capability <CAP>   pick the first online agent whose config lists CAP
 #
-# The resolved agent yields an agent_type (config) and a tmux_target. If that
-# tmux session is not running, this prints an error telling you to start it with
-# agent-session.sh — it never auto-starts a session.
+# The resolved agent yields an agent_type (config) and a live tmux target. If no
+# session is running, this prints an error telling you to start it with
+# agent-session.sh. It never auto-starts a session.
 #
 # A one-line provenance header is prepended to the body before dispatch.
 # The agent reply is printed to stdout.
 #
 # Environment overrides:
 #   AGENT_MESH_ROOT     repo root (auto-derived from script location if unset)
-#   MESH_REGISTRY       path to registry.json (default: ../mesh/registry.json)
+#   MESH_REGISTRY       optional legacy registry.json path; if set, read it
 #   MESH_FROM           default sender name for the provenance header (default: "mesh")
+#   TMUX_SESSION_PREFIX tmux name prefix (default: "mesh")
 
 set -euo pipefail
 
@@ -28,8 +29,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_MESH_ROOT="${AGENT_MESH_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 BIN_DIR="$SCRIPT_DIR"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-MESH_REGISTRY="${MESH_REGISTRY:-$BRIDGE_DIR/mesh/registry.json}"
+AGENTS_DIR="$BRIDGE_DIR/agents"
 SEND_BIN="$BIN_DIR/agent-send.sh"
+TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 
 # Dedicated tmux socket (see _mesh-tmux.sh) — must match the bridge scripts.
 # shellcheck source=/dev/null
@@ -37,6 +39,7 @@ source "$SCRIPT_DIR/_mesh-tmux.sh"
 
 TO=""
 CAPABILITY=""
+TARGET_OVERRIDE=""
 INTENT="request"
 FROM="${MESH_FROM:-mesh}"
 ARGS=()
@@ -44,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --to)         TO="$2"; shift 2 ;;
         --capability) CAPABILITY="$2"; shift 2 ;;
+        --target)     TARGET_OVERRIDE="$2"; shift 2 ;;
         --intent)     INTENT="$2"; shift 2 ;;
         --from)       FROM="$2"; shift 2 ;;
         -h|--help)    sed -n '/^#/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -55,7 +59,6 @@ set -- "${ARGS[@]:-}"
 BODY="${1:-}"
 TIMEOUT="${2:-120}"
 
-[[ -f "$MESH_REGISTRY" ]] || { echo "ERROR: registry not found: $MESH_REGISTRY" >&2; exit 1; }
 [[ -x "$SEND_BIN" ]] || { echo "ERROR: missing executable: $SEND_BIN" >&2; exit 1; }
 [[ -z "$BODY" ]] && { echo "ERROR: message BODY required" >&2; exit 1; }
 [[ -z "$TO" && -z "$CAPABILITY" ]] && { echo "ERROR: one of --to or --capability is required" >&2; exit 1; }
@@ -65,8 +68,10 @@ case "$INTENT" in
     *) echo "ERROR: invalid --intent '$INTENT' (use request|reply|notification)" >&2; exit 1 ;;
 esac
 
-# Resolve target → tab-separated: name<TAB>agent_type<TAB>tmux_target<TAB>status
-RESOLVED="$(python3 - "$MESH_REGISTRY" "$TO" "$CAPABILITY" <<'PY'
+if [[ -n "${MESH_REGISTRY:-}" ]]; then
+    [[ -f "$MESH_REGISTRY" ]] || { echo "ERROR: registry not found: $MESH_REGISTRY" >&2; exit 1; }
+    # Resolve target → tab-separated: name<TAB>agent_type<TAB>tmux_target<TAB>status
+    RESOLVED="$(python3 - "$MESH_REGISTRY" "$TO" "$CAPABILITY" <<'PY'
 import json, sys
 
 registry, to, capability = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -95,19 +100,86 @@ print("\t".join([
     match.get("status", ""),
 ]))
 PY
-)" || {
+    )" || {
+        if [[ -n "$TO" ]]; then
+            echo "ERROR: no agent named '$TO' in registry: $MESH_REGISTRY" >&2
+        else
+            echo "ERROR: no online agent with capability '$CAPABILITY' in registry: $MESH_REGISTRY" >&2
+        fi
+        exit 1
+    }
+
+    IFS=$'\t' read -r R_NAME R_TYPE R_TARGET R_STATUS <<<"$RESOLVED"
+else
+    R_NAME=""
+    R_TYPE=""
+    R_TARGET=""
+    R_STATUS=""
+
+    shopt -s nullglob
+    for conf in "$AGENTS_DIR"/*.conf; do
+        agent_type="$(basename "$conf" .conf)"
+        MESH_AGENT_NAME=""
+        MESH_AGENT_CAPABILITIES=""
+        # shellcheck source=/dev/null
+        source "$conf"
+        name="${MESH_AGENT_NAME:-$agent_type}"
+        capabilities=",${MESH_AGENT_CAPABILITIES:-},"
+
+        if [[ -n "$TO" && "$name" != "$TO" && "$agent_type" != "$TO" ]]; then
+            continue
+        fi
+        if [[ -n "$CAPABILITY" && "$capabilities" != *",$CAPABILITY,"* ]]; then
+            continue
+        fi
+
+        prefix="${TMUX_SESSION_PREFIX}-${agent_type}"
+        targets="$(mtmux list-sessions -F '#S' 2>/dev/null \
+            | while IFS= read -r session; do
+                [[ "$session" == "$prefix" || "$session" == "$prefix"-* ]] && printf '%s\n' "$session"
+              done || true)"
+        [[ -n "$targets" || -n "$TO" ]] || continue
+
+        R_NAME="$name"
+        R_TYPE="$agent_type"
+        R_STATUS="offline"
+        [[ -n "$targets" ]] && R_STATUS="online"
+
+        if [[ -n "$TARGET_OVERRIDE" ]]; then
+            R_TARGET="$TARGET_OVERRIDE"
+        else
+            preferred="${TMUX_SESSION_PREFIX}-${agent_type}-main"
+            if echo "$targets" | grep -qx "$preferred"; then
+                R_TARGET="$preferred"
+            else
+                count="$(echo "$targets" | grep -c . || true)"
+                if [[ "$count" -eq 1 ]]; then
+                    R_TARGET="$targets"
+                elif [[ "$count" -gt 1 ]]; then
+                    echo "ERROR: multiple running tmux sessions for agent '$R_NAME'; pass --target." >&2
+                    echo "$targets" | sed 's/^/       /' >&2
+                    exit 1
+                fi
+            fi
+        fi
+        break
+    done
+fi
+
+[[ -n "$R_TYPE" ]] || {
     if [[ -n "$TO" ]]; then
-        echo "ERROR: no agent named '$TO' in registry: $MESH_REGISTRY" >&2
+        echo "ERROR: no agent named '$TO' (expected config in $AGENTS_DIR)" >&2
     else
-        echo "ERROR: no online agent with capability '$CAPABILITY' in registry: $MESH_REGISTRY" >&2
+        echo "ERROR: no agent with capability '$CAPABILITY' is online" >&2
     fi
     exit 1
 }
-
-IFS=$'\t' read -r R_NAME R_TYPE R_TARGET R_STATUS <<<"$RESOLVED"
-
-[[ -n "$R_TYPE" ]] || { echo "ERROR: agent '$R_NAME' has no agent_type in registry" >&2; exit 1; }
-[[ -n "$R_TARGET" ]] || { echo "ERROR: agent '$R_NAME' has no tmux_target in registry" >&2; exit 1; }
+[[ -n "$R_TARGET" ]] || {
+    echo "ERROR: no running tmux session for agent '$R_NAME'." >&2
+    echo "       Start it first, e.g.:" >&2
+    echo "         $BIN_DIR/agent-session.sh --agent $R_TYPE new <CWD> ${TMUX_SESSION_PREFIX}-${R_TYPE}-main" >&2
+    exit 1
+}
 
 if ! mtmux has-session -t "$R_TARGET" 2>/dev/null; then
     echo "ERROR: tmux session '$R_TARGET' for agent '$R_NAME' is not running." >&2
