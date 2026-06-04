@@ -8,12 +8,13 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "verify": "npm run build && npm test && npm run mesh:smoke && npm run mesh:decentralized && npm run mesh:readiness",
+    "verify": "npm run build && npm test && npm run mesh:smoke && npm run mesh:decentralized && npm run mesh:readiness && npm run mesh:hydrate",
     "lint": "npm run build",
     "mesh:readiness": "node scripts/mesh-readiness.mjs",
     "mesh:harness": "node scripts/mesh-dispatch-harness.mjs",
     "mesh:smoke": "node scripts/mesh-dispatch-smoke.mjs",
-    "mesh:decentralized": "node scripts/mesh-decentralized-smoke.mjs"
+    "mesh:decentralized": "node scripts/mesh-decentralized-smoke.mjs",
+    "mesh:hydrate": "node scripts/mesh-hydrate-smoke.mjs"
   },
   "workspaces": [
     "packages/*"
