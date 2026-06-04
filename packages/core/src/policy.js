@@ -1115,18 +1115,23 @@ export function formatMeshV1Envelope({ to, from, meshId, turn, final, seen = [],
   return `${headers.join("\n")}\n\n${String(body ?? "")}`;
 }
 
-export function formatCompactMeshV1Envelope({ from, meshId, turn, final, seen = [], hopLimit, body = "" } = {}) {
+export function formatCompactMeshV1Envelope({ from, meshId, turn, final, seen = [], hopLimit, body = "", participants = [] } = {}) {
+  const normalizedParticipants = normalizeBridgeParticipants(participants);
+  const turnParticipant = resolveBridgeParticipant(normalizedParticipants, turn);
+  const turnValue = optionalString(turnParticipant?.agentId ?? turnParticipant?.label ?? turnParticipant?.mention ?? turn);
+  const wakeMention = turnParticipant?.mention ?? (turnParticipant?.botId ? `<@${turnParticipant.botId}>` : "");
   const fields = [
     ["id", optionalString(meshId)],
     ["from", optionalString(from)],
-    ["turn", optionalString(turn)],
+    ["turn", turnValue],
     ["final", typeof final === "boolean" ? (final ? "1" : "0") : optionalString(final)],
     ["seen", formatMeshList(seen)],
     ["hop", Number.isInteger(hopLimit) ? String(hopLimit) : optionalString(hopLimit)]
   ]
     .filter(([, value]) => value)
     .map(([key, value]) => `${key}=${value}`);
-  return `ccm:v1 ${fields.join(" ")}\n\n${String(body ?? "")}`;
+  const envelope = `ccm:v1 ${fields.join(" ")}\n\n${String(body ?? "")}`;
+  return wakeMention ? `${wakeMention}\n${envelope}` : envelope;
 }
 
 export function parseMeshV1Envelope(text = "") {

@@ -168,6 +168,34 @@ test("compact ccm:v1 envelope parses after Discord mention and dispatches like l
   assert.equal(beta.plan.dispatchText, "compact body");
 });
 
+test("compact formatter hydrates display labels to raw wake mention", () => {
+  const text = formatCompactMeshV1Envelope({
+    from: "karan-openclaw",
+    meshId: "compact-hydrate-1",
+    turn: "Karan - NestDev",
+    final: true,
+    seen: ["hermes", "karan-openclaw"],
+    hopLimit: 3,
+    participants: [
+      { botId: "222", mention: "<@222>", label: "nestdev", aliases: ["Karan - NestDev"] }
+    ],
+    body: "handoff"
+  });
+
+  assert.match(text, /^<@222>\nccm:v1 /);
+  assert.doesNotMatch(text.split("\n")[0], /Karan - NestDev/);
+  assert.match(text, / turn=nestdev /);
+
+  const envelope = parseMeshV1Envelope(text);
+  assert.equal(envelope.valid, true);
+  assert.equal(envelope.turn, "nestdev");
+  assert.deepEqual(envelope.to, ["nestdev"]);
+
+  const nestdev = processMessage("nestdev", text, { records: {} }, "compact-hydrate-1");
+  assert.equal(nestdev.plan.reason, "mesh_v1_final_dispatch_ready");
+  assert.equal(nestdev.plan.dispatchText, "handoff");
+});
+
 test("compact formatter emits one ccm:v1 line and supports partial/final dedupe", () => {
   let state = { records: {} };
   const partial = formatCompactMeshV1Envelope({
