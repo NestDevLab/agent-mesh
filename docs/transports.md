@@ -49,7 +49,7 @@ guarantees.
 Both transports sit behind the same core. None of the following lives in a
 transport adapter:
 
-- **Registry / routing** — explicit targets; no transport invents recipients.
+- **Discovery / routing** — explicit targets; no transport invents recipients.
 - **Anti-loop** — `evaluateAntiLoop` (TTL, expiry, self-message, ping-pong),
   evaluated before any send on every transport.
 - **Delivery / audit store** — append-only NDJSON records per transport
@@ -77,7 +77,7 @@ transport adapter:
                 |
                 v
         +-----------------+
-        |  mesh core      |   registry / routing
+        |  mesh core      |   discovery / routing
         |  coordination   |   anti-loop (evaluateAntiLoop)
         |                 |   idempotency dedup
         |                 |   sensitivity / redaction

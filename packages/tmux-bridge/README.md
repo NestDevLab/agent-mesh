@@ -15,6 +15,8 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-session.sh` | Create, resume, list, or kill agent sessions in tmux |
 | `bin/agent-send.sh` | Send a prompt and wait for the reply |
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
+| `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
+| `bin/mesh-send.sh` | Send to an agent by name or capability using live tmux discovery |
 
 ## Agent Configs
 
@@ -24,6 +26,13 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `agents/claude.conf` | Claude Code CLI (`claude --resume`, `Enter` submit) |
 
 Add `agents/<name>.conf` to support additional CLIs.
+
+Agent configs may also expose mesh metadata:
+
+```bash
+MESH_AGENT_NAME="codex"
+MESH_AGENT_CAPABILITIES="code,review,plan"
+```
 
 ## Usage
 
@@ -45,7 +54,16 @@ $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
 
 # List on-disk sessions + running tmux sessions
 $BIN/agent-session.sh --agent codex list
+
+# Discover live mesh agents and send by logical name
+$BIN/mesh-list-agents.sh
+$BIN/mesh-send.sh --to codex "summarize the current branch" 120
 ```
+
+`mesh-send.sh` does not require a checked-in runtime registry. It discovers
+agent types from `agents/*.conf` and running targets from the dedicated tmux
+socket. If multiple sessions exist for the same agent type, it prefers
+`mesh-<agent>-main`; otherwise pass `--target <TMUX_TARGET>`.
 
 ## Environment Variables
 
@@ -53,6 +71,7 @@ $BIN/agent-session.sh --agent codex list
 |---|---|---|
 | `MESH_TMUX_SOCKET` | `mesh` | Dedicated tmux socket (`tmux -L`) for all bridge sessions |
 | `TMUX_SESSION_PREFIX` | `mesh` | Prefix for tmux session names |
+| `MESH_REGISTRY` | unset | Optional legacy registry path; dynamic discovery is used when unset |
 | `AGENT_POLL_INTERVAL` | `2` | Seconds between output polls |
 | `AGENT_IDLE_ROUNDS` | `3` | Stable-output rounds before declaring idle |
 

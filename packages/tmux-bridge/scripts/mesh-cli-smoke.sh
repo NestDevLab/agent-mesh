@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke-test the mesh CLI layer (mesh-list-agents.sh + mesh-send.sh) against a
-# disposable interactive bash session, using a temp registry + temp agent config.
+# disposable interactive bash session, using dynamic tmux discovery.
 
 set -euo pipefail
 
@@ -19,11 +19,10 @@ LIST_BIN="$BIN_DIR/mesh-list-agents.sh"
 MESH_SEND_BIN="$BIN_DIR/mesh-send.sh"
 
 AGENT_NAME="bash-smoke-$$"
-TARGET_NAME="mesh-smoke-$$"
+TARGET_NAME="mesh-${AGENT_NAME}-main"
 LOGICAL_NAME="bash-smoke"
 SMOKE_CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-mesh-smoke.XXXXXX")"
-REGISTRY="$WORKDIR/registry.json"
 TARGET=""
 
 fail() {
@@ -69,6 +68,8 @@ cat > "$SMOKE_CONF" <<'CONF'
 AGENT_BIN="bash"
 AGENT_SUBMIT_KEY="Enter"
 AGENT_PROMPT_CHAR="SMOKE>"
+MESH_AGENT_NAME="bash-smoke"
+MESH_AGENT_CAPABILITIES="smoke,echo"
 AGENT_WORKING_PATTERN="__agent_mesh_smoke_never_working__"
 AGENT_IDLE_PATTERN="SMOKE>"
 AGENT_RESUME_CMD="env PS1='SMOKE> ' bash --noprofile --norc -i"
@@ -78,23 +79,6 @@ AGENT_NEW_CMD="env PS1='SMOKE> ' bash --noprofile --norc -i"
 AGENT_SESSION_DIR="${TMPDIR:-/tmp}"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\n" "$PWD"'
 CONF
-
-# ── temp registry pointing the logical agent at the disposable bash session ────
-cat > "$REGISTRY" <<JSON
-{
-  "agents": [
-    {
-      "name": "$LOGICAL_NAME",
-      "agent_type": "$AGENT_NAME",
-      "tmux_target": "$TARGET_NAME",
-      "capabilities": ["smoke", "echo"],
-      "status": "online"
-    }
-  ]
-}
-JSON
-
-export MESH_REGISTRY="$REGISTRY"
 
 # ── start the disposable bash session ──────────────────────────────────────────
 TARGET="$("$SESSION_BIN" --agent "$AGENT_NAME" new "$WORKDIR" "$TARGET_NAME")"
