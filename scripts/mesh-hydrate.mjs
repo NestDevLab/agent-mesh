@@ -47,6 +47,7 @@ const from = normalizeLabel(readArg("--from"));
 const meshId = readArg("--id").trim();
 const seen = readArg("--seen").trim();
 const hop = readArg("--hop").trim();
+const final = readArg("--final").trim() || "1";
 const compact = hasFlag("--compact") || readArg("--format") === "ccm";
 const body = readArg("--body").trim();
 
@@ -89,7 +90,11 @@ if (compact) {
     console.error("mesh-hydrate: --compact requires --id, --from, and at least one --to recipient");
     process.exit(2);
   }
-  const headerParts = ["ccm:v1", `id=${meshId}`, `from=${from}`, `turn=${trigger}`, "final=1"];
+  if (!["0", "1", "false", "true"].includes(final.toLowerCase())) {
+    console.error("mesh-hydrate: --final must be one of 0, 1, false, or true");
+    process.exit(2);
+  }
+  const headerParts = ["ccm:v1", `id=${meshId}`, `from=${from}`, `turn=${trigger}`, `final=${final}`];
   if (seen) headerParts.push(`seen=${seen}`);
   if (hop) headerParts.push(`hop=${hop}`);
   console.log(`${prefix}\n${headerParts.join(" ")}\n\n${body}`);

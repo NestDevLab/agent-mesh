@@ -59,4 +59,24 @@ assert.equal(
   "<@99999>\nccm:v1 id=live-peer-test from=nestdev turn=odino final=1 seen=hermes,karan-openclaw,nestdev hop=2\n\nForward one micro-turn.\n",
 );
 
+assert.equal(
+  run(
+    [
+      "--compact",
+      "--to",
+      "odino",
+      "--from",
+      "nestdev",
+      "--id",
+      "partial-peer-test",
+      "--final",
+      "0",
+      "--body",
+      "Partial context only; do not dispatch yet.",
+    ],
+    registry,
+  ),
+  "<@99999>\nccm:v1 id=partial-peer-test from=nestdev turn=odino final=0\n\nPartial context only; do not dispatch yet.\n",
+);
+
 console.log("PASS mesh-hydrate smoke");
