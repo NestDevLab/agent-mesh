@@ -73,7 +73,7 @@ test("validates proactivity records and documented enums", () => {
     schema: PROACTIVITY_RECORD_SCHEMA,
     event_id: "proactivity_1",
     created_at: "2026-05-10T12:00:00.000Z",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     project_id: "project.agent_mesh",
     task_id: "task.phase_2",
@@ -100,7 +100,7 @@ test("rejects invalid proactivity enum values and external execution", () => {
     schema: PROACTIVITY_RECORD_SCHEMA,
     event_id: "proactivity_bad",
     created_at: "2026-05-10T12:00:00.000Z",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     agent_id: "agent.chief_of_staff",
     trigger_kind: "cron",
@@ -156,7 +156,7 @@ test("stale backlog selector maps items to triage, escalate, and archive proposa
       {
         id: "task-unclear",
         title: "Unclear backlog item",
-        workspace_id: "workspace.joseph",
+        workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
         stale_since: "2026-05-01T00:00:00.000Z",
         owner_agent_id: null
@@ -164,7 +164,7 @@ test("stale backlog selector maps items to triage, escalate, and archive proposa
       {
         id: "task-blocked",
         title: "Blocked backlog item",
-        workspace_id: "workspace.joseph",
+        workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
         stale_since: "2026-05-01T00:00:00.000Z",
         blocked_by: "human decision"
@@ -172,7 +172,7 @@ test("stale backlog selector maps items to triage, escalate, and archive proposa
       {
         id: "task-old",
         title: "Old low-value item",
-        workspace_id: "workspace.joseph",
+        workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
         stale_since: "2026-05-01T00:00:00.000Z",
         low_value: true
@@ -206,7 +206,7 @@ test("proactivity stores append and replay local NDJSON records", async () => {
       {
         id: "task-store",
         title: "Stored stale item",
-        workspace_id: "workspace.joseph",
+        workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
         stale_since: "2026-05-01T00:00:00.000Z"
       }

@@ -166,12 +166,12 @@ function executionJob(overrides = {}) {
     runner: "codex-stub",
     request: {
       requested_by_agent_id: "agent.software_engineer",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
       summary: "Record a local CAS runner plan.",
       policy_profile: "software_business_standard",
       endpoint_id: "default",
-      workspace_dir: "/root/.openclaw/workspace/openclaw-agent-mesh-gateway",
+      workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
       repo_scope: "openclaw-agent-mesh-gateway",
       approval_profile: "phase-2-local-stub",
       approval_required: false
@@ -184,7 +184,7 @@ function executionJob(overrides = {}) {
       no_external_execution: true,
       reason: "CAS runner is stub-only.",
       evaluated_at: "2026-05-10T17:20:00.000Z",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev"
     },
     created_at: "2026-05-10T17:20:00.000Z",

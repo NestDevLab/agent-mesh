@@ -126,7 +126,7 @@ function proposal(overrides = {}) {
   return {
     id: "memory_proposal_1",
     requested_by_agent_id: "agent.software_engineer",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     project_id: "project.agent_mesh",
     target: "mem0_scope",

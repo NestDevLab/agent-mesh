@@ -2,7 +2,7 @@
 
 Status: **v0.9 preview**, not v1.0.
 
-v0.9 is intended for serious live testing in controlled Discord/OpenClaw/runtime-b surfaces. v1.0 should wait until the protocol has been used live for a while and has shown stable behavior.
+v0.9 is intended for serious live testing in controlled Discord/runtime-adapter surfaces. v1.0 should wait until the protocol has been used live for a while and has shown stable behavior.
 
 This plan is Discord-only: it tests message ingestion, Mesh headers, pre-wake gating, state persistence, dedupe, and loop guards. It does not include execution backends.
 
@@ -31,7 +31,7 @@ npm run verify
 Use the side-effect-free harness before touching Discord:
 
 ```bash
-cat fixtures.txt | npm run mesh:harness -- --participant runtime-a --state-file /tmp/agent-mesh-state.json --pretty
+cat fixtures.txt | npm run mesh:harness -- --participant agent-beta --state-file /tmp/agent-mesh-state.json --pretty
 ```
 
 Separate multiple candidate Discord messages with a line containing exactly:

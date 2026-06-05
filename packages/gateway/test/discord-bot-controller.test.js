@@ -9,7 +9,7 @@ test("controller converts questions into dry-run follow-up work", () => {
   const plan = planDiscordBotControllerTurn({
     task_id: "AO-031",
     channel_id: "channel-1",
-    actor_id: "yehonalbot",
+    actor_id: "agent-alpha",
     message_id: "msg-q-1",
     text: "What should I inspect next?",
     state: state()
@@ -25,7 +25,7 @@ test("controller asks human when handoff target is low-confidence", () => {
   const plan = planDiscordBotControllerTurn({
     task_id: "AO-031",
     channel_id: "channel-1",
-    actor_id: "yehonalbot",
+    actor_id: "agent-alpha",
     message_id: "msg-h-1",
     text: "handoff maybe to the other bot",
     state: state()
@@ -54,7 +54,7 @@ function state() {
   return {
     task_id: "AO-031",
     channel_id: "channel-1",
-    participant_allowlist: ["yehonalbot", "runtime-a-controller", "agent-alpha"],
+    participant_allowlist: ["agent-alpha", "agent-controller", "agent-gamma"],
     seen_message_ids: [],
     seen_content_hashes: [],
     turn_budget_remaining: 4,

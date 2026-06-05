@@ -12,7 +12,7 @@ test("classifies completion claims and requires verification before close", () =
   const plan = planConversationTurn(
     {
       task_id: "AO-030",
-      actor_id: "yehonalbot",
+      actor_id: "agent-alpha",
       message_id: "msg-complete-1",
       text: "Done, completed the assigned scope.",
       state: initialConversationTaskState("AO-030")
@@ -27,16 +27,16 @@ test("classifies completion claims and requires verification before close", () =
 });
 
 test("classifies handoff and extracts next actor when present", () => {
-  const turn = classifyConversationAct("Please handoff to agent-alpha for the next step");
+  const turn = classifyConversationAct("Please handoff to agent-gamma for the next step");
   assert.equal(turn.act, "handoff");
-  assert.equal(turn.target_agent_id, "agent-alpha");
+  assert.equal(turn.target_agent_id, "agent-gamma");
 });
 
 test("blocked messages create a human-request path and stop prompting", () => {
   const plan = planConversationTurn(
     {
       task_id: "AO-030",
-      actor_id: "runtime-a-nestdev",
+      actor_id: "agent-beta-nestdev",
       message_id: "msg-blocked-1",
       text: "Blocked: missing access to the delivery surface.",
       state: initialConversationTaskState("AO-030")

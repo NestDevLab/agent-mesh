@@ -4,7 +4,7 @@ Private wrapper scaffold for the Agent Mesh sidecar.
 
 Default mode is `observe`: it can plan and audit runtime actions, but it does not execute Discord sends.
 
-In the current private-customizations runtime integration, audit records resolve relative to the gateway process working directory and have been verified at `/root/runtime/agent-mesh-wrapper/audit.jsonl`.
+In the current private-customizations runtime integration, audit records resolve relative to the gateway process working directory and have been verified at `/path/to/runtime/agent-mesh-wrapper/audit.jsonl`.
 
 ## Guardrails
 

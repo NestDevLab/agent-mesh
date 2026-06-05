@@ -87,7 +87,7 @@ const envelope = {
   schema: "openclaw.agent.message.v1",
   message_id: `e2e-msg-${stamp}`,
   created_at: new Date().toISOString(),
-  workspace_id: "workspace.joseph",
+  workspace_id: "workspace.the operator",
   domain_id: "domain.nestdev",
   conversation_id: `e2e-conv-${stamp}`,
   from: "agent.chief_of_staff",

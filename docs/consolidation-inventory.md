@@ -1,101 +1,25 @@
-# Agent Mesh Consolidation Inventory
+# Consolidation Inventory
 
-This branch consolidates the surviving Agent Mesh implementations into one monorepo.
+This repository contains only reusable, runtime-neutral Agent Mesh code, tests, and public documentation.
 
-## Canonical target
+## Included
 
-Intended canonical path:
+- `packages/core/` — runtime-agnostic policy, envelope, turn, and replay primitives.
+- `packages/gateway/` — controlled gateway sidecar and transport boundary prototypes.
+- `packages/runtime-wrapper/` — generic runtime-wrapper integration patterns and tests.
+- `packages/tmux-bridge/` — tmux transport utilities.
+- `docs/` — public protocol, transport, architecture, readiness, and release notes.
 
-```text
-/path/to/workspace/nestdevlabs/agent-mesh
-```
+## Excluded
 
-Current blocker: that directory exists but is owned by `nobody:nogroup` with `0755`, and both local `administrator` and `root@nestdev` hit `Operation not permitted` on `chown`. Until the mount/ownership is fixed, this working branch is assembled at:
+The following are intentionally not stored in this public repository:
 
-```text
-/path/to/workspace/openclaw/shared/projects/agent-mesh-consolidation
-```
+- private deployment paths or hostnames;
+- real Discord guild/channel/thread/user/message IDs;
+- session transcripts, trajectory files, or raw operational logs;
+- private agent names, domain names, customer/project topology, or participant registries;
+- secrets, tokens, local runtime state, approvals, or live rollout reports.
 
-## Sources merged
+## Import rule
 
-### Existing package repo
-
-Source:
-
-```text
-/path/to/workspace/openclaw/openclaw-agent-mesh
-```
-
-Remote recorded there:
-
-```text
-https://github.com/NestDevLab/openclaw-agent-mesh.git
-```
-
-Imported as base:
-
-- `packages/core/`
-- `packages/openclaw-plugin/`
-- root package metadata and docs
-
-The source tree had local modifications in:
-
-- `packages/core/src/policy.js`
-- `packages/openclaw-plugin/openclaw.plugin.json`
-
-Those modifications are preserved in this consolidation branch.
-
-### Legacy gateway sidecar implementation
-
-Source:
-
-```text
-/path/to/workspace/openclaw/archive/agent-mesh-legacy-20260530T215439Z
-```
-
-Imported cleanly, excluding generated/runtime artifacts (`node_modules`, `dist`, `var`, build info):
-
-- `openclaw-agent-mesh-gateway/` → `packages/gateway/`
-- `openclaw-agent-mesh-wrapper/` → `packages/runtime-wrapper/`
-
-Not imported into final package layout:
-
-- generated `dist/`
-- runtime `var/agent-mesh/`
-- dependency folders
-
-### runtime-a/runtime-b/OpenClaw operational trail
-
-Relevant trail is preserved by reference, not raw-imported into the repo, because it contains session transcripts and private operational context.
-
-Pointers:
-
-```text
-/home/operator/.openclaw/agents/runtime-a-nestdev/sessions/agent-mesh-taboo-round-2-nestdev.jsonl
-/home/operator/.openclaw/agents/runtime-a-nestdev/sessions/agent-mesh-taboo-round-2-nestdev.trajectory.jsonl
-/home/operator/.openclaw/agents/runtime-a-nestdev/sessions/agent-mesh-taboo-round-2-nestdev.trajectory-path.json
-/path/to/workspace/openclaw/runtime/agent-mesh-wrapper
-```
-
-The repo keeps the reusable code/artifacts, not private raw session dumps.
-
-## Final package layout
-
-```text
-packages/core/              Runtime-agnostic policy primitives
-packages/openclaw-plugin/   OpenClaw plugin adapter from existing package repo
-packages/gateway/           Discord gateway sidecar implementation
-packages/runtime-wrapper/   Runtime wrapper/plugin integration
-```
-
-## Verification policy
-
-Before pushing this branch:
-
-```bash
-npm install
-npm run build
-npm test
-```
-
-If dependency installation or GitHub push is blocked by missing credentials/network, keep the local branch and report the blocker explicitly.
+When consolidating work from another environment, extract only reusable code, public docs, synthetic fixtures, and tests. Keep operational evidence in the private ops repository and reference it only as sanitized behavior, never as raw paths or transcripts.

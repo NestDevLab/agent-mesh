@@ -76,12 +76,12 @@ function classifyTask(task: TaskThreadTaskInput, taskId: string): TaskThreadClas
   let domain = normalizeHint(task.domainHint);
   if (domain) {
     reasons.push(`domain hint '${task.domainHint}' used`);
-  } else if (matches(haystack, ["chromiecraft", "yehonal", "worldserver", "armory", "pvpstats"])) {
+  } else if (matches(haystack, ["chromiecraft", "agent-alpha", "worldserver", "armory", "pvpstats"])) {
     domain = "chromiecraft";
-    reasons.push("ChromieCraft/Yehonal keywords matched");
-  } else if (matches(haystack, ["example-tenant", "fatture", "invoice", "receipt", "refund"])) {
-    domain = "example-tenant";
-    reasons.push("example-tenant/backoffice keywords matched");
+    reasons.push("example project/Agent Alpha keywords matched");
+  } else if (matches(haystack, ["domain-alpha", "fatture", "invoice", "receipt", "refund"])) {
+    domain = "domain-alpha";
+    reasons.push("Domain Alpha/backoffice keywords matched");
   } else if (matches(haystack, ["nestdev", "odido", "wipro", "jira"])) {
     domain = "nestdev";
     reasons.push("NestDev/Odido keywords matched");
@@ -131,7 +131,7 @@ function planOrchestration(
   task: TaskThreadTaskInput
 ): TaskThreadOrchestrationPlan {
   const text = `${task.title} ${task.summary ?? ""}`.toLowerCase();
-  if (classification.domain === "chromiecraft" || matches(text, ["yehonal", "external bot", "discord bot"])) {
+  if (classification.domain === "chromiecraft" || matches(text, ["agent-alpha", "external bot", "discord bot"])) {
     return {
       strategy: "hybrid",
       allowedStrategies: ["discord_bot_to_bot", "hybrid"],
@@ -198,7 +198,7 @@ function planPlacement(
     thread: { title: buildThreadTitle(taskId, input.task.title, rules), source: "proposed" },
     rationale: ["no suitable existing Discord channel/thread was found", "new channel proposals are disabled by rule"],
     needsApproval: true,
-    approvalReason: "Joseph must identify an existing Discord placement or approve a new one."
+    approvalReason: "the operator must identify an existing Discord placement or approve a new one."
   };
 }
 
@@ -322,7 +322,7 @@ function proposeNewChannel(
     thread: { title: buildThreadTitle(taskId, task.title, rules), source: "proposed" },
     rationale: ["no suitable existing placement found", "new channel proposal allowed by dry-run rules"],
     needsApproval: true,
-    approvalReason: "Creating Discord channels/categories requires Joseph approval."
+    approvalReason: "Creating Discord channels/categories requires the operator approval."
   };
 }
 

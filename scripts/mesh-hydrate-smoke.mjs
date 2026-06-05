@@ -21,15 +21,15 @@ function run(args, registry) {
 
 const registry = {
   participants: {
-    runtime-a: { discordUserId: "12345", aliases: ["runtime-b", "runtime-a-runtime-b"] },
-    nestdev: { discordUserId: "67890", aliases: ["example-tenant"] },
-    agent-alpha: { discordUserId: "99999", aliases: [] },
+    "agent-beta": { discordUserId: "12345", aliases: ["runtime", "agent-beta-runtime"] },
+    nestdev: { discordUserId: "67890", aliases: ["domain-alpha"] },
+    "agent-gamma": { discordUserId: "99999", aliases: [] },
   },
 };
 
 assert.equal(
-  run(["--to", "runtime-b,example-tenant", "--body", "Diagnosi pronta."], registry),
-  "cc-mesh: runtime-a,nestdev\n<@12345> <@67890> Diagnosi pronta.\n",
+  run(["--to", "runtime,domain-alpha", "--body", "Diagnosi pronta."], registry),
+  "cc-mesh: agent-beta,nestdev\n<@12345> <@67890> Diagnosi pronta.\n",
 );
 
 assert.equal(
@@ -42,13 +42,13 @@ assert.equal(
     [
       "--compact",
       "--to",
-      "agent-alpha",
+      "agent-gamma",
       "--from",
       "nestdev",
       "--id",
       "live-peer-test",
       "--seen",
-      "runtime-b,runtime-a-openclaw,nestdev",
+      "runtime,agent-beta-openclaw,nestdev",
       "--hop",
       "2",
       "--body",
@@ -56,7 +56,7 @@ assert.equal(
     ],
     registry,
   ),
-  "<@99999>\nccm:v1 id=live-peer-test from=nestdev turn=agent-alpha final=1 seen=runtime-b,runtime-a-openclaw,nestdev hop=2\n\nForward one micro-turn.\n",
+  "<@99999>\nccm:v1 id=live-peer-test from=nestdev turn=agent-gamma final=1 seen=runtime,agent-beta-openclaw,nestdev hop=2\n\nForward one micro-turn.\n",
 );
 
 assert.equal(
@@ -64,7 +64,7 @@ assert.equal(
     [
       "--compact",
       "--to",
-      "agent-alpha",
+      "agent-gamma",
       "--from",
       "nestdev",
       "--id",
@@ -76,7 +76,7 @@ assert.equal(
     ],
     registry,
   ),
-  "<@99999>\nccm:v1 id=partial-peer-test from=nestdev turn=agent-alpha final=0\n\nPartial context only; do not dispatch yet.\n",
+  "<@99999>\nccm:v1 id=partial-peer-test from=nestdev turn=agent-gamma final=0\n\nPartial context only; do not dispatch yet.\n",
 );
 
 console.log("PASS mesh-hydrate smoke");

@@ -71,4 +71,4 @@ Before moving beyond sidecar smoke:
 - [ ] keep real sends allow-once by default;
 - [ ] require explicit target allowlists for Discord;
 - [ ] require backup and rollback notes before any persistent runtime deployment;
-- [ ] do not push, publish, deploy, or restart without Joseph's explicit approval.
+- [ ] do not push, publish, deploy, or restart without the operator's explicit approval.

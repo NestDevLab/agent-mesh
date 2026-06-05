@@ -308,6 +308,6 @@ const DEFAULT_KNOWN_SCOPES = [
   "domain.personal",
   "domain.example-business",
   "domain.nestdev",
-  "domain.example-tenant",
-  "domain.drassil"
+  "domain.domain-alpha",
+  "domain.domain-beta"
 ] as const;

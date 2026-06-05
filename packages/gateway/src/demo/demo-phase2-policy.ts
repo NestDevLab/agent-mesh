@@ -88,7 +88,7 @@ export function buildPhase2PolicyDemo(): Phase2PolicyDemoResult {
       {
         id: "task-phase2-backlog-hygiene",
         title: "Phase 2 backlog hygiene has not been reviewed",
-        workspace_id: "workspace.joseph",
+        workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
         project_id: "project.agent_mesh",
         task_id: "task.phase2.backlog",
@@ -106,7 +106,7 @@ export function buildPhase2PolicyDemo(): Phase2PolicyDemoResult {
   const modelSelection = selectModelProfile({
     agent_id: "agent.software_engineer",
     agent_role: "software_engineering",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     project_id: "project.agent_mesh",
     task_id: "task.phase2.demo",
@@ -169,7 +169,7 @@ export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCom
     ...planDiscordDelivery(
       {
         message_kind: "safe_status_summary",
-        workspace_id: "workspace.joseph",
+        workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
         conversation_id: "conversation.phase2.policy",
         source_event_id: "event.phase2.policy",
@@ -382,7 +382,7 @@ function buildMemoryProposal(): MemoryFabricProposal {
   return {
     id: "memory_proposal_phase2_demo",
     requested_by_agent_id: "agent.software_engineer",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     project_id: "project.agent_mesh",
     task_id: "task.phase2.demo",
@@ -415,7 +415,7 @@ function buildExecutionJob(): ExecutionJob {
     runner: "codex-stub",
     request: {
       requested_by_agent_id: "agent.software_engineer",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
       project_id: "project.agent_mesh",
       task_id: "task.phase2.policy_completion",
@@ -423,7 +423,7 @@ function buildExecutionJob(): ExecutionJob {
       summary: "Record the local-only CAS runner plan for Phase 2 policy completion.",
       policy_profile: "software_business_standard",
       endpoint_id: "default",
-      workspace_dir: "/root/.openclaw/workspace/openclaw-agent-mesh-gateway",
+      workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
       repo_scope: "openclaw-agent-mesh-gateway",
       approval_profile: "phase-2-local-stub",
       approval_required: false,
@@ -439,7 +439,7 @@ function buildExecutionJob(): ExecutionJob {
       no_external_execution: true,
       reason: "Completion demo is local-only and uses injected fake adapters.",
       evaluated_at: DEMO_NOW,
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
       project_id: "project.agent_mesh",
       task_id: "task.phase2.policy_completion",

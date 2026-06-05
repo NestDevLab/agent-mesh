@@ -13,8 +13,8 @@ const plan = planTaskThreadReportDryRun({
       nextAction: "Implement dry-run placement planner and tests."
     },
     links: {
-      taskflowPath: "/root/.openclaw/workspace/memory/tasks/agent-mesh-bootstrap-taskflow.md",
-      specPath: "/root/.openclaw/workspace/shared/projects/agent-operating-system/discord-placement-map.md"
+      taskflowPath: "/path/to/runtime/workspace/memory/tasks/agent-mesh-bootstrap-taskflow.md",
+      specPath: "/path/to/runtime/workspace/shared/projects/agent-operating-system/discord-placement-map.md"
     }
   },
   discordInventory: {

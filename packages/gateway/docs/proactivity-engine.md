@@ -35,7 +35,7 @@ The engine may model schedules, triggers, policies, and audit records locally. R
 | `staleness` | Item/thread/task has not advanced past threshold | Generates review proposal. |
 | `failure_pattern` | Repeated tool, handoff, delivery, or workflow failures | Generates improvement proposal. |
 | `inbox_signal` | New item appears in monitored intake/inbox | Generates triage proposal. |
-| `human_request` | Joseph asks an agent/team to proceed | Routes to operational loop. |
+| `human_request` | the operator asks an agent/team to proceed | Routes to operational loop. |
 | `post_outcome_review` | Completed work should update playbooks/checklists | Routes to improvement loop. |
 
 ## Proactivity cycle
@@ -237,7 +237,7 @@ Minimal record shape:
   "schema": "openclaw.agent.proactivity.v1",
   "event_id": "proactivity_...",
   "created_at": "2026-05-10T00:00:00.000Z",
-  "workspace_id": "workspace.joseph",
+  "workspace_id": "workspace.the operator",
   "domain_id": "domain.nestdev",
   "agent_id": "agent.chief_of_staff",
   "trigger_kind": "staleness",

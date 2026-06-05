@@ -103,7 +103,7 @@ function baseInput() {
   return {
     agent_id: "agent.software_engineer",
     agent_role: "software_engineering",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     project_id: "project.agent_mesh",
     task_id: "task-model-selection",

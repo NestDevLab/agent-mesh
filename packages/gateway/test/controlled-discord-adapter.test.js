@@ -208,7 +208,7 @@ function allowedPlan() {
   return planDiscordDelivery(
     {
       message_kind: "approval_request",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
       conversation_id: "conversation-1",
       target: {
