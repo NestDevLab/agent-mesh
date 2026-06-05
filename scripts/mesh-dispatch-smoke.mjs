@@ -6,37 +6,37 @@ import path from "node:path";
 
 const tmp = mkdtempSync(path.join(tmpdir(), "agent-mesh-smoke-"));
 const stateFile = path.join(tmp, "state.json");
-const fixture = `cc-mesh: karan
+const fixture = `cc-mesh: agent-beta
 cc-mesh-from: claude
 cc-mesh-id: smoke-1
-cc-mesh-turn: karan
+cc-mesh-turn: agent-beta
 cc-mesh-final: false
 cc-mesh-seen: claude
 hop-limit: 2
 
 partial one
 ---mesh-message---
-cc-mesh: karan
+cc-mesh: agent-beta
 cc-mesh-from: claude
 cc-mesh-id: smoke-1
-cc-mesh-turn: karan
+cc-mesh-turn: agent-beta
 cc-mesh-final: true
 cc-mesh-seen: claude
 hop-limit: 2
 
 final two
 ---mesh-message---
-cc-mesh: karan
+cc-mesh: agent-beta
 cc-mesh-from: claude
 cc-mesh-id: smoke-1
-cc-mesh-turn: karan
+cc-mesh-turn: agent-beta
 cc-mesh-final: true
 cc-mesh-seen: claude
 hop-limit: 2
 
 final duplicate
 ---mesh-message---
-cc-mesh: karan
+cc-mesh: agent-beta
 cc-mesh-from: claude
 cc-mesh-id: smoke-2
 cc-mesh-turn: nestdev
@@ -44,17 +44,17 @@ cc-mesh-final: true
 
 wrong turn
 ---mesh-message---
-cc-mesh: karan
+cc-mesh: agent-beta
 cc-mesh-from: claude
 cc-mesh-id: smoke-3
-cc-mesh-turn: karan
+cc-mesh-turn: agent-beta
 cc-mesh-final: true
-cc-mesh-seen: claude,karan
+cc-mesh-seen: claude,agent-beta
 
 loop`;
 
 try {
-  const run = spawnSync(process.execPath, ["scripts/mesh-dispatch-harness.mjs", "--participant", "karan", "--state-file", stateFile], {
+  const run = spawnSync(process.execPath, ["scripts/mesh-dispatch-harness.mjs", "--participant", "agent-beta", "--state-file", stateFile], {
     input: fixture,
     encoding: "utf8"
   });

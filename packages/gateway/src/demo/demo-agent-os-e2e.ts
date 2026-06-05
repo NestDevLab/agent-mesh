@@ -23,14 +23,14 @@ export function buildAgentOsE2eDemo() {
     status: "active",
     observed_at: "2026-05-13T17:35:00.000Z",
     evidence: [
-      "Joseph explicitly asked for memory commands to work and docs to be indexed",
+      "the operator explicitly asked for memory commands to work and docs to be indexed",
       "Current dry-run planning identifies docs indexing as a first-class Agent OS task"
     ],
     domain_hint: "openclaw",
     type_hint: "docs_indexing",
     taskflow_path: "memory/tasks/agent-mesh-bootstrap-taskflow.md",
     spec_path: "shared/projects/agent-operating-system/README.md",
-    owner_agent_id: "karan-controller"
+    owner_agent_id: "agent-controller"
   };
 
   const taskThreadFlow = planProactivityTaskThreadFlow({
@@ -56,7 +56,7 @@ export function buildAgentOsE2eDemo() {
       task_title: taskThreadFlow.finding.title,
       request_type: "approval",
       priority: "P1",
-      owner_agent_id: "karan-controller",
+      owner_agent_id: "agent-controller",
       canonical_state_ref: "memory/tasks/agent-mesh-bootstrap-taskflow.md",
       question: "Approve one bounded live Discord task-thread smoke test after dry-run closure?",
       recommendation: {
@@ -82,7 +82,7 @@ export function buildAgentOsE2eDemo() {
     {
       request: humanRequest,
       decision: "approve",
-      decided_by: "Joseph",
+      decided_by: "the operator",
       decision_text_summary: "Approved a single bounded smoke test after dry-run completion.",
       approval_scope: {
         action: "single bounded Discord task-thread smoke test",
@@ -111,7 +111,7 @@ export function buildAgentOsE2eDemo() {
   const workerTurn = planConversationTurn(
     {
       task_id: taskThreadFlow.task_thread_plan.taskId,
-      actor_id: "yehonalbot",
+      actor_id: "agent-alpha",
       message_id: "msg-demo-complete-1",
       text: "Done, completed the assigned dry-run docs indexing analysis and prepared the next smoke-test handoff."
     },
@@ -121,14 +121,14 @@ export function buildAgentOsE2eDemo() {
   const controllerTurn = planDiscordBotControllerTurn({
     task_id: taskThreadFlow.task_thread_plan.taskId,
     channel_id: "channel-worklog",
-    actor_id: "yehonalbot",
+    actor_id: "agent-alpha",
     message_id: "msg-demo-complete-1",
     text: "Done, completed the assigned dry-run docs indexing analysis and prepared the next smoke-test handoff.",
     message_hash: canonicalInputHash("done-dry-run-docs-indexing"),
     state: {
       task_id: taskThreadFlow.task_thread_plan.taskId,
       channel_id: "channel-worklog",
-      participant_allowlist: ["yehonalbot", "karan-controller", "odino"],
+      participant_allowlist: ["agent-alpha", "agent-controller", "agent-gamma"],
       seen_message_ids: [],
       seen_content_hashes: [],
       turn_budget_remaining: 4,

@@ -22,7 +22,7 @@ test("defaults to observe dry-run with temp-only CAS", () => {
   assert.equal(cfg.allowRealCasDispatch, false);
   assert.equal(cfg.allowRealDiscordSend, false);
   assert.equal(isCasWorkspaceAllowed(cfg.casAllowlist, "/tmp/openclaw-agent-mesh-demo", "demo"), true);
-  assert.equal(isCasWorkspaceAllowed(cfg.casAllowlist, "/root/repo", "demo"), false);
+  assert.equal(isCasWorkspaceAllowed(cfg.casAllowlist, "/var/repo", "demo"), false);
 });
 
 test("observe mode accepts planning but never side effects", () => {
@@ -257,8 +257,8 @@ test("bridge planner resolves allowlisted NEXT display labels to mentions", () =
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot" },
-        { botId: "222", mention: "<@222>", label: "Karan S'Jet" }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha" },
+        { botId: "222", mention: "<@222>", label: "Agent Beta" }
       ]
     }
   };
@@ -268,7 +268,7 @@ test("bridge planner resolves allowlisted NEXT display labels to mentions", () =
       expectedSpeakerId: "111",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messageText: "Please continue.\n---\nORCH: demo-label-next\nTURN: 2\nNEXT: @Karan S'Jet\nSTATE: handoff\nMi fermo qui"
+      messageText: "Please continue.\n---\nORCH: demo-label-next\nTURN: 2\nNEXT: @Agent Beta\nSTATE: handoff\nMi fermo qui"
     }
   });
   assert.equal(plan.accepted, true);
@@ -280,14 +280,14 @@ test("bridge planner resolves allowlisted NEXT display labels to mentions", () =
 
 test("address book includes labels, mentions, and aliases", () => {
   const entries = buildAgentAddressBook([
-    { botId: "111", mention: "<@111>", label: "YehonalBot", aliases: ["Yehonal"] },
-    { botId: "222", mention: "<@222>", label: "Karan S'Jet", aliases: ["Karan"] }
+    { botId: "111", mention: "<@111>", label: "Agent Alpha", aliases: ["Agent Alpha"] },
+    { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
   ]);
   assert.deepEqual(entries, [
-    { botId: "111", mention: "<@111>", label: "YehonalBot", aliases: ["YehonalBot", "Yehonal"] },
-    { botId: "222", mention: "<@222>", label: "Karan S'Jet", aliases: ["Karan S'Jet", "Karan"] }
+    { botId: "111", mention: "<@111>", label: "Agent Alpha", aliases: ["Agent Alpha"] },
+    { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
   ]);
-  assert.match(formatAgentAddressBook(entries), /Karan S'Jet: <@222>/);
+  assert.match(formatAgentAddressBook(entries), /Agent Beta: <@222>/);
 });
 
 test("mention correction planner detects natural agent names without real Discord mention", () => {
@@ -296,8 +296,8 @@ test("mention correction planner detects natural agent names without real Discor
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot", aliases: ["Yehonal"] },
-        { botId: "222", mention: "<@222>", label: "Karan S'Jet", aliases: ["Karan"] }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha", aliases: ["Agent Alpha"] },
+        { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
       ]
     }
   };
@@ -305,13 +305,13 @@ test("mention correction planner detects natural agent names without real Discor
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messageText: "Secondo me deve continuare Karan con il prossimo controllo."
+      messageText: "Secondo me deve continuare Agent Beta con il prossimo controllo."
     }
   });
   assert.equal(plan.accepted, true);
   assert.equal(plan.reason, "mention_correction_required");
   assert.equal(plan.nextAction, "send_correction_dry_run");
-  assert.deepEqual(plan.references, [{ botId: "222", mention: "<@222>", label: "Karan S'Jet", matchedAlias: "Karan" }]);
+  assert.deepEqual(plan.references, [{ botId: "222", mention: "<@222>", label: "Agent Beta", matchedAlias: "Agent Beta" }]);
   assert.match(plan.correctionMessage, /^<@222> Controller:/);
 });
 
@@ -321,8 +321,8 @@ test("mention correction planner does not correct already valid mentions or self
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot" },
-        { botId: "222", mention: "<@222>", label: "Karan", aliases: ["Karan S'Jet"] }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha" },
+        { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
       ]
     }
   };
@@ -330,7 +330,7 @@ test("mention correction planner does not correct already valid mentions or self
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messageText: "Passo a Karan <@222>."
+      messageText: "Passo a Agent Beta <@222>."
     }
   });
   assert.equal(alreadyMentioned.reason, "mention_correction_not_needed");
@@ -340,7 +340,7 @@ test("mention correction planner does not correct already valid mentions or self
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messageText: "YehonalBot può continuare da solo."
+      messageText: "Agent Alpha può continuare da solo."
     }
   });
   assert.equal(selfReference.reason, "mention_correction_not_needed");
@@ -352,8 +352,8 @@ test("mention correction skips structured event task messages", () => {
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot", aliases: ["YehonalBot"] },
-        { botId: "222", mention: "<@222>", label: "Odino", aliases: ["Odino"] }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha", aliases: ["Agent Alpha"] },
+        { botId: "222", mention: "<@222>", label: "Agent Gamma", aliases: ["Agent Gamma"] }
       ]
     },
     eventController: {
@@ -372,7 +372,7 @@ test("mention correction skips structured event task messages", () => {
     request: {
       source: { botId: "222" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "m1", content: "AgentReport: Odino / waiting\nStatus: waiting for YehonalBot" }]
+      messages: [{ id: "m1", content: "AgentReport: Agent Gamma / waiting\nStatus: waiting for Agent Alpha" }]
     }
   });
 
@@ -387,8 +387,8 @@ test("mention correction skips unstructured messages in active event task channe
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot", aliases: ["YehonalBot"] },
-        { botId: "222", mention: "<@222>", label: "Karan", aliases: ["Karan S'Jet"] }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha", aliases: ["Agent Alpha"] },
+        { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
       ]
     },
     eventController: {
@@ -407,7 +407,7 @@ test("mention correction skips unstructured messages in active event task channe
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "m1", content: "Waiting for Karan S'Jet before I continue." }]
+      messages: [{ id: "m1", content: "Waiting for Agent Beta before I continue." }]
     }
   });
 
@@ -421,8 +421,8 @@ test("event task planner follows up on one container status without knowing tota
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot" },
-        { botId: "222", mention: "<@222>", label: "Karan" }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha" },
+        { botId: "222", mention: "<@222>", label: "Agent Beta" }
       ]
     },
     eventController: {
@@ -462,7 +462,7 @@ test("event task planner stops only when the worker declares completion", () => 
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       tasks: [{
@@ -494,7 +494,7 @@ test("event task planner does not hardcode completion phrases", () => {
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       tasks: [{ id: "containers", sourceBotId: "111", target: { guildId: "g1", channelId: "c1" } }]
@@ -519,7 +519,7 @@ test("event task planner dedupes already seen worker messages", () => {
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       tasks: [{ id: "containers", sourceBotId: "111", target: { guildId: "g1", channelId: "c1" } }]
@@ -544,7 +544,7 @@ test("event task planner uses low-trust LLM advisor for ambiguous status only ab
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       llmAdvisor: { enabled: true, confidenceThreshold: 0.75 },
@@ -583,8 +583,8 @@ test("event task planner gates LLM handoff through participant allowlist and ask
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: {
       participants: [
-        { botId: "111", mention: "<@111>", label: "YehonalBot" },
-        { botId: "222", mention: "<@222>", label: "Karan", aliases: ["Karan S'Jet"] }
+        { botId: "111", mention: "<@111>", label: "Agent Alpha" },
+        { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
       ]
     },
     eventController: {
@@ -598,9 +598,9 @@ test("event task planner gates LLM handoff through participant allowlist and ask
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "m1", content: "Karan dovrebbe dare un'occhiata." }]
+      messages: [{ id: "m1", content: "Agent Beta dovrebbe dare un'occhiata." }]
     },
-    advisor: { classification: "handoff", confidence: 0.82, targetAgentLabel: "Karan" }
+    advisor: { classification: "handoff", confidence: 0.82, targetAgentLabel: "Agent Beta" }
   });
   assert.equal(high.reason, "event_task_llm_handoff_advised");
   assert.equal(high.nextAction, "send_handoff_dry_run");
@@ -610,9 +610,9 @@ test("event task planner gates LLM handoff through participant allowlist and ask
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "m2", content: "Forse Karan?" }]
+      messages: [{ id: "m2", content: "Forse Agent Beta?" }]
     },
-    advisor: { classification: "handoff", confidence: 0.5, targetAgentLabel: "Karan" }
+    advisor: { classification: "handoff", confidence: 0.5, targetAgentLabel: "Agent Beta" }
   });
   assert.equal(low.reason, "event_task_llm_low_confidence_confirmation_required");
   assert.equal(low.nextAction, "send_confirmation_dry_run");
@@ -622,7 +622,7 @@ test("event task planner normalizes unknown advisor enum to ambiguous confirmati
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       llmAdvisor: { enabled: true, confidenceThreshold: 0.75 },
@@ -648,7 +648,7 @@ test("event task planner supports task-specific item prefixes", () => {
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       tasks: [{
@@ -696,8 +696,8 @@ test("event task planner supports multiple source bots for one task", () => {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
     bridge: { participants: [
-      { botId: "111", mention: "<@111>", label: "YehonalBot" },
-      { botId: "222", mention: "<@222>", label: "Odino" }
+      { botId: "111", mention: "<@111>", label: "Agent Alpha" },
+      { botId: "222", mention: "<@222>", label: "Agent Gamma" }
     ] },
     eventController: {
       enabled: true,
@@ -717,12 +717,12 @@ test("event task planner supports multiple source bots for one task", () => {
       taskId: "multi-agent-smoke",
       source: { botId: "222" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r1", content: "AgentReport: Odino / CAS\nStatus: ready" }]
+      messages: [{ id: "r1", content: "AgentReport: Agent Gamma / CAS\nStatus: ready" }]
     },
     state: { status: "awaiting_status", itemCount: 0 }
   });
   assert.equal(plan.reason, "event_task_follow_up_required");
-  assert.equal(plan.item, "Odino / CAS");
+  assert.equal(plan.item, "Agent Gamma / CAS");
   assert.match(plan.followUpMessage, /^<@222>/);
   assert.match(plan.followUpMessage, /Multi-agent test complete/);
 });
@@ -734,7 +734,7 @@ test("event task planner requires and propagates explicit run ids for scoped liv
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       tasks: [{
@@ -754,7 +754,7 @@ test("event task planner requires and propagates explicit run ids for scoped liv
       taskId: "multi-agent-smoke-v4",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r0", content: "AgentReport: Yehonal / runtime\nStatus: ready" }]
+      messages: [{ id: "r0", content: "AgentReport: Agent Alpha / runtime\nStatus: ready" }]
     },
     state: { status: "awaiting_status", itemCount: 0 }
   });
@@ -767,7 +767,7 @@ test("event task planner requires and propagates explicit run ids for scoped liv
       taskId: "multi-agent-smoke-v4",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r1", content: "AgentReport: Yehonal / runtime\nStatus: ready\nRunId: smoke-v4-001" }]
+      messages: [{ id: "r1", content: "AgentReport: Agent Alpha / runtime\nStatus: ready\nRunId: smoke-v4-001" }]
     },
     state: { status: "awaiting_status", itemCount: 0 }
   });
@@ -780,7 +780,7 @@ test("event task planner does not reopen a completed run for same RunId replay",
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
-    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "YehonalBot" }] },
+    bridge: { participants: [{ botId: "111", mention: "<@111>", label: "Agent Alpha" }] },
     eventController: {
       enabled: true,
       tasks: [{
@@ -803,7 +803,7 @@ test("event task planner does not reopen a completed run for same RunId replay",
       taskId: "multi-agent-smoke-v4",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "replay1", content: "AgentReport: Yehonal / duplicate\nStatus: ready\nRunId: smoke-v4-001" }]
+      messages: [{ id: "replay1", content: "AgentReport: Agent Alpha / duplicate\nStatus: ready\nRunId: smoke-v4-001" }]
     },
     state: {
       status: "done",
@@ -846,7 +846,7 @@ test("event task planner only enables the current phase source and expands delib
       taskId: "multi-agent-smoke",
       source: { botId: "222" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r0", content: "AgentReport: Odino / CAS\nStatus: too early" }]
+      messages: [{ id: "r0", content: "AgentReport: Agent Gamma / CAS\nStatus: too early" }]
     },
     state: { status: "awaiting_status", itemCount: 0, phaseIndex: 0 }
   });
@@ -858,7 +858,7 @@ test("event task planner only enables the current phase source and expands delib
       taskId: "multi-agent-smoke",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r1", content: "AgentReport: Yehonal / runtime\nStatus: ready" }]
+      messages: [{ id: "r1", content: "AgentReport: Agent Alpha / runtime\nStatus: ready" }]
     },
     state: { status: "awaiting_status", itemCount: 0, phaseIndex: 0 }
   });
@@ -874,7 +874,7 @@ test("event task planner only enables the current phase source and expands delib
       taskId: "multi-agent-smoke",
       source: { botId: "333" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r3", content: "AgentReport: Karan / runtime\nStatus: done" }]
+      messages: [{ id: "r3", content: "AgentReport: Agent Beta / runtime\nStatus: done" }]
     },
     state: {
       status: "awaiting_status",
@@ -893,7 +893,7 @@ test("event task planner only enables the current phase source and expands delib
       taskId: "multi-agent-smoke",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r2", content: "AgentReport: Yehonal / runtime\nStatus: restarted" }]
+      messages: [{ id: "r2", content: "AgentReport: Agent Alpha / runtime\nStatus: restarted" }]
     },
     state: { status: "done", itemCount: 3, phaseIndex: 2, seenSourceBotIds: ["111", "222", "333"] }
   });

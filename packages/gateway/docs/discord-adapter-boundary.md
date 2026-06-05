@@ -4,7 +4,7 @@
 
 Discord is an observable command, transcript, and approval surface. It is not the Agent Mesh protocol. This document defines the boundary required before the mesh can perform real Discord writes.
 
-Phase 2 has moved past stub-only for the controlled adapter boundary after Joseph's explicit approval. The package still must not call the OpenClaw message tool directly; any real send path must go through an injected sender supplied by the host runtime or tests.
+Phase 2 has moved past stub-only for the controlled adapter boundary after the operator's explicit approval. The package still must not call the OpenClaw message tool directly; any real send path must go through an injected sender supplied by the host runtime or tests.
 
 ## Current state
 
@@ -113,7 +113,7 @@ Before real send, every outbound payload must be classified:
 {
   "delivery_id": "delivery_...",
   "message_kind": "approval_request",
-  "workspace_id": "workspace.joseph",
+  "workspace_id": "workspace.the operator",
   "domain_id": "domain.nestdev",
   "target": {
     "surface": "discord",
@@ -152,7 +152,7 @@ Human approval is required before enabling real sends if:
 - the message contains private/confidential material;
 - the destination is not explicitly configured;
 - the action creates/edits/deletes Discord objects;
-- the send could represent Joseph, a project, or staff-facing operational policy.
+- the send could represent the operator, a project, or staff-facing operational policy.
 
 ## Phase 2 next safe implementation
 

@@ -14,7 +14,7 @@ test("controller suppresses duplicate content ping-pong from the same task", () 
   const plan = planDiscordBotControllerTurn({
     task_id: "AO-031",
     channel_id: "channel-1",
-    actor_id: "yehonalbot",
+    actor_id: "agent-alpha",
     message_id: "msg-2",
     text: "same payload",
     message_hash: "hash-repeat",
@@ -30,7 +30,7 @@ test("controller pauses when turn budget is exhausted", () => {
   const plan = planDiscordBotControllerTurn({
     task_id: "AO-031",
     channel_id: "channel-1",
-    actor_id: "yehonalbot",
+    actor_id: "agent-alpha",
     message_id: "msg-3",
     text: "progress update",
     state: baseState({ turn_budget_remaining: 0 })
@@ -45,7 +45,7 @@ function baseState(overrides = {}) {
   return {
     task_id: "AO-031",
     channel_id: "channel-1",
-    participant_allowlist: ["yehonalbot", "karan-controller", "odino"],
+    participant_allowlist: ["agent-alpha", "agent-controller", "agent-gamma"],
     seen_message_ids: [],
     seen_content_hashes: [],
     turn_budget_remaining: 3,

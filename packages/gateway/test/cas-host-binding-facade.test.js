@@ -45,7 +45,7 @@ test("CAS host binding facade rejects non-/tmp workspaces by default", async () 
   });
 
   await assert.rejects(
-    facade.dispatch(payload({ workspace_dir: "/root/.openclaw/workspace/openclaw-agent-mesh-gateway" })),
+    facade.dispatch(payload({ workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway" })),
     /requires workspaceDir under \/tmp/
   );
   assert.equal(callCount, 0);

@@ -940,13 +940,13 @@ test("event task planner suppresses repeated reports from a capped source", () =
 });
 
 test("Mesh v1 parser extracts headers and body without runtime-specific data", () => {
-  const envelope = parseMeshV1Envelope(`cc-mesh: karan, nestdev\ncc-mesh-from: claude\ncc-mesh-id: mesh-123\ncc-mesh-turn: karan\ncc-mesh-final: false\ncc-mesh-seen: claude\nhop-limit: 3\n\npart one`);
+  const envelope = parseMeshV1Envelope(`cc-mesh: agent-beta, nestdev\ncc-mesh-from: claude\ncc-mesh-id: mesh-123\ncc-mesh-turn: agent-beta\ncc-mesh-final: false\ncc-mesh-seen: claude\nhop-limit: 3\n\npart one`);
 
   assert.equal(envelope.valid, true);
-  assert.deepEqual(envelope.to, ["karan", "nestdev"]);
+  assert.deepEqual(envelope.to, ["agent-beta", "nestdev"]);
   assert.equal(envelope.from, "claude");
   assert.equal(envelope.meshId, "mesh-123");
-  assert.equal(envelope.turn, "karan");
+  assert.equal(envelope.turn, "agent-beta");
   assert.equal(envelope.final, false);
   assert.deepEqual(envelope.seen, ["claude"]);
   assert.equal(envelope.hopLimit, 3);
@@ -954,18 +954,18 @@ test("Mesh v1 parser extracts headers and body without runtime-specific data", (
 });
 
 test("Mesh v1 state machine buffers partial chunks and dispatches final exactly once", () => {
-  const partial = planMeshV1Dispatch({ localParticipant: "karan" }, {
+  const partial = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
     messageId: "m1",
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-1\ncc-mesh-turn: karan\ncc-mesh-final: false\n\nfirst"
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-1\ncc-mesh-turn: agent-beta\ncc-mesh-final: false\n\nfirst"
   });
   assert.equal(partial.accepted, true);
   assert.equal(partial.reason, "mesh_v1_partial_buffered");
   assert.equal(partial.nextAction, "buffer_only");
   assert.equal(partial.dispatchText, undefined);
 
-  const final = planMeshV1Dispatch({ localParticipant: "karan" }, {
+  const final = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
     messageId: "m2",
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-1\ncc-mesh-turn: karan\ncc-mesh-final: true\n\nsecond",
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-1\ncc-mesh-turn: agent-beta\ncc-mesh-final: true\n\nsecond",
     state: partial.stateTransition
   });
   assert.equal(final.accepted, true);
@@ -973,9 +973,9 @@ test("Mesh v1 state machine buffers partial chunks and dispatches final exactly 
   assert.equal(final.nextAction, "dispatch_once");
   assert.equal(final.dispatchText, "first\nsecond");
 
-  const duplicate = planMeshV1Dispatch({ localParticipant: "karan" }, {
+  const duplicate = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
     messageId: "m3",
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-1\ncc-mesh-turn: karan\ncc-mesh-final: true\n\nsecond again",
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-1\ncc-mesh-turn: agent-beta\ncc-mesh-final: true\n\nsecond again",
     state: final.stateTransition
   });
   assert.equal(duplicate.reason, "mesh_v1_duplicate_suppressed");
@@ -983,41 +983,41 @@ test("Mesh v1 state machine buffers partial chunks and dispatches final exactly 
 });
 
 test("Mesh v1 parser fails closed on ambiguous headers and preserves body", () => {
-  const duplicate = parseMeshV1Envelope("cc-mesh: karan\ncc-mesh: nestdev\ncc-mesh-from: claude\ncc-mesh-id: mesh-dup\ncc-mesh-turn: karan\ncc-mesh-final: true\n\nbody");
+  const duplicate = parseMeshV1Envelope("cc-mesh: agent-beta\ncc-mesh: nestdev\ncc-mesh-from: claude\ncc-mesh-id: mesh-dup\ncc-mesh-turn: agent-beta\ncc-mesh-final: true\n\nbody");
   assert.equal(duplicate.valid, false);
   assert.equal(duplicate.errors.includes("duplicate_cc_mesh"), true);
 
-  const missingFinal = planMeshV1Dispatch({ localParticipant: "karan" }, {
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-no-final\ncc-mesh-turn: karan\n\nbody"
+  const missingFinal = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-no-final\ncc-mesh-turn: agent-beta\n\nbody"
   });
   assert.equal(missingFinal.reason, "mesh_v1_invalid_envelope");
   assert.equal(missingFinal.nextAction, "none");
 
-  const malformed = parseMeshV1Envelope("cc-mesh: karan\ncc-mesh-final maybe\ncc-mesh-from: claude\ncc-mesh-id: mesh-bad\ncc-mesh-turn: karan\n\nbody");
+  const malformed = parseMeshV1Envelope("cc-mesh: agent-beta\ncc-mesh-final maybe\ncc-mesh-from: claude\ncc-mesh-id: mesh-bad\ncc-mesh-turn: agent-beta\n\nbody");
   assert.equal(malformed.valid, false);
   assert.equal(malformed.errors.includes("malformed_mesh_header"), true);
 
-  const whitespace = parseMeshV1Envelope("cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-space\ncc-mesh-turn: karan\ncc-mesh-final: true\n\n  keep me  \n");
+  const whitespace = parseMeshV1Envelope("cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-space\ncc-mesh-turn: agent-beta\ncc-mesh-final: true\n\n  keep me  \n");
   assert.equal(whitespace.body, "  keep me  \n");
 });
 
 test("Mesh v1 state machine fails closed for out-of-turn and loop guarded messages", () => {
-  const outOfTurn = planMeshV1Dispatch({ localParticipant: "karan" }, {
+  const outOfTurn = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
     messageId: "m3",
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-2\ncc-mesh-turn: nestdev\ncc-mesh-final: true\n\nhello"
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-2\ncc-mesh-turn: nestdev\ncc-mesh-final: true\n\nhello"
   });
   assert.equal(outOfTurn.accepted, false);
   assert.equal(outOfTurn.reason, "mesh_v1_not_local_turn");
 
-  const seen = planMeshV1Dispatch({ localParticipant: "karan" }, {
+  const seen = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
     messageId: "m4",
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-3\ncc-mesh-turn: karan\ncc-mesh-final: true\ncc-mesh-seen: claude,karan\n\nhello"
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-3\ncc-mesh-turn: agent-beta\ncc-mesh-final: true\ncc-mesh-seen: claude,agent-beta\n\nhello"
   });
   assert.equal(seen.reason, "mesh_v1_loop_guard_seen");
 
-  const hopLimit = planMeshV1Dispatch({ localParticipant: "karan" }, {
+  const hopLimit = planMeshV1Dispatch({ localParticipant: "agent-beta" }, {
     messageId: "m5",
-    text: "cc-mesh: karan\ncc-mesh-from: claude\ncc-mesh-id: mesh-4\ncc-mesh-turn: karan\ncc-mesh-final: true\nhop-limit: 0\n\nhello"
+    text: "cc-mesh: agent-beta\ncc-mesh-from: claude\ncc-mesh-id: mesh-4\ncc-mesh-turn: agent-beta\ncc-mesh-final: true\nhop-limit: 0\n\nhello"
   });
   assert.equal(hopLimit.reason, "mesh_v1_hop_limit_exhausted");
 });

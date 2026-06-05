@@ -70,7 +70,7 @@ test("strict CAS dispatch adapter never calls dispatcher unless every gate passe
     },
     {
       name: "workspace is not scoped to repo",
-      patch: { workspace_dir: "/root/.openclaw/workspace/other-package" },
+      patch: { workspace_dir: "/path/to/runtime/workspace/other-package" },
       reason: /workspace_dir/
     },
     {
@@ -200,12 +200,12 @@ function executionJob() {
     runner: "codex-stub",
     request: {
       requested_by_agent_id: "agent.software_engineer",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
       summary: "Dispatch through the strict CAS runner boundary.",
       policy_profile: "software_business_standard",
       endpoint_id: "default",
-      workspace_dir: "/root/.openclaw/workspace/openclaw-agent-mesh-gateway",
+      workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
       repo_scope: "openclaw-agent-mesh-gateway",
       approval_profile: "phase-2-local-stub",
       approval_required: false
@@ -218,7 +218,7 @@ function executionJob() {
       no_external_execution: true,
       reason: "CAS runner plan is locally approved.",
       evaluated_at: "2026-05-10T18:05:00.000Z",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev"
     },
     created_at: "2026-05-10T18:05:00.000Z",

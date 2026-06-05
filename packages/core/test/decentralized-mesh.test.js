@@ -170,20 +170,20 @@ test("compact ccm:v1 envelope parses after Discord mention and dispatches like l
 
 test("compact formatter hydrates display labels to raw wake mention", () => {
   const text = formatCompactMeshV1Envelope({
-    from: "karan-openclaw",
+    from: "agent-beta-openclaw",
     meshId: "compact-hydrate-1",
-    turn: "Karan - NestDev",
+    turn: "Agent Beta",
     final: true,
-    seen: ["hermes", "karan-openclaw"],
+    seen: ["runtime", "agent-beta-openclaw"],
     hopLimit: 3,
     participants: [
-      { botId: "222", mention: "<@222>", label: "nestdev", aliases: ["Karan - NestDev"] }
+      { botId: "222", mention: "<@222>", label: "nestdev", aliases: ["Agent Beta"] }
     ],
     body: "handoff"
   });
 
   assert.match(text, /^<@222>\nccm:v1 /);
-  assert.doesNotMatch(text.split("\n")[0], /Karan - NestDev/);
+  assert.doesNotMatch(text.split("\n")[0], /Agent Beta/);
   assert.match(text, / turn=nestdev /);
 
   const envelope = parseMeshV1Envelope(text);

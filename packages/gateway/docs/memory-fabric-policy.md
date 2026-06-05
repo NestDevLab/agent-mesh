@@ -37,8 +37,8 @@ workspace.personal_private
 domain.personal
 domain.itermodus
 domain.nestdev
-domain.tirrenia
-domain.drassil
+domain.domain-alpha
+domain.domain-beta
 project.*
 agent-private.*
 ```
@@ -104,7 +104,7 @@ Cross-host handoffs should use a compact packet:
   "handoff_id": "handoff_...",
   "from_agent_id": "agent.research",
   "to_agent_id": "agent.chief_of_staff",
-  "workspace_id": "workspace.joseph",
+  "workspace_id": "workspace.the operator",
   "domain_id": "domain.nestdev",
   "project_id": "project.example",
   "summary": "What the receiving agent needs to know.",

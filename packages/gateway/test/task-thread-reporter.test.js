@@ -71,11 +71,11 @@ test("critical OpenClaw finding routes as incident/status", () => {
   assert.equal(plan.placement.channel?.name, "agent-os-incidents");
 });
 
-test("ChromieCraft/Yehonal tasks choose a Discord-mediated strategy", () => {
+test("example project/Agent Alpha tasks choose a Discord-mediated strategy", () => {
   const plan = planTaskThreadReportDryRun({
     task: task({
       id: "CC-012",
-      title: "YehonalBot inspect ChromieCraft containers",
+      title: "Agent Alpha inspect example project containers",
       domainHint: "chromiecraft"
     }),
     discordInventory: inventory()
@@ -116,9 +116,9 @@ function task(overrides = {}) {
 function inventory(options = {}) {
   const channels = [
     { id: "channel-worklog", name: "agent-os-worklog", type: "text", topic: "Agent OS task lifecycle logs" },
-    { id: "channel-requests", name: "agent-os-requests", type: "text", topic: "Approvals and Joseph decisions" },
+    { id: "channel-requests", name: "agent-os-requests", type: "text", topic: "Approvals and the operator decisions" },
     { id: "channel-incidents", name: "agent-os-incidents", type: "text", topic: "OpenClaw incident status and critical findings" },
-    { id: "channel-chromie", name: "chromiecraft-ops", type: "text", topic: "ChromieCraft and YehonalBot operations" }
+    { id: "channel-chromie", name: "chromiecraft-ops", type: "text", topic: "example project and Agent Alpha operations" }
   ];
 
   if (options.includeAoThread) {

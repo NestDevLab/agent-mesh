@@ -100,7 +100,7 @@ test("records Discord delivery plans in the local NDJSON store", async () => {
 function request(overrides = {}) {
   return {
     message_kind: "approval_request",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     conversation_id: "conversation-1",
     source_event_id: "audit-1",

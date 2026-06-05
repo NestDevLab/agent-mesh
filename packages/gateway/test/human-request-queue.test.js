@@ -28,7 +28,7 @@ test("draftHumanRequest produces a valid dry-run human request", () => {
       task_title: "Human Request Queue",
       request_type: "approval",
       priority: "P1",
-      owner_agent_id: "karan-controller",
+      owner_agent_id: "agent-controller",
       canonical_state_ref: "memory/tasks/agent-mesh-bootstrap-taskflow.md",
       question: "Approve bounded live Discord test?",
       recommendation: {
@@ -59,10 +59,10 @@ test("transitionHumanRequestStatus updates status and timestamp safely", () => {
       task_title: "Human Request Queue",
       request_type: "decision",
       priority: "P2",
-      owner_agent_id: "karan-controller",
+      owner_agent_id: "agent-controller",
       canonical_state_ref: "memory/tasks/agent-mesh-bootstrap-taskflow.md",
       question: "Which request channel should Agent OS use?",
-      recommendation: { option: "ask_more", rationale: "Need Joseph preference." },
+      recommendation: { option: "ask_more", rationale: "Need the operator preference." },
       risk: {
         risk_level: "low",
         approval_triggers: ["preference"],
@@ -85,7 +85,7 @@ test("captureHumanDecision records decision and updates request state", () => {
       task_title: "Task Thread Reporter Bounded Live Test",
       request_type: "approval",
       priority: "P1",
-      owner_agent_id: "karan-controller",
+      owner_agent_id: "agent-controller",
       canonical_state_ref: "memory/tasks/agent-mesh-bootstrap-taskflow.md",
       question: "Approve one bounded live test?",
       recommendation: { option: "approve", rationale: "Dry-run is complete." },
@@ -103,7 +103,7 @@ test("captureHumanDecision records decision and updates request state", () => {
     {
       request,
       decision: "approve",
-      decided_by: "Joseph",
+      decided_by: "the operator",
       decision_text_summary: "Approved one bounded live test.",
       approval_scope: {
         action: "post one bounded lifecycle message",
@@ -131,7 +131,7 @@ test("human request validation rejects malformed replies array", () => {
     request_type: "approval",
     priority: "P1",
     status: "drafted",
-    owner_agent_id: "karan-controller",
+    owner_agent_id: "agent-controller",
     created_at: "2026-05-13T13:40:00.000Z",
     updated_at: "2026-05-13T13:40:00.000Z",
     canonical_state_ref: "memory/tasks/agent-mesh-bootstrap-taskflow.md",

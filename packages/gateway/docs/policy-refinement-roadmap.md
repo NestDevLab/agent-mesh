@@ -46,7 +46,7 @@ Risk inputs should include:
 - tool capability;
 - domain/project;
 - operation reversibility;
-- whether Joseph explicitly requested the action.
+- whether the operator explicitly requested the action.
 
 ### 3. Approval surface routing
 

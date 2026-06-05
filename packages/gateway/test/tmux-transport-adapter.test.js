@@ -30,7 +30,7 @@ function baseEnvelope(overrides = {}) {
     schema: "openclaw.agent.message.v1",
     message_id: "msg-1",
     created_at: "2026-06-03T11:59:00.000Z",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     conversation_id: "conv-1",
     from: "agent.chief_of_staff",

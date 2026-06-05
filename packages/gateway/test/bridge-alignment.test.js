@@ -97,7 +97,7 @@ function envelope(overrides = {}) {
     schema: "openclaw.agent.message.v1",
     message_id: "msg-request-1",
     created_at: "2026-05-09T11:59:00.000Z",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     conversation_id: "conversation-1",
     from: "agent.chief_of_staff",
@@ -115,11 +115,11 @@ function envelope(overrides = {}) {
 function contexts() {
   return [
     {
-      id: "workspace.joseph",
+      id: "workspace.the operator",
       type: "workspace",
-      name: "Joseph Workspace",
+      name: "Example Workspace",
       parent_id: null,
-      owner_human: "joseph",
+      owner_human: "the operator",
       policy_profile: "workspace_standard",
       status: "active"
     },
@@ -127,7 +127,7 @@ function contexts() {
       id: "domain.nestdev",
       type: "company",
       name: "NestDev",
-      parent_id: "workspace.joseph",
+      parent_id: "workspace.the operator",
       policy_profile: "software_business_standard",
       status: "active"
     }
@@ -143,7 +143,7 @@ function agents() {
       status: "simulated",
       phase_1_active: true,
       capabilities: ["route_request"],
-      enabled_contexts: ["workspace.joseph", "domain.nestdev"]
+      enabled_contexts: ["workspace.the operator", "domain.nestdev"]
     },
     {
       id: "agent.software_engineer",

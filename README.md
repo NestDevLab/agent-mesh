@@ -2,7 +2,7 @@
 
 Current status: **v0.9 preview**. This repository is ready for serious controlled live testing, not yet a v1.0 stability release.
 
-Agent Mesh is a consolidated monorepo for bounded multi-agent workflows around OpenClaw/Hermes-style agent teams.
+Agent Mesh is a consolidated monorepo for bounded multi-agent workflows around runtime-adapter agent teams.
 
 It merges the previously separate policy/plugin package, Discord gateway sidecar prototype, and runtime wrapper integration into one testable tree.
 
@@ -28,7 +28,7 @@ It merges the previously separate policy/plugin package, Discord gateway sidecar
 See:
 
 - `docs/consolidation-inventory.md`
-- `docs/karan-hermes-source-notes.md`
+- `docs/agent-beta-runtime-source-notes.md`
 
 ## Development
 
@@ -45,7 +45,7 @@ Useful Mesh commands:
 npm run mesh:smoke
 npm run mesh:decentralized
 npm run mesh:readiness
-npm run mesh:harness -- --participant karan --state-file /tmp/agent-mesh-state.json --pretty
+npm run mesh:harness -- --participant agent-beta --state-file /tmp/agent-mesh-state.json --pretty
 ```
 
 ## Mesh v1 compact Discord header
@@ -54,7 +54,7 @@ Preferred live Discord shape:
 
 ```text
 <@bot>
-ccm:v1 id=live-peer-20260603-a from=karan turn=nestdev final=1 seen=hermes,karan hop=3
+ccm:v1 id=live-peer-20260603-a from=agent-beta turn=nestdev final=1 seen=runtime,agent-beta hop=3
 
 body...
 ```

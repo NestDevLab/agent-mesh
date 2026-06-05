@@ -126,7 +126,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
     created_at: "2026-05-09T12:00:00.000Z",
     source_agent_id: "agent.chief_of_staff",
     target_agent_id: "agent.software_engineer",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     intent: "request",
     ttl: 4,
@@ -139,7 +139,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
     runner: "codex-stub",
     request: {
       requested_by_agent_id: "agent.software_engineer",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
       summary: "stub",
       policy_profile: "software_business_standard",
@@ -156,7 +156,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
       no_external_execution: true,
       reason: "CAS runner is stub-only.",
       evaluated_at: "2026-05-09T12:00:00.000Z",
-      workspace_id: "workspace.joseph",
+      workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev"
     },
     created_at: "2026-05-09T12:00:00.000Z",
@@ -171,7 +171,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
   await new DiscordDeliveryPlanStore({ stateDir, clock: fixedClock }).append({
     id: "discord_delivery_plan_1",
     message_kind: "approval_request",
-    workspace_id: "workspace.joseph",
+    workspace_id: "workspace.the operator",
     domain_id: "domain.nestdev",
     conversation_id: "conversation-1",
     target: {

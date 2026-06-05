@@ -1,10 +1,10 @@
 [
   {
-    "id": "workspace.joseph",
+    "id": "workspace.the operator",
     "type": "workspace",
-    "name": "Joseph Workspace",
+    "name": "Example Workspace",
     "parent_id": null,
-    "owner_human": "joseph",
+    "owner_human": "the operator",
     "policy_profile": "workspace_standard",
     "status": "active"
   },
@@ -12,7 +12,7 @@
     "id": "domain.personal",
     "type": "personal",
     "name": "Personal",
-    "parent_id": "workspace.joseph",
+    "parent_id": "workspace.the operator",
     "policy_profile": "personal_private",
     "memory_scopes": ["domain.personal", "workspace.operational_preferences"],
     "status": "active"
@@ -21,7 +21,7 @@
     "id": "domain.itermodus",
     "type": "business",
     "name": "IterModus",
-    "parent_id": "workspace.joseph",
+    "parent_id": "workspace.the operator",
     "policy_profile": "business_standard",
     "memory_scopes": ["domain.itermodus", "workspace.operational_preferences"],
     "status": "active"
@@ -30,27 +30,27 @@
     "id": "domain.nestdev",
     "type": "company",
     "name": "NestDev",
-    "parent_id": "workspace.joseph",
+    "parent_id": "workspace.the operator",
     "policy_profile": "software_business_standard",
     "memory_scopes": ["domain.nestdev", "workspace.operational_preferences"],
     "status": "active"
   },
   {
-    "id": "domain.tirrenia",
+    "id": "domain.domain-alpha",
     "type": "business",
-    "name": "Tirrenia",
-    "parent_id": "workspace.joseph",
+    "name": "Domain Alpha",
+    "parent_id": "workspace.the operator",
     "policy_profile": "business_sensitive",
-    "memory_scopes": ["domain.tirrenia", "workspace.operational_preferences"],
+    "memory_scopes": ["domain.domain-alpha", "workspace.operational_preferences"],
     "status": "active"
   },
   {
-    "id": "domain.drassil",
+    "id": "domain.domain-beta",
     "type": "project_or_venture",
-    "name": "Drassil",
-    "parent_id": "workspace.joseph",
+    "name": "Domain Beta",
+    "parent_id": "workspace.the operator",
     "policy_profile": "creative_business_standard",
-    "memory_scopes": ["domain.drassil", "workspace.operational_preferences"],
+    "memory_scopes": ["domain.domain-beta", "workspace.operational_preferences"],
     "status": "active"
   }
 ]
