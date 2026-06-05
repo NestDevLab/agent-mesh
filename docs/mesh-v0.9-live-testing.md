@@ -15,7 +15,6 @@ This plan is Discord-only: it tests message ingestion, Mesh headers, pre-wake ga
 - Duplicate finals are suppressed after dispatch.
 - `cc-mesh-turn` gates the local participant.
 - `cc-mesh-seen` and `hop-limit` guard loops.
-- The public tree is scanned for private IDs, host paths, and secret-shaped literals by `npm run mesh:readiness`.
 
 ## Commands before any live test
 
