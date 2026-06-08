@@ -27,11 +27,13 @@ agentwheel sync
 ```
 
 The package currently provides the `claude-tmux` and `codex-tmux` skills from
-`skills/`. Those skills are bridge front-ends: they expect the Agent Mesh repo
-to be available locally and `AGENT_MESH_ROOT` to point at it, because the actual
-tmux commands live under `packages/tmux-bridge/bin`. Installing only the skill
-markdown gives the runtime the usage instructions, but callers still need the
-bridge scripts from this repo.
+`skills/`. With agentwheel asset-includes, each installed skill also receives
+the bridge scripts and agent configs it needs under its own `bin/` and `agents/`
+directories. The canonical script source remains `packages/tmux-bridge/bin` in
+this repo; no generated script copies are committed.
+
+Repository mode remains supported by setting `AGENT_MESH_ROOT` and using
+`$AGENT_MESH_ROOT/packages/tmux-bridge/bin` directly.
 
 ## Design rules
 

@@ -10,10 +10,22 @@ Control **Claude Code CLI** sessions via tmux from within Codex (or any other ca
 
 ## Setup
 
+Installed mode (agentwheel): use the scripts bundled inside this skill directory.
+Run commands from the installed skill directory, or set `SKILL_DIR` explicitly.
+
+```bash
+SKILL_DIR="${SKILL_DIR:-$PWD}"
+BIN="$SKILL_DIR/bin"
+```
+
+Repository mode remains supported:
+
 ```bash
 export AGENT_MESH_ROOT="<path-to-agent-mesh-repo>"
-BIN="$AGENT_MESH_ROOT/packages/tmux-bridge/bin"
+BIN="${AGENT_MESH_ROOT}/packages/tmux-bridge/bin"
 ```
+
+Prerequisites: `bash`, `tmux`, `python3`, and the `claude`/`codex` CLIs you want to control.
 
 ## Commands
 
