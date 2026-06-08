@@ -5,7 +5,21 @@
   "provides": [
     {
       "type": "skills",
-      "path": "skills"
+      "path": "skills",
+      "assets": [
+        {
+          "from": "packages/tmux-bridge/bin",
+          "into": "bin",
+          "include": ["*.sh"],
+          "mode": "preserve"
+        },
+        {
+          "from": "packages/tmux-bridge/agents",
+          "into": "agents",
+          "include": ["*.conf"],
+          "mode": "preserve"
+        }
+      ]
     }
   ]
 }
