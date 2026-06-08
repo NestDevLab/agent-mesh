@@ -14,6 +14,25 @@ It merges the previously separate policy/plugin package, Discord gateway sidecar
 - `@openclaw-agent-mesh/runtime-wrapper` — OpenClaw runtime wrapper/plugin integration for sidecar rollout and dry-run safety.
 - `@openclaw-agent-mesh/tmux-bridge` — agnostic tmux bridge for CLI-to-CLI agent intercommunication, surfaced in the gateway as the `tmux-transport` adapter (a peer of the Discord adapter). See `docs/transports.md`.
 
+## Agentwheel install
+
+This repo can be installed as an agentwheel package:
+
+```bash
+npm i -g agentwheel
+agentwheel registry update
+agentwheel add nestdev-mesh --adapter openclaw
+agentwheel sync --dry-run
+agentwheel sync
+```
+
+The package currently provides the `claude-tmux` and `codex-tmux` skills from
+`skills/`. Those skills are bridge front-ends: they expect the Agent Mesh repo
+to be available locally and `AGENT_MESH_ROOT` to point at it, because the actual
+tmux commands live under `packages/tmux-bridge/bin`. Installing only the skill
+markdown gives the runtime the usage instructions, but callers still need the
+bridge scripts from this repo.
+
 ## Design rules
 
 - Core code must stay runtime-agnostic: no real Discord ids, host paths, bot names, secrets, or private deployment assumptions.
