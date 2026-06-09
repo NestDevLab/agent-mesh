@@ -65,6 +65,29 @@ agent types from `agents/*.conf` and running targets from the dedicated tmux
 socket. If multiple sessions exist for the same agent type, it prefers
 `mesh-<agent>-main`; otherwise pass `--target <TMUX_TARGET>`.
 
+## Codex Desktop visibility (remote mode)
+
+To make a tmux Codex session **also visible from Codex Desktop**, export
+`CODEX_REMOTE_SOCK` before launching so the TUI attaches to the running
+app-server instead of spawning a standalone process:
+
+```bash
+export CODEX_REMOTE_SOCK="$HOME/.codex/app-server-control/desktop-ssh-websocket-v0.sock"
+# confirm a listener exists: ss -x | grep codex
+TARGET=$($BIN/agent-session.sh --agent codex new /path/to/project)
+```
+
+**Working-directory gotcha:** in remote mode the app-server ignores the
+`tmux -c <cwd>` the bridge sets — a plain `codex --remote …` lands in the
+*server's* cwd (typically `$HOME`), not your project. The `new` command fixes
+this by passing the resolved directory through the `{CWD}` placeholder in
+`codex.conf`, which expands to `codex --remote … --cd "<project>"`. So a session
+started with `new /path/to/project` is both rooted in that project **and**
+visible from the desktop. Verify with a `pwd` probe if in doubt.
+
+> Note: this `{CWD}` pinning applies to `new`. A `resume` in remote mode relies
+> on Codex restoring the session's own recorded cwd.
+
 ## Environment Variables
 
 | Variable | Default | Purpose |

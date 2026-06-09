@@ -99,6 +99,8 @@ case "$cmd" in
 
     new)
         CWD="${1:-$PWD}"
+        # Resolve to an absolute path so both `tmux -c` and any agent --cd flag agree.
+        CWD="$(cd "$CWD" 2>/dev/null && pwd || echo "$CWD")"
         TMUX_NAME="${2:-}"
         TARGET=$(_tmux_target "$TMUX_NAME")
 
@@ -108,7 +110,11 @@ case "$cmd" in
 
         mtmux new-session -d -s "$TARGET" -c "$CWD"
         mesh_tmux_harden
-        mtmux send-keys -t "$TARGET" "$AGENT_NEW_CMD" Enter
+        # {CWD} placeholder lets an agent conf pin the working root (e.g. codex --cd).
+        # Required in remote mode, where the agent's app-server ignores `tmux -c` and
+        # would otherwise land in the server's own cwd. No-op for confs without {CWD}.
+        NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}"
+        mtmux send-keys -t "$TARGET" "$NEW_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
         echo "$TARGET"
