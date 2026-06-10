@@ -3,8 +3,8 @@
 # from agent configs + live tmux sessions, then dispatch via agent-send.sh.
 #
 # Usage:
-#   mesh-send.sh --to <NAME> [--target <TMUX_TARGET>] [--intent request|reply|notification] [--from <NAME>] <BODY> [TIMEOUT]
-#   mesh-send.sh --capability <CAP> [--target <TMUX_TARGET>] [--intent ...] [--from <NAME>] <BODY> [TIMEOUT]
+#   mesh-send.sh --to <NAME> [--target <TMUX_TARGET>] [--intent request|reply|notification] [--from <NAME>] [--from-agent <TYPE>] [--from-target <TMUX_TARGET>] <BODY> [TIMEOUT]
+#   mesh-send.sh --capability <CAP> [--target <TMUX_TARGET>] [--intent ...] [--from <NAME>] [--from-agent <TYPE>] [--from-target <TMUX_TARGET>] <BODY> [TIMEOUT]
 #
 # Resolution:
 #   --to <NAME>          look up the agent by agents/*.conf metadata
@@ -14,13 +14,17 @@
 # session is running, this prints an error telling you to start it with
 # agent-session.sh. It never auto-starts a session.
 #
-# A one-line provenance header is prepended to the body before dispatch.
+# A provenance header is prepended to the body before dispatch. When source
+# coordinates are supplied, it also includes a return path that the receiver must
+# use only if the user explicitly asks to message the source agent.
 # The agent reply is printed to stdout.
 #
 # Environment overrides:
 #   AGENT_MESH_ROOT     repo root (auto-derived from script location if unset)
 #   MESH_REGISTRY       optional legacy registry.json path; if set, read it
 #   MESH_FROM           default sender name for the provenance header (default: "mesh")
+#   MESH_FROM_AGENT     default source agent type for return-path metadata
+#   MESH_FROM_TARGET    default source tmux target for return-path metadata
 #   TMUX_SESSION_PREFIX tmux name prefix (default: "mesh")
 
 set -euo pipefail
@@ -42,6 +46,8 @@ CAPABILITY=""
 TARGET_OVERRIDE=""
 INTENT="request"
 FROM="${MESH_FROM:-mesh}"
+FROM_AGENT="${MESH_FROM_AGENT:-}"
+FROM_TARGET="${MESH_FROM_TARGET:-}"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -50,6 +56,8 @@ while [[ $# -gt 0 ]]; do
         --target)     TARGET_OVERRIDE="$2"; shift 2 ;;
         --intent)     INTENT="$2"; shift 2 ;;
         --from)       FROM="$2"; shift 2 ;;
+        --from-agent) FROM_AGENT="$2"; shift 2 ;;
+        --from-target) FROM_TARGET="$2"; shift 2 ;;
         -h|--help)    sed -n '/^#/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)            ARGS+=("$1"); shift ;;
     esac
@@ -188,9 +196,16 @@ if ! mtmux has-session -t "$R_TARGET" 2>/dev/null; then
     exit 1
 fi
 
-# One-line provenance header prepended to the body. It is emitted as a leading
-# comment line ("# ...") so shell-like receivers treat it as inert metadata while
-# agent CLIs still see it as the first line of the message.
+# Provenance header prepended to the body. It is emitted as leading comment
+# lines ("# ...") so shell-like receivers treat it as inert metadata while agent
+# CLIs still see it at the top of the message.
 HEADER="# [mesh from=${FROM} to=${R_NAME} intent=${INTENT}]"
+if [[ -n "$FROM_AGENT" || -n "$FROM_TARGET" ]]; then
+    HEADER="$(printf '%s\n# [mesh-source name=%s agent=%s target=%s]' "$HEADER" "$FROM" "${FROM_AGENT:-unknown}" "${FROM_TARGET:-unknown}")"
+    HEADER="$(printf '%s\n# Return path is informational only: use it only when the user explicitly asks you to message the source agent.' "$HEADER")"
+    if [[ -n "$FROM_AGENT" && -n "$FROM_TARGET" ]]; then
+        HEADER="$(printf '%s\n# Return command: %s/agent-send.sh --agent %s %q \"<message>\" <checkpoint_seconds>' "$HEADER" "$BIN_DIR" "$FROM_AGENT" "$FROM_TARGET")"
+    fi
+fi
 
 exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$(printf '%s\n%s' "$HEADER" "$BODY")" "$TIMEOUT"

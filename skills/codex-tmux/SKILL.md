@@ -1,5 +1,5 @@
 ---
-name: Codex tmux Bridge
+name: codex-tmux-bridge
 description: Resume, send prompts to, and read responses from Codex CLI sessions running inside tmux. Use when the user wants to interact with a Codex session by ID, continue previous Codex work, or the MCP codex-reply returns "Session not found".
 allowed-tools: [Bash]
 ---
@@ -55,6 +55,28 @@ $BIN/agent-send.sh --agent codex "$TARGET" "your prompt here"
 $BIN/agent-send.sh --agent codex "$TARGET" "long task" 300
 ```
 
+The timeout is a checkpoint. If Codex is still producing pane output,
+`agent-send.sh` exits `4` with a `PROGRESS` status instead of waiting forever. If
+the pane has not changed recently, it exits `124` with `STALLED`.
+
+When delegating from one agent to another, give the source a human name and
+include source coordinates in the first message:
+
+```bash
+$BIN/mesh-send.sh \
+  --to codex \
+  --from claude-reviewer \
+  --from-agent claude \
+  --from-target mesh-claude-reviewer \
+  --intent request \
+  "your prompt here" \
+  300
+```
+
+The receiving agent may use the source coordinates only when the user explicitly
+asks it to send a message back to the source. A normal reply must stay in the
+current bridge response and must not start a bridge call back.
+
 ### Read output / status
 
 ```bash
@@ -62,6 +84,26 @@ $BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | erro
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
 $BIN/agent-read.sh --agent codex "$TARGET" --full
 ```
+
+### Wait with checkpoints
+
+Use `agent-wait.sh` for long-running work when you need a robust wait without
+blocking indefinitely:
+
+```bash
+state=$($BIN/agent-wait.sh --agent codex "$TARGET" --timeout 300 --poll 8 --stall 180)
+case "$state" in
+  idle*)     $BIN/agent-read.sh --agent codex "$TARGET" --last-reply ;;
+  progress*) $BIN/agent-read.sh --agent codex "$TARGET" --status ;;
+  stalled*)  $BIN/agent-read.sh --agent codex "$TARGET" --status ;;
+  dead*)     echo "Codex session ended" ;;
+esac
+```
+
+On `progress`, inspect status and decide whether to continue waiting, report
+that Codex is still working, or ask the user what to do. On `stalled`, inspect
+the pane/status and ask before stopping or replacing Codex unless the user
+already authorized that action.
 
 ### List sessions
 

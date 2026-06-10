@@ -14,6 +14,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 |---|---|
 | `bin/agent-session.sh` | Create, resume, list, or kill agent sessions in tmux |
 | `bin/agent-send.sh` | Send a prompt and wait for the reply |
+| `bin/agent-wait.sh` | Wait for a turn with progress/stalled checkpoints |
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
 | `bin/mesh-send.sh` | Send to an agent by name or capability using live tmux discovery |
@@ -58,12 +59,34 @@ $BIN/agent-session.sh --agent codex list
 # Discover live mesh agents and send by logical name
 $BIN/mesh-list-agents.sh
 $BIN/mesh-send.sh --to codex "summarize the current branch" 120
+
+# Send with source identity and optional return coordinates
+$BIN/mesh-send.sh --to claude \
+  --from codex-main \
+  --from-agent codex \
+  --from-target mesh-codex-main \
+  "review the current branch" \
+  300
+
+# Long waits use checkpoint semantics
+$BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --stall 180
 ```
 
 `mesh-send.sh` does not require a checked-in runtime registry. It discovers
 agent types from `agents/*.conf` and running targets from the dedicated tmux
 socket. If multiple sessions exist for the same agent type, it prefers
 `mesh-<agent>-main`; otherwise pass `--target <TMUX_TARGET>`.
+
+When `--from-agent` and `--from-target` are supplied, `mesh-send.sh` includes an
+informational return path in the message header. The receiver must use that path
+only when the user explicitly asks to message the source agent; normal replies
+stay in the current bridge response.
+
+`agent-send.sh` and `agent-wait.sh` treat timeouts as checkpoints. If the pane
+changed recently, they return `progress` / `PROGRESS` with exit `4`; if the pane
+has not changed for the stall window, they return `stalled` / `STALLED` with exit
+`124`. The caller LLM should inspect status and decide whether to keep waiting,
+update the user, or ask before stopping the other agent.
 
 ## Codex Desktop visibility (remote mode)
 
@@ -97,6 +120,7 @@ visible from the desktop. Verify with a `pwd` probe if in doubt.
 | `MESH_REGISTRY` | unset | Optional legacy registry path; dynamic discovery is used when unset |
 | `AGENT_POLL_INTERVAL` | `2` | Seconds between output polls |
 | `AGENT_IDLE_ROUNDS` | `3` | Stable-output rounds before declaring idle |
+| `AGENT_STALL_TIMEOUT` | `300` | Seconds without pane changes before checkpointing as stalled |
 
 ## Session isolation & durability
 

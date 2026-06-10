@@ -106,9 +106,19 @@ mesh_send() {
 }
 
 expected="mesh-cli-smoke-ok-$$"
-mesh_send --to "$LOGICAL_NAME" --intent request "{ echo '$expected'; }" 10 >/dev/null
+mesh_send --to "$LOGICAL_NAME" \
+    --from codex-main \
+    --from-agent codex \
+    --from-target mesh-codex-main \
+    --intent request \
+    "{ echo '$expected'; }" \
+    10 >/dev/null
 pane="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --full)"
 [[ "$pane" == *"intent=request"* ]] || fail "provenance header was not delivered to '$TARGET'"
+[[ "$pane" == *"mesh-source name=codex-main agent=codex target=mesh-codex-main"* ]] \
+    || fail "source coordinates were not delivered to '$TARGET'"
+[[ "$pane" == *"Return path is informational only"* ]] \
+    || fail "return-path guardrail was not delivered to '$TARGET'"
 [[ "$pane" == *"$expected"* ]] || fail "--to delivery did not produce expected output '$expected'"
 
 # ── mesh-send.sh --capability resolves and delivers ────────────────────────────

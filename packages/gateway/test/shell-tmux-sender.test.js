@@ -46,7 +46,7 @@ test("builds the agent-send.sh invocation and maps exit 0 to ok:true", async () 
 });
 
 test("maps a non-zero exit to ok:false with stderr as the error", async () => {
-  const run = async () => ({ code: 2, stdout: "", stderr: "TIMEOUT: no reply" });
+  const run = async () => ({ code: 124, stdout: "", stderr: "STALLED: no final reply" });
   const sender = new ShellTmuxSender({
     agentSendPath: "/x/agent-send.sh",
     agentType: "codex",
@@ -56,7 +56,7 @@ test("maps a non-zero exit to ok:false with stderr as the error", async () => {
   const res = await sender.send(baseInput);
 
   assert.equal(res.ok, false);
-  assert.match(res.error, /TIMEOUT/);
+  assert.match(res.error, /STALLED/);
 });
 
 test("maps a spawn rejection to ok:false", async () => {
