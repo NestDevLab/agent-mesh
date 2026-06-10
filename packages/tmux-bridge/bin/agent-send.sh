@@ -5,11 +5,12 @@
 #   agent-send.sh --agent <NAME> <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
 #
 # --agent defaults to "codex". Prints the agent reply to stdout.
-# Exit codes: 0 success, 2 timeout.
+# Exit codes: 0 success, 4 progress checkpoint, 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
 #   AGENT_IDLE_ROUNDS     consecutive stable polls before declaring done (default: 3)
+#   AGENT_STALL_TIMEOUT   max seconds without pane changes before stalled (default: 300)
 
 set -euo pipefail
 
@@ -37,6 +38,7 @@ source "$CONF"
 TARGET="${1:-}"; PROMPT="${2:-}"; TIMEOUT="${3:-120}"
 POLL="${AGENT_POLL_INTERVAL:-2}"
 IDLE_NEEDED="${AGENT_IDLE_ROUNDS:-3}"
+STALL="${AGENT_STALL_TIMEOUT:-300}"
 
 [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_TARGET required" >&2; exit 1; }
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
@@ -78,20 +80,31 @@ done
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0
 last_output=""
+last_activity="$(date +%s)"
 
 while true; do
-    [[ $(date +%s) -ge $deadline ]] && { echo "TIMEOUT: no reply in ${TIMEOUT}s" >&2; exit 2; }
+    now="$(date +%s)"
+    if [[ "$now" -ge "$deadline" ]]; then
+        inactive=$(( now - last_activity ))
+        if [[ "$inactive" -le "$STALL" ]]; then
+            echo "PROGRESS: no final reply in ${TIMEOUT}s, but pane changed ${inactive}s ago" >&2
+            exit 4
+        fi
+        echo "STALLED: no final reply in ${TIMEOUT}s and no pane activity for ${inactive}s" >&2
+        exit 124
+    fi
     sleep "$POLL"
     output=$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)
 
     if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
+        [[ "$output" != "$last_output" ]] && last_activity="$(date +%s)"
         idle_rounds=0; last_output="$output"; continue
     fi
 
     if [[ "$output" == "$last_output" ]]; then
         idle_rounds=$(( idle_rounds + 1 ))
     else
-        idle_rounds=0; last_output="$output"
+        idle_rounds=0; last_output="$output"; last_activity="$(date +%s)"
     fi
 
     [[ $idle_rounds -ge $IDLE_NEEDED ]] && break

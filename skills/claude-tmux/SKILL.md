@@ -1,5 +1,5 @@
 ---
-name: Claude tmux Bridge
+name: claude-tmux-bridge
 description: Resume, send prompts to, and read responses from Claude Code CLI sessions running inside tmux. Use when delegating work to Claude Code, continuing a previous Claude session, or running Claude and Codex in parallel.
 allowed-tools: [Bash]
 ---
@@ -48,12 +48,54 @@ reply=$($BIN/agent-send.sh --agent claude "$TARGET" "your task" 300)
 echo "$reply"
 ```
 
+The timeout is a checkpoint. If the other agent is still producing pane output,
+`agent-send.sh` exits `4` with a `PROGRESS` status instead of waiting forever. If
+the pane has not changed recently, it exits `124` with `STALLED`.
+
+When delegating from one agent to another, give the source a human name and
+include source coordinates in the first message:
+
+```bash
+$BIN/mesh-send.sh \
+  --to claude \
+  --from codex-main \
+  --from-agent codex \
+  --from-target mesh-codex-main \
+  --intent request \
+  "your task" \
+  300
+```
+
+The receiving agent may use the source coordinates only when the user explicitly
+asks it to send a message back to the source. A normal reply must stay in the
+current bridge response and must not start a bridge call back.
+
 ### Read output / status
 
 ```bash
 $BIN/agent-read.sh --agent claude "$TARGET" --status
 $BIN/agent-read.sh --agent claude "$TARGET" --last-reply
 ```
+
+### Wait with checkpoints
+
+Use `agent-wait.sh` for long-running work when you need a robust wait without
+blocking indefinitely:
+
+```bash
+state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --stall 180)
+case "$state" in
+  idle*)     $BIN/agent-read.sh --agent claude "$TARGET" --last-reply ;;
+  progress*) $BIN/agent-read.sh --agent claude "$TARGET" --status ;;
+  stalled*)  $BIN/agent-read.sh --agent claude "$TARGET" --status ;;
+  dead*)     echo "Claude session ended" ;;
+esac
+```
+
+On `progress`, inspect status and decide whether to continue waiting, report
+that the other agent is still working, or ask the user what to do. On `stalled`,
+inspect the pane/status and ask before stopping or replacing the other agent
+unless the user already authorized that action.
 
 ### List sessions
 

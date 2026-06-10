@@ -15,12 +15,17 @@ AGENTS_DIR="$BRIDGE_DIR/agents"
 SESSION_BIN="$BIN_DIR/agent-session.sh"
 SEND_BIN="$BIN_DIR/agent-send.sh"
 READ_BIN="$BIN_DIR/agent-read.sh"
+WAIT_BIN="$BIN_DIR/agent-wait.sh"
 
 AGENT_NAME="bash-smoke-$$"
+WAIT_AGENT_NAME="bash-wait-smoke-$$"
 TARGET_NAME="mesh-smoke-$$"
 SMOKE_CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
+WAIT_CONF="$AGENTS_DIR/${WAIT_AGENT_NAME}.conf"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-smoke.XXXXXX")"
 TARGET=""
+PROGRESS_TARGET=""
+STALLED_TARGET=""
 
 fail() {
     echo "FAIL: $*" >&2
@@ -41,13 +46,19 @@ cleanup() {
             || tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$TARGET" 2>/dev/null \
             || true
     fi
+    if [[ -n "${PROGRESS_TARGET:-}" ]] && tmux -L "$MESH_TMUX_SOCKET" has-session -t "$PROGRESS_TARGET" 2>/dev/null; then
+        tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$PROGRESS_TARGET" 2>/dev/null || true
+    fi
+    if [[ -n "${STALLED_TARGET:-}" ]] && tmux -L "$MESH_TMUX_SOCKET" has-session -t "$STALLED_TARGET" 2>/dev/null; then
+        tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$STALLED_TARGET" 2>/dev/null || true
+    fi
 
     # exit-empty is off on the mesh socket, so the empty server would persist;
     # tear down our isolated socket entirely.
     tmux -L "$MESH_TMUX_SOCKET" kill-server 2>/dev/null || true
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$MESH_TMUX_SOCKET" 2>/dev/null || true
 
-    rm -f "$SMOKE_CONF"
+    rm -f "$SMOKE_CONF" "$WAIT_CONF"
     rm -rf "$WORKDIR"
     exit "$status"
 }
@@ -57,6 +68,7 @@ command -v tmux >/dev/null 2>&1 || fail "tmux is required"
 [[ -x "$SESSION_BIN" ]] || fail "missing executable: $SESSION_BIN"
 [[ -x "$SEND_BIN" ]] || fail "missing executable: $SEND_BIN"
 [[ -x "$READ_BIN" ]] || fail "missing executable: $READ_BIN"
+[[ -x "$WAIT_BIN" ]] || fail "missing executable: $WAIT_BIN"
 
 send_prompt() {
     local prompt="$1"
@@ -74,6 +86,20 @@ AGENT_RESUME_CMD="env PS1='SMOKE> ' bash --noprofile --norc -i"
 AGENT_HAS_CWD_PICKER="false"
 AGENT_PICKER_PATTERN=""
 AGENT_NEW_CMD="env PS1='SMOKE> ' bash --noprofile --norc -i"
+AGENT_SESSION_DIR="${TMPDIR:-/tmp}"
+AGENT_SESSION_CWD_EXTRACTOR='printf "%s\n" "$PWD"'
+CONF
+
+cat > "$WAIT_CONF" <<'CONF'
+AGENT_BIN="bash"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="WAIT>"
+AGENT_WORKING_PATTERN="Working"
+AGENT_IDLE_PATTERN="WAIT>"
+AGENT_RESUME_CMD="env PS1='WAIT> ' bash --noprofile --norc -i"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="env PS1='WAIT> ' bash --noprofile --norc -i"
 AGENT_SESSION_DIR="${TMPDIR:-/tmp}"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\n" "$PWD"'
 CONF
@@ -114,6 +140,28 @@ full_output="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --full)"
     || fail "full pane output did not contain multiline output '$multiline_expected'"
 [[ "$full_output" == *"$special_expected"* ]] \
     || fail "full pane output did not contain special-char output '$special_expected'"
+
+PROGRESS_TARGET="mesh-smoke-progress-$$"
+tmux -L "$MESH_TMUX_SOCKET" new-session -d -s "$PROGRESS_TARGET" "while true; do echo Working; sleep 0.2; done"
+set +e
+progress_state="$("$WAIT_BIN" --agent "$WAIT_AGENT_NAME" "$PROGRESS_TARGET" --timeout 2 --poll 1 --stall 5)"
+progress_rc=$?
+set -e
+[[ "$progress_rc" -eq 4 ]] || fail "expected progress exit 4, got $progress_rc ($progress_state)"
+[[ "$progress_state" == progress* ]] || fail "expected progress state, got '$progress_state'"
+tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$PROGRESS_TARGET"
+PROGRESS_TARGET=""
+
+STALLED_TARGET="mesh-smoke-stalled-$$"
+tmux -L "$MESH_TMUX_SOCKET" new-session -d -s "$STALLED_TARGET" "sleep 100"
+set +e
+stalled_state="$("$WAIT_BIN" --agent "$WAIT_AGENT_NAME" "$STALLED_TARGET" --timeout 2 --poll 1 --stall 1)"
+stalled_rc=$?
+set -e
+[[ "$stalled_rc" -eq 124 ]] || fail "expected stalled exit 124, got $stalled_rc ($stalled_state)"
+[[ "$stalled_state" == stalled* ]] || fail "expected stalled state, got '$stalled_state'"
+tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$STALLED_TARGET"
+STALLED_TARGET=""
 
 "$SESSION_BIN" --agent "$AGENT_NAME" kill "$TARGET" >/dev/null
 TARGET=""
