@@ -2,13 +2,18 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> resume <SESSION_ID> [TMUX_NAME]
-#   agent-session.sh --agent <NAME> new    [CWD]        [TMUX_NAME]
+#   agent-session.sh --agent <NAME> resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
 # --agent defaults to "codex". Config files: ../agents/<name>.conf
 # Prints the tmux target name on stdout so callers can pipe into agent-send.sh.
+#
+# Everything after `--` is passed verbatim as extra flags to the agent CLI, so
+# you never need to bypass this script to tweak the launch. Example (xhigh +
+# Codex Desktop visibility + correct cwd, all via the bridge):
+#   agent-session.sh --agent codex new "$PWD" mesh-codex-b1 -- -c model_reasoning_effort=xhigh
 #
 # Environment overrides:
 #   AGENT_MESH_ROOT    repo root (auto-derived from script location if unset)
@@ -28,9 +33,11 @@ source "$SCRIPT_DIR/_mesh-tmux.sh"
 # ── parse --agent flag ────────────────────────────────────────────────────────
 AGENT_NAME="codex"
 ARGS=()
+PASSTHRU=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --agent) AGENT_NAME="$2"; shift 2 ;;
+        --)      shift; PASSTHRU=("$@"); break ;;
         *)       ARGS+=("$1"); shift ;;
     esac
 done
@@ -40,6 +47,15 @@ CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 [[ -f "$CONF" ]] || { echo "ERROR: no config for agent '$AGENT_NAME' ($CONF)" >&2; exit 1; }
 # shellcheck source=/dev/null
 source "$CONF"
+
+# Extra agent flags (everything after `--`), shell-quoted so the inner shell that
+# `tmux send-keys` feeds receives each argument intact (spaces, quotes, =).
+EXTRA_CMD=""
+if [[ ${#PASSTHRU[@]} -gt 0 ]]; then
+    for _a in "${PASSTHRU[@]}"; do
+        EXTRA_CMD+=" $(printf '%q' "$_a")"
+    done
+fi
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 _tmux_target() {
@@ -88,7 +104,7 @@ case "$cmd" in
             echo "$TARGET"; exit 0
         fi
 
-        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}"
+        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$EXTRA_CMD"
         mtmux new-session -d -s "$TARGET"
         mesh_tmux_harden
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
@@ -113,7 +129,7 @@ case "$cmd" in
         # {CWD} placeholder lets an agent conf pin the working root (e.g. codex --cd).
         # Required in remote mode, where the agent's app-server ignores `tmux -c` and
         # would otherwise land in the server's own cwd. No-op for confs without {CWD}.
-        NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}"
+        NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}$EXTRA_CMD"
         mtmux send-keys -t "$TARGET" "$NEW_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
