@@ -90,13 +90,19 @@ update the user, or ask before stopping the other agent.
 
 ## Codex Desktop visibility (remote mode)
 
-To make a tmux Codex session **also visible from Codex Desktop**, export
-`CODEX_REMOTE_SOCK` before launching so the TUI attaches to the running
-app-server instead of spawning a standalone process:
+Bridge Codex sessions show up **inside Codex Desktop automatically** whenever the
+desktop app-server socket is live — no env var to remember. `codex.conf`
+auto-detects `~/.codex/app-server-control/desktop-ssh-websocket-v0.sock` and adds
+`--remote unix://…` when it exists. Overrides:
+
+| Want | Do |
+|---|---|
+| Default (auto-attach when socket is live) | nothing |
+| Force a specific socket | `export CODEX_REMOTE_SOCK=/path/to.sock` |
+| Force standalone, tmux-only (no desktop) | `export CODEX_NO_REMOTE=1` |
 
 ```bash
-export CODEX_REMOTE_SOCK="$HOME/.codex/app-server-control/desktop-ssh-websocket-v0.sock"
-# confirm a listener exists: ss -x | grep codex
+# Visible in Codex Desktop AND rooted in the project — just:
 TARGET=$($BIN/agent-session.sh --agent codex new /path/to/project)
 ```
 
@@ -110,6 +116,21 @@ visible from the desktop. Verify with a `pwd` probe if in doubt.
 
 > Note: this `{CWD}` pinning applies to `new`. A `resume` in remote mode relies
 > on Codex restoring the session's own recorded cwd.
+
+### Extra launch flags — never bypass the bridge
+
+Anything after `--` is forwarded verbatim to the agent CLI, so per-session knobs
+like reasoning effort no longer require hand-rolling a raw `codex` command (which
+is exactly how sessions historically lost `--remote` *and* `--cd`):
+
+```bash
+# xhigh + correct cwd + Codex Desktop visibility, all in one bridge call:
+$BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
+  -- -c model_reasoning_effort=xhigh
+```
+
+`--remote` and `-c` overrides (e.g. `model_reasoning_effort=xhigh`) are verified
+to coexist — the remote app-server honors the per-session override.
 
 ## Environment Variables
 
