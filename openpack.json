@@ -1,6 +1,6 @@
 {
-  "schemaVersion": 1,
-  "name": "nestdev-mesh",
+  "schemaVersion": 2,
+  "name": "NestDevLab/agent-mesh",
   "version": "0.9.0",
   "provides": [
     {

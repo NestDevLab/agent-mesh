@@ -1,0 +1,46 @@
+{
+  "plugins": {
+    "agent-mesh-wrapper": {
+      "enabled": true,
+      "mode": "observe",
+      "dryRun": true,
+      "killSwitch": false,
+      "paused": false,
+      "allowRealCasDispatch": false,
+      "allowRealDiscordSend": false,
+      "localParticipant": "external-bot-a",
+      "discordAllowlist": [
+        {
+          "guildId": "YOUR_DISCORD_GUILD_ID",
+          "channelId": "YOUR_DISCORD_CHANNEL_ID",
+          "threadId": "OPTIONAL_DISCORD_THREAD_ID"
+        }
+      ],
+      "casAllowlist": [
+        {
+          "tempOnly": true,
+          "workspacePrefix": "/tmp/openclaw-agent-mesh-"
+        }
+      ],
+      "bridge": {
+        "maxTurns": 6,
+        "participants": [
+          {
+            "botId": "EXTERNAL_BOT_A_ID",
+            "mention": "<@EXTERNAL_BOT_A_ID>",
+            "label": "external-bot-a"
+          },
+          {
+            "botId": "EXTERNAL_BOT_B_ID",
+            "mention": "<@EXTERNAL_BOT_B_ID>",
+            "label": "external-bot-b"
+          }
+        ]
+      },
+      "audit": {
+        "enabled": true,
+        "path": "runtime/agent-mesh-wrapper/audit.jsonl"
+      }
+    }
+  }
+}
