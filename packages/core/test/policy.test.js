@@ -258,7 +258,7 @@ test("address book includes labels, mentions, and aliases", () => {
   assert.match(formatAgentAddressBook(entries), /ControllerBot: <@222>/);
 });
 
-test("mention correction planner detects natural agent names without real Discord mention", () => {
+test("mention correction skips bot-authored natural agent names without creating pings", () => {
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
@@ -277,13 +277,13 @@ test("mention correction planner detects natural agent names without real Discor
     }
   });
   assert.equal(plan.accepted, true);
-  assert.equal(plan.reason, "mention_correction_required");
-  assert.equal(plan.nextAction, "send_correction_dry_run");
-  assert.deepEqual(plan.references, [{ botId: "222", mention: "<@222>", label: "ControllerBot", matchedAlias: "ControllerBot" }]);
-  assert.match(plan.correctionMessage, /^<@222> Controller:/);
+  assert.equal(plan.reason, "mention_correction_skipped_bot_source");
+  assert.equal(plan.nextAction, "none");
+  assert.equal(plan.references, undefined);
+  assert.equal(plan.correctionMessage, undefined);
 });
 
-test("mention correction planner does not correct already valid mentions or self references", () => {
+test("mention correction skips bot-authored mentions and self references", () => {
   const cfg = {
     mode: "plan",
     discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
@@ -301,7 +301,7 @@ test("mention correction planner does not correct already valid mentions or self
       messageText: "Passo a ControllerBot <@222>."
     }
   });
-  assert.equal(alreadyMentioned.reason, "mention_correction_not_needed");
+  assert.equal(alreadyMentioned.reason, "mention_correction_skipped_bot_source");
   assert.equal(alreadyMentioned.nextAction, "none");
 
   const selfReference = planDiscordMentionCorrection(cfg, {
@@ -311,7 +311,32 @@ test("mention correction planner does not correct already valid mentions or self
       messageText: "WorkerAlpha can continue alone."
     }
   });
-  assert.equal(selfReference.reason, "mention_correction_not_needed");
+  assert.equal(selfReference.reason, "mention_correction_skipped_bot_source");
+});
+
+test("mention correction skips controller service text without creating pings", () => {
+  const cfg = {
+    mode: "plan",
+    discordAllowlist: [{ guildId: "g1", channelId: "c1" }],
+    bridge: {
+      participants: [
+        { botId: "111", mention: "<@111>", label: "Agent Alpha", aliases: ["Agent Alpha"] },
+        { botId: "222", mention: "<@222>", label: "Agent Beta", aliases: ["Agent Beta"] }
+      ]
+    }
+  };
+
+  const plan = planDiscordMentionCorrection(cfg, {
+    request: {
+      target: { guildId: "g1", channelId: "c1" },
+      messageText: "Controller: Agent Gamma named Agent Alpha, Agent Beta without a valid Discord tag. The controller is applying the canonical tag so the turn can continue."
+    }
+  });
+
+  assert.equal(plan.accepted, true);
+  assert.equal(plan.reason, "mention_correction_skipped_controller_message");
+  assert.equal(plan.nextAction, "none");
+  assert.equal(plan.references, undefined);
 });
 
 test("mention correction skips structured event task messages", () => {

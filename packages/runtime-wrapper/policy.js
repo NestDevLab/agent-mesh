@@ -404,6 +404,17 @@ export function planDiscordMentionCorrection(config, action, inheritedBase) {
   const normalizedTurn = normalizeBridgeTurn(request);
   const text = normalizedTurn.text;
 
+  if (/^\s*(?:<@!?\d+>\s*)*Controller:/i.test(text)) {
+    return {
+      ...base,
+      accepted: true,
+      reason: "mention_correction_skipped_controller_message",
+      nextAction: "none",
+      sideEffectsAllowed: false,
+      normalizedTurn
+    };
+  }
+
   if (cfg.mode === "observe") {
     return {
       ...base,
@@ -444,6 +455,21 @@ export function planDiscordMentionCorrection(config, action, inheritedBase) {
       nextAction: "none",
       sideEffectsAllowed: false,
       taskId: eventTask.id,
+      normalizedTurn
+    };
+  }
+
+  // Anti ping-loop guard: the mention-correction bridge used to derive
+  // Discord pings from free-form bot text. In mesh mode the body is human
+  // content, not routing. Bot/controller output must never generate fresh
+  // Discord mentions; only a separately validated routing/envelope layer may.
+  if (sourceBotId) {
+    return {
+      ...base,
+      accepted: true,
+      reason: "mention_correction_skipped_bot_source",
+      nextAction: "none",
+      sideEffectsAllowed: false,
       normalizedTurn
     };
   }
