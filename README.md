@@ -14,21 +14,39 @@ It merges the previously separate policy/plugin package, Discord gateway sidecar
 - `@openclaw-agent-mesh/runtime-wrapper` — OpenClaw runtime wrapper/plugin integration for sidecar rollout and dry-run safety.
 - `@openclaw-agent-mesh/tmux-bridge` — agnostic tmux bridge for CLI-to-CLI agent intercommunication, surfaced in the gateway as the `tmux-transport` adapter (a peer of the Discord adapter). See `docs/transports.md`.
 
-## Agentwheel install
+## AgentWheel / OpenPack install
 
-This repo can be installed as an agentwheel package:
+This repo is an OpenPack package for AgentWheel. `openpack.json` is the
+canonical package manifest; the older `agentwheel.json` manifest is not used.
+
+Install the shared runtime-neutral instructions and tmux skills:
 
 ```bash
 npm i -g agentwheel
 agentwheel registry update
-agentwheel add nestdev-mesh --adapter openclaw
-agentwheel sync --dry-run
-agentwheel sync
+agentwheel add nestdev-mesh --adapter codex
+agentwheel install --dry-run
+agentwheel install
 ```
 
-The package currently provides the `claude-tmux` and `codex-tmux` skills from
-`skills/`. With agentwheel asset-includes, each installed skill also receives
-the bridge scripts and agent configs it needs under its own `bin/` and `agents/`
+OpenClaw runtimes that need the optional mesh plugin should select it
+explicitly instead of installing it everywhere:
+
+```bash
+agentwheel install nestdev-mesh \
+  --adapter openclaw \
+  --select plugins/openclaw-agent-mesh \
+  --dry-run
+
+# after reviewing the plan:
+agentwheel install nestdev-mesh \
+  --adapter openclaw \
+  --select plugins/openclaw-agent-mesh
+```
+
+The package provides the `claude-tmux` and `codex-tmux` skills from `skills/`.
+With AgentWheel asset-includes, each installed skill also receives the bridge
+scripts and agent configs it needs under its own `bin/` and `agents/`
 directories. The canonical script source remains `packages/tmux-bridge/bin` in
 this repo; no generated script copies are committed.
 

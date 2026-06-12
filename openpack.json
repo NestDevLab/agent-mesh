@@ -1,8 +1,12 @@
 {
-  "schemaVersion": 1,
-  "name": "nestdev-mesh",
+  "schemaVersion": 2,
+  "name": "NestDevLab/agent-mesh",
   "version": "0.9.0",
   "provides": [
+    {
+      "type": "instructions",
+      "path": "AGENTS.md"
+    },
     {
       "type": "skills",
       "path": "skills",
@@ -10,16 +14,24 @@
         {
           "from": "packages/tmux-bridge/bin",
           "into": "bin",
-          "include": ["*.sh"],
+          "include": [
+            "*.sh"
+          ],
           "mode": "preserve"
         },
         {
           "from": "packages/tmux-bridge/agents",
           "into": "agents",
-          "include": ["*.conf"],
+          "include": [
+            "*.conf"
+          ],
           "mode": "preserve"
         }
       ]
+    },
+    {
+      "type": "plugins",
+      "path": "plugins"
     }
   ]
 }
