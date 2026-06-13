@@ -1,6 +1,6 @@
 ---
 name: agent-tmux-bridge
-description: Drive AI agent CLI sessions (Codex and Claude Code) running inside tmux — start, resume, send prompts, read replies, and delegate agent-to-agent. Agent-agnostic; one bridge drives either type, including same-type (Claude→Claude, Codex→Codex) and cross-type (Claude→Codex, Codex→Claude). Use when orchestrating another agent, continuing a session by ID, running agents in parallel, or when the MCP codex-reply returns "Session not found".
+description: Use only when tmux/agent-mesh is the requested transport: start/resume persistent CLI sessions, inspect/message existing mesh sessions, bridge different runtimes, or recover lost MCP sessions. For same-runtime subagents, use native delegation by default; use this bridge only if the user asks for tmux/agent-mesh/session resume or native delegation is unavailable.
 allowed-tools: [Bash]
 ---
 
@@ -12,9 +12,16 @@ agent-agnostic toolset. The same `bin/` scripts drive any agent through a
 patterns, launch flags) live in `agents/<type>.conf`. Reaches on-disk sessions
 that an agent's own MCP server no longer tracks.
 
-This is the **mesh**: any agent that can run these scripts can start and pilot
-any other agent — including its own type. See **Anti-recursion & fan-out
-safety** before chaining agents.
+This is the **tmux transport** for the mesh: any agent that can run these scripts
+can pilot supported CLI agents through persistent tmux sessions.
+
+## Use Policy
+
+- Same-runtime fan-out uses native delegation by default.
+- Do not use this bridge just to create another worker of your own runtime.
+- Use it for explicit tmux/agent-mesh, session start/resume, existing mesh
+  session control, cross-runtime delegation, or native-unavailable fallback.
+- If using it as fallback, state why.
 
 ## Setup
 
@@ -38,8 +45,8 @@ and/or `claude`). All sessions share the dedicated tmux socket `mesh`
 | **Claude** | `--agent codex` | `--agent claude` |
 | **Codex**  | `--agent codex` | `--agent claude` |
 
-Same-type is allowed (`Claude → another Claude`, `Codex → another Codex`).
-The caller only needs shell access to `bin/`.
+Same-type tmux control is supported, but native same-runtime delegation remains
+the default. The caller only needs shell access to `bin/`.
 
 ## Commands
 
