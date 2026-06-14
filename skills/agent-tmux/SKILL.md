@@ -1,6 +1,6 @@
 ---
 name: agent-tmux-bridge
-description: Use only when tmux/agent-mesh is the requested transport: start/resume persistent CLI sessions, inspect/message existing mesh sessions, bridge different runtimes, or recover lost MCP sessions. For same-runtime subagents, use native delegation by default; use this bridge only if the user asks for tmux/agent-mesh/session resume or native delegation is unavailable.
+description: "Use only when tmux/agent-mesh is the requested transport: start/resume persistent CLI sessions, inspect/message existing mesh sessions, bridge different runtimes, or recover lost MCP sessions. For same-runtime subagents, use native delegation by default; use this bridge only if the user asks for tmux/agent-mesh/session resume or native delegation is unavailable."
 allowed-tools: [Bash]
 ---
 
@@ -40,7 +40,7 @@ and/or `claude`). All sessions share the dedicated tmux socket `mesh`
 
 ## Who can drive whom
 
-| Caller \ Target | Codex | Claude |
+| Caller \\ Target | Codex | Claude |
 |---|---|---|
 | **Claude** | `--agent codex` | `--agent claude` |
 | **Codex**  | `--agent codex` | `--agent claude` |
@@ -154,6 +154,13 @@ Hold these rules:
   sends anything external is still bound by the user's git/safety rules. Pass
   those constraints down explicitly; do not let delegation launder an action the
   user has not approved.
+
+## Repository/source-of-truth sync
+
+When changing this skill or the local runtime-b installation, keep `agent-mesh` as
+the source of truth: patch the repo, run its verification, commit and push, then
+sync a trusted local copy into runtime-b and archive conflicting local helper skills.
+See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
 
 ## Known gotchas
 
