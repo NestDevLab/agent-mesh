@@ -5,7 +5,10 @@
 #   ./scripts/setup-skills.sh [--dry-run] [--skills-dir <path>]
 #
 # Auto-detects the skills directory by probing known runtime locations.
-# Creates a symlink for each skill found in ./skills/.
+# Installs each skill as a local directory copy and materializes openpack assets
+# (tmux-bridge bin/ and agents/) into the skill directory. This keeps runtime-b
+# skill loaders inside their trusted skills tree while preserving the bridge
+# executables needed by the skill.
 #
 # Privacy: this script contains no secrets, host paths, IDs, or private config.
 
@@ -51,36 +54,55 @@ echo "Skills target : $SKILLS_DIR"
 [[ "$DRY_RUN" == "true" ]] && echo "(dry-run — no changes will be made)"
 echo ""
 
-# ── Make scripts executable ───────────────────────────────────────────────────
-echo "→ Checking tmux-bridge scripts"
+copy_tree() {
+    local src="$1"
+    local dest="$2"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        return 0
+    fi
+    mkdir -p "$dest"
+    cp -a "$src"/. "$dest"/
+}
+
+# ── Check source scripts without mutating the repo ────────────────────────────
+echo "→ Checking tmux-bridge source scripts"
 for f in "$REPO_ROOT"/packages/tmux-bridge/bin/*.sh; do
-    if [[ ! -x "$f" ]]; then
-        echo "  chmod +x $(basename "$f")"
-        [[ "$DRY_RUN" == "false" ]] && chmod +x "$f"
+    if [[ -x "$f" ]]; then
+        echo "  ✓ $(basename "$f") executable"
     else
-        echo "  ✓ $(basename "$f") already executable"
+        echo "  ! $(basename "$f") not executable in repo; installed copy will be chmodded"
     fi
 done
 echo ""
 
-# ── Install skill symlinks ────────────────────────────────────────────────────
-echo "→ Installing skill symlinks"
+# ── Install skills and materialized assets ────────────────────────────────────
+echo "→ Installing skills"
+mkdir -p "$SKILLS_DIR"
 for skill_path in "$SKILLS_SRC"/*/; do
     skill_name=$(basename "$skill_path")
     dest="$SKILLS_DIR/$skill_name"
 
-    if [[ -L "$dest" && "$(readlink "$dest")" == "$skill_path" ]]; then
-        echo "  ✓ $skill_name (already linked correctly)"
-    elif [[ -L "$dest" ]]; then
-        echo "  ~ $skill_name (symlink exists but points elsewhere — relinking)"
-        if [[ "$DRY_RUN" == "false" ]]; then
-            ln -sf "$skill_path" "$dest"
-        fi
+    if [[ -L "$dest" ]]; then
+        echo "  ~ $skill_name (replacing symlink with trusted local copy)"
+        [[ "$DRY_RUN" == "false" ]] && rm "$dest"
+    elif [[ -d "$dest" ]]; then
+        echo "  ~ $skill_name (updating existing local copy)"
     elif [[ -e "$dest" ]]; then
-        echo "  ⚠ $skill_name — target exists and is not a symlink; skipping"
+        echo "  ⚠ $skill_name — target exists and is not a directory/symlink; skipping"
+        continue
     else
         echo "  + $skill_name → $dest"
-        [[ "$DRY_RUN" == "false" ]] && ln -sf "$skill_path" "$dest"
+    fi
+
+    copy_tree "$skill_path" "$dest"
+
+    if [[ "$skill_name" == "agent-tmux" ]]; then
+        echo "    + materialize tmux-bridge bin/ and agents/ assets"
+        copy_tree "$REPO_ROOT/packages/tmux-bridge/bin" "$dest/bin"
+        copy_tree "$REPO_ROOT/packages/tmux-bridge/agents" "$dest/agents"
+        if [[ "$DRY_RUN" == "false" ]]; then
+            chmod +x "$dest"/bin/*.sh 2>/dev/null || true
+        fi
     fi
 done
 echo ""
