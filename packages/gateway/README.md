@@ -130,7 +130,7 @@ $ npm test -- --test-reporter=dot
 # pass 99
 # fail 0
 
-$ /root/.local/lib/node_modules/openclaw/node_modules/.bin/tsc -p tsconfig.json --noEmit
+$ ./node_modules/.bin/tsc -p tsconfig.json --noEmit
 # pass
 ```
 
