@@ -659,7 +659,7 @@ test("event task planner normalizes unknown advisor enum to ambiguous confirmati
     request: {
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "m1", content: "Boh, forse abbiamo finito." }]
+      messages: [{ id: "m1", content: "Maybe this is complete." }]
     },
     advisor: { classification: "maybe_done", confidence: 0.9 }
   });
@@ -677,35 +677,35 @@ test("event task planner supports task-specific item prefixes", () => {
     eventController: {
       enabled: true,
       tasks: [{
-        id: "tailscale-inventory",
+        id: "network-inventory",
         sourceBotId: "111",
         sourceMention: "<@111>",
         target: { guildId: "g1", channelId: "c1" },
         itemLabel: "node/user",
         itemPrefixes: ["Node", "User"],
-        stopConditions: [{ type: "phrase", value: "Tailscale inventory complete" }]
+        stopConditions: [{ type: "phrase", value: "Network inventory complete" }]
       }]
     }
   };
 
   const nodePlan = planDiscordEventTaskTurn(cfg, {
     request: {
-      taskId: "tailscale-inventory",
+      taskId: "network-inventory",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "n1", content: "Node: cc-lab\nStatus: online\nWarning: none" }]
+      messages: [{ id: "n1", content: "Node: lab-node\nStatus: online\nWarning: none" }]
     },
     state: { status: "awaiting_status", itemCount: 0 }
   });
   assert.equal(nodePlan.reason, "event_task_follow_up_required");
-  assert.equal(nodePlan.item, "cc-lab");
+  assert.equal(nodePlan.item, "lab-node");
   assert.match(nodePlan.followUpMessage, /prossimo node\/user/);
-  assert.match(nodePlan.followUpMessage, /Tailscale inventory complete/);
+  assert.match(nodePlan.followUpMessage, /Network inventory complete/);
   assert.doesNotMatch(nodePlan.followUpMessage, /“Inventory complete”/);
 
   const userPlan = planDiscordEventTaskTurn(cfg, {
     request: {
-      taskId: "tailscale-inventory",
+      taskId: "network-inventory",
       source: { botId: "111" },
       target: { guildId: "g1", channelId: "c1" },
       messages: [{ id: "u1", content: "User: admin@example.invalid\nStatus: active" }]
