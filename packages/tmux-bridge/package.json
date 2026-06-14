@@ -16,7 +16,9 @@
   "bin": {
     "agent-session": "./bin/agent-session.sh",
     "agent-send": "./bin/agent-send.sh",
-    "agent-read": "./bin/agent-read.sh"
+    "agent-read": "./bin/agent-read.sh",
+    "mesh-list-agents": "./bin/mesh-list-agents.sh",
+    "mesh-send": "./bin/mesh-send.sh"
   },
   "engines": {
     "node": ">=20"
