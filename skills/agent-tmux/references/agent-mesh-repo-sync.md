@@ -22,7 +22,7 @@ Do not stop at fixing the installed runtime-b skill or the runtime copy. If `age
    - Preferred: `npm run verify`.
 5. Commit and push.
    - Verify local HEAD equals the remote branch ref with `git ls-remote origin refs/heads/<branch>`.
-   - Report commit shorthashes, not just "pushed".
+   - Report commit shorthashes, not just “pushed”.
 6. Sync installed skills from the repo.
    - Prefer a trusted local copy under the runtime-b skills tree over a symlink that points outside the skills tree, because some runtime-b skill security checks warn on external skill files.
    - Materialize needed bridge assets (`bin/`, `agents/`) into the installed skill copy if the skill expects them.
@@ -37,4 +37,4 @@ Do not stop at fixing the installed runtime-b skill or the runtime copy. If `age
 
 - Running an installer may chmod source scripts and leave mode-only git diffs. Inspect `git diff --summary` and revert accidental mode changes before commit.
 - A symlink from the profile skills tree to a repo checkout can work functionally but trigger trusted-directory warnings. Use a copied/materialized install when the goal is a clean runtime-b runtime.
-- Do not claim "synced" until both dimensions are true: repo remote has the commit, and the live runtime-b profile resolves the intended skill while conflicting helpers are absent.
+- Do not claim “synced” until both dimensions are true: repo remote has the commit, and the live runtime-b profile resolves the intended skill while conflicting helpers are absent.
