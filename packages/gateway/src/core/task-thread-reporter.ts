@@ -82,9 +82,9 @@ function classifyTask(task: TaskThreadTaskInput, taskId: string): TaskThreadClas
   } else if (matches(haystack, ["domain-alpha", "fatture", "invoice", "receipt", "refund"])) {
     domain = "domain-alpha";
     reasons.push("Domain Alpha/backoffice keywords matched");
-  } else if (matches(haystack, ["nestdev", "odido", "wipro", "jira"])) {
+  } else if (matches(haystack, ["nestdev", "client-ops", "vendor", "ticketing"])) {
     domain = "nestdev";
-    reasons.push("NestDev/Odido keywords matched");
+    reasons.push("NestDev/client-ops keywords matched");
   } else if (matches(haystack, ["openclaw", "memory", "docs", "documentation", "gateway", "codex", "cas"])) {
     domain = "openclaw";
     reasons.push("OpenClaw platform keywords matched");

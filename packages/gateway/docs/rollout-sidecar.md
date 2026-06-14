@@ -53,7 +53,7 @@ Verification commands after cleanup:
 
 ```bash
 npm test -- --test-reporter=dot
-/root/.local/lib/node_modules/openclaw/node_modules/.bin/tsc -p tsconfig.json --noEmit
+./node_modules/.bin/tsc -p tsconfig.json --noEmit
 ```
 
 Results:
