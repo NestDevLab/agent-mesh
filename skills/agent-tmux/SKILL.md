@@ -34,7 +34,7 @@ export AGENT_MESH_ROOT="<path-to-agent-mesh-repo>"
 BIN="${AGENT_MESH_ROOT}/packages/tmux-bridge/bin"
 ```
 
-Prerequisites: `bash`, `tmux`, `python3`, and the target agent CLI (`codex`
+Prerequisites: `bash`, `tmux`, `python3`, `ss`, and the target agent CLI (`codex`
 and/or `claude`). All sessions share the dedicated tmux socket `mesh`
 (`tmux -L mesh`), kept alive with `exit-empty off` — never the default server.
 
@@ -106,9 +106,11 @@ Codex bridge sessions attach to the desktop **app-server automatically** wheneve
 its socket is live — they show up inside Codex Desktop and are co-pilotable from
 mobile over the remote-control tunnel. No env var to remember.
 
-- `codex.conf` auto-detects `~/.codex/app-server-control/desktop-ssh-websocket-v0.sock`
-  and adds `--remote unix://…`; it also passes `--cd "<dir>"` (in remote mode the
-  app-server ignores `tmux -c`, so this keeps the session in the right project).
+- `codex.conf` checks the known app-server socket candidates in order and adds
+  `--remote unix://…` only for the first candidate that is actually listening; if
+  none is live, it falls back to a standalone tmux-only session. It also passes
+  `--cd "<dir>"` in remote mode (the app-server ignores `tmux -c`, so this keeps
+  the session in the right project).
 - Override: `CODEX_REMOTE_SOCK=/path.sock` forces a socket; `CODEX_NO_REMOTE=1`
   forces a standalone, tmux-only session (use for long unattended runs you want
   isolated from daemon restarts).
@@ -169,6 +171,9 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
   `tmux send-keys … Enter` directly for prompt text.
 - **Multiline / special chars.** `agent-send.sh` injects prompts via
   `tmux paste-buffer`; always use it, never raw `send-keys`.
+- **Large prompts.** `agent-send.sh` waits for bracketed-paste rendering to
+  settle before submitting, then confirms submit via working/done markers so a
+  paste repaint is not mistaken for a started turn.
 - **Codex trust dialog.** New directories prompt a workspace-trust dialog;
   `agent-session.sh` auto-confirms with Enter. If stuck, check `--status` and
   capture the pane with `--full`.

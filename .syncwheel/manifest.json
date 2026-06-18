@@ -10,9 +10,26 @@
     "branch": "main-integration",
     "base": "origin/main",
     "strategy": "cherry-pick",
-    "stacks": []
+    "stacks": [
+      "codex-live-socket"
+    ]
   },
-  "stacks": [],
+  "stacks": [
+    {
+      "id": "codex-live-socket",
+      "branch": "codex/tmux-bridge-live-socket",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "dceff295f0f910994340a66aa159778525f1f0d8"
+      ],
+      "meta": {
+        "purpose": "Fix Codex remote socket live detection"
+      }
+    }
+  ],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked"
 }
