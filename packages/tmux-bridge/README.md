@@ -37,6 +37,9 @@ MESH_AGENT_CAPABILITIES="code,review,plan"
 
 ## Usage
 
+Prerequisites: `bash`, `tmux`, `python3`, `ss`, and the target agent CLI
+(`codex`, `claude`, or another configured agent).
+
 ```bash
 BIN="packages/tmux-bridge/bin"   # relative to repo root
 
@@ -88,12 +91,18 @@ has not changed for the stall window, they return `stalled` / `STALLED` with exi
 `124`. The caller LLM should inspect status and decide whether to keep waiting,
 update the user, or ask before stopping the other agent.
 
+For large prompts, `agent-send.sh` waits for bracketed-paste rendering to settle
+before submitting, then confirms the submit with a real working/done marker
+instead of treating any pane repaint as success.
+
 ## Codex Desktop visibility (remote mode)
 
 Bridge Codex sessions show up **inside Codex Desktop automatically** whenever the
-desktop app-server socket is live — no env var to remember. `codex.conf`
-auto-detects `~/.codex/app-server-control/desktop-ssh-websocket-v0.sock` and adds
-`--remote unix://…` when it exists. Overrides:
+desktop app-server has a listening socket — no env var to remember. `codex.conf`
+checks the known app-server socket candidates in order and adds `--remote
+unix://…` only for the first candidate that is actually listening. If no
+candidate is live, the bridge falls back to a standalone tmux-only Codex session
+instead of failing on a stale socket file. Overrides:
 
 | Want | Do |
 |---|---|
