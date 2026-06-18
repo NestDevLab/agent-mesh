@@ -60,18 +60,30 @@ mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
 trap - EXIT
 sleep 0.2
 
-# Submit and CONFIRM submission. A large paste is ingested asynchronously by the
-# TUI (shown as a collapsed "[Pasted Content N chars]" placeholder); a submit key
-# sent during ingestion is dropped, leaving the prompt unsent. So we send the
-# submit key, then verify the turn actually started (working spinner appears or
-# the pane changes); if not, re-send the submit key a few times.
-_pre_submit="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
+# A large paste lands in several bracketed-paste chunks, each rendered
+# asynchronously as a collapsed "[Pasted Content N chars]" placeholder. Wait for
+# the pane to stop mutating before submitting, otherwise the still-rendering
+# paste looks like "the turn started".
+_settle_prev=""
+for _ in 1 2 3 4 5 6 7 8; do
+    sleep 0.5
+    _settle_now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
+    [[ "$_settle_now" == "$_settle_prev" ]] && break
+    _settle_prev="$_settle_now"
+done
+
+# Submit and CONFIRM the turn actually started. Confirmation keys on the working
+# spinner ONLY — NOT "the pane changed" (the paste keeps repainting the pane as it
+# renders) and NOT the done marker (the PREVIOUS turn's "Worked for …" lingers on
+# screen and would falsely confirm after a single dropped submit key). A new turn
+# always shows the working spinner, which a finished turn does not. Keep re-sending
+# until it appears; submit keys hitting an already-empty composer are harmless.
 submitted=0
-for _attempt in 1 2 3 4; do
+for _attempt in 1 2 3 4 5 6 7 8; do
     mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
     sleep 1
     _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
-    if echo "$_now" | grep -qE "$AGENT_WORKING_PATTERN" || [[ "$_now" != "$_pre_submit" ]]; then
+    if echo "$_now" | grep -qE "$AGENT_WORKING_PATTERN"; then
         submitted=1; break
     fi
 done
