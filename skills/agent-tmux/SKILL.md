@@ -172,8 +172,14 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
 - **Multiline / special chars.** `agent-send.sh` injects prompts via
   `tmux paste-buffer`; always use it, never raw `send-keys`.
 - **Large prompts.** `agent-send.sh` waits for bracketed-paste rendering to
-  settle before submitting, then confirms submit via working/done markers so a
-  paste repaint is not mistaken for a started turn.
+  settle before submitting, then confirms submit via working/done markers. This
+  is not reliable while the pane is actively repainting (e.g. a fresh Codex
+  session still printing MCP-startup warnings): the submit can be swallowed and
+  a large multiline paste can arrive interleaved/corrupted. Mitigate — on a new
+  session, poll `--status` until `idle` before the first `agent-send`; keep
+  prompts small or pass them via a file instead of a huge inline heredoc; if a
+  send lands mid-startup (prompt sits un-submitted, or `--status` shows
+  `error`), `kill` the session, start a fresh one, and resend once `idle`.
 - **Codex trust dialog.** New directories prompt a workspace-trust dialog;
   `agent-session.sh` auto-confirms with Enter. If stuck, check `--status` and
   capture the pane with `--full`.
@@ -182,3 +188,7 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
   `WebSocket protocol error: Connection reset…`. The auto-detect above resolves
   this when the desktop app-server is up; otherwise `ss -x | grep codex` to find
   a live socket.
+- **Queued input survives a kill.** A session killed while it still has queued
+  input can execute that input late (observed: a `git commit` fired after the
+  session was killed). After killing a session mid-task, verify the real
+  side-effect state (`git status` / `git log`) instead of assuming nothing ran.
