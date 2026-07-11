@@ -10,6 +10,9 @@ BIN="$AGENT_MESH_ROOT/packages/tmux-bridge/bin"
 TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
 TARGET=$($BIN/agent-session.sh --agent claude resume <SESSION_ID>)
 
+# New Codex session with a readable Codex Desktop title
+TARGET=$($BIN/agent-session.sh --agent codex --title "agent-mesh: review" new /path/to/project)
+
 # Extra agent flags after `--` (e.g. Codex xhigh) — no need to bypass the bridge
 $BIN/agent-session.sh --agent codex new "$DIR" mesh-codex-b1 -- -c model_reasoning_effort=xhigh
 
@@ -41,6 +44,8 @@ $BIN/mesh-list-agents.sh
   Enter` directly.
 - Codex sessions auto-attach to the desktop app-server when its socket is live
   (visible in Codex Desktop / mobile). `CODEX_NO_REMOTE=1` forces standalone.
+- For Codex Desktop title hygiene, pass `--title "<short title>"` to
+  `agent-session.sh ... new`; it is prepended once to the first real prompt.
 - Timeouts are checkpoints: `progress` = pane changed recently, `stalled` = it
   did not. Inspect and decide; ask before stopping another agent.
 - Return-path coordinates are informational — use only when the user explicitly

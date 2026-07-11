@@ -60,6 +60,11 @@ identical.
 TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 
+# New Codex session with a readable Codex Desktop title:
+TARGET=$($BIN/agent-session.sh --agent codex \
+  --title "agent-mesh: review tmux adapter" \
+  new /path/to/project mesh-codex-review)
+
 # Resume an on-disk session by ID:
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
@@ -100,7 +105,20 @@ $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
   -- -c model_reasoning_effort=xhigh
 ```
 
-## Codex Desktop visibility (Codex only)
+## Desktop / mobile visibility
+
+Claude bridge sessions start and resume with Claude Code Remote Control enabled
+by default (`claude --remote-control`), so they are visible from Claude Desktop /
+mobile without remembering a passthrough flag. A named tmux target is still
+useful for a readable mesh identity:
+
+```bash
+TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
+```
+
+Codex bridge sessions use the Codex Desktop app-server path described below.
+
+## Codex Desktop visibility
 
 Codex bridge sessions attach to the desktop **app-server automatically** whenever
 its socket is live — they show up inside Codex Desktop and are co-pilotable from
@@ -111,12 +129,18 @@ mobile over the remote-control tunnel. No env var to remember.
   none is live, it falls back to a standalone tmux-only session. It also passes
   `--cd "<dir>"` in remote mode (the app-server ignores `tmux -c`, so this keeps
   the session in the right project).
+- Use `agent-session.sh --agent codex --title "<short title>" new ...` for a
+  readable Desktop title. The bridge stores the title for that tmux target and
+  `agent-send.sh` prepends it as the first line of the first real prompt, so no
+  DB edit or Desktop restart is needed. Limit: the title is visible after the
+  first prompt is sent, and that title line is part of the first user message.
 - Override: `CODEX_REMOTE_SOCK=/path.sock` forces a socket; `CODEX_NO_REMOTE=1`
   forces a standalone, tmux-only session (use for long unattended runs you want
   isolated from daemon restarts).
 - `--remote` coexists with `-c` overrides (verified: `model_reasoning_effort=xhigh`).
 
-Claude Code has no app-server/remote concept; these flags are codex-only.
+For already-created sessions only, DB rename is a fallback with a Desktop restart
+caveat; see `docs/codex-session-titles.md`.
 
 ## Cross-agent delegation
 
