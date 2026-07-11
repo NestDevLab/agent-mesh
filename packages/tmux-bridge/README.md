@@ -47,7 +47,7 @@ BIN="packages/tmux-bridge/bin"   # relative to repo root
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 $BIN/agent-send.sh --agent codex "$TARGET" "describe the project state"
 
-# Start a Claude Code session
+# Start a Claude Code session (Remote Control is enabled by default)
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
@@ -113,6 +113,11 @@ instead of failing on a stale socket file. Overrides:
 ```bash
 # Visible in Codex Desktop AND rooted in the project — just:
 TARGET=$($BIN/agent-session.sh --agent codex new /path/to/project)
+
+# Optional readable Desktop title, applied on the first real prompt:
+TARGET=$($BIN/agent-session.sh --agent codex \
+  --title "agent-mesh: review tmux adapter" \
+  new /path/to/project mesh-codex-review)
 ```
 
 **Working-directory gotcha:** in remote mode the app-server ignores the
@@ -140,6 +145,31 @@ $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
 
 `--remote` and `-c` overrides (e.g. `model_reasoning_effort=xhigh`) are verified
 to coexist — the remote app-server honors the per-session override.
+
+## Claude Remote Control visibility
+
+Bridge Claude sessions start and resume with `--remote-control` by default, so
+they are visible from Claude Desktop / mobile without passing extra flags. A
+named tmux target still gives the session a readable mesh identity:
+
+```bash
+TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
+```
+
+Anything after `--` is still forwarded to Claude Code, so per-session flags can
+be layered on top without bypassing the bridge.
+
+### Codex Desktop titles
+
+Codex CLI 0.143.0 does not expose a launch `--title`/`--name` flag. The bridge's
+`--title` option stores a pending title for the tmux target; `agent-send.sh`
+consumes it once and prepends it as the first line of the first real prompt.
+That keeps the first Desktop title readable without editing Codex's SQLite DB or
+restarting Desktop. The tradeoff is that the title line is part of the first user
+message and appears only after that first prompt is sent.
+
+For already-created sessions, see `../../docs/codex-session-titles.md` for the DB
+rename fallback and its Desktop restart caveat.
 
 ## Environment Variables
 
@@ -180,3 +210,4 @@ runs immediately after `new-session`. Regression test:
 | Resume command | `codex resume <UUID>` | `claude --resume <UUID>` |
 | Session dir | `~/.codex/sessions/` | `~/.claude/projects/` |
 | CWD picker on resume | yes | no |
+| Remote visibility | auto-detected Codex app-server | `--remote-control` by default |
