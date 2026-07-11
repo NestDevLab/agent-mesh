@@ -11,6 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_DIR="$BRIDGE_DIR/bin"
 AGENTS_DIR="$BRIDGE_DIR/agents"
+# shellcheck source=../bin/_mesh-tmux.sh
+source "$BIN_DIR/_mesh-tmux.sh"
 
 SESSION_BIN="$BIN_DIR/agent-session.sh"
 SEND_BIN="$BIN_DIR/agent-send.sh"
@@ -20,6 +22,7 @@ WAIT_BIN="$BIN_DIR/agent-wait.sh"
 AGENT_NAME="bash-smoke-$$"
 WAIT_AGENT_NAME="bash-wait-smoke-$$"
 TARGET_NAME="mesh-smoke-$$"
+TITLE_TEXT=": agent-mesh-smoke-title-$$"
 SMOKE_CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 WAIT_CONF="$AGENTS_DIR/${WAIT_AGENT_NAME}.conf"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-smoke.XXXXXX")"
@@ -88,6 +91,7 @@ AGENT_PICKER_PATTERN=""
 AGENT_NEW_CMD="env PS1='SMOKE> ' bash --noprofile --norc -i"
 AGENT_SESSION_DIR="${TMPDIR:-/tmp}"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\n" "$PWD"'
+AGENT_SUPPORTS_LAUNCH_TITLE="true"
 CONF
 
 cat > "$WAIT_CONF" <<'CONF'
@@ -104,15 +108,20 @@ AGENT_SESSION_DIR="${TMPDIR:-/tmp}"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\n" "$PWD"'
 CONF
 
-TARGET="$("$SESSION_BIN" --agent "$AGENT_NAME" new "$WORKDIR" "$TARGET_NAME")"
+TARGET="$("$SESSION_BIN" --agent "$AGENT_NAME" --title "$TITLE_TEXT" new "$WORKDIR" "$TARGET_NAME")"
 [[ "$TARGET" == "$TARGET_NAME" ]] || fail "expected target '$TARGET_NAME', got '$TARGET'"
 tmux -L "$MESH_TMUX_SOCKET" has-session -t "$TARGET" 2>/dev/null || fail "tmux session was not created: $TARGET"
+[[ -s "$(mesh_pending_title_file "$TARGET")" ]] || fail "pending launch title was not recorded"
 
 status="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --status)"
 [[ "$status" == "idle" ]] || fail "expected idle status, got '$status'"
 
 cwd_reply="$(send_prompt "pwd")"
 [[ "$cwd_reply" == *"$WORKDIR"* ]] || fail "session cwd was not '$WORKDIR'"
+[[ ! -e "$(mesh_pending_title_file "$TARGET")" ]] || fail "pending launch title was not consumed"
+first_send_output="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --full)"
+title_count="$(grep -cF "$TITLE_TEXT" <<<"$first_send_output" || true)"
+[[ "$title_count" -eq 1 ]] || fail "launch title should be injected once, got $title_count occurrences"
 
 expected="agent-mesh-smoke-ok-$$"
 prompt="echo '$expected'"
