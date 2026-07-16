@@ -12,22 +12,7 @@
     "strategy": "cherry-pick",
     "stacks": []
   },
-  "stacks": [
-    {
-      "id": "mesh-attach-guidance",
-      "branch": "docs/mesh-attach-guidance",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "f4a7f902b43f74211f0b9670aea0cd6f95077fcc"
-      ],
-      "meta": {
-        "purpose": "Document read-only tmux mesh attach guidance"
-      }
-    }
-  ],
+  "stacks": [],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked"
 }
