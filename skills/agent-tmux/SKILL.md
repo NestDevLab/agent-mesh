@@ -37,6 +37,7 @@ BIN="${AGENT_MESH_ROOT}/packages/tmux-bridge/bin"
 Prerequisites: `bash`, `tmux`, `python3`, `ss`, and the target agent CLI (`codex`
 and/or `claude`). All sessions share the dedicated tmux socket `mesh`
 (`tmux -L mesh`), kept alive with `exit-empty off` — never the default server.
+Read-only attach: `tmux -L mesh attach -t <target> -r`; detach with `Ctrl-b d`.
 
 ## Who can drive whom
 
