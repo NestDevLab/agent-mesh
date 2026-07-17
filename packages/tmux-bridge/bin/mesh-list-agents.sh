@@ -115,9 +115,9 @@ pin = item["pinned_model"] or "none"
 if item["probe"] == "unavailable":
     print(f"models: {agent}: no probe available, pin={pin}")
 else:
-    new_count = len(item["new_models"])
-    suffix = ", review" if item["stale_pin"] == "review" else ""
-    print(f"models: {agent}: {new_count} new, pin={pin}{suffix}")
+    new_count = len(item["new_nudged_models"])
+    suffix = ", deprecated" if item["pin_status"] == "deprecated" else ""
+    print(f"models: {agent}: {new_count} new nudged, pin={pin}{suffix}")
 ' "$agent_type" <<<"$report"
         then
             printf 'models: %s: unavailable\n' "$agent_type"
