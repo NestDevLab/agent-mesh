@@ -31,6 +31,25 @@ mesh_tmux_harden() {
     mtmux set-option -s exit-empty off 2>/dev/null || true
 }
 
+# Print pane lines that are new since the previous capture. The caller chooses
+# the output file descriptor: agent-send uses stderr (2), agent-read uses
+# stdout (1). Working/spinner lines and unchanged repaint content are omitted.
+mesh_stream_pane_delta() {
+    local current="$1" previous="$2" output_fd="${3:-1}" line
+    [[ "$current" == "$previous" ]] && return 0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if [[ -n "${AGENT_WORKING_PATTERN:-}" ]] \
+           && grep -Eq "$AGENT_WORKING_PATTERN" <<<"$line"; then
+            continue
+        fi
+        if [[ -n "$previous" ]] && grep -Fqx -- "$line" <<<"$previous"; then
+            continue
+        fi
+        printf '%s\n' "$line" >&"$output_fd"
+    done <<< "$current"
+}
+
 # Small per-target bridge state. Keep it outside the repo: this is runtime glue
 # such as a pending launch title that should be consumed by the first send.
 mesh_state_dir() {
