@@ -111,6 +111,10 @@ _wait_for_ready() {
     return 1
 }
 
+_print_attach_hint() {
+    echo "ATTACH: tmux -L mesh attach -t $TARGET" >&2
+}
+
 # ── commands ──────────────────────────────────────────────────────────────────
 cmd="${1:-}"; shift || true
 
@@ -127,6 +131,7 @@ case "$cmd" in
         TARGET=$(_tmux_target "${TMUX_NAME:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
+            _print_attach_hint
             echo "$TARGET"; exit 0
         fi
 
@@ -136,6 +141,7 @@ case "$cmd" in
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
+        _print_attach_hint
         echo "$TARGET"
         ;;
 
@@ -166,6 +172,7 @@ case "$cmd" in
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )
         fi
+        _print_attach_hint
         echo "$TARGET"
         ;;
 

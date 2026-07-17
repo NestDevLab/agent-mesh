@@ -56,6 +56,10 @@ identical.
 
 ### Start / resume
 
+After every `new` or `resume`, relay the `ATTACH:` command printed on stderr to
+the user. For read-only monitoring, use its `tmux -L mesh attach -r -t <target>`
+variant.
+
 ```bash
 # New session in a directory (prints the tmux target on stdout):
 TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
@@ -83,7 +87,13 @@ $BIN/agent-send.sh --agent codex "$TARGET" "your prompt here" [timeout]
 $BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
 $BIN/agent-read.sh --agent codex "$TARGET" --full
+$BIN/agent-read.sh --agent codex "$TARGET" --follow
 ```
+
+For delegation, run one foreground `agent-send.sh`; it streams readable worker
+progress to stderr by default while keeping the extracted reply on stdout. Use
+`agent-read.sh --follow` to watch a session you did not start, and `--quiet` on
+`agent-send.sh` for programmatic callers that need clean stderr.
 
 `agent-send.sh`/`agent-wait.sh` treat the timeout as a **checkpoint**, not a
 hard stop: exit `4`/`PROGRESS` if the pane changed recently, exit `124`/`STALLED`
@@ -194,6 +204,10 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
 - **Submit key differs per agent.** Codex submits with `C-m`, Claude with
   `Enter`. `agent-send.sh` handles this via the conf — never call
   `tmux send-keys … Enter` directly for prompt text.
+- **Visibility.** Keep the `ATTACH:` hint from `agent-session.sh`; use
+  `attach -r` for pure monitoring. A foreground `agent-send.sh` is the primary
+  live-delegation path; use `agent-read.sh --follow` for an existing session and
+  `agent-send.sh --quiet` when stderr must stay machine-clean.
 - **Multiline / special chars.** `agent-send.sh` injects prompts via
   `tmux paste-buffer`; always use it, never raw `send-keys`.
 - **Large prompts.** `agent-send.sh` waits for bracketed-paste rendering to
