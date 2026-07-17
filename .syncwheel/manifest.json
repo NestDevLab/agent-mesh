@@ -10,9 +10,26 @@
     "branch": "main-integration",
     "base": "origin/main",
     "strategy": "cherry-pick",
-    "stacks": []
+    "stacks": [
+      "mesh-models"
+    ]
   },
-  "stacks": [],
+  "stacks": [
+    {
+      "id": "mesh-models",
+      "branch": "pr/mesh-models",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "ee0a584ad18725ed62be66cdb57436d560cd330c"
+      ],
+      "meta": {
+        "purpose": "on-demand mesh model discovery and pin freshness reporting"
+      }
+    }
+  ],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked"
 }
