@@ -137,6 +137,17 @@ $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
   --effort high -- -c model_reasoning_effort=low
 ```
 
+### Model discovery and pin freshness
+
+`$BIN/mesh-models.sh [--agent codex|claude|--all] [--json] [--refresh]` reports
+advertised models, models newly seen by the mesh, the effective bridge pin, and
+an advisory `STALE-PIN` review hint. It **never auto-bumps a pin** or writes a
+harness config: model promotion is a human decision. Discovery is declared by
+each config's read-only `AGENT_MODELS_PROBE_CMD`; Codex reads its config signals
+best-effort, while Claude currently reports `no probe available`. Text runs add
+models to the local seen cache; `--refresh` replaces it, and plain `--json`
+remains read-only for scheduled consumers.
+
 ## Desktop / mobile visibility
 
 Claude bridge sessions start and resume with Claude Code Remote Control enabled
