@@ -71,22 +71,6 @@ if [[ "$FOLLOW" == "true" ]]; then
         seen_working="true"
     fi
 
-    stream_pane_delta() {
-        local current="$1" previous="$2" line
-        [[ "$current" == "$previous" ]] && return 0
-        while IFS= read -r line; do
-            [[ -z "$line" ]] && continue
-            if [[ -n "$AGENT_WORKING_PATTERN" ]] \
-               && grep -Eq "$AGENT_WORKING_PATTERN" <<<"$line"; then
-                continue
-            fi
-            if [[ -n "$previous" ]] && grep -Fqx -- "$line" <<<"$previous"; then
-                continue
-            fi
-            printf '%s\n' "$line"
-        done <<< "$current"
-    }
-
     while true; do
         now="$(date +%s)"
         if (( now - start_time >= MAX_WAIT )); then
@@ -98,7 +82,7 @@ if [[ "$FOLLOW" == "true" ]]; then
             || { echo "ERROR: tmux target '$TARGET' disappeared" >&2; exit 3; }
         output="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)" \
             || { echo "ERROR: tmux target '$TARGET' disappeared" >&2; exit 3; }
-        stream_pane_delta "$output" "$stream_previous"
+        mesh_stream_pane_delta "$output" "$stream_previous" 1
 
         if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
             seen_working="true"

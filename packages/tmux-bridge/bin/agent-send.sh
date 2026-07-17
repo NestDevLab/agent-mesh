@@ -109,22 +109,6 @@ for _attempt in 1 2 3 4 5 6 7 8; do
 done
 [[ "$submitted" -eq 1 ]] || echo "WARN: submission may not have registered for '$TARGET'" >&2
 
-stream_pane_delta() {
-    local current="$1" previous="$2" line
-    [[ "$QUIET" == "true" || "$current" == "$previous" ]] && return 0
-    while IFS= read -r line; do
-        [[ -z "$line" ]] && continue
-        if [[ -n "$AGENT_WORKING_PATTERN" ]] \
-           && grep -Eq "$AGENT_WORKING_PATTERN" <<<"$line"; then
-            continue
-        fi
-        if [[ -n "$previous" ]] && grep -Fqx -- "$line" <<<"$previous"; then
-            continue
-        fi
-        printf '%s\n' "$line" >&2
-    done <<< "$current"
-}
-
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0
 last_output=""
@@ -143,7 +127,8 @@ while true; do
     fi
     sleep "$POLL"
     output=$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)
-    stream_pane_delta "$output" "$stream_previous"
+    [[ "$QUIET" == "true" ]] \
+        || mesh_stream_pane_delta "$output" "$stream_previous" 2
     stream_previous="$output"
 
     if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
