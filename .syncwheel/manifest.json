@@ -12,7 +12,22 @@
     "strategy": "cherry-pick",
     "stacks": []
   },
-  "stacks": [],
+  "stacks": [
+    {
+      "id": "agent-tmux-model-pinning",
+      "branch": "pr/agent-tmux-model-pinning",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "e3f923d4db53354ee802b064a264419924347e7c"
+      ],
+      "meta": {
+        "purpose": "agent-tmux model and effort controls with send safety guard"
+      }
+    }
+  ],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked"
 }

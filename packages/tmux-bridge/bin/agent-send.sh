@@ -6,7 +6,8 @@
 #
 # --agent defaults to "codex". Prints the agent reply to stdout and streams
 # readable pane progress to stderr unless --quiet is supplied.
-# Exit codes: 0 success, 4 progress checkpoint, 124 stalled checkpoint.
+# Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
+# 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
@@ -47,6 +48,30 @@ STALL="${AGENT_STALL_TIMEOUT:-300}"
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
 mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
+# New configs declare a precise alive pattern. Fall back to the existing agent
+# lifecycle fields for portable third-party configs until they add one.
+AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PATTERN:-${AGENT_WORKING_PATTERN:-}|${AGENT_IDLE_PATTERN:-}|${AGENT_PROMPT_CHAR:-}}"
+[[ "$AGENT_ALIVE_PATTERN" != "||" ]] \
+    || { echo "ERROR: agent '$AGENT_NAME' has no live-TUI pattern" >&2; exit 1; }
+
+_require_live_agent_tui() {
+    local pane pane_command
+    pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+    pane_command="$(mtmux display-message -p -t "$TARGET" '#{pane_current_command}' 2>/dev/null || true)"
+    if ! echo "$pane" | grep -qE "$AGENT_ALIVE_PATTERN"; then
+        echo "ERROR: target '$TARGET' does not show a live $AGENT_NAME TUI; prompt was not pasted. Use agent-session.sh --agent $AGENT_NAME resume <SESSION_ID> or new <CWD>." >&2
+        return 1
+    fi
+    if [[ -n "${AGENT_ALIVE_PROCESS_PATTERN:-}" ]] \
+        && ! echo "$pane_command" | grep -qE "$AGENT_ALIVE_PROCESS_PATTERN"; then
+        echo "ERROR: target '$TARGET' is running '$pane_command', not a live $AGENT_NAME TUI; prompt was not pasted. Use agent-session.sh --agent $AGENT_NAME resume <SESSION_ID> or new <CWD>." >&2
+        return 1
+    fi
+}
+
+# A tmux session may survive after its agent CLI dies and leave a bare shell in
+# the pane. Never paste a prompt into that shell.
+_require_live_agent_tui || exit 5
 
 PROMPT_MATCH_HEAD="${PROMPT%%$'\n'*}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
@@ -98,6 +123,9 @@ done
 submitted=0
 stream_previous="${_settle_now:-}"
 for _attempt in 1 2 3 4 5 6 7 8; do
+    # The CLI can die after the paste. Check each retry so Enter never reaches
+    # the bare shell that tmux leaves behind.
+    _require_live_agent_tui || exit 5
     mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
     sleep 1
     _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
