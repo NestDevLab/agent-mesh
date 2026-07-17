@@ -70,6 +70,11 @@ TARGET=$($BIN/agent-session.sh --agent codex \
   --title "agent-mesh: review tmux adapter" \
   new /path/to/project mesh-codex-review)
 
+# Model and effort are first-class launch options for both new and resume:
+TARGET=$($BIN/agent-session.sh --agent codex \
+  --model gpt-5.6-luna --effort xhigh \
+  new /path/to/project mesh-codex-review)
+
 # Resume an on-disk session by ID:
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
@@ -100,20 +105,36 @@ hard stop: exit `4`/`PROGRESS` if the pane changed recently, exit `124`/`STALLED
 if it has not. Inspect status and decide whether to keep waiting, report
 progress, or ask before stopping the other agent.
 
+Exit `5` means the tmux target exists but no longer shows a live agent TUI (for
+example, the CLI died and left bash in the pane). The prompt is not pasted and
+the submit retry loop stops; use `agent-session.sh … resume` or `new` first.
+
 ```bash
 state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --stall 180)
 ```
 
-### Extra launch flags — never bypass the bridge
+### Model, effort, and raw launch flags
+
+`--model <name>` and `--effort <level>` work with `new` and `resume`. Their
+per-agent mapping lives in `agents/<type>.conf`: Codex maps them to its config
+overrides, while Claude accepts `--model` and hard-errors on unsupported
+`--effort`.
+
+Codex workers pin `gpt-5.6-terra` with `high` reasoning by default on both new
+and resumed sessions, independent of the Desktop model picker. Set
+`CODEX_MESH_MODEL` and/or `CODEX_MESH_EFFORT` to replace those defaults, or
+`CODEX_MESH_PIN=0` to follow the Desktop config. Precedence (weakest to
+strongest): pinned default, environment override, `--model`/`--effort`, raw
+passthrough after `--`.
 
 Anything after `--` is forwarded verbatim to the agent CLI, so per-session knobs
 no longer require a hand-rolled command (which is how sessions historically lost
 `--remote` and `--cd`):
 
 ```bash
-# Codex with xhigh reasoning, correct cwd, and Codex Desktop visibility — one call:
+# Raw flags are last and override first-class flags when the CLI supports both:
 $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
-  -- -c model_reasoning_effort=xhigh
+  --effort high -- -c model_reasoning_effort=low
 ```
 
 ## Desktop / mobile visibility
