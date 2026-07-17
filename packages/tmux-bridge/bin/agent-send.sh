@@ -2,9 +2,10 @@
 # agent-send.sh — Send a prompt to an AI agent CLI running in tmux, wait for reply.
 #
 # Usage:
-#   agent-send.sh --agent <NAME> <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
+#   agent-send.sh [--quiet] --agent <NAME> <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
 #
-# --agent defaults to "codex". Prints the agent reply to stdout.
+# --agent defaults to "codex". Prints the agent reply to stdout and streams
+# readable pane progress to stderr unless --quiet is supplied.
 # Exit codes: 0 success, 4 progress checkpoint, 124 stalled checkpoint.
 #
 # Environment overrides:
@@ -21,10 +22,12 @@ AGENTS_DIR="$SCRIPT_DIR/../agents"
 source "$SCRIPT_DIR/_mesh-tmux.sh"
 
 AGENT_NAME="codex"
+QUIET="false"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --agent) AGENT_NAME="$2"; shift 2 ;;
+        --quiet) QUIET="true"; shift ;;
         *)       ARGS+=("$1"); shift ;;
     esac
 done
@@ -93,15 +96,34 @@ done
 # always shows the working spinner, which a finished turn does not. Keep re-sending
 # until it appears; submit keys hitting an already-empty composer are harmless.
 submitted=0
+stream_previous="${_settle_now:-}"
 for _attempt in 1 2 3 4 5 6 7 8; do
     mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
     sleep 1
     _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
     if echo "$_now" | grep -qE "$AGENT_WORKING_PATTERN"; then
-        submitted=1; break
+        submitted=1
+        stream_previous="$_now"
+        break
     fi
 done
 [[ "$submitted" -eq 1 ]] || echo "WARN: submission may not have registered for '$TARGET'" >&2
+
+stream_pane_delta() {
+    local current="$1" previous="$2" line
+    [[ "$QUIET" == "true" || "$current" == "$previous" ]] && return 0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if [[ -n "$AGENT_WORKING_PATTERN" ]] \
+           && grep -Eq "$AGENT_WORKING_PATTERN" <<<"$line"; then
+            continue
+        fi
+        if [[ -n "$previous" ]] && grep -Fqx -- "$line" <<<"$previous"; then
+            continue
+        fi
+        printf '%s\n' "$line" >&2
+    done <<< "$current"
+}
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0
@@ -121,6 +143,8 @@ while true; do
     fi
     sleep "$POLL"
     output=$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)
+    stream_pane_delta "$output" "$stream_previous"
+    stream_previous="$output"
 
     if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
         [[ "$output" != "$last_output" ]] && last_activity="$(date +%s)"
