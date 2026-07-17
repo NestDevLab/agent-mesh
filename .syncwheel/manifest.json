@@ -10,9 +10,26 @@
     "branch": "main-integration",
     "base": "origin/main",
     "strategy": "cherry-pick",
-    "stacks": []
+    "stacks": [
+      "mesh-models-semantics"
+    ]
   },
-  "stacks": [],
+  "stacks": [
+    {
+      "id": "mesh-models-semantics",
+      "branch": "pr/mesh-models-semantics",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "8639632c96c25e128e3cbcdd186e3b12c686929c"
+      ],
+      "meta": {
+        "purpose": "Fix mesh-models nudge semantics"
+      }
+    }
+  ],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked"
 }
