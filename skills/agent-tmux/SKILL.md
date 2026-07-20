@@ -263,3 +263,10 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
   input can execute that input late (observed: a `git commit` fired after the
   session was killed). After killing a session mid-task, verify the real
   side-effect state (`git status` / `git log`) instead of assuming nothing ran.
+- **Status flaps between batches.** A multi-phase worker briefly reads `idle`
+  between batches; re-check after ~20s before treating `idle` as final, or use
+  `agent-wait.sh` (`--poll`/`--stall`) instead of a hand-rolled status loop.
+- **Destructive confirmations need the human's key.** A driven agent's
+  confirmation prompt for a destructive command (e.g. `rm -rf`) cannot be
+  confirmed by orchestrator key relays — safety layers block them by design.
+  Have the user attach (writable, no `-r`) and press the key.
