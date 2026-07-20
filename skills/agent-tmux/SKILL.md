@@ -116,9 +116,8 @@ state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --sta
 ### Model, effort, and raw launch flags
 
 `--model <name>` and `--effort <level>` work with `new` and `resume`. Their
-per-agent mapping lives in `agents/<type>.conf`: Codex maps them to its config
-overrides, while Claude accepts `--model` and hard-errors on unsupported
-`--effort`.
+per-agent mapping lives in `agents/<type>.conf`: Claude maps both flags directly
+to its CLI, while Codex maps them to its config overrides.
 
 Codex workers pin `gpt-5.6-terra` with `high` reasoning by default on both new
 and resumed sessions, independent of the Desktop model picker. Set
