@@ -148,9 +148,9 @@ to coexist — the remote app-server honors the per-session override.
 
 ## Claude Remote Control visibility
 
-Bridge Claude sessions start and resume with `--remote-control` by default, so
-they are visible from Claude Desktop / mobile without passing extra flags. A
-named tmux target still gives the session a readable mesh identity:
+Bridge Claude sessions start and resume locally by default. Remote Control must
+be enabled explicitly when desktop or mobile visibility is needed. A named tmux
+target still gives the session a readable mesh identity:
 
 ```bash
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
@@ -210,4 +210,4 @@ runs immediately after `new-session`. Regression test:
 | Resume command | `codex resume <UUID>` | `claude --resume <UUID>` |
 | Session dir | `~/.codex/sessions/` | `~/.claude/projects/` |
 | CWD picker on resume | yes | no |
-| Remote visibility | auto-detected Codex app-server | `--remote-control` by default |
+| Remote visibility | auto-detected Codex app-server | explicit `--remote-control` opt-in |
