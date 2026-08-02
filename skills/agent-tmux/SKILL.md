@@ -191,10 +191,9 @@ local seen cache; `--refresh` replaces it, and plain `--json` remains read-only.
 
 ## Desktop / mobile visibility
 
-Claude bridge sessions start and resume with Claude Code Remote Control enabled
-by default (`claude --remote-control`), so they are visible from Claude Desktop /
-mobile without remembering a passthrough flag. A named tmux target is still
-useful for a readable mesh identity:
+Claude bridge sessions start and resume locally by default. Enable Claude Code
+Remote Control explicitly only when Claude Desktop or mobile visibility is
+needed. A named tmux target is still useful for a readable mesh identity:
 
 ```bash
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
