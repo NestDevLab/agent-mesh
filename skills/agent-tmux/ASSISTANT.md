@@ -26,6 +26,15 @@ $BIN/mesh-send.sh --to codex --from claude-reviewer --from-agent claude --from-t
 $BIN/agent-read.sh --agent codex "$TARGET" --status        # idle | working | error
 $BIN/agent-wait.sh --agent codex "$TARGET" --timeout 300 --stall 180
 
+# Read-only transcript cursor (works without a tmux target)
+python3 "$BIN/agent-watch.py" <SESSION_ID> --agent codex --state /path/to/cursor.json --init
+python3 "$BIN/agent-watch.py" <SESSION_ID> --agent codex --state /path/to/cursor.json --drain --format jsonl
+
+# User-approved bounded connection (run once with --init, then without it)
+$BIN/agent-link.mjs --mode bidirectional --state /path/to/link-state.json \
+  --left-agent codex --left-session <ID> --left-target <TMUX> \
+  --right-agent claude --right-session <ID> --right-target <TMUX> --init
+
 # Discover all agents + live sessions
 $BIN/mesh-list-agents.sh
 ```
@@ -55,7 +64,8 @@ $BIN/mesh-list-agents.sh
 
 - **Default depth 1**: you drive workers; workers don't spawn more agents unless
   the user asked for multi-level orchestration.
-- **No cycles**: if A drove B, B must not drive A.
+- **No ad hoc cycles**: only a user-approved `agent-link.mjs` connection may
+  return `A -> B -> A`, bounded by Mesh v1 hop/seen guards.
 - **Reuse before spawning**: check `mesh-list-agents.sh`; don't pile up duplicate
   sessions.
 - **Name children to show nesting**; pass `--from` for provenance.
