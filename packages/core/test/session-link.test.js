@@ -53,12 +53,16 @@ test("bidirectional session link performs one bounded return turn", () => {
 
   state = acknowledgeSessionLinkDelivery(state, state.outbox[0].id);
   result = processSessionLinkEvents(state, "right", [
-    event("human_message", "right-relay", { agent: "claude", body: statePrompt(meshId, "codex", "claude", 2, []) }),
+    event("human_message", "right-relay", {
+      agent: "claude",
+      body: statePrompt(meshId, "codex", "claude", 2, []).replaceAll("\n", "\r"),
+    }),
     event("reasoning", "right-think", { agent: "claude", body: "reviewing" }),
     event("agent_message", "right-final", { agent: "claude", body: "claude answer", phase: "final" }),
     event("turn_complete", "right-complete", { agent: "claude" }),
   ]);
   state = result.state;
+  assert.ok(result.activity.some((item) => item.reason === "relay_turn_started"));
   assert.equal(state.outbox.length, 1);
   assert.equal(state.outbox[0].targetSide, "left");
   envelope = parseMeshV1Envelope(state.outbox[0].prompt);

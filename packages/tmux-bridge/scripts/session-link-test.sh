@@ -76,6 +76,10 @@ assert " turn=claude final=1" in prompt
 assert " hop=2" in prompt
 assert "[human] compare the two designs" in prompt
 assert "[codex/reasoning] checking constraints" in prompt
+# Claude's interactive TUI persists multiline pasted prompts with bare CR
+# separators. Exercise that real transcript shape so the envelope cannot be
+# misclassified as a fresh human turn and amplified.
+prompt = prompt.replace("\n", "\r")
 with open(sys.argv[2], "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"type":"user","timestamp":"2026-08-02T12:01:00Z","message":{"content":prompt}}) + "\n")
     handle.write(json.dumps({"type":"assistant","timestamp":"2026-08-02T12:01:01Z","message":{"stop_reason":"tool_use","content":[{"type":"thinking","thinking":"reviewing codex"}]}}) + "\n")
