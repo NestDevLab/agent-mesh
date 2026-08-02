@@ -5,6 +5,7 @@ import {
   createSessionLinkState,
   markSessionLinkDeliveryDispatching,
   markSessionLinkDeliveryUncertain,
+  normalizeSessionLinkConfig,
   processSessionLinkEvents,
   retrySessionLinkDelivery,
 } from "../src/session-link.js";
@@ -28,6 +29,22 @@ function event(kind, id, extra = {}) {
     source_event_id: id,
   };
 }
+
+test("session link transport is normalized and included in endpoint identity", () => {
+  const normalized = normalizeSessionLinkConfig({
+    ...config,
+    right: { ...config.right, transport: "monitor-inbox" },
+  });
+  assert.equal(normalized.left.transport, "tmux");
+  assert.equal(normalized.right.transport, "monitor-inbox");
+  assert.throws(
+    () => normalizeSessionLinkConfig({
+      ...config,
+      right: { ...config.right, transport: "private-rpc" },
+    }),
+    /transport must be tmux or monitor-inbox/,
+  );
+});
 
 test("bidirectional session link performs one bounded return turn", () => {
   let state = createSessionLinkState(config);

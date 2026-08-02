@@ -3,10 +3,14 @@
 
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
+  writeSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -30,10 +34,14 @@ const { values } = parseArgs({
     "left-agent": { type: "string" },
     "left-session": { type: "string" },
     "left-target": { type: "string" },
+    "left-transport": { type: "string", default: "tmux" },
+    "left-inbox": { type: "string" },
     "left-name": { type: "string" },
     "right-agent": { type: "string" },
     "right-session": { type: "string" },
     "right-target": { type: "string" },
+    "right-transport": { type: "string", default: "tmux" },
+    "right-inbox": { type: "string" },
     "right-name": { type: "string" },
     "retry-delivery": { type: "string" },
     "drop-delivery": { type: "string" },
@@ -61,7 +69,7 @@ const config = {
   right: stripTarget(endpoints.right),
 };
 core.normalizeSessionLinkConfig(config);
-validateTargets(config, endpoints);
+validateDeliveryEndpoints(config, endpoints);
 
 if (values.init && (values.drain || values["retry-delivery"] || values["drop-delivery"])) {
   fail("--init cannot be combined with drain or delivery recovery actions");
@@ -72,6 +80,7 @@ if (values["retry-delivery"] && values["drop-delivery"]) {
 
 const watchBin = process.env.AGENT_LINK_WATCH_BIN || resolve(scriptDir, "agent-watch.py");
 const sendBin = process.env.AGENT_LINK_SEND_BIN || resolve(scriptDir, "agent-send.sh");
+const writerStatusBin = process.env.AGENT_LINK_WRITER_STATUS_BIN || resolve(scriptDir, "session-writer-status.mjs");
 const cursorPaths = {
   left: `${statePath}.left.cursor.json`,
   right: `${statePath}.right.cursor.json`,
@@ -82,6 +91,7 @@ if (values.init) {
   for (const cursor of Object.values(cursorPaths)) {
     if (existsSync(cursor)) fail(`cursor already exists: ${cursor}`);
   }
+  prepareDeliveryEndpoints(config, endpoints, false);
   for (const side of ["left", "right"]) runWatcher(side, "init");
   saveState(statePath, core.createSessionLinkState(config));
   log({ reason: "session_link_initialized", state: statePath, mode: config.mode, direction: config.direction || "both" });
@@ -91,6 +101,7 @@ if (values.init) {
 if (!existsSync(statePath)) fail(`state not initialized: run once with --init (${statePath})`);
 let state = loadState(statePath);
 core.assertSessionLinkState(state, config);
+prepareDeliveryEndpoints(config, endpoints);
 
 if (values["drop-delivery"]) {
   state = core.acknowledgeSessionLinkDelivery(state, values["drop-delivery"]);
@@ -153,22 +164,24 @@ function flushOutbox() {
   for (const delivery of [...state.outbox]) {
     if (delivery.status !== "pending") continue;
     const target = endpoints[delivery.targetSide];
+    preflightDeliveryEndpoint(target);
     state = core.markSessionLinkDeliveryDispatching(state, delivery.id);
     saveState(statePath, state);
 
-    const result = spawnSync(
-      sendBin,
-      ["--quiet", "--agent", target.agent, target.target, delivery.prompt, String(timeout)],
-      { encoding: "utf8", env: process.env },
-    );
-    if (!result.error && result.status === 0) {
+    const result = deliver(target, delivery);
+    if (result.ok) {
       state = core.acknowledgeSessionLinkDelivery(state, delivery.id);
       saveState(statePath, state);
-      log({ reason: "delivery_sent", deliveryId: delivery.id, targetSide: delivery.targetSide });
+      log({
+        reason: "delivery_sent",
+        deliveryId: delivery.id,
+        targetSide: delivery.targetSide,
+        transport: target.transport,
+      });
       continue;
     }
 
-    const detail = result.error?.message || result.stderr || `send command exited ${result.status}`;
+    const detail = result.detail;
     state = core.markSessionLinkDeliveryUncertain(state, delivery.id, detail);
     saveState(statePath, state);
     throw new Error(`delivery ${delivery.id} is uncertain after send failure`);
@@ -206,22 +219,113 @@ function endpoint(side) {
     name: values[`${side}-name`] || defaultName,
     agent,
     sessionId,
+    transport: values[`${side}-transport`] || "tmux",
     target: values[`${side}-target`] || "",
+    inbox: values[`${side}-inbox`] ? resolve(values[`${side}-inbox`]) : "",
   };
 }
 
-function validateTargets(rawConfig, rawEndpoints) {
-  if (rawConfig.mode === "bidirectional") {
-    required(rawEndpoints.left.target, "--left-target");
-    required(rawEndpoints.right.target, "--right-target");
-    return;
+function validateDeliveryEndpoints(rawConfig, rawEndpoints) {
+  const sides = rawConfig.mode === "bidirectional"
+    ? ["left", "right"]
+    : [rawConfig.direction === "left-to-right" ? "right" : "left"];
+  for (const side of sides) {
+    const endpointValue = rawEndpoints[side];
+    if (endpointValue.transport === "tmux") {
+      required(endpointValue.target, `--${side}-target`);
+    } else if (endpointValue.transport === "monitor-inbox") {
+      if (endpointValue.agent !== "claude") {
+        fail(`--${side}-transport monitor-inbox currently requires --${side}-agent claude`);
+      }
+      required(endpointValue.inbox, `--${side}-inbox`);
+    } else {
+      fail(`--${side}-transport must be tmux or monitor-inbox`);
+    }
   }
-  const targetSide = rawConfig.direction === "left-to-right" ? "right" : "left";
-  required(rawEndpoints[targetSide].target, `--${targetSide}-target`);
 }
 
 function stripTarget(value) {
-  return { name: value.name, agent: value.agent, sessionId: value.sessionId };
+  return {
+    name: value.name,
+    agent: value.agent,
+    sessionId: value.sessionId,
+    transport: value.transport,
+  };
+}
+
+function prepareDeliveryEndpoints(rawConfig, rawEndpoints, requireReady = true) {
+  const sides = rawConfig.mode === "bidirectional"
+    ? ["left", "right"]
+    : [rawConfig.direction === "left-to-right" ? "right" : "left"];
+  for (const side of sides) {
+    const endpointValue = rawEndpoints[side];
+    preflightDeliveryEndpoint(endpointValue, requireReady);
+    if (endpointValue.transport === "monitor-inbox") ensureInbox(endpointValue.inbox);
+  }
+}
+
+function preflightDeliveryEndpoint(target, requireReady = true) {
+  if (target.agent !== "claude") return;
+  const requirement = target.transport === "monitor-inbox"
+    ? ["--require-kind", "claude-desktop"]
+    : ["--require-kind", "claude-cli"];
+  if (target.transport === "monitor-inbox" && requireReady) {
+    requirement.push("--require-monitor-inbox", target.inbox);
+  }
+  const result = spawnSync(
+    writerStatusBin,
+    ["--agent", target.agent, "--session", target.sessionId, ...requirement],
+    { encoding: "utf8", env: process.env },
+  );
+  if (result.error || result.status !== 0) {
+    const detail = result.error?.message || result.stderr || `writer check exited ${result.status}`;
+    throw new Error(`writer preflight failed for ${target.name}: ${String(detail).trim()}`);
+  }
+}
+
+function deliver(target, delivery) {
+  if (target.transport === "monitor-inbox") {
+    try {
+      appendInbox(target.inbox, delivery);
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, detail: error.message };
+    }
+  }
+  const result = spawnSync(
+    sendBin,
+    ["--quiet", "--agent", target.agent, target.target, delivery.prompt, String(timeout)],
+    { encoding: "utf8", env: process.env },
+  );
+  return !result.error && result.status === 0
+    ? { ok: true }
+    : {
+      ok: false,
+      detail: result.error?.message || result.stderr || `send command exited ${result.status}`,
+    };
+}
+
+function ensureInbox(path) {
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  if (!existsSync(path)) writeFileSync(path, "", { mode: 0o600 });
+  chmodSync(path, 0o600);
+}
+
+function appendInbox(path, delivery) {
+  ensureInbox(path);
+  const record = {
+    schema: "agent-mesh.monitor-inbox.v1",
+    deliveryId: delivery.id,
+    meshId: delivery.meshId,
+    prompt: delivery.prompt,
+  };
+  const descriptor = openSync(path, "a", 0o600);
+  try {
+    writeSync(descriptor, `${JSON.stringify(record)}\n`);
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 async function loadSessionLinkCore() {
@@ -287,6 +391,10 @@ function printHelp() {
     --left-agent codex --left-session <ID> --left-target <TMUX> \\
     --right-agent claude --right-session <ID> --right-target <TMUX> --init
 
+  Desktop-visible Claude endpoint:
+    --right-agent claude --right-session <ID> \\
+    --right-transport monitor-inbox --right-inbox <JSONL>
+
   agent-link.mjs <same endpoints and state> [--drain]
 
 Modes:
@@ -295,5 +403,6 @@ Modes:
 
 The watcher buffers messages, reasoning, and tool events. Only turn_complete can
 produce one dispatch_once. Use --retry-delivery or --drop-delivery to resolve a
-delivery left uncertain by an interrupted or failed send.`);
+delivery left uncertain by an interrupted or failed send. monitor-inbox requires
+exactly one active Claude Desktop writer and event-driven inbox watcher.`);
 }
