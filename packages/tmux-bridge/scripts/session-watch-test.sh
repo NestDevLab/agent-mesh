@@ -93,6 +93,46 @@ assert items[5]["phase"] == "final"
 assert items[4]["tool_name"] == "Bash"
 PY
 
+# Claude Desktop Monitor persists inbox wakes as queued task-notification
+# attachments. Unwrap the durable record back to the original Mesh prompt so
+# the hop-limit policy recognizes the turn as relay input rather than a new
+# human turn.
+python3 - "$CLAUDE_LOG" <<'PY'
+import json, sys
+record = {
+    "schema": "agent-mesh.monitor-inbox.v1",
+    "deliveryId": "delivery-1",
+    "meshId": "mesh-1",
+    "prompt": "ccm:v1 id=mesh-1 from=codex turn=claude final=1 hop=2\n\nreview this",
+}
+notification = (
+    "<task-notification><task-id>monitor-1</task-id>"
+    f"<event>AGENT_MESH_INBOX {json.dumps(record, separators=(',', ':'))}</event>"
+    "</task-notification>"
+)
+attachment = {
+    "type": "attachment",
+    "timestamp": "2026-08-02T10:01:04Z",
+    "attachment": {
+        "type": "queued_command",
+        "commandMode": "task-notification",
+        "prompt": notification,
+    },
+}
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(attachment) + "\n")
+PY
+
+monitor_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --drain --format jsonl)"
+python3 - "$monitor_output" <<'PY'
+import json, sys
+items = [json.loads(line) for line in sys.argv[1].splitlines()]
+assert len(items) == 1
+assert items[0]["kind"] == "human_message"
+assert items[0]["body"].startswith("ccm:v1 id=mesh-1")
+assert items[0]["body"].endswith("review this")
+PY
+
 # A resumed session may move to a newer matching transcript. The watcher follows
 # the newest file and starts at its first committed record.
 sleep 0.01

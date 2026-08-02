@@ -231,6 +231,11 @@ case "$cmd" in
             echo "$TARGET"; exit 0
         fi
 
+        if [[ "${AGENT_REQUIRE_FREE_SESSION_WRITER:-false}" == "true" ]]; then
+            node "$SCRIPT_DIR/session-writer-status.mjs" \
+                --agent "$AGENT_NAME" --session "$SESSION_ID" --require-free
+        fi
+
         RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD"
         mtmux new-session -d -s "$TARGET"
         mesh_tmux_harden

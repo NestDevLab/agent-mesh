@@ -149,6 +149,28 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
 
 def claude_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, Any]]:
     record_type = record.get("type")
+    if record_type == "attachment":
+        attachment = record.get("attachment") or {}
+        if attachment.get("type") != "queued_command" or attachment.get("commandMode") != "task-notification":
+            return
+        prompt = str(attachment.get("prompt") or "")
+        match = re.search(r"<event>AGENT_MESH_INBOX\s+(.+?)</event>", prompt, re.DOTALL)
+        if not match:
+            return
+        try:
+            inbox_record = json.loads(match.group(1))
+        except (TypeError, ValueError):
+            return
+        body = clipped(inbox_record.get("prompt"))
+        if inbox_record.get("schema") == "agent-mesh.monitor-inbox.v1" and body:
+            yield event(
+                timestamp=record.get("timestamp"),
+                agent="claude",
+                session_id=session_id,
+                kind="human_message",
+                body=body,
+            )
+        return
     if record_type not in {"user", "assistant"}:
         return
     if record.get("isSidechain") or record.get("isMeta"):
