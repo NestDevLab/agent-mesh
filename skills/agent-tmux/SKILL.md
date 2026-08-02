@@ -95,6 +95,48 @@ $BIN/agent-read.sh --agent codex "$TARGET" --full
 $BIN/agent-read.sh --agent codex "$TARGET" --follow
 ```
 
+### Watch any persisted Codex or Claude session
+
+Transcript watching does not require the session to have been started by this
+bridge. Arm a caller-owned cursor at EOF, then drain or follow normalized events:
+
+```bash
+python3 "$BIN/agent-watch.py" <SESSION_ID> --agent codex \
+  --state /path/to/cursor.json --init
+python3 "$BIN/agent-watch.py" <SESSION_ID> --agent codex \
+  --state /path/to/cursor.json --drain --format jsonl
+```
+
+The watcher never resumes, writes to, or attaches to the session. It writes only
+the explicit cursor file. Watching is not authorization to relay: use the
+existing send path only when the user has approved the target and direction.
+
+### Connect two sessions
+
+Only after the user approves the endpoints and direction, attach each writable
+session to a live bridge target and initialize a caller-owned link state:
+
+```bash
+LEFT_TARGET=$($BIN/agent-session.sh --agent codex resume <CODEX_ID>)
+RIGHT_TARGET=$($BIN/agent-session.sh --agent claude resume <CLAUDE_ID>)
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/codex-claude-link.json"
+
+$BIN/agent-link.mjs --mode bidirectional --state "$STATE" \
+  --left-agent codex --left-session <CODEX_ID> --left-target "$LEFT_TARGET" \
+  --right-agent claude --right-session <CLAUDE_ID> --right-target "$RIGHT_TARGET" \
+  --init
+$BIN/agent-link.mjs --mode bidirectional --state "$STATE" \
+  --left-agent codex --left-session <CODEX_ID> --left-target "$LEFT_TARGET" \
+  --right-agent claude --right-session <CLAUDE_ID> --right-target "$RIGHT_TARGET"
+```
+
+Bidirectional mode performs one bounded return (`A -> B -> A`) using Mesh v1
+hop limit 2. Unidirectional mode requires `--direction left-to-right` or
+`right-to-left` and performs one wake only. Reasoning, tool, and message events
+are buffered; only `turn_complete` can produce `dispatch_once`. Keep state out of
+the repository. If delivery becomes uncertain, the link fails closed and
+requires explicit `--retry-delivery <ID>` or `--drop-delivery <ID>`.
+
 For delegation, run one foreground `agent-send.sh`; it streams readable worker
 progress to stderr by default while keeping the extracted reply on stdout. Use
 `agent-read.sh --follow` to watch a session you did not start, and `--quiet` on
@@ -208,8 +250,9 @@ Hold these rules:
 - **Default depth is 1.** You drive workers; workers do **not** spawn further
   agents unless the user explicitly asked for multi-level orchestration. If you
   delegate, tell the worker to do the task and report back — not to bridge again.
-- **No cycles.** If A drove B, B must not drive A. Combined with the return-path
-  rule above, this prevents reply/spawn loops.
+- **No ad hoc cycles.** If A drove B, B must not drive A. The only exception is
+  an explicitly user-approved `agent-link.mjs` connection, which is bounded by
+  Mesh v1 `seen` and `hop` guards.
 - **Reuse before spawning.** Run `mesh-list-agents.sh` (or `agent-session.sh
   --agent <t> list`) first and reuse a live session instead of piling up
   duplicates. Sessions persist on the `mesh` socket across turns.
