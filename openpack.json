@@ -20,6 +20,39 @@
           "mode": "preserve"
         },
         {
+          "from": "packages/tmux-bridge/bin",
+          "into": "bin",
+          "include": [
+            "*.py"
+          ],
+          "mode": "preserve"
+        },
+        {
+          "from": "packages/tmux-bridge/bin",
+          "into": "bin",
+          "include": [
+            "*.mjs"
+          ],
+          "mode": "preserve"
+        },
+        {
+          "from": "packages/core/src",
+          "into": "lib",
+          "include": [
+            "policy.js",
+            "session-link.js"
+          ],
+          "mode": "preserve"
+        },
+        {
+          "from": "packages/tmux-bridge/lib",
+          "into": "lib",
+          "include": [
+            "package.json"
+          ],
+          "mode": "preserve"
+        },
+        {
           "from": "packages/tmux-bridge/agents",
           "into": "agents",
           "include": [

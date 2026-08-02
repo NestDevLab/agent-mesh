@@ -6,7 +6,8 @@
 #
 # Auto-detects the skills directory by probing known runtime locations.
 # Installs each skill as a local directory copy and materializes openpack assets
-# (tmux-bridge bin/ and agents/) into the skill directory. This keeps Hermes
+# (tmux-bridge bin/ and agents/, plus the Mesh policy core) into the skill
+# directory. This keeps Hermes
 # skill loaders inside their trusted skills tree while preserving the bridge
 # executables needed by the skill.
 #
@@ -97,11 +98,15 @@ for skill_path in "$SKILLS_SRC"/*/; do
     copy_tree "$skill_path" "$dest"
 
     if [[ "$skill_name" == "agent-tmux" ]]; then
-        echo "    + materialize tmux-bridge bin/ and agents/ assets"
+        echo "    + materialize tmux-bridge bin/, agents/, and Mesh policy assets"
         copy_tree "$REPO_ROOT/packages/tmux-bridge/bin" "$dest/bin"
         copy_tree "$REPO_ROOT/packages/tmux-bridge/agents" "$dest/agents"
+        copy_tree "$REPO_ROOT/packages/tmux-bridge/lib" "$dest/lib"
         if [[ "$DRY_RUN" == "false" ]]; then
-            chmod +x "$dest"/bin/*.sh 2>/dev/null || true
+            mkdir -p "$dest/lib"
+            cp "$REPO_ROOT/packages/core/src/policy.js" "$dest/lib/policy.js"
+            cp "$REPO_ROOT/packages/core/src/session-link.js" "$dest/lib/session-link.js"
+            chmod +x "$dest"/bin/*.sh "$dest"/bin/*.py "$dest"/bin/*.mjs 2>/dev/null || true
         fi
     fi
 done
