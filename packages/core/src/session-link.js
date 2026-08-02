@@ -271,7 +271,7 @@ function normalizeEvent(raw) {
     agent: String(raw.agent || "unknown"),
     session_id: String(raw.session_id || ""),
     kind,
-    body: clipped(raw.body, MAX_EVENT_BODY),
+    body: clipped(normalizeLineEndings(raw.body), MAX_EVENT_BODY),
     phase: raw.phase ? String(raw.phase) : undefined,
     tool_name: raw.tool_name ? String(raw.tool_name) : undefined,
     source_event_id: String(raw.source_event_id || hash(JSON.stringify(raw))),
@@ -348,4 +348,8 @@ function hash(value) {
 function clipped(value, limit) {
   const text = String(value || "").trim();
   return text.length <= limit ? text : `${text.slice(0, limit)}\n[…truncated]`;
+}
+
+function normalizeLineEndings(value) {
+  return String(value || "").replace(/\r\n?/g, "\n");
 }
