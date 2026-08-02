@@ -29,6 +29,7 @@ CODEX_LOG="$CODEX_SESSION_ROOT/2026/08/02/rollout-$CODEX_ID.jsonl"
 CLAUDE_LOG="$CLAUDE_SESSION_ROOT/project/$CLAUDE_ID.jsonl"
 LINK_STATE="$WORKDIR/link-state.json"
 FAKE_SEND="$WORKDIR/fake-send.py"
+FAKE_WRITER="$WORKDIR/fake-writer.sh"
 
 printf '%s\n' \
     '#!/usr/bin/env python3' \
@@ -38,6 +39,9 @@ printf '%s\n' \
     > "$FAKE_SEND"
 chmod +x "$FAKE_SEND"
 export AGENT_LINK_SEND_BIN="$FAKE_SEND"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$FAKE_WRITER"
+chmod +x "$FAKE_WRITER"
+export AGENT_LINK_WRITER_STATUS_BIN="$FAKE_WRITER"
 
 printf '%s\n' '{"timestamp":"2026-08-02T12:00:00Z","type":"session_meta","payload":{"id":"codex"}}' > "$CODEX_LOG"
 printf '%s\n' '{"type":"system","timestamp":"2026-08-02T12:00:00Z"}' > "$CLAUDE_LOG"
