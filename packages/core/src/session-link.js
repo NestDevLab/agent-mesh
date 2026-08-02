@@ -254,10 +254,14 @@ function normalizeParticipant(raw, side) {
   const name = String(raw?.name || side).trim();
   const agent = String(raw?.agent || "").trim();
   const sessionId = String(raw?.sessionId || "").trim();
+  const transport = String(raw?.transport || "tmux").trim();
   if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error(`${side} participant name contains unsafe characters`);
   if (!agent) throw new Error(`${side} agent is required`);
   if (!sessionId) throw new Error(`${side} session id is required`);
-  return { name, agent, sessionId };
+  if (!new Set(["tmux", "monitor-inbox"]).has(transport)) {
+    throw new Error(`${side} participant transport must be tmux or monitor-inbox`);
+  }
+  return { name, agent, sessionId, transport };
 }
 
 function normalizeEvent(raw) {
