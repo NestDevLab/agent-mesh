@@ -16,6 +16,8 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-send.sh` | Send a prompt and wait for the reply |
 | `bin/agent-wait.sh` | Wait for a turn with progress/stalled checkpoints |
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
+| `bin/agent-watch.py` | Follow persisted Codex/Claude transcripts by session id |
+| `bin/agent-link.mjs` | Connect two watched sessions with a bounded Mesh v1 relay |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
 | `bin/mesh-send.sh` | Send to an agent by name or capability using live tmux discovery |
 
@@ -56,6 +58,22 @@ echo "$reply"
 $BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
 
+# Arm at EOF, then drain only events committed after that point
+python3 $BIN/agent-watch.py <SESSION_ID> --agent codex \
+  --state /path/to/cursor.json --init
+python3 $BIN/agent-watch.py <SESSION_ID> --agent codex \
+  --state /path/to/cursor.json --drain --format jsonl
+
+# Connect two sessions: one bounded return A -> B -> A
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/codex-claude-link.json"
+$BIN/agent-link.mjs --mode bidirectional --state "$STATE" \
+  --left-agent codex --left-session <CODEX_ID> --left-target <CODEX_TMUX> \
+  --right-agent claude --right-session <CLAUDE_ID> --right-target <CLAUDE_TMUX> \
+  --init
+$BIN/agent-link.mjs --mode bidirectional --state "$STATE" \
+  --left-agent codex --left-session <CODEX_ID> --left-target <CODEX_TMUX> \
+  --right-agent claude --right-session <CLAUDE_ID> --right-target <CLAUDE_TMUX>
+
 # List on-disk sessions + running tmux sessions
 $BIN/agent-session.sh --agent codex list
 
@@ -74,6 +92,26 @@ $BIN/mesh-send.sh --to claude \
 # Long waits use checkpoint semantics
 $BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --stall 180
 ```
+
+`agent-watch.py` is read-only with respect to the watched session. It resolves
+the newest matching transcript on each poll, writes only the caller-provided
+cursor file, and supports Codex and Claude without requiring a tmux target. Its
+structured output is intended for existing Mesh transports; the watcher does
+not dispatch, resume, or wake an agent by itself.
+
+`agent-link.mjs` composes that watcher with `agent-send.sh` and the existing
+Mesh v1 `final`, `seen`, `hop`, and `dispatch_once` policy. It buffers transcript
+events and wakes the peer only after `turn_complete`. Bidirectional mode permits
+one bounded return (`A -> B -> A`, hop limit 2); unidirectional mode requires
+`--direction left-to-right|right-to-left` and permits no return. The watched
+sessions may be arbitrary persisted sessions, but each writable destination
+must also have a live tmux bridge target, normally created with
+`agent-session.sh ... resume <SESSION_ID>`.
+
+Link state and its durable outbox live only at the explicit `--state` path; use
+an XDG runtime/state directory, never the repository. A failed or interrupted
+send is marked uncertain and stops automatic delivery. Resolve it explicitly
+with `--retry-delivery <ID>` or `--drop-delivery <ID>` to avoid duplicate wakes.
 
 `mesh-send.sh` does not require a checked-in runtime registry. It discovers
 agent types from `agents/*.conf` and running targets from the dedicated tmux

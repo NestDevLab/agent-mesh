@@ -11,7 +11,8 @@
   "main": "./src/policy.js",
   "exports": {
     ".": "./src/policy.js",
-    "./policy": "./src/policy.js"
+    "./policy": "./src/policy.js",
+    "./session-link": "./src/session-link.js"
   },
   "files": [
     "src",
