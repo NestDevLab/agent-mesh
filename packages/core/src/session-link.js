@@ -74,6 +74,13 @@ export function processSessionLinkEvents(rawState, side, rawEvents = []) {
         && knownRelay
         && envelope.turn === state.config[side].name
         && envelope.to.includes(state.config[side].name);
+      const duplicateRelaySignal = addressedHere && state.queues[side].some((turn) => (
+        turn.origin === "relay" && turn.inbound?.meshId === envelope.meshId
+      ));
+      if (duplicateRelaySignal) {
+        activity.push({ side, reason: "relay_signal_duplicate_suppressed", meshId: envelope.meshId });
+        continue;
+      }
       const origin = addressedHere ? "relay" : (envelope.valid ? "foreign_mesh" : "human");
       state.queues[side].push({
         origin,

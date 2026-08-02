@@ -61,6 +61,7 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.tmp")
     temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    temporary.chmod(0o600)
     os.replace(temporary, path)
 
 
@@ -147,22 +148,63 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
         yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="context", body=body)
 
 
-def claude_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, Any]]:
+def monitor_inbox_prompt(notification: Any, inbox: Path | None) -> str:
+    text = str(notification or "")
+    marker = re.search(r"AGENT_MESH_INBOX\s+(.+?)(?:</event>|$)", text, re.DOTALL)
+    if not marker:
+        return ""
+
+    inbox_record: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(marker.group(1))
+        if isinstance(parsed, dict):
+            inbox_record = parsed
+    except (TypeError, ValueError):
+        pass
+
+    if inbox_record and inbox_record.get("schema") == "agent-mesh.monitor-inbox.v1":
+        prompt = inbox_record.get("prompt")
+        if isinstance(prompt, str) and prompt.strip():
+            return clipped(prompt)
+
+    delivery_match = re.search(r'"deliveryId"\s*:\s*"([^"\\]{1,300})"', marker.group(1))
+    delivery_id = delivery_match.group(1) if delivery_match else ""
+    if not delivery_id or inbox is None:
+        return ""
+
+    resolved_record: dict[str, Any] | None = None
+    try:
+        with inbox.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    candidate = json.loads(line)
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    isinstance(candidate, dict)
+                    and candidate.get("schema") == "agent-mesh.monitor-inbox.v1"
+                    and candidate.get("deliveryId") == delivery_id
+                    and isinstance(candidate.get("prompt"), str)
+                ):
+                    resolved_record = candidate
+    except OSError:
+        return ""
+
+    return clipped(resolved_record.get("prompt")) if resolved_record else ""
+
+
+def claude_events(
+    record: dict[str, Any],
+    session_id: str,
+    inbox: Path | None = None,
+) -> Iterable[dict[str, Any]]:
     record_type = record.get("type")
     if record_type == "attachment":
         attachment = record.get("attachment") or {}
         if attachment.get("type") != "queued_command" or attachment.get("commandMode") != "task-notification":
             return
-        prompt = str(attachment.get("prompt") or "")
-        match = re.search(r"<event>AGENT_MESH_INBOX\s+(.+?)</event>", prompt, re.DOTALL)
-        if not match:
-            return
-        try:
-            inbox_record = json.loads(match.group(1))
-        except (TypeError, ValueError):
-            return
-        body = clipped(inbox_record.get("prompt"))
-        if inbox_record.get("schema") == "agent-mesh.monitor-inbox.v1" and body:
+        body = monitor_inbox_prompt(attachment.get("prompt"), inbox)
+        if body:
             yield event(
                 timestamp=record.get("timestamp"),
                 agent="claude",
@@ -182,7 +224,8 @@ def claude_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str,
 
     if isinstance(content, str):
         if record_type == "user":
-            body = clipped(content)
+            is_monitor_notification = "AGENT_MESH_INBOX" in content
+            body = monitor_inbox_prompt(content, inbox) if is_monitor_notification else clipped(content)
             if body:
                 yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="human_message", body=body)
         return
@@ -196,7 +239,9 @@ def claude_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str,
             continue
         block_type = block.get("type")
         if record_type == "user" and block_type == "text":
-            body = clipped(block.get("text"))
+            text = str(block.get("text") or "")
+            is_monitor_notification = "AGENT_MESH_INBOX" in text
+            body = monitor_inbox_prompt(text, inbox) if is_monitor_notification else clipped(text)
             if body:
                 yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="human_message", body=body)
         elif record_type == "assistant" and block_type == "text":
@@ -230,8 +275,13 @@ def claude_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str,
         yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete")
 
 
-def events_for(agent: str, record: dict[str, Any], session_id: str) -> Iterable[dict[str, Any]]:
-    rendered = codex_events(record, session_id) if agent == "codex" else claude_events(record, session_id)
+def events_for(
+    agent: str,
+    record: dict[str, Any],
+    session_id: str,
+    inbox: Path | None = None,
+) -> Iterable[dict[str, Any]]:
+    rendered = codex_events(record, session_id) if agent == "codex" else claude_events(record, session_id, inbox)
     source_record_id = record.get("uuid")
     if not isinstance(source_record_id, str) or not source_record_id:
         canonical = json.dumps(record, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -270,6 +320,7 @@ def consume(
     session_id: str,
     state: dict[str, Any],
     output_format: str,
+    inbox: Path | None,
 ) -> tuple[int, bool]:
     path = Path(str(state["path"]))
     try:
@@ -301,7 +352,7 @@ def consume(
             continue
         if not isinstance(record, dict):
             continue
-        for item in events_for(agent, record, session_id):
+        for item in events_for(agent, record, session_id, inbox):
             emit(item, output_format)
             count += 1
     return count, True
@@ -321,6 +372,7 @@ def main() -> int:
     parser.add_argument("session_id")
     parser.add_argument("--agent", choices=sorted(DEFAULT_ROOTS), required=True)
     parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--inbox", type=Path)
     parser.add_argument("--format", choices=("text", "jsonl"), default="text")
     parser.add_argument("--interval", type=float, default=2.0)
     mode = parser.add_mutually_exclusive_group()
@@ -332,6 +384,10 @@ def main() -> int:
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
         parser.error("--interval must be greater than zero")
+    if args.inbox is not None and args.agent != "claude":
+        parser.error("--inbox is supported only for Claude Monitor notifications")
+    if args.inbox is not None and not args.inbox.is_file():
+        parser.error(f"inbox does not exist: {args.inbox}")
 
     transcript = resolve_transcript(args.agent, args.session_id)
     if transcript is None:
@@ -359,6 +415,7 @@ def main() -> int:
             session_id=args.session_id,
             state=state,
             output_format=args.format,
+            inbox=args.inbox,
         )
         if changed:
             save_state(args.state, state)
@@ -378,6 +435,7 @@ def main() -> int:
             session_id=args.session_id,
             state=state,
             output_format=args.format,
+            inbox=args.inbox,
         )
         if changed:
             save_state(args.state, state)
