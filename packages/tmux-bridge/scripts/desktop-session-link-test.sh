@@ -110,18 +110,15 @@ assert " turn=claude final=1" in record["prompt"]
 assert " hop=2" in record["prompt"]
 notification = (
     "<task-notification><task-id>monitor-1</task-id>"
-    f"<event>AGENT_MESH_INBOX {json.dumps(record, separators=(',', ':'))}</event>"
+    "<event>AGENT_MESH_INBOX {\"schema\":\"agent-mesh.monitor-inbox.v1\","
+    f"\"deliveryId\":\"{record['deliveryId']}\",\"prompt\":\"ccm:v1 ...(truncated)</event>"
     "</task-notification>"
 )
 with open(sys.argv[2], "a", encoding="utf-8") as handle:
     handle.write(json.dumps({
-        "type": "attachment",
+        "type": "user",
         "timestamp": "2026-08-02T12:01:00Z",
-        "attachment": {
-            "type": "queued_command",
-            "commandMode": "task-notification",
-            "prompt": notification,
-        },
+        "message": {"content": notification},
     }) + "\n")
     handle.write(json.dumps({
         "type": "assistant",

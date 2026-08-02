@@ -195,8 +195,9 @@ function runWatcher(side, mode) {
     "--agent", target.agent,
     "--state", cursorPaths[side],
     "--format", "jsonl",
-    `--${mode}`,
   ];
+  if (target.transport === "monitor-inbox") args.push("--inbox", target.inbox);
+  args.push(`--${mode}`);
   const result = spawnSync(watchBin, args, { encoding: "utf8", env: process.env });
   if (result.error || result.status !== 0) {
     const detail = result.error?.message || result.stderr || `watcher exited ${result.status}`;
