@@ -69,17 +69,20 @@ test("bidirectional session link performs one bounded return turn", () => {
   const meshId = envelope.meshId;
 
   state = acknowledgeSessionLinkDelivery(state, state.outbox[0].id);
+  const relayPrompt = statePrompt(meshId, "codex", "claude", 2, []).replaceAll("\n", "\r");
   result = processSessionLinkEvents(state, "right", [
     event("human_message", "right-relay", {
       agent: "claude",
-      body: statePrompt(meshId, "codex", "claude", 2, []).replaceAll("\n", "\r"),
+      body: relayPrompt,
     }),
+    event("human_message", "right-relay-duplicate", { agent: "claude", body: relayPrompt }),
     event("reasoning", "right-think", { agent: "claude", body: "reviewing" }),
     event("agent_message", "right-final", { agent: "claude", body: "claude answer", phase: "final" }),
     event("turn_complete", "right-complete", { agent: "claude" }),
   ]);
   state = result.state;
   assert.ok(result.activity.some((item) => item.reason === "relay_turn_started"));
+  assert.ok(result.activity.some((item) => item.reason === "relay_signal_duplicate_suppressed"));
   assert.equal(state.outbox.length, 1);
   assert.equal(state.outbox[0].targetSide, "left");
   envelope = parseMeshV1Envelope(state.outbox[0].prompt);

@@ -31,6 +31,8 @@ CODEX_LOG="$CODEX_SESSION_ROOT/2026/08/02/rollout-$CODEX_ID.jsonl"
 CLAUDE_LOG="$CLAUDE_SESSION_ROOT/project/$CLAUDE_ID.jsonl"
 CODEX_STATE="$WORKDIR/codex-state.json"
 CLAUDE_STATE="$WORKDIR/claude-state.json"
+CLAUDE_INBOX="$WORKDIR/claude-inbox.jsonl"
+: > "$CLAUDE_INBOX"
 
 printf '%s\n' '{"timestamp":"2026-08-02T10:00:00Z","type":"session_meta","payload":{"id":"seed"}}' > "$CODEX_LOG"
 python3 "$WATCHER" "$CODEX_ID" --agent codex --state "$CODEX_STATE" --init >/dev/null
@@ -71,7 +73,7 @@ assert items[0]["body"] == "after truncation"
 PY
 
 printf '%s\n' '{"type":"system","timestamp":"2026-08-02T10:01:00Z"}' > "$CLAUDE_LOG"
-python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --init >/dev/null
+python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --inbox "$CLAUDE_INBOX" --init >/dev/null
 
 printf '%s\n' \
     '{"type":"user","timestamp":"2026-08-02T10:01:01Z","message":{"content":"hello claude"}}' \
@@ -80,7 +82,7 @@ printf '%s\n' \
     '{"type":"assistant","timestamp":"2026-08-02T10:01:03Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}' \
     >> "$CLAUDE_LOG"
 
-claude_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --drain --format jsonl)"
+claude_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --inbox "$CLAUDE_INBOX" --drain --format jsonl)"
 python3 - "$claude_output" <<'PY'
 import json, sys
 items = [json.loads(line) for line in sys.argv[1].splitlines()]
@@ -123,7 +125,7 @@ with open(sys.argv[1], "a", encoding="utf-8") as handle:
     handle.write(json.dumps(attachment) + "\n")
 PY
 
-monitor_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --drain --format jsonl)"
+monitor_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --inbox "$CLAUDE_INBOX" --drain --format jsonl)"
 python3 - "$monitor_output" <<'PY'
 import json, sys
 items = [json.loads(line) for line in sys.argv[1].splitlines()]
@@ -133,12 +135,55 @@ assert items[0]["body"].startswith("ccm:v1 id=mesh-1")
 assert items[0]["body"].endswith("review this")
 PY
 
+# Current Claude Desktop versions also persist Monitor wakes as ordinary user
+# task-notifications and truncate long event output. Resolve the delivery id
+# against the explicit durable inbox instead of misclassifying the notification
+# as a fresh human turn.
+python3 - "$CLAUDE_INBOX" "$CLAUDE_LOG" <<'PY'
+import json, sys
+record = {
+    "schema": "agent-mesh.monitor-inbox.v1",
+    "deliveryId": "delivery-2",
+    "meshId": "mesh-2",
+    "prompt": "ccm:v1 id=mesh-2 from=codex turn=claude final=1 hop=2\n\nfull durable prompt",
+}
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(record) + "\n")
+notification = (
+    "<task-notification><task-id>monitor-2</task-id>"
+    "<event>AGENT_MESH_INBOX {\"schema\":\"agent-mesh.monitor-inbox.v1\","
+    "\"deliveryId\":\"delivery-2\",\"prompt\":\"ccm:v1 ...(truncated)</event>"
+    "</task-notification>"
+)
+with open(sys.argv[2], "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({
+        "type": "user",
+        "timestamp": "2026-08-02T10:01:05Z",
+        "message": {"content": notification},
+    }) + "\n")
+    handle.write(json.dumps({
+        "type": "user",
+        "timestamp": "2026-08-02T10:01:06Z",
+        "message": {"content": notification.replace("delivery-2", "missing-delivery")},
+    }) + "\n")
+PY
+
+truncated_monitor_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --inbox "$CLAUDE_INBOX" --drain --format jsonl)"
+python3 - "$truncated_monitor_output" <<'PY'
+import json, sys
+items = [json.loads(line) for line in sys.argv[1].splitlines()]
+assert len(items) == 1
+assert items[0]["kind"] == "human_message"
+assert items[0]["body"].startswith("ccm:v1 id=mesh-2")
+assert items[0]["body"].endswith("full durable prompt")
+PY
+
 # A resumed session may move to a newer matching transcript. The watcher follows
 # the newest file and starts at its first committed record.
 sleep 0.01
 CLAUDE_RESUMED="$CLAUDE_SESSION_ROOT/project/resumed-$CLAUDE_ID.jsonl"
 printf '%s\n' '{"type":"user","timestamp":"2026-08-02T10:02:00Z","message":{"content":"after resume"}}' > "$CLAUDE_RESUMED"
-resumed_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --drain --format jsonl)"
+resumed_output="$(python3 "$WATCHER" "$CLAUDE_ID" --agent claude --state "$CLAUDE_STATE" --inbox "$CLAUDE_INBOX" --drain --format jsonl)"
 python3 - "$resumed_output" <<'PY'
 import json, sys
 items = [json.loads(line) for line in sys.argv[1].splitlines()]
@@ -147,7 +192,7 @@ assert items[0]["kind"] == "human_message"
 assert items[0]["body"] == "after resume"
 PY
 
-if python3 "$WATCHER" '../bad' --agent claude --state "$CLAUDE_STATE" --drain >/dev/null 2>&1; then
+if python3 "$WATCHER" '../bad' --agent claude --state "$CLAUDE_STATE" --inbox "$CLAUDE_INBOX" --drain >/dev/null 2>&1; then
     fail "unsafe session id was accepted"
 fi
 
