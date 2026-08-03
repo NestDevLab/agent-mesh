@@ -14,6 +14,7 @@
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
 #   AGENT_IDLE_ROUNDS     consecutive stable polls before declaring done (default: 3)
 #   AGENT_STALL_TIMEOUT   max seconds without pane changes before stalled (default: 300)
+#   AGENT_CONFIRM_FAST_IDLE allow changed+idle submit confirmation (default: false)
 
 set -euo pipefail
 
@@ -133,9 +134,9 @@ done
 # renders) and NOT the done marker (the PREVIOUS turn's "Worked for …" lingers on
 # screen and would falsely confirm after a single dropped submit key). A new turn
 # always shows the working spinner, which a finished turn does not. Keep re-sending
-# until it appears. Very fast agents may complete before the first capture; in
-# that case, a changed pane that already shows the idle marker also confirms the
-# submit. A stable pane confirms neither case.
+# until it appears. Synthetic or genuinely instant agents may opt into
+# changed+idle confirmation with AGENT_CONFIRM_FAST_IDLE=true. Interactive AI
+# TUIs must keep this off because late paste rendering also changes an idle pane.
 submitted=0
 stream_previous="${_settle_now:-}"
 for _attempt in 1 2 3 4 5 6 7 8; do
@@ -150,7 +151,8 @@ for _attempt in 1 2 3 4 5 6 7 8; do
         stream_previous="$_now"
         break
     fi
-    if [[ "$_now" != "${_settle_now:-}" ]] \
+    if [[ "${AGENT_CONFIRM_FAST_IDLE:-false}" == "true" ]] \
+        && [[ "$_now" != "${_settle_now:-}" ]] \
         && [[ -n "${AGENT_IDLE_PATTERN:-}" ]] \
         && echo "$_now" | grep -qE "$AGENT_IDLE_PATTERN"; then
         submitted=1
