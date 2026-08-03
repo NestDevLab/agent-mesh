@@ -10,6 +10,7 @@ const SIDES = ["left", "right"];
 const MAX_TURN_EVENTS = 120;
 const MAX_EVENT_BODY = 1600;
 const MAX_POLICY_RECORDS = 512;
+const MAX_DISPATCH_TEXT = 6000;
 
 export function normalizeSessionLinkConfig(raw = {}) {
   const mode = String(raw.mode || "").trim();
@@ -120,6 +121,8 @@ export function markSessionLinkDeliveryDispatching(rawState, deliveryId) {
     status: "dispatching",
     attempts: Number(delivery.attempts || 0) + 1,
     lastError: undefined,
+    lastDeferred: undefined,
+    retryAt: undefined,
   }));
 }
 
@@ -128,6 +131,18 @@ export function markSessionLinkDeliveryUncertain(rawState, deliveryId, error) {
     ...delivery,
     status: "uncertain",
     lastError: clipped(error, 500),
+    retryAt: undefined,
+  }));
+}
+
+export function deferSessionLinkDelivery(rawState, deliveryId, detail, retryAt) {
+  return updateDelivery(rawState, deliveryId, (delivery) => ({
+    ...delivery,
+    status: "pending",
+    attempts: Math.max(0, Number(delivery.attempts || 0) - 1),
+    lastError: undefined,
+    lastDeferred: clipped(detail, 500),
+    retryAt: String(retryAt || ""),
   }));
 }
 
@@ -136,6 +151,8 @@ export function retrySessionLinkDelivery(rawState, deliveryId) {
     ...delivery,
     status: "pending",
     lastError: undefined,
+    lastDeferred: undefined,
+    retryAt: undefined,
   }));
 }
 
@@ -233,7 +250,7 @@ function routeCompletedTurn(state, side, turn, completionEvent) {
     `Connected-session turn from ${source.name}. The user explicitly enabled this bounded link.`,
     "Read the context, think about it, and respond normally in this session. Do not forward it manually.",
     "",
-    plan.dispatchText || "[relay] Source turn completed without readable content.",
+    compactDispatchText(plan.dispatchText) || "[relay] Source turn completed without readable content.",
   ].join("\n");
   const prompt = formatCompactMeshV1Envelope({
     from: source.name,
@@ -359,6 +376,16 @@ function hash(value) {
 function clipped(value, limit) {
   const text = String(value || "").trim();
   return text.length <= limit ? text : `${text.slice(0, limit)}\n[…truncated]`;
+}
+
+function compactDispatchText(value) {
+  const text = String(value || "").trim();
+  if (text.length <= MAX_DISPATCH_TEXT) return text;
+  const marker = "\n[relay] Middle of source turn omitted to keep delivery bounded.\n";
+  const available = MAX_DISPATCH_TEXT - marker.length;
+  const head = Math.ceil(available / 2);
+  const tail = Math.floor(available / 2);
+  return `${text.slice(0, head)}${marker}${text.slice(-tail)}`;
 }
 
 function normalizeLineEndings(value) {

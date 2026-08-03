@@ -58,6 +58,7 @@ if (values.help) {
 const statePath = required(values.state, "--state");
 const interval = positiveNumber(values.interval, "--interval");
 const timeout = positiveInteger(values.timeout, "--timeout");
+const busyRetryMs = positiveInteger(process.env.AGENT_LINK_BUSY_RETRY_MS || "5000", "AGENT_LINK_BUSY_RETRY_MS");
 const endpoints = {
   left: endpoint("left"),
   right: endpoint("right"),
@@ -154,17 +155,32 @@ function tick() {
 }
 
 function flushOutbox() {
-  const ambiguous = state.outbox.find((delivery) => ["dispatching", "uncertain"].includes(delivery.status));
-  if (ambiguous) {
-    throw new Error(
-      `delivery ${ambiguous.id} has ambiguous status ${ambiguous.status}; use --retry-delivery or --drop-delivery explicitly`,
-    );
-  }
+  const blockedTargets = new Set(
+    state.outbox
+      .filter((delivery) => ["dispatching", "uncertain"].includes(delivery.status))
+      .map((delivery) => delivery.targetSide),
+  );
 
   for (const delivery of [...state.outbox]) {
     if (delivery.status !== "pending") continue;
+    if (blockedTargets.has(delivery.targetSide)) continue;
+    if (delivery.retryAt && Date.parse(delivery.retryAt) > Date.now()) continue;
     const target = endpoints[delivery.targetSide];
-    preflightDeliveryEndpoint(target);
+    try {
+      preflightDeliveryEndpoint(target);
+    } catch (error) {
+      state = core.markSessionLinkDeliveryDispatching(state, delivery.id);
+      state = deferDelivery(state, delivery.id, error.message);
+      saveState(statePath, state);
+      log({
+        reason: "delivery_deferred",
+        deliveryId: delivery.id,
+        targetSide: delivery.targetSide,
+        detail: error.message,
+      });
+      blockedTargets.add(delivery.targetSide);
+      continue;
+    }
     state = core.markSessionLinkDeliveryDispatching(state, delivery.id);
     saveState(statePath, state);
 
@@ -181,11 +197,35 @@ function flushOutbox() {
       continue;
     }
 
+    if (result.retryable) {
+      state = deferDelivery(state, delivery.id, result.detail);
+      saveState(statePath, state);
+      log({
+        reason: "delivery_deferred",
+        deliveryId: delivery.id,
+        targetSide: delivery.targetSide,
+        detail: result.detail,
+      });
+      blockedTargets.add(delivery.targetSide);
+      continue;
+    }
+
     const detail = result.detail;
     state = core.markSessionLinkDeliveryUncertain(state, delivery.id, detail);
     saveState(statePath, state);
-    throw new Error(`delivery ${delivery.id} is uncertain after send failure`);
+    blockedTargets.add(delivery.targetSide);
+    log({
+      reason: "delivery_uncertain",
+      deliveryId: delivery.id,
+      targetSide: delivery.targetSide,
+      detail,
+    });
   }
+}
+
+function deferDelivery(currentState, deliveryId, detail) {
+  const retryAt = new Date(Date.now() + busyRetryMs).toISOString();
+  return core.deferSessionLinkDelivery(currentState, deliveryId, detail, retryAt);
 }
 
 function runWatcher(side, mode) {
@@ -298,12 +338,13 @@ function deliver(target, delivery) {
     ["--quiet", "--agent", target.agent, target.target, delivery.prompt, String(timeout)],
     { encoding: "utf8", env: process.env },
   );
-  return !result.error && result.status === 0
-    ? { ok: true }
-    : {
-      ok: false,
-      detail: result.error?.message || result.stderr || `send command exited ${result.status}`,
-    };
+  if (!result.error && result.status === 0) return { ok: true };
+  const detail = String(result.error?.message || result.stderr || `send command exited ${result.status}`).trim();
+  return {
+    ok: false,
+    retryable: !result.error && result.status === 75,
+    detail,
+  };
 }
 
 function ensureInbox(path) {
@@ -403,7 +444,8 @@ Modes:
   bidirectional   Performs one bounded return: A -> B -> A (Mesh hop limit 2).
 
 The watcher buffers messages, reasoning, and tool events. Only turn_complete can
-produce one dispatch_once. Use --retry-delivery or --drop-delivery to resolve a
-delivery left uncertain by an interrupted or failed send. monitor-inbox requires
-exactly one active Claude Desktop writer and event-driven inbox watcher.`);
+produce one dispatch_once. A busy target is retried automatically without pasting;
+an uncertain delivery blocks only its target direction until --retry-delivery or
+--drop-delivery resolves it. monitor-inbox requires exactly one active Claude
+Desktop writer and event-driven inbox watcher.`);
 }

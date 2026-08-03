@@ -7,6 +7,7 @@
 # --agent defaults to "codex". Prints the agent reply to stdout and streams
 # readable pane progress to stderr unless --quiet is supplied.
 # Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
+# 70 pasted but submission was not confirmed, 75 target busy before paste,
 # 124 stalled checkpoint.
 #
 # Environment overrides:
@@ -69,9 +70,20 @@ _require_live_agent_tui() {
     fi
 }
 
+_require_idle_agent_tui() {
+    local pane
+    [[ -n "${AGENT_WORKING_PATTERN:-}" ]] || return 0
+    pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+    if tail -n 24 <<<"$pane" | grep -qE "$AGENT_WORKING_PATTERN"; then
+        echo "BUSY: target '$TARGET' is processing another turn; prompt was not pasted" >&2
+        return 1
+    fi
+}
+
 # A tmux session may survive after its agent CLI dies and leave a bare shell in
 # the pane. Never paste a prompt into that shell.
 _require_live_agent_tui || exit 5
+_require_idle_agent_tui || exit 75
 
 PROMPT_MATCH_HEAD="${PROMPT%%$'\n'*}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
@@ -91,6 +103,8 @@ fi
 # special characters and multiline text (tmux send-keys would misinterpret them).
 mtmux send-keys -t "$TARGET" "" 2>/dev/null || true
 sleep 0.3
+_require_live_agent_tui || exit 5
+_require_idle_agent_tui || exit 75
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
 trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
@@ -119,7 +133,9 @@ done
 # renders) and NOT the done marker (the PREVIOUS turn's "Worked for …" lingers on
 # screen and would falsely confirm after a single dropped submit key). A new turn
 # always shows the working spinner, which a finished turn does not. Keep re-sending
-# until it appears; submit keys hitting an already-empty composer are harmless.
+# until it appears. Very fast agents may complete before the first capture; in
+# that case, a changed pane that already shows the idle marker also confirms the
+# submit. A stable pane confirms neither case.
 submitted=0
 stream_previous="${_settle_now:-}"
 for _attempt in 1 2 3 4 5 6 7 8; do
@@ -134,8 +150,18 @@ for _attempt in 1 2 3 4 5 6 7 8; do
         stream_previous="$_now"
         break
     fi
+    if [[ "$_now" != "${_settle_now:-}" ]] \
+        && [[ -n "${AGENT_IDLE_PATTERN:-}" ]] \
+        && echo "$_now" | grep -qE "$AGENT_IDLE_PATTERN"; then
+        submitted=1
+        stream_previous="$_now"
+        break
+    fi
 done
-[[ "$submitted" -eq 1 ]] || echo "WARN: submission may not have registered for '$TARGET'" >&2
+if [[ "$submitted" -ne 1 ]]; then
+    echo "NOT_SUBMITTED: prompt was pasted into '$TARGET', but the turn did not start" >&2
+    exit 70
+fi
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0

@@ -134,8 +134,11 @@ Bidirectional mode performs one bounded return (`A -> B -> A`) using Mesh v1
 hop limit 2. Unidirectional mode requires `--direction left-to-right` or
 `right-to-left` and performs one wake only. Reasoning, tool, and message events
 are buffered; only `turn_complete` can produce `dispatch_once`. Keep state out of
-the repository. If delivery becomes uncertain, the link fails closed and
-requires explicit `--retry-delivery <ID>` or `--drop-delivery <ID>`.
+the repository. A busy destination is retried without pasting. If delivery
+becomes uncertain, only that target direction fails closed and requires explicit
+`--retry-delivery <ID>` or `--drop-delivery <ID>`; the opposite direction keeps
+flowing. Relay prompts are bounded while preserving the initial request and
+final answer.
 
 For delegation, run one foreground `agent-send.sh`; it streams readable worker
 progress to stderr by default while keeping the extracted reply on stdout. Use

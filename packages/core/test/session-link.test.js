@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   acknowledgeSessionLinkDelivery,
   createSessionLinkState,
+  deferSessionLinkDelivery,
   markSessionLinkDeliveryDispatching,
   markSessionLinkDeliveryUncertain,
   normalizeSessionLinkConfig,
@@ -186,6 +187,37 @@ test("durable outbox requires explicit recovery after an uncertain send", () => 
   assert.equal(state.outbox[0].status, "pending");
   state = acknowledgeSessionLinkDelivery(state, deliveryId);
   assert.equal(state.outbox.length, 0);
+});
+
+test("busy delivery deferral does not consume an attempt", () => {
+  let state = createSessionLinkState(config);
+  state = processSessionLinkEvents(state, "left", [
+    event("human_message", "busy-user", { body: "question" }),
+    event("turn_complete", "busy-complete"),
+  ]).state;
+  const deliveryId = state.outbox[0].id;
+  state = markSessionLinkDeliveryDispatching(state, deliveryId);
+  state = deferSessionLinkDelivery(state, deliveryId, "target busy", "2026-08-02T12:00:05Z");
+  assert.equal(state.outbox[0].status, "pending");
+  assert.equal(state.outbox[0].attempts, 0);
+  assert.equal(state.outbox[0].lastDeferred, "target busy");
+  assert.equal(state.outbox[0].retryAt, "2026-08-02T12:00:05Z");
+});
+
+test("large turns keep the user request and final answer in a bounded prompt", () => {
+  const events = [event("human_message", "large-user", { body: "REQUEST-MUST-SURVIVE" })];
+  for (let index = 0; index < 117; index += 1) {
+    events.push(event("reasoning", `large-reasoning-${index}`, { body: `middle-${index}-${"x".repeat(1800)}` }));
+  }
+  events.push(event("agent_message", "large-final", { body: "FINAL-MUST-SURVIVE", phase: "final" }));
+  events.push(event("turn_complete", "large-complete"));
+
+  const state = processSessionLinkEvents(createSessionLinkState(config), "left", events).state;
+  const prompt = state.outbox[0].prompt;
+  assert.ok(prompt.length < 7000, `expected bounded prompt, got ${prompt.length} characters`);
+  assert.match(prompt, /REQUEST-MUST-SURVIVE/);
+  assert.match(prompt, /Middle of source turn omitted/);
+  assert.match(prompt, /FINAL-MUST-SURVIVE/);
 });
 
 function statePrompt(meshId, from, turn, hop, seen) {
