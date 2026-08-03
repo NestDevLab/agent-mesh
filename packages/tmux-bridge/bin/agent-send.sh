@@ -82,10 +82,21 @@ _require_idle_agent_tui() {
 }
 
 _require_empty_composer() {
-    local pane
+    local pane cursor_x cursor_x_min
     [[ -n "${AGENT_NONEMPTY_COMPOSER_PATTERN:-}" ]] || return 0
     pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
     if tail -n 24 <<<"$pane" | grep -qE "$AGENT_NONEMPTY_COMPOSER_PATTERN"; then
+        # Some TUIs render ghost suggestions as text while keeping the logical
+        # cursor at the empty prompt. Count the match only after the cursor has
+        # moved into real input; fail closed if the cursor cannot be read.
+        if [[ -n "${AGENT_NONEMPTY_COMPOSER_CURSOR_X_MIN:-}" ]]; then
+            cursor_x="$(mtmux display-message -p -t "$TARGET" '#{cursor_x}' 2>/dev/null || true)"
+            cursor_x_min="$AGENT_NONEMPTY_COMPOSER_CURSOR_X_MIN"
+            if [[ "$cursor_x" =~ ^[0-9]+$ && "$cursor_x_min" =~ ^[0-9]+$ ]] \
+                && (( 10#$cursor_x < 10#$cursor_x_min )); then
+                return 0
+            fi
+        fi
         echo "COMPOSER_OCCUPIED: target '$TARGET' contains unsent input; prompt was not pasted" >&2
         return 1
     fi
