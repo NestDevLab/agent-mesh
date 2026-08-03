@@ -8,7 +8,7 @@
 # readable pane progress to stderr unless --quiet is supplied.
 # Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
 # 70 pasted but submission was not confirmed, 75 target busy before paste,
-# 124 stalled checkpoint.
+# 76 target composer occupied before paste, 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
@@ -81,10 +81,21 @@ _require_idle_agent_tui() {
     fi
 }
 
+_require_empty_composer() {
+    local pane
+    [[ -n "${AGENT_NONEMPTY_COMPOSER_PATTERN:-}" ]] || return 0
+    pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+    if tail -n 24 <<<"$pane" | grep -qE "$AGENT_NONEMPTY_COMPOSER_PATTERN"; then
+        echo "COMPOSER_OCCUPIED: target '$TARGET' contains unsent input; prompt was not pasted" >&2
+        return 1
+    fi
+}
+
 # A tmux session may survive after its agent CLI dies and leave a bare shell in
 # the pane. Never paste a prompt into that shell.
 _require_live_agent_tui || exit 5
 _require_idle_agent_tui || exit 75
+_require_empty_composer || exit 76
 
 PROMPT_MATCH_HEAD="${PROMPT%%$'\n'*}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
@@ -106,6 +117,7 @@ mtmux send-keys -t "$TARGET" "" 2>/dev/null || true
 sleep 0.3
 _require_live_agent_tui || exit 5
 _require_idle_agent_tui || exit 75
+_require_empty_composer || exit 76
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
 trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT

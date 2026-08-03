@@ -342,7 +342,7 @@ function deliver(target, delivery) {
   const detail = String(result.error?.message || result.stderr || `send command exited ${result.status}`).trim();
   return {
     ok: false,
-    retryable: !result.error && result.status === 75,
+    retryable: !result.error && [75, 76].includes(result.status),
     detail,
   };
 }

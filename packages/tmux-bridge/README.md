@@ -109,11 +109,12 @@ must also have a live tmux bridge target, normally created with
 `agent-session.sh ... resume <SESSION_ID>`.
 
 Link state and its durable outbox live only at the explicit `--state` path; use
-an XDG runtime/state directory, never the repository. A busy tmux target is
-retried automatically without pasting or consuming a delivery attempt. A failed
-or interrupted send is marked uncertain and blocks only deliveries to that same
-target side; the opposite direction continues. Resolve the ambiguous delivery
-explicitly with `--retry-delivery <ID>` or `--drop-delivery <ID>` to avoid
+an XDG runtime/state directory, never the repository. A busy tmux target or a
+non-empty input composer is retried automatically without pasting or consuming
+a delivery attempt. A failed or interrupted send is marked uncertain and blocks
+only deliveries to that same target side; the opposite direction continues.
+Resolve the ambiguous delivery explicitly with `--retry-delivery <ID>` or
+`--drop-delivery <ID>` to avoid
 duplicate wakes. Relay prompts are bounded while preserving the source request
 and final answer.
 

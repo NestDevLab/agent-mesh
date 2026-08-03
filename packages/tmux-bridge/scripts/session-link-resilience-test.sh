@@ -44,6 +44,9 @@ printf '%s\n' \
     'if target == "mesh-claude-main" and mode == "busy":' \
     '    print("BUSY: prompt was not pasted", file=sys.stderr)' \
     '    raise SystemExit(75)' \
+    'if target == "mesh-claude-main" and mode == "composer":' \
+    '    print("COMPOSER_OCCUPIED: prompt was not pasted", file=sys.stderr)' \
+    '    raise SystemExit(76)' \
     'if target == "mesh-claude-main" and mode == "fail":' \
     '    print("NOT_SUBMITTED: synthetic failure", file=sys.stderr)' \
     '    raise SystemExit(70)' \
@@ -88,6 +91,20 @@ assert delivery["attempts"] == 0
 assert delivery["lastDeferred"].startswith("BUSY:")
 assert delivery["retryAt"]
 PY
+
+# An occupied composer is equally safe to retry because the prompt was not
+# pasted. It must retain the same pending/no-attempt state.
+sleep 1.1
+printf '%s\n' composer > "$AGENT_LINK_SEND_MODE"
+node "$LINK" "${ARGS[@]}" --drain >/dev/null
+python3 - "$LINK_STATE" <<'PY'
+import json, sys
+delivery = json.load(open(sys.argv[1], encoding="utf-8"))["outbox"][0]
+assert delivery["status"] == "pending"
+assert delivery["attempts"] == 0
+assert delivery["lastDeferred"].startswith("COMPOSER_OCCUPIED:")
+PY
+printf '%s\n' busy > "$AGENT_LINK_SEND_MODE"
 
 # A fresh Claude-local turn targets Codex and must still flow while the opposite
 # delivery remains deferred.
