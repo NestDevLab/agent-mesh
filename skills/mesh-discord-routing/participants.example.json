@@ -1,0 +1,12 @@
+{
+  "participants": {
+    "alice": {
+      "discordUserId": "111111111111111111",
+      "aliases": ["alice"]
+    },
+    "facilitator": {
+      "discordUserId": "222222222222222222",
+      "aliases": ["host", "moderator"]
+    }
+  }
+}

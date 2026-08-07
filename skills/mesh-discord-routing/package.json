@@ -1,0 +1,52 @@
+{
+  "name": "@nestdevlab/mesh-discord-routing-skill",
+  "version": "0.2.0",
+  "private": false,
+  "type": "module",
+  "description": "Portable Discord cc-mesh routing skill, hydrator, and runtime adapters.",
+  "main": "./src/core.js",
+  "exports": {
+    ".": "./src/core.js",
+    "./openclaw": "./openclaw/index.js"
+  },
+  "scripts": {
+    "build": "node --check scripts/mesh-hydrate.mjs && node --check scripts/mesh-session.mjs && node --check src/core.js && node --check openclaw/index.js && python3 -m py_compile hermes/cc_mesh_bridge.py && node -e \"JSON.parse(require('fs').readFileSync('openclaw.plugin.json','utf8')); JSON.parse(require('fs').readFileSync('openclaw/openclaw.plugin.json','utf8'))\"",
+    "test": "node --test"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./openclaw/index.js"
+    ]
+  },
+  "files": [
+    "SKILL.md",
+    "README.md",
+    "LICENSE",
+    "participants.example.json",
+    "openclaw.plugin.json",
+    "scripts",
+    "src",
+    "openclaw",
+    "hermes/README.md",
+    "hermes/cc_mesh_bridge.py",
+    "docs",
+    "demo"
+  ],
+  "keywords": [
+    "discord",
+    "mesh",
+    "agent",
+    "openclaw",
+    "hermes"
+  ],
+  "author": "NestDevLab",
+  "license": "MIT"
+}
