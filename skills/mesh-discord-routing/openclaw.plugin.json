@@ -1,0 +1,45 @@
+{
+  "id": "mesh-discord-routing",
+  "name": "Mesh Discord Routing",
+  "description": "OpenClaw support plugin for the portable cc-mesh Discord routing skill.",
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "localLabel": {
+        "type": "string"
+      },
+      "localLabels": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "configPath": {
+        "type": "string"
+      },
+      "addressInbound": {
+        "type": "boolean",
+        "default": true
+      },
+      "hydrateOutbound": {
+        "type": "boolean",
+        "default": true
+      },
+      "outboundFailurePolicy": {
+        "type": "string",
+        "enum": ["block", "warn"],
+        "default": "block",
+        "description": "What to do when an outbound cc-mesh message cannot be hydrated. block prevents silent raw cc-mesh delivery; warn preserves legacy behavior."
+      }
+    }
+  }
+}
