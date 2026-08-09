@@ -13,7 +13,8 @@
     "strategy": "cherry-pick",
     "stacks": [
       "mesh-models-semantics",
-      "privacy-scan-repeated-digits"
+      "privacy-scan-repeated-digits",
+      "tmux-approval-pending"
     ]
   },
   "stacks": [
@@ -51,6 +52,24 @@
       },
       "meta": {
         "purpose": "Ignore repeated-digit placeholders in public-tree privacy scan"
+      }
+    },
+    {
+      "id": "tmux-approval-pending",
+      "branch": "pr/tmux-approval-pending",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "88c4face91cd17822339785e813601bf721d471d"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Detect and safely surface pending Codex approval dialogs"
       }
     }
   ],
