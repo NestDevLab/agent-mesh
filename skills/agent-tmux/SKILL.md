@@ -89,7 +89,7 @@ $BIN/mesh-list-agents.sh            # all agents, live targets, capabilities
 # Prompts go via tmux paste-buffer — multiline and special chars are safe.
 $BIN/agent-send.sh --agent codex "$TARGET" "your prompt here" [timeout]
 
-$BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | error
+$BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | approval-pending | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
 $BIN/agent-read.sh --agent codex "$TARGET" --full
 $BIN/agent-read.sh --agent codex "$TARGET" --follow
@@ -151,6 +151,15 @@ Exit `5` means the tmux target exists but no longer shows a live agent TUI (for
 example, the CLI died and left bash in the pane). The prompt is not pasted and
 the submit retry loop stops; use `agent-session.sh … resume` or `new` first.
 
+Exit `6` / `approval-pending` means the agent is blocked on an interactive
+approval dialog (e.g. a destructive-command confirmation ending in "Press enter
+to confirm or esc to cancel"). `agent-read.sh --status` reports
+`approval-pending`, `agent-wait.sh` and `agent-read.sh --follow` exit `6`
+immediately instead of riding to a checkpoint, and `agent-send.sh` refuses to
+paste or submit — its submit key would blind-confirm the dialog. Do not poll or
+resend: only a human can answer it. Have the user attach (writable, no `-r`),
+or relaunch the worker with an explicit `--approval-policy` (below).
+
 ```bash
 state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --stall 180)
 ```
@@ -160,6 +169,19 @@ state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --sta
 `--model <name>` and `--effort <level>` work with `new` and `resume`. Their
 per-agent mapping lives in `agents/<type>.conf`: Claude maps both flags directly
 to its CLI, while Codex maps them to its config overrides.
+
+`--approval-policy <policy>` (Codex only) is an opt-in knob for `new` and
+`resume` that maps to `codex -a/--ask-for-approval`. Accepted values are
+`untrusted`, `on-request`, and `never`; anything else is rejected before the
+session spawns. Use it when a driven run must not block on approval dialogs.
+`never` stops the prompts but keeps the sandbox, so sandbox-blocked commands
+fail back to the model instead of hanging the session. Claude has no safe
+mapping (only `--dangerously-skip-permissions`) and hard-errors.
+
+```bash
+TARGET=$($BIN/agent-session.sh --agent codex --approval-policy never \
+  new /path/to/project mesh-codex-unattended)
+```
 
 Codex workers pin `gpt-5.6-terra` with `high` reasoning by default on both new
 and resumed sessions, independent of the Desktop model picker. Set
@@ -310,4 +332,9 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
 - **Destructive confirmations need the human's key.** A driven agent's
   confirmation prompt for a destructive command (e.g. `rm -rf`) cannot be
   confirmed by orchestrator key relays — safety layers block them by design.
-  Have the user attach (writable, no `-r`) and press the key.
+  Have the user attach (writable, no `-r`) and press the key. The bridge
+  detects a pending Codex dialog by its tail footer and reports
+  `approval-pending` / exit `6` instead of `idle`, so drivers no longer poll
+  forever. Two limits: Claude dialogs are not detected yet (no
+  `AGENT_APPROVAL_PATTERN` in `claude.conf`), and a prompt whose own text ends
+  with the literal footer can trip the pre-send guard — rephrase and resend.

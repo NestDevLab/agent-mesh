@@ -55,7 +55,7 @@ reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues"
 echo "$reply"
 
 # Check status, read last reply
-$BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | error
+$BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | approval-pending | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
 
 # Arm at EOF, then drain only events committed after that point
@@ -128,6 +128,20 @@ changed recently, they return `progress` / `PROGRESS` with exit `4`; if the pane
 has not changed for the stall window, they return `stalled` / `STALLED` with exit
 `124`. The caller LLM should inspect status and decide whether to keep waiting,
 update the user, or ask before stopping the other agent.
+
+When the driven agent blocks on an interactive approval dialog (detected via the
+per-agent `AGENT_APPROVAL_PATTERN`, matched against the pane tail), the state is
+`approval-pending` with exit `6`: `agent-read.sh --status` reports it,
+`agent-wait.sh` and `agent-read.sh --follow` exit immediately, and
+`agent-send.sh` refuses to paste or submit because its submit key would
+blind-confirm the dialog. Only a human can answer it (attach to the tmux
+target), or relaunch the session with an explicit approval policy:
+`agent-session.sh --agent codex --approval-policy never new …` maps to
+`codex -a/--ask-for-approval` on both `new` and `resume`. Accepted values are
+`untrusted`, `on-request`, and `never`; they are validated before spawning,
+since the CLI exits on an unknown one. `never` stops approval prompts but keeps
+the sandbox, so sandbox-blocked commands fail back to the model instead of
+asking.
 
 For large prompts, `agent-send.sh` waits for bracketed-paste rendering to settle
 before submitting, then confirms the submit with a real working/done marker
@@ -249,3 +263,5 @@ runs immediately after `new-session`. Regression test:
 | Session dir | `~/.codex/sessions/` | `~/.claude/projects/` |
 | CWD picker on resume | yes | no |
 | Remote visibility | auto-detected Codex app-server | explicit `--remote-control` opt-in |
+| Approval-dialog detection | footer "Press enter to confirm" | not wired yet |
+| `--approval-policy` | `-a/--ask-for-approval` | unsupported (hard error) |

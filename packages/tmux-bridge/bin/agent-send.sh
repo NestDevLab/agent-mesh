@@ -7,7 +7,8 @@
 # --agent defaults to "codex". Prints the agent reply to stdout and streams
 # readable pane progress to stderr unless --quiet is supplied.
 # Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
-# 124 stalled checkpoint.
+# 6 approval-pending (agent blocked on an interactive approval dialog that
+# needs a human), 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
@@ -73,6 +74,19 @@ _require_live_agent_tui() {
 # the pane. Never paste a prompt into that shell.
 _require_live_agent_tui || exit 5
 
+_approval_blocked_msg() {
+    echo "APPROVAL-PENDING: target '$TARGET' is blocked on an interactive approval dialog; $1. Have the user attach to answer it: tmux -L $MESH_TMUX_SOCKET attach -t $TARGET" >&2
+}
+
+# A pending approval dialog captures the composer's input: pasted text is
+# swallowed and the submit key would blind-confirm the dialog (possibly a
+# destructive command). Refuse to send instead.
+_pane_before="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+if mesh_pane_approval_pending "$_pane_before"; then
+    _approval_blocked_msg "prompt was not pasted"
+    exit 6
+fi
+
 PROMPT_MATCH_HEAD="${PROMPT%%$'\n'*}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
 
@@ -126,6 +140,13 @@ for _attempt in 1 2 3 4 5 6 7 8; do
     # The CLI can die after the paste. Check each retry so Enter never reaches
     # the bare shell that tmux leaves behind.
     _require_live_agent_tui || exit 5
+    # An approval dialog can also appear between retries; the submit key would
+    # confirm it. Re-check before every keypress.
+    _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
+    if mesh_pane_approval_pending "$_now"; then
+        _approval_blocked_msg "submit halted"
+        exit 6
+    fi
     mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
     sleep 1
     _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
@@ -158,6 +179,11 @@ while true; do
     [[ "$QUIET" == "true" ]] \
         || mesh_stream_pane_delta "$output" "$stream_previous" 2
     stream_previous="$output"
+
+    if mesh_pane_approval_pending "$output"; then
+        _approval_blocked_msg "no final reply will arrive until it is answered"
+        exit 6
+    fi
 
     if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
         [[ "$output" != "$last_output" ]] && last_activity="$(date +%s)"
