@@ -6,6 +6,19 @@ import { parseMeshV1Envelope, planMeshV1Dispatch } from "../packages/core/src/po
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checks = [];
+const agentTmuxBundleFiles = [
+  "bin/_mesh-tmux.sh",
+  "bin/agent-read.sh",
+  "bin/agent-send.sh",
+  "bin/agent-session.sh",
+  "bin/agent-wait.sh",
+  "bin/mesh-list-agents.sh",
+  "bin/mesh-models.sh",
+  "bin/mesh-send.sh",
+  "bin/session-writer-status.mjs",
+  "agents/claude.conf",
+  "agents/codex.conf"
+];
 const snowflakeIdPattern = /\b(?!([0-9])\1{16,19}\b)\d{17,20}\b/;
 function check(name, fn) { try { fn(); checks.push({ name, ok: true }); } catch (error) { checks.push({ name, ok: false, error: error.message }); } }
 function assert(condition, message) { if (!condition) throw new Error(message); }
@@ -18,5 +31,6 @@ check("turn gate fails closed", () => { const plan = planMeshV1Dispatch({ localP
 check("seen loop guard fails closed", () => { const plan = planMeshV1Dispatch({ localParticipant: "alpha" }, { text: "cc-mesh: alpha\ncc-mesh-from: beta\ncc-mesh-id: ready-6\ncc-mesh-turn: alpha\ncc-mesh-final: true\ncc-mesh-seen: beta,alpha\n\nhello" }); assert(plan.reason === "mesh_v1_loop_guard_seen", `expected loop guard got ${plan.reason}`); });
 check("privacy snowflake rule ignores repeated placeholders", () => { assert(!snowflakeIdPattern.test("111111111111111111"), "repeated-digit placeholder must not be flagged"); assert(!snowflakeIdPattern.test("222222222222222222"), "repeated-digit placeholder must not be flagged"); assert(snowflakeIdPattern.test("123456789" + "012345678"), "mixed-digit snowflake-shaped ID must be flagged"); });
 check("public-tree privacy sanity", () => { const deny = [snowflakeIdPattern, /\/home\/administrator\/env\/workspace\/itermodus\//, /(api[_-]?key|secret|password|token)\s*[:=]\s*["'][^"']{6,}["']/i]; const skipDirs = new Set([".git", "node_modules", "dist"]); const skipPaths = new Set([".syncwheel/ledger"]); const hits = []; function walk(dir) { if (skipPaths.has(path.relative(root, dir))) return; for (const entry of readdirSync(dir)) { if (skipDirs.has(entry)) continue; const full = path.join(dir, entry); const stat = statSync(full); if (stat.isDirectory()) walk(full); else if (stat.isFile()) { const text = readFileSync(full, "utf8"); for (const pattern of deny) if (pattern.test(text)) hits.push(path.relative(root, full)); } } } walk(root); assert(hits.length === 0, `privacy scan hits: ${[...new Set(hits)].join(", ")}`); });
+check("agent-tmux skill bundle sync", () => { const drifted = agentTmuxBundleFiles.filter((relativePath) => { try { return !readFileSync(path.join(root, "packages/tmux-bridge", relativePath)).equals(readFileSync(path.join(root, "skills/agent-tmux", relativePath))); } catch { return true; } }); assert(drifted.length === 0, `agent-tmux skill bundle drift: ${drifted.join(", ")}`); });
 for (const result of checks) console.log(`${result.ok ? "PASS" : "FAIL"} ${result.name}${result.ok ? "" : `: ${result.error}`}`);
 if (checks.some((result) => !result.ok)) process.exit(1);
