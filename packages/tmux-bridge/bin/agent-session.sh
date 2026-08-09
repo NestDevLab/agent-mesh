@@ -2,8 +2,8 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
@@ -42,6 +42,7 @@ AGENT_NAME="codex"
 SESSION_TITLE=""
 SESSION_MODEL=""
 SESSION_EFFORT=""
+SESSION_APPROVAL_POLICY=""
 ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
@@ -63,6 +64,12 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 && -n "${2:-}" ]] \
                 || { echo "ERROR: --effort requires a non-empty value" >&2; exit 1; }
             SESSION_EFFORT="$2"
+            shift 2
+            ;;
+        --approval-policy)
+            [[ $# -ge 2 && -n "${2:-}" ]] \
+                || { echo "ERROR: --approval-policy requires a non-empty value" >&2; exit 1; }
+            SESSION_APPROVAL_POLICY="$2"
             shift 2
             ;;
         --)      shift; PASSTHRU=("$@"); break ;;
@@ -100,7 +107,7 @@ fi
 # agnostic while preserving each CLI's native flag shape.
 LAUNCH_OPTION_CMD=""
 _append_agent_option() {
-    local knob="$1" value="$2" supported templates=() template has_value="false"
+    local knob="$1" value="$2" supported templates=() template has_value="false" allowed=""
 
     case "$knob" in
         model)
@@ -110,6 +117,11 @@ _append_agent_option() {
         effort)
             supported="${AGENT_SUPPORTS_EFFORT:-false}"
             templates=("${AGENT_EFFORT_ARGS[@]}")
+            ;;
+        approval-policy)
+            supported="${AGENT_SUPPORTS_APPROVAL_POLICY:-false}"
+            templates=("${AGENT_APPROVAL_POLICY_ARGS[@]}")
+            allowed="${AGENT_APPROVAL_POLICY_VALUES:-}"
             ;;
         *)
             echo "ERROR: unknown launch option '$knob'" >&2
@@ -123,6 +135,12 @@ _append_agent_option() {
     fi
     if [[ ${#templates[@]} -eq 0 ]]; then
         echo "ERROR: agent '$AGENT_NAME' has no --$knob argument mapping" >&2
+        exit 1
+    fi
+    # Configs may enumerate accepted values for knobs whose CLI rejects unknown
+    # ones at launch — catching it here beats spawning a session that dies.
+    if [[ -n "$allowed" && " $allowed " != *" $value "* ]]; then
+        echo "ERROR: invalid --$knob '$value' for agent '$AGENT_NAME' (accepted: $allowed)" >&2
         exit 1
     fi
 
@@ -163,6 +181,8 @@ _build_launch_options() {
 
     [[ -n "$SESSION_MODEL" ]] && _append_agent_option model "$SESSION_MODEL"
     [[ -n "$SESSION_EFFORT" ]] && _append_agent_option effort "$SESSION_EFFORT"
+    [[ -n "$SESSION_APPROVAL_POLICY" ]] \
+        && _append_agent_option approval-policy "$SESSION_APPROVAL_POLICY"
     return 0
 }
 
@@ -210,9 +230,9 @@ if [[ -n "$SESSION_TITLE" && "$cmd" != "new" ]]; then
     echo "ERROR: --title is only supported with 'new'" >&2
     exit 1
 fi
-if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" ) \
+if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" || -n "$SESSION_APPROVAL_POLICY" ) \
     && "$cmd" != "new" && "$cmd" != "resume" ]]; then
-    echo "ERROR: --model and --effort are only supported with 'new' or 'resume'" >&2
+    echo "ERROR: --model, --effort, and --approval-policy are only supported with 'new' or 'resume'" >&2
     exit 1
 fi
 if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then

@@ -10,6 +10,7 @@
 #   error     -> error pattern detected on the pane      exit 0
 #   dead      -> tmux session no longer exists           exit 3
 #   progress  -> checkpoint reached, pane changed recently  exit 4
+#   approval-pending -> agent blocked on an interactive approval dialog exit 6
 #   stalled   -> checkpoint reached, no recent pane activity exit 124
 #
 # Why this exists: the Monitor tool proved unreliable at watching the bridge's
@@ -80,6 +81,12 @@ while true; do
     elif [[ "$pane_hash" != "$last_hash" ]]; then
         last_hash="$pane_hash"
         last_activity="$now"
+    fi
+
+    # A pending approval dialog blocks the turn indefinitely: only a human can
+    # answer it, so report it instead of letting the wait ride to a checkpoint.
+    if mesh_pane_approval_pending "$pane"; then
+        echo "approval-pending"; exit 6
     fi
 
     if echo "$pane" | grep -qE "$AGENT_WORKING_PATTERN"; then
