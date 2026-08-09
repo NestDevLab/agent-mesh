@@ -50,6 +50,20 @@ mesh_stream_pane_delta() {
     done <<< "$current"
 }
 
+# True when the pane's visible tail shows a pending interactive approval
+# dialog (AGENT_APPROVAL_PATTERN; agents without one always return false).
+# Tail-anchored on the last non-blank lines: a pending dialog ends with its
+# confirm footer, while answered-dialog text higher up the pane must not
+# re-trigger. Callers treat this state as blocked-on-a-human — never answer
+# the dialog by sending keys.
+mesh_pane_approval_pending() {
+    [[ -n "${AGENT_APPROVAL_PATTERN:-}" ]] || return 1
+    printf '%s\n' "$1" \
+        | grep -vE '^[[:space:]]*$' \
+        | tail -n "${AGENT_APPROVAL_TAIL_LINES:-5}" \
+        | grep -qE "$AGENT_APPROVAL_PATTERN"
+}
+
 # Small per-target bridge state. Keep it outside the repo: this is runtime glue
 # such as a pending launch title that should be consumed by the first send.
 mesh_state_dir() {

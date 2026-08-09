@@ -9,8 +9,9 @@
 # Modes:
 #   --full        Raw tmux pane dump (default)
 #   --last-reply  Most recent agent reply block
-#   --status      Print: idle | working | error
+#   --status      Print: idle | working | approval-pending | error
 #   --follow      Stream new pane lines until a working turn returns to idle
+#                 (exit 6 if the agent blocks on an interactive approval dialog)
 #   --forever     With --follow, keep watching across turns
 #   --poll SEC    Follow poll interval (default: 3)
 #   --max-wait SEC Follow guard rail (default: 3600)
@@ -84,6 +85,10 @@ if [[ "$FOLLOW" == "true" ]]; then
             || { echo "ERROR: tmux target '$TARGET' disappeared" >&2; exit 3; }
         mesh_stream_pane_delta "$output" "$stream_previous" 1
 
+        if mesh_pane_approval_pending "$output"; then
+            echo "APPROVAL-PENDING: agent is blocked on an interactive approval dialog; attach to answer it: tmux -L $MESH_TMUX_SOCKET attach -t $TARGET" >&2
+            exit 6
+        fi
         if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
             seen_working="true"
             idle_rounds=0
@@ -108,7 +113,10 @@ case "$MODE" in
         echo "$output"
         ;;
     --status)
-        if   echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then echo "working"
+        # Approval wins over working/idle: a pending dialog blocks the turn even
+        # when stale spinner text is still visible above it.
+        if   mesh_pane_approval_pending "$output";                 then echo "approval-pending"
+        elif echo "$output" | grep -qE "$AGENT_WORKING_PATTERN";   then echo "working"
         elif echo "$output" | grep -qiE "error|failed|exception";  then echo "error"
         else echo "idle"
         fi

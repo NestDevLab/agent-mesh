@@ -45,6 +45,17 @@ trap cleanup EXIT INT TERM
         || { echo "FAIL: Claude effort support is not enabled" >&2; exit 1; }
     [[ "${AGENT_EFFORT_ARGS[*]:-}" == "--effort {VALUE}" ]] \
         || { echo "FAIL: Claude effort mapping is not '--effort {VALUE}'" >&2; exit 1; }
+
+    # Keep the accepted Codex policy values and native mapping tied to the
+    # real adapter. This must not invoke the Codex CLI.
+    # shellcheck source=/dev/null
+    source "$AGENTS_DIR/codex.conf"
+    [[ "${AGENT_SUPPORTS_APPROVAL_POLICY:-false}" == "true" ]] \
+        || { echo "FAIL: Codex approval-policy support is not enabled" >&2; exit 1; }
+    [[ "${AGENT_APPROVAL_POLICY_ARGS[*]:-}" == "-a {VALUE}" ]] \
+        || { echo "FAIL: Codex approval-policy mapping is not '-a {VALUE}'" >&2; exit 1; }
+    [[ "${AGENT_APPROVAL_POLICY_VALUES:-}" == "untrusted on-request never" ]] \
+        || { echo "FAIL: Codex approval-policy values are incorrect" >&2; exit 1; }
 )
 
 cat > "$FAKE_CLI" <<'CLI'
@@ -70,6 +81,9 @@ AGENT_SUPPORTS_MODEL="true"
 AGENT_MODEL_ARGS=(--model "{VALUE}")
 AGENT_SUPPORTS_EFFORT="true"
 AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_SUPPORTS_APPROVAL_POLICY="true"
+AGENT_APPROVAL_POLICY_ARGS=(-a "{VALUE}")
+AGENT_APPROVAL_POLICY_VALUES="untrusted on-request never"
 CONF
 
 cat > "$UNSUPPORTED_CONF" <<CONF
@@ -102,11 +116,11 @@ run_and_check() {
     : > "$LOG_FILE"
     if [[ "$command" == "new" ]]; then
         "$SESSION_BIN" --agent "launch-options-supported-$$" \
-            --model model-one --effort high new "$WORKDIR" "$target" \
+            --model model-one --effort high --approval-policy never new "$WORKDIR" "$target" \
             -- --model raw-model --effort low >/dev/null
     else
         "$SESSION_BIN" --agent "launch-options-supported-$$" \
-            --model model-one --effort high resume session-123 "$target" \
+            --model model-one --effort high --approval-policy never resume session-123 "$target" \
             -- --model raw-model --effort low >/dev/null
     fi
     TARGETS+=("$target")
@@ -114,9 +128,9 @@ run_and_check() {
 }
 
 run_and_check new launch-options-new-$$ \
-    "--new --model model-one --effort high --model raw-model --effort low "
+    "--new --model model-one --effort high -a never --model raw-model --effort low "
 run_and_check resume launch-options-resume-$$ \
-    "--resume session-123 --model model-one --effort high --model raw-model --effort low "
+    "--resume session-123 --model model-one --effort high -a never --model raw-model --effort low "
 
 if "$SESSION_BIN" --agent "launch-options-unsupported-$$" --effort high \
     new "$WORKDIR" launch-options-unsupported-$$ >/dev/null 2>"$WORKDIR/error"; then
@@ -125,5 +139,13 @@ if "$SESSION_BIN" --agent "launch-options-unsupported-$$" --effort high \
 fi
 grep -q -- "--effort is not supported" "$WORKDIR/error" \
     || { echo "FAIL: unsupported effort did not fail closed" >&2; exit 1; }
+
+if "$SESSION_BIN" --agent "launch-options-supported-$$" --approval-policy on-failure \
+    new "$WORKDIR" launch-options-invalid-policy-$$ >/dev/null 2>"$WORKDIR/error"; then
+    echo "FAIL: invalid approval policy unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -q -- "invalid --approval-policy 'on-failure'" "$WORKDIR/error" \
+    || { echo "FAIL: invalid approval policy did not fail closed" >&2; exit 1; }
 
 echo "PASS: first-class launch-option rendering"
