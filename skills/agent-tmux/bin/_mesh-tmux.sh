@@ -31,6 +31,39 @@ mesh_tmux_harden() {
     mtmux set-option -s exit-empty off 2>/dev/null || true
 }
 
+# Print pane lines that are new since the previous capture. The caller chooses
+# the output file descriptor: agent-send uses stderr (2), agent-read uses
+# stdout (1). Working/spinner lines and unchanged repaint content are omitted.
+mesh_stream_pane_delta() {
+    local current="$1" previous="$2" output_fd="${3:-1}" line
+    [[ "$current" == "$previous" ]] && return 0
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if [[ -n "${AGENT_WORKING_PATTERN:-}" ]] \
+           && grep -Eq "$AGENT_WORKING_PATTERN" <<<"$line"; then
+            continue
+        fi
+        if [[ -n "$previous" ]] && grep -Fqx -- "$line" <<<"$previous"; then
+            continue
+        fi
+        printf '%s\n' "$line" >&"$output_fd"
+    done <<< "$current"
+}
+
+# True when the pane's visible tail shows a pending interactive approval
+# dialog (AGENT_APPROVAL_PATTERN; agents without one always return false).
+# Tail-anchored on the last non-blank lines: a pending dialog ends with its
+# confirm footer, while answered-dialog text higher up the pane must not
+# re-trigger. Callers treat this state as blocked-on-a-human — never answer
+# the dialog by sending keys.
+mesh_pane_approval_pending() {
+    [[ -n "${AGENT_APPROVAL_PATTERN:-}" ]] || return 1
+    printf '%s\n' "$1" \
+        | grep -vE '^[[:space:]]*$' \
+        | tail -n "${AGENT_APPROVAL_TAIL_LINES:-5}" \
+        | grep -qE "$AGENT_APPROVAL_PATTERN"
+}
+
 # Small per-target bridge state. Keep it outside the repo: this is runtime glue
 # such as a pending launch title that should be consumed by the first send.
 mesh_state_dir() {

@@ -14,7 +14,8 @@
     "stacks": [
       "mesh-models-semantics",
       "privacy-scan-repeated-digits",
-      "tmux-approval-pending"
+      "tmux-approval-pending",
+      "skill-bundle-sync"
     ]
   },
   "stacks": [
@@ -70,6 +71,24 @@
       },
       "meta": {
         "purpose": "Detect and safely surface pending Codex approval dialogs"
+      }
+    },
+    {
+      "id": "skill-bundle-sync",
+      "branch": "pr/skill-bundle-sync",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "9ac6e2a38b95658f349cd62a62653ff63ec0c32e"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Keep the agent-tmux skill bundle byte-identical to tmux-bridge"
       }
     }
   ],
