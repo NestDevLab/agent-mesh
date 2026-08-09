@@ -4,14 +4,16 @@
     "canonical_remote": "origin",
     "publication_remote": "fork",
     "base_branch": "main",
-    "base_ref": "origin/main"
+    "base_ref": "origin/main",
+    "integration_membership": "legacy"
   },
   "integration": {
     "branch": "main-integration",
     "base": "origin/main",
     "strategy": "cherry-pick",
     "stacks": [
-      "mesh-models-semantics"
+      "mesh-models-semantics",
+      "privacy-scan-repeated-digits"
     ]
   },
   "stacks": [
@@ -27,6 +29,28 @@
       ],
       "meta": {
         "purpose": "Fix mesh-models nudge semantics"
+      },
+      "state": "published",
+      "publication": {
+        "enabled": true
+      }
+    },
+    {
+      "id": "privacy-scan-repeated-digits",
+      "branch": "pr/privacy-scan-repeated-digits",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "95411acb63d3cf9f102b43bb107012cdbed87f8a"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Ignore repeated-digit placeholders in public-tree privacy scan"
       }
     }
   ],
