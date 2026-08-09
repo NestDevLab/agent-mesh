@@ -2,10 +2,13 @@
 # agent-send.sh — Send a prompt to an AI agent CLI running in tmux, wait for reply.
 #
 # Usage:
-#   agent-send.sh --agent <NAME> <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
+#   agent-send.sh [--quiet] --agent <NAME> <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
 #
-# --agent defaults to "codex". Prints the agent reply to stdout.
-# Exit codes: 0 success, 4 progress checkpoint, 124 stalled checkpoint.
+# --agent defaults to "codex". Prints the agent reply to stdout and streams
+# readable pane progress to stderr unless --quiet is supplied.
+# Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
+# 6 approval-pending (agent blocked on an interactive approval dialog that
+# needs a human), 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
@@ -21,10 +24,12 @@ AGENTS_DIR="$SCRIPT_DIR/../agents"
 source "$SCRIPT_DIR/_mesh-tmux.sh"
 
 AGENT_NAME="codex"
+QUIET="false"
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --agent) AGENT_NAME="$2"; shift 2 ;;
+        --quiet) QUIET="true"; shift ;;
         *)       ARGS+=("$1"); shift ;;
     esac
 done
@@ -44,6 +49,43 @@ STALL="${AGENT_STALL_TIMEOUT:-300}"
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
 mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
+# New configs declare a precise alive pattern. Fall back to the existing agent
+# lifecycle fields for portable third-party configs until they add one.
+AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PATTERN:-${AGENT_WORKING_PATTERN:-}|${AGENT_IDLE_PATTERN:-}|${AGENT_PROMPT_CHAR:-}}"
+[[ "$AGENT_ALIVE_PATTERN" != "||" ]] \
+    || { echo "ERROR: agent '$AGENT_NAME' has no live-TUI pattern" >&2; exit 1; }
+
+_require_live_agent_tui() {
+    local pane pane_command
+    pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+    pane_command="$(mtmux display-message -p -t "$TARGET" '#{pane_current_command}' 2>/dev/null || true)"
+    if ! echo "$pane" | grep -qE "$AGENT_ALIVE_PATTERN"; then
+        echo "ERROR: target '$TARGET' does not show a live $AGENT_NAME TUI; prompt was not pasted. Use agent-session.sh --agent $AGENT_NAME resume <SESSION_ID> or new <CWD>." >&2
+        return 1
+    fi
+    if [[ -n "${AGENT_ALIVE_PROCESS_PATTERN:-}" ]] \
+        && ! echo "$pane_command" | grep -qE "$AGENT_ALIVE_PROCESS_PATTERN"; then
+        echo "ERROR: target '$TARGET' is running '$pane_command', not a live $AGENT_NAME TUI; prompt was not pasted. Use agent-session.sh --agent $AGENT_NAME resume <SESSION_ID> or new <CWD>." >&2
+        return 1
+    fi
+}
+
+# A tmux session may survive after its agent CLI dies and leave a bare shell in
+# the pane. Never paste a prompt into that shell.
+_require_live_agent_tui || exit 5
+
+_approval_blocked_msg() {
+    echo "APPROVAL-PENDING: target '$TARGET' is blocked on an interactive approval dialog; $1. Have the user attach to answer it: tmux -L $MESH_TMUX_SOCKET attach -t $TARGET" >&2
+}
+
+# A pending approval dialog captures the composer's input: pasted text is
+# swallowed and the submit key would blind-confirm the dialog (possibly a
+# destructive command). Refuse to send instead.
+_pane_before="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+if mesh_pane_approval_pending "$_pane_before"; then
+    _approval_blocked_msg "prompt was not pasted"
+    exit 6
+fi
 
 PROMPT_MATCH_HEAD="${PROMPT%%$'\n'*}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
@@ -93,12 +135,25 @@ done
 # always shows the working spinner, which a finished turn does not. Keep re-sending
 # until it appears; submit keys hitting an already-empty composer are harmless.
 submitted=0
+stream_previous="${_settle_now:-}"
 for _attempt in 1 2 3 4 5 6 7 8; do
+    # The CLI can die after the paste. Check each retry so Enter never reaches
+    # the bare shell that tmux leaves behind.
+    _require_live_agent_tui || exit 5
+    # An approval dialog can also appear between retries; the submit key would
+    # confirm it. Re-check before every keypress.
+    _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
+    if mesh_pane_approval_pending "$_now"; then
+        _approval_blocked_msg "submit halted"
+        exit 6
+    fi
     mtmux send-keys -t "$TARGET" "$AGENT_SUBMIT_KEY"
     sleep 1
     _now="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)"
     if echo "$_now" | grep -qE "$AGENT_WORKING_PATTERN"; then
-        submitted=1; break
+        submitted=1
+        stream_previous="$_now"
+        break
     fi
 done
 [[ "$submitted" -eq 1 ]] || echo "WARN: submission may not have registered for '$TARGET'" >&2
@@ -121,6 +176,14 @@ while true; do
     fi
     sleep "$POLL"
     output=$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null)
+    [[ "$QUIET" == "true" ]] \
+        || mesh_stream_pane_delta "$output" "$stream_previous" 2
+    stream_previous="$output"
+
+    if mesh_pane_approval_pending "$output"; then
+        _approval_blocked_msg "no final reply will arrive until it is answered"
+        exit 6
+    fi
 
     if echo "$output" | grep -qE "$AGENT_WORKING_PATTERN"; then
         [[ "$output" != "$last_output" ]] && last_activity="$(date +%s)"
