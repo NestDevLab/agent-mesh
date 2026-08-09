@@ -92,6 +92,7 @@ AGENT_NEW_CMD="env PS1='SMOKE> ' bash --noprofile --norc -i"
 AGENT_SESSION_DIR="${TMPDIR:-/tmp}"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\n" "$PWD"'
 AGENT_SUPPORTS_LAUNCH_TITLE="true"
+AGENT_APPROVAL_PATTERN="Press enter to confirm"
 CONF
 
 cat > "$WAIT_CONF" <<'CONF'
@@ -171,6 +172,46 @@ set -e
 [[ "$stalled_state" == stalled* ]] || fail "expected stalled state, got '$stalled_state'"
 tmux -L "$MESH_TMUX_SOCKET" kill-session -t "$STALLED_TARGET"
 STALLED_TARGET=""
+
+# Approval-pending: a pending confirm dialog must surface as its own state and
+# block sends instead of reading as idle. The printf builds the footer via %s so
+# the echoed command itself cannot match the tail-anchored pattern.
+approval_dialog="printf 'Would you like to run the following command?\n1. Yes, proceed\nPress enter to %s or esc to cancel\n' confirm"
+set +e
+send_prompt "$approval_dialog" >/dev/null
+approval_rc=$?
+set -e
+[[ "$approval_rc" -eq 6 ]] || fail "expected approval-pending exit 6 from send, got $approval_rc"
+
+approval_status="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --status)"
+[[ "$approval_status" == "approval-pending" ]] \
+    || fail "expected approval-pending status, got '$approval_status'"
+
+set +e
+approval_state="$("$WAIT_BIN" --agent "$AGENT_NAME" "$TARGET" --timeout 5 --poll 1 --stall 5)"
+approval_wait_rc=$?
+set -e
+[[ "$approval_wait_rc" -eq 6 ]] \
+    || fail "expected approval-pending exit 6 from wait, got $approval_wait_rc ($approval_state)"
+[[ "$approval_state" == "approval-pending" ]] \
+    || fail "expected approval-pending wait state, got '$approval_state'"
+
+blocked_marker="agent-mesh-smoke-blocked-$$"
+set +e
+"$SEND_BIN" --agent "$AGENT_NAME" "$TARGET" "echo $blocked_marker" 2>/dev/null
+blocked_send_rc=$?
+set -e
+[[ "$blocked_send_rc" -eq 6 ]] \
+    || fail "expected blocked send exit 6, got $blocked_send_rc"
+approval_pane="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --full)"
+[[ "$approval_pane" != *"$blocked_marker"* ]] \
+    || fail "blocked prompt was pasted into approval dialog"
+
+tmux -L "$MESH_TMUX_SOCKET" send-keys -t "$TARGET" "clear" Enter
+sleep 0.5
+cleared_status="$("$READ_BIN" --agent "$AGENT_NAME" "$TARGET" --status)"
+[[ "$cleared_status" == "idle" ]] \
+    || fail "expected idle after clearing approval dialog, got '$cleared_status'"
 
 "$SESSION_BIN" --agent "$AGENT_NAME" kill "$TARGET" >/dev/null
 TARGET=""
