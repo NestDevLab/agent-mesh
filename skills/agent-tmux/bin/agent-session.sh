@@ -2,8 +2,8 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent <NAME> new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
@@ -11,8 +11,8 @@
 # --agent defaults to "codex". Config files: ../agents/<name>.conf
 # Prints the tmux target name on stdout so callers can pipe into agent-send.sh.
 #
-# Everything after `--` is passed verbatim as extra flags to the agent CLI, so
-# you never need to bypass this script to tweak the launch. Example (xhigh +
+# Everything after `--` is passed verbatim as extra flags to the agent CLI and
+# takes precedence over the first-class model/effort flags. Example (xhigh +
 # Codex Desktop visibility + correct cwd, all via the bridge):
 #   agent-session.sh --agent codex new "$PWD" mesh-codex-b1 -- -c model_reasoning_effort=xhigh
 #
@@ -40,6 +40,9 @@ source "$SCRIPT_DIR/_mesh-tmux.sh"
 # ── parse --agent flag ────────────────────────────────────────────────────────
 AGENT_NAME="codex"
 SESSION_TITLE=""
+SESSION_MODEL=""
+SESSION_EFFORT=""
+SESSION_APPROVAL_POLICY=""
 ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
@@ -49,6 +52,24 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 && -n "${2:-}" ]] \
                 || { echo "ERROR: --title requires a non-empty value" >&2; exit 1; }
             SESSION_TITLE="$2"
+            shift 2
+            ;;
+        --model)
+            [[ $# -ge 2 && -n "${2:-}" ]] \
+                || { echo "ERROR: --model requires a non-empty value" >&2; exit 1; }
+            SESSION_MODEL="$2"
+            shift 2
+            ;;
+        --effort)
+            [[ $# -ge 2 && -n "${2:-}" ]] \
+                || { echo "ERROR: --effort requires a non-empty value" >&2; exit 1; }
+            SESSION_EFFORT="$2"
+            shift 2
+            ;;
+        --approval-policy)
+            [[ $# -ge 2 && -n "${2:-}" ]] \
+                || { echo "ERROR: --approval-policy requires a non-empty value" >&2; exit 1; }
+            SESSION_APPROVAL_POLICY="$2"
             shift 2
             ;;
         --)      shift; PASSTHRU=("$@"); break ;;
@@ -71,12 +92,99 @@ fi
 
 # Extra agent flags (everything after `--`), shell-quoted so the inner shell that
 # `tmux send-keys` feeds receives each argument intact (spaces, quotes, =).
+# This must remain after the configured options: raw passthrough is the strongest
+# launch setting by contract.
 EXTRA_CMD=""
 if [[ ${#PASSTHRU[@]} -gt 0 ]]; then
     for _a in "${PASSTHRU[@]}"; do
         EXTRA_CMD+=" $(printf '%q' "$_a")"
     done
 fi
+
+# ── launch-option mapping ────────────────────────────────────────────────────
+# Configs declare support and an argument template array for each first-class
+# knob. Keeping the mapping in the config makes model/effort selection agent-
+# agnostic while preserving each CLI's native flag shape.
+LAUNCH_OPTION_CMD=""
+_append_agent_option() {
+    local knob="$1" value="$2" supported templates=() template has_value="false" allowed=""
+
+    case "$knob" in
+        model)
+            supported="${AGENT_SUPPORTS_MODEL:-false}"
+            templates=("${AGENT_MODEL_ARGS[@]}")
+            ;;
+        effort)
+            supported="${AGENT_SUPPORTS_EFFORT:-false}"
+            templates=("${AGENT_EFFORT_ARGS[@]}")
+            ;;
+        approval-policy)
+            supported="${AGENT_SUPPORTS_APPROVAL_POLICY:-false}"
+            templates=("${AGENT_APPROVAL_POLICY_ARGS[@]}")
+            allowed="${AGENT_APPROVAL_POLICY_VALUES:-}"
+            ;;
+        *)
+            echo "ERROR: unknown launch option '$knob'" >&2
+            exit 1
+            ;;
+    esac
+
+    if [[ "$supported" != "true" ]]; then
+        echo "ERROR: --$knob is not supported by agent '$AGENT_NAME'" >&2
+        exit 1
+    fi
+    if [[ ${#templates[@]} -eq 0 ]]; then
+        echo "ERROR: agent '$AGENT_NAME' has no --$knob argument mapping" >&2
+        exit 1
+    fi
+    # Configs may enumerate accepted values for knobs whose CLI rejects unknown
+    # ones at launch — catching it here beats spawning a session that dies.
+    if [[ -n "$allowed" && " $allowed " != *" $value "* ]]; then
+        echo "ERROR: invalid --$knob '$value' for agent '$AGENT_NAME' (accepted: $allowed)" >&2
+        exit 1
+    fi
+
+    for template in "${templates[@]}"; do
+        [[ "$template" == *"{VALUE}"* ]] && has_value="true"
+        LAUNCH_OPTION_CMD+=" $(printf '%q' "${template//\{VALUE\}/$value}")"
+    done
+    [[ "$has_value" == "true" ]] \
+        || { echo "ERROR: invalid --$knob mapping for agent '$AGENT_NAME'" >&2; exit 1; }
+}
+
+_build_launch_options() {
+    local pin_env pin_value model_env effort_env model_value effort_value
+
+    # Pinned defaults and their environment replacements are a single policy.
+    # CODEX_MESH_PIN=0 (declared by codex.conf) suppresses both so workers follow
+    # the desktop config; explicit --model/--effort still apply afterwards.
+    pin_env="${AGENT_PIN_ENABLE_ENV:-}"
+    pin_value=""
+    [[ -n "$pin_env" ]] && pin_value="${!pin_env-}"
+    if [[ -n "$pin_env" && "$pin_value" != "0" ]]; then
+        [[ -n "${AGENT_PIN_DEFAULT_MODEL:-}" ]] \
+            && _append_agent_option model "$AGENT_PIN_DEFAULT_MODEL"
+        [[ -n "${AGENT_PIN_DEFAULT_EFFORT:-}" ]] \
+            && _append_agent_option effort "$AGENT_PIN_DEFAULT_EFFORT"
+
+        model_env="${AGENT_PIN_MODEL_ENV:-}"
+        effort_env="${AGENT_PIN_EFFORT_ENV:-}"
+        model_value=""
+        effort_value=""
+        [[ -n "$model_env" ]] && model_value="${!model_env-}"
+        [[ -n "$effort_env" ]] && effort_value="${!effort_env-}"
+        [[ -n "$model_env" && -n "$model_value" ]] \
+            && _append_agent_option model "$model_value"
+        [[ -n "$effort_env" && -n "$effort_value" ]] \
+            && _append_agent_option effort "$effort_value"
+    fi
+
+    [[ -n "$SESSION_MODEL" ]] && _append_agent_option model "$SESSION_MODEL"
+    [[ -n "$SESSION_EFFORT" ]] && _append_agent_option effort "$SESSION_EFFORT"
+    [[ -n "$SESSION_APPROVAL_POLICY" ]] \
+        && _append_agent_option approval-policy "$SESSION_APPROVAL_POLICY"
+    return 0
+}
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 _tmux_target() {
@@ -111,12 +219,24 @@ _wait_for_ready() {
     return 1
 }
 
+_print_attach_hint() {
+    echo "ATTACH: tmux -L mesh attach -t $TARGET" >&2
+}
+
 # ── commands ──────────────────────────────────────────────────────────────────
 cmd="${1:-}"; shift || true
 
 if [[ -n "$SESSION_TITLE" && "$cmd" != "new" ]]; then
     echo "ERROR: --title is only supported with 'new'" >&2
     exit 1
+fi
+if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" || -n "$SESSION_APPROVAL_POLICY" ) \
+    && "$cmd" != "new" && "$cmd" != "resume" ]]; then
+    echo "ERROR: --model, --effort, and --approval-policy are only supported with 'new' or 'resume'" >&2
+    exit 1
+fi
+if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then
+    _build_launch_options
 fi
 
 case "$cmd" in
@@ -127,15 +247,22 @@ case "$cmd" in
         TARGET=$(_tmux_target "${TMUX_NAME:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
+            _print_attach_hint
             echo "$TARGET"; exit 0
         fi
 
-        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$EXTRA_CMD"
+        if [[ "${AGENT_REQUIRE_FREE_SESSION_WRITER:-false}" == "true" ]]; then
+            node "$SCRIPT_DIR/session-writer-status.mjs" \
+                --agent "$AGENT_NAME" --session "$SESSION_ID" --require-free
+        fi
+
+        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD"
         mtmux new-session -d -s "$TARGET"
         mesh_tmux_harden
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
+        _print_attach_hint
         echo "$TARGET"
         ;;
 
@@ -158,7 +285,7 @@ case "$cmd" in
         # {CWD} placeholder lets an agent conf pin the working root (e.g. codex --cd).
         # Required in remote mode, where the agent's app-server ignores `tmux -c` and
         # would otherwise land in the server's own cwd. No-op for confs without {CWD}.
-        NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}$EXTRA_CMD"
+        NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}$LAUNCH_OPTION_CMD$EXTRA_CMD"
         mtmux send-keys -t "$TARGET" "$NEW_CMD" Enter
         _wait_for_ready "$TARGET" 30 \
             || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
@@ -166,6 +293,7 @@ case "$cmd" in
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )
         fi
+        _print_attach_hint
         echo "$TARGET"
         ;;
 

@@ -18,6 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_MESH_ROOT="${AGENT_MESH_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 AGENTS_DIR="$BRIDGE_DIR/agents"
+MODELS_BIN="$SCRIPT_DIR/mesh-models.sh"
 TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 
 # Dedicated tmux socket (see _mesh-tmux.sh).
@@ -94,6 +95,37 @@ emit_rows() {
     done
 }
 
+emit_model_summaries() {
+    local conf agent_type report
+    shopt -s nullglob
+    for conf in "$AGENTS_DIR"/*.conf; do
+        agent_type="$(basename "$conf" .conf)"
+        if ! report="$("$MODELS_BIN" --agent "$agent_type" --json 2>/dev/null)"; then
+            printf 'models: %s: unavailable\n' "$agent_type"
+            continue
+        fi
+        if ! python3 -c '
+import json
+import sys
+
+agent = sys.argv[1]
+payload = json.load(sys.stdin)
+item = payload["agents"][0]
+pin = item["pinned_model"] or "none"
+if item["probe"] == "unavailable":
+    print(f"models: {agent}: no probe available, pin={pin}")
+else:
+    new_count = len(item["new_nudged_models"])
+    suffix = ", deprecated" if item["pin_status"] == "deprecated" else ""
+    print(f"models: {agent}: {new_count} new nudged, pin={pin}{suffix}")
+' "$agent_type" <<<"$report"
+        then
+            printf 'models: %s: unavailable\n' "$agent_type"
+        fi
+    done
+    shopt -u nullglob
+}
+
 if [[ "$AS_JSON" == "true" ]]; then
     emit_rows | python3 -c '
 import json, sys
@@ -138,3 +170,5 @@ print(fmt.format(*("-" * w for w in widths)))
 for row in rows:
     print(fmt.format(*row))
 '
+
+emit_model_summaries
