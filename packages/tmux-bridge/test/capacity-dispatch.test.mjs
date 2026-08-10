@@ -37,20 +37,48 @@ test("invalid Limen protocol never delivers a prompt", async () => {
   assert.equal(result.code, 2); await assert.rejects(stat(sent));
 });
 
-test("mesh send discovers the installed provider policy before queueing L3 work", async () => {
+test("mesh send prefers the additive v2 provider policy before queueing L3 work", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-policy-"));
   const config = join(dir, "config"), state = join(dir, "state"), bin = join(dir, "bin");
-  const policy = join(config, "limen", "codex-shadow-policy.json");
+  const policy = join(config, "limen", "codex-shadow-policy-v2.json");
+  const legacyPolicy = join(config, "limen", "codex-shadow-policy.json");
   const registry = join(dir, "registry.json"), limen = join(bin, "limen"), tmux = join(bin, "tmux");
   const argsFile = join(dir, "limen-args.txt");
   await mkdir(join(config, "limen"), { recursive: true });
   await mkdir(bin, { recursive: true });
   await writeFile(policy, "{}\n");
+  await writeFile(legacyPolicy, "{}\n");
   await writeFile(registry, JSON.stringify({ agents: [{ name: "codex", agent_type: "codex", tmux_target: "mesh-codex-main", status: "online" }] }));
   await writeFile(tmux, "#!/bin/sh\nexit 0\n");
   await writeFile(limen, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '{"decision":"defer","retryAt":0,"decisionId":"defer-L3","configHash":"cfg","workClass":"L3","concurrencyTarget":0,"reasons":["over_pace"]}'\nexit 75\n`);
   await chmod(tmux, 0o700); await chmod(limen, 0o700);
   const result = await runCommand(meshSend, ["--to", "codex", "--class", "L3", "--run-id", "run-auto-policy", "background work"], {
+    ...process.env,
+    PATH: `${bin}:${process.env.PATH}`,
+    MESH_REGISTRY: registry,
+    XDG_CONFIG_HOME: config,
+    XDG_STATE_HOME: state,
+    LIMEN_BIN: limen,
+  });
+  assert.equal(result.code, 75);
+  assert.match(result.stderr, /waiting_capacity/);
+  assert.match(await readFile(argsFile, "utf8"), new RegExp(`--config\\n${policy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("mesh send falls back to the legacy provider policy during migration", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-policy-"));
+  const config = join(dir, "config"), state = join(dir, "state"), bin = join(dir, "bin");
+  const policy = join(config, "limen", "claude-shadow-policy.json");
+  const registry = join(dir, "registry.json"), limen = join(bin, "limen"), tmux = join(bin, "tmux");
+  const argsFile = join(dir, "limen-args.txt");
+  await mkdir(join(config, "limen"), { recursive: true });
+  await mkdir(bin, { recursive: true });
+  await writeFile(policy, "{}\n");
+  await writeFile(registry, JSON.stringify({ agents: [{ name: "claude", agent_type: "claude", tmux_target: "mesh-claude-main", status: "online" }] }));
+  await writeFile(tmux, "#!/bin/sh\nexit 0\n");
+  await writeFile(limen, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '{"decision":"defer","retryAt":0,"decisionId":"defer-L2","configHash":"cfg","workClass":"L2","concurrencyTarget":0,"reasons":["over_pace"]}'\nexit 75\n`);
+  await chmod(tmux, 0o700); await chmod(limen, 0o700);
+  const result = await runCommand(meshSend, ["--to", "claude", "--class", "L2", "--run-id", "run-legacy-policy", "background work"], {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     MESH_REGISTRY: registry,
