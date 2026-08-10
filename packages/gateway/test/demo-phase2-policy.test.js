@@ -6,10 +6,10 @@ import "./ts-extension-resolver.mjs";
 const { buildPhase2PolicyCompletionDemo, buildPhase2PolicyDemo } = await import(
   "../src/demo/demo-phase2-policy.ts"
 );
-const { validateCasRunnerDispatchRecord } = await import(
-  "../src/schema/cas-runner-dispatch.ts"
+const { validateRunnerDispatchRecord } = await import(
+  "../src/schema/runner-dispatch.ts"
 );
-const { validateCasRunnerPlanRecord } = await import("../src/schema/cas-runner-plan.ts");
+const { validateRunnerPlanRecord } = await import("../src/schema/runner-plan.ts");
 const { validateDiscordDeliveryPlan } = await import(
   "../src/schema/discord-delivery-plan.ts"
 );
@@ -62,9 +62,9 @@ test("Phase 2 policy demo returns deterministic stub-safe inspection JSON", () =
     demo.model_selection_for_code_implementation.no_runtime_config_change,
     true
   );
-  assert.equal(demo.cas_team_sizing.orchestration, "two_roles");
-  assert.deepEqual(demo.cas_team_sizing.roles, ["implementer", "reviewer_qa"]);
-  assert.equal(demo.cas_team_sizing.approval_required, false);
+  assert.equal(demo.runner_team_sizing.orchestration, "two_roles");
+  assert.deepEqual(demo.runner_team_sizing.roles, ["implementer", "reviewer_qa"]);
+  assert.equal(demo.runner_team_sizing.approval_required, false);
 });
 
 test("Phase 2 policy demo is stable across repeated calls", () => {
@@ -76,9 +76,9 @@ test("Phase 2 policy completion demo returns unified policy records for all plan
 
   assert.equal(demo.demo, "phase2-policy-completion");
   assert.equal(demo.generated_at, "2026-05-10T12:30:00.000Z");
-  assert.equal(validateCasRunnerPlanRecord(demo.cas_runner_plan).ok, true);
-  assert.equal(validateCasRunnerDispatchRecord(demo.cas_dispatch_attempt).ok, true);
-  assert.equal(validateCasRunnerDispatchRecord(demo.cas_dispatch_result).ok, true);
+  assert.equal(validateRunnerPlanRecord(demo.runner_plan).ok, true);
+  assert.equal(validateRunnerDispatchRecord(demo.runner_dispatch_attempt).ok, true);
+  assert.equal(validateRunnerDispatchRecord(demo.runner_dispatch_result).ok, true);
   assert.equal(validateDiscordDeliveryPlan(demo.discord_delivery_plan).ok, true);
   assert.equal(validateDiscordSendAttemptRecord(demo.discord_send_attempt).ok, true);
 
@@ -91,21 +91,21 @@ test("Phase 2 policy completion demo returns unified policy records for all plan
     "memory",
     "proactivity",
     "model_selection",
-    "cas_plan",
-    "cas_dispatch",
+    "runner_plan",
+    "runner_dispatch",
     "discord_plan",
     "discord_send"
   ]);
   assert.equal(demo.unified_policy_decisions.memory.subject_kind, "memory_action");
   assert.equal(demo.unified_policy_decisions.proactivity.subject_kind, "proactivity_action");
   assert.equal(demo.unified_policy_decisions.model_selection.subject_kind, "model_selection");
-  assert.equal(demo.unified_policy_decisions.cas_plan.subject_id, demo.cas_runner_plan.id);
-  assert.equal(demo.unified_policy_decisions.cas_dispatch.subject_id, demo.cas_runner_plan.id);
+  assert.equal(demo.unified_policy_decisions.runner_plan.subject_id, demo.runner_plan.id);
+  assert.equal(demo.unified_policy_decisions.runner_dispatch.subject_id, demo.runner_plan.id);
   assert.equal(demo.unified_policy_decisions.discord_plan.subject_id, demo.discord_delivery_plan.id);
   assert.equal(demo.unified_policy_decisions.discord_send.subject_id, demo.discord_delivery_plan.id);
 
-  assert.equal(demo.cas_dispatch_attempt.dispatcher_called, false);
-  assert.equal(demo.cas_dispatch_result.dispatcher_called, true);
+  assert.equal(demo.runner_dispatch_attempt.dispatcher_called, false);
+  assert.equal(demo.runner_dispatch_result.dispatcher_called, true);
   assert.equal(demo.discord_send_attempt.sender_called, true);
   assert.equal(demo.discord_send_attempt.openclaw_message_tool_called, false);
   assert.deepEqual(demo.injected_adapters, {

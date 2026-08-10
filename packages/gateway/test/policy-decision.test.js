@@ -33,23 +33,23 @@ test("validates unified policy decision records and enforces no external side ef
   assert.deepEqual(invalid.issues.map((issue) => issue.path), ["no_external_side_effects"]);
 });
 
-test("maps execution_job and cas_runner_plan stub records to allow-once low risk", () => {
+test("maps execution_job and runner_plan stub records to allow-once low risk", () => {
   const executionJob = createPolicyDecisionRecord(baseInput(), { clock: fixedClock });
-  const casRunnerPlan = createPolicyDecisionRecord(
+  const runnerPlan = createPolicyDecisionRecord(
     baseInput({
-      subject_kind: "cas_runner_plan",
-      subject_id: "cas_runner_plan_1",
+      subject_kind: "runner_plan",
+      subject_id: "runner_plan_1",
       tool_capability: "read",
-      metadata: { source_schema: "openclaw.agent.cas_runner_plan.v1" }
+      metadata: { source_schema: "openclaw.agent.runner_plan.v1" }
     }),
     { clock: fixedClock }
   );
 
   assert.equal(executionJob.decision, "allow-once");
   assert.equal(executionJob.risk_level, "low");
-  assert.equal(casRunnerPlan.decision, "allow-once");
-  assert.equal(casRunnerPlan.risk_level, "low");
-  assert.ok(casRunnerPlan.risk_flags.includes("cas_runner_plan"));
+  assert.equal(runnerPlan.decision, "allow-once");
+  assert.equal(runnerPlan.risk_level, "low");
+  assert.ok(runnerPlan.risk_flags.includes("runner_plan"));
 });
 
 test("maps memory actions to ask-human or deny based on durable write and secret risk", () => {

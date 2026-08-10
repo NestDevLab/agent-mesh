@@ -12,9 +12,9 @@ const { validateDiscordDeliveryPlan } = await import("../src/schema/discord-deli
 const { validateHeartbeatRecord } = await import("../src/schema/heartbeat.js");
 const { validateExecutionJob } = await import("../src/schema/execution-job.js");
 const { validateApprovalGateEvaluation } = await import("../src/schema/approval.js");
-const { validateCasRunnerPlanRecord } = await import("../src/schema/cas-runner-plan.ts");
-const { validateCasRunnerDispatchRecord } = await import(
-  "../src/schema/cas-runner-dispatch.ts"
+const { validateRunnerPlanRecord } = await import("../src/schema/runner-plan.ts");
+const { validateRunnerDispatchRecord } = await import(
+  "../src/schema/runner-dispatch.ts"
 );
 const { validateMeshContextRecord } = await import("../src/schema/context.js");
 const { validateMeshAgentRecord } = await import("../src/schema/agent.js");
@@ -156,7 +156,7 @@ test("validates heartbeat and execution job records", () => {
         control_intent: "run",
         summary: "Run a stub job.",
         policy_profile: "software_business_standard",
-        endpoint_id: "cas-stub-local",
+        endpoint_id: "runner-stub-local",
         workspace_dir: "/workspace/stub",
         repo_scope: "openclaw-agent-mesh-gateway",
         approval_profile: "stub-no-external-actions",
@@ -169,7 +169,7 @@ test("validates heartbeat and execution job records", () => {
         approval_profile: "stub-no-external-actions",
         approval_status: "required_stubbed",
         no_external_execution: true,
-        reason: "CAS runner is stub-only.",
+        reason: "runner is stub-only.",
         evaluated_at: "2026-05-09T12:00:00.000Z",
         workspace_id: "workspace.the operator",
         domain_id: "domain.nestdev",
@@ -222,23 +222,23 @@ test("validates local Guardian approval gate evaluations", () => {
   assert.equal(result.value.decision.decision, "ask-human");
 });
 
-test("validates CAS runner plan records as stub-only", () => {
-  const result = validateCasRunnerPlanRecord({
-    schema: "openclaw.agent.cas_runner_plan.v1",
-    id: "cas_runner_plan-1",
+test("validates runner plan records as stub-only", () => {
+  const result = validateRunnerPlanRecord({
+    schema: "openclaw.agent.runner_plan.v1",
+    id: "runner_plan-1",
     execution_job_id: "execution_job-1",
     status: "planned_stub_only",
     endpoint_id: "default",
     workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
     repo_scope: "openclaw-agent-mesh-gateway",
     thread_name: "agent-mesh/job-o",
-    cas_roles: ["implementer", "reviewer_qa"],
+    runner_roles: ["implementer", "reviewer_qa"],
     operation_mode: "code_edit",
     approval_policy: "ask_before_write",
     allowed_actions: ["read", "edit_package_files", "run_tests"],
     forbidden_actions: ["openclaw_core_edit", "push", "publish", "deploy", "restart"],
     no_external_side_effects: true,
-    no_real_cas_adapter_call: true,
+    no_real_runner_adapter_call: true,
     no_codex_workers_call: true,
     created_at: "2026-05-10T17:20:00.000Z",
     reason: "Stub-only plan."
@@ -247,38 +247,38 @@ test("validates CAS runner plan records as stub-only", () => {
   assert.equal(result.ok, true);
   assert.equal(result.value.no_external_side_effects, true);
 
-  const invalid = validateCasRunnerPlanRecord({
-    schema: "openclaw.agent.cas_runner_plan.v1",
-    id: "cas_runner_plan-1",
+  const invalid = validateRunnerPlanRecord({
+    schema: "openclaw.agent.runner_plan.v1",
+    id: "runner_plan-1",
     execution_job_id: "execution_job-1",
     status: "planned_stub_only",
     endpoint_id: "default",
     workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
     repo_scope: "openclaw-agent-mesh-gateway",
     thread_name: "agent-mesh/job-o",
-    cas_roles: ["implementer"],
+    runner_roles: ["implementer"],
     operation_mode: "code_edit",
     approval_policy: "ask_before_write",
     allowed_actions: ["read"],
     forbidden_actions: ["push"],
     no_external_side_effects: true,
-    no_real_cas_adapter_call: false,
+    no_real_runner_adapter_call: false,
     no_codex_workers_call: true,
     created_at: "2026-05-10T17:20:00.000Z",
     reason: "Stub-only plan."
   });
 
   assert.equal(invalid.ok, false);
-  assert.match(invalid.issues.map((issue) => issue.path).join(","), /no_real_cas_adapter_call/);
+  assert.match(invalid.issues.map((issue) => issue.path).join(","), /no_real_runner_adapter_call/);
 });
 
-test("validates CAS runner dispatch attempt and result records", () => {
-  const result = validateCasRunnerDispatchRecord({
-    schema: "openclaw.agent.cas_runner_dispatch_record.v1",
-    id: "cas_runner_dispatch-1",
+test("validates runner dispatch attempt and result records", () => {
+  const result = validateRunnerDispatchRecord({
+    schema: "openclaw.agent.runner_dispatch_record.v1",
+    id: "runner_dispatch-1",
     kind: "result",
     execution_job_id: "execution_job-1",
-    plan_id: "cas_runner_plan-1",
+    plan_id: "runner_plan-1",
     status: "dispatched",
     enable_real_dispatch: true,
     endpoint_id: "default",
@@ -298,9 +298,9 @@ test("validates CAS runner dispatch attempt and result records", () => {
   assert.equal(result.ok, true);
   assert.equal(result.value.dispatcher_called, true);
 
-  const invalid = validateCasRunnerDispatchRecord({
-    schema: "openclaw.agent.cas_runner_dispatch_record.v1",
-    id: "cas_runner_dispatch-1",
+  const invalid = validateRunnerDispatchRecord({
+    schema: "openclaw.agent.runner_dispatch_record.v1",
+    id: "runner_dispatch-1",
     kind: "result",
     execution_job_id: "execution_job-1",
     status: "dispatched",

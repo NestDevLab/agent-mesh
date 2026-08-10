@@ -7,11 +7,11 @@ import test from "node:test";
 import "./ts-extension-resolver.mjs";
 
 const {
-  CasRunnerPlanFacade,
-  REQUIRED_CAS_RUNNER_FORBIDDEN_ACTIONS,
-  createCasRunnerPlan
-} = await import("../src/core/cas-runner-planner.ts");
-const { CasRunnerPlanStore } = await import("../src/core/cas-runner-plan-store.ts");
+  RunnerPlanFacade,
+  REQUIRED_RUNNER_FORBIDDEN_ACTIONS,
+  createRunnerPlan
+} = await import("../src/core/runner-planner.ts");
+const { RunnerPlanStore } = await import("../src/core/runner-plan-store.ts");
 
 const fixedClock = {
   now() {
@@ -19,10 +19,10 @@ const fixedClock = {
   }
 };
 
-test("CAS runner plan facade requires an explicitly scoped workspace", () => {
+test("runner plan facade requires an explicitly scoped workspace", () => {
   assert.throws(
     () =>
-      createCasRunnerPlan(
+      createRunnerPlan(
         planInput({
           executionJob: executionJob({
             request: {
@@ -39,7 +39,7 @@ test("CAS runner plan facade requires an explicitly scoped workspace", () => {
 
   assert.throws(
     () =>
-      createCasRunnerPlan(
+      createRunnerPlan(
         planInput({
           executionJob: executionJob({
             request: {
@@ -54,25 +54,25 @@ test("CAS runner plan facade requires an explicitly scoped workspace", () => {
   );
 });
 
-test("CAS runner plan facade enforces required forbidden actions", () => {
-  const plan = createCasRunnerPlan(
+test("runner plan facade enforces required forbidden actions", () => {
+  const plan = createRunnerPlan(
     planInput({
       forbidden_actions: ["custom_forbidden_action"]
     }),
     fixedClock
   );
 
-  for (const action of REQUIRED_CAS_RUNNER_FORBIDDEN_ACTIONS) {
+  for (const action of REQUIRED_RUNNER_FORBIDDEN_ACTIONS) {
     assert.equal(plan.forbidden_actions.includes(action), true, `missing ${action}`);
   }
   assert.equal(plan.forbidden_actions.includes("custom_forbidden_action"), true);
   assert.equal(plan.no_external_side_effects, true);
 });
 
-test("CAS runner plan facade requires approval policy for write-capable jobs", () => {
+test("runner plan facade requires approval policy for write-capable jobs", () => {
   assert.throws(
     () =>
-      createCasRunnerPlan(
+      createRunnerPlan(
         planInput({
           operation_mode: "code_edit",
           allowed_actions: ["read", "edit_package_files"],
@@ -80,10 +80,10 @@ test("CAS runner plan facade requires approval policy for write-capable jobs", (
         }),
         fixedClock
       ),
-    /Write-capable CAS runner plans require/
+    /Write-capable runner plans require/
   );
 
-  const readOnlyPlan = createCasRunnerPlan(
+  const readOnlyPlan = createRunnerPlan(
     planInput({
       operation_mode: "analysis",
       allowed_actions: ["read"],
@@ -94,28 +94,28 @@ test("CAS runner plan facade requires approval policy for write-capable jobs", (
   assert.equal(readOnlyPlan.approval_policy, "not_required_read_only");
 });
 
-test("CAS runner plan facade records no real adapter or codex_workers calls", async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-cas-plan-"));
-  const facade = new CasRunnerPlanFacade({ stateDir, clock: fixedClock });
+test("runner plan facade records no real adapter or codex_workers calls", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-runner-plan-"));
+  const facade = new RunnerPlanFacade({ stateDir, clock: fixedClock });
 
   const plan = await facade.plan(planInput());
 
-  assert.equal(plan.no_real_cas_adapter_call, true);
+  assert.equal(plan.no_real_runner_adapter_call, true);
   assert.equal(plan.no_codex_workers_call, true);
   assert.equal(plan.no_external_side_effects, true);
-  assert.equal(plan.metadata.source, "cas-runner-plan-facade");
+  assert.equal(plan.metadata.source, "runner-plan-facade");
 
-  const stored = await new CasRunnerPlanStore({ stateDir, clock: fixedClock }).list();
+  const stored = await new RunnerPlanStore({ stateDir, clock: fixedClock }).list();
   assert.equal(stored.length, 1);
   assert.equal(stored[0].id, plan.id);
-  assert.equal(stored[0].no_real_cas_adapter_call, true);
+  assert.equal(stored[0].no_real_runner_adapter_call, true);
   assert.equal(stored[0].no_codex_workers_call, true);
 });
 
-test("CAS runner plan facade rejects non-approved or non-record-only execution jobs", () => {
+test("runner plan facade rejects non-approved or non-record-only execution jobs", () => {
   assert.throws(
     () =>
-      createCasRunnerPlan(
+      createRunnerPlan(
         planInput({
           executionJob: executionJob({
             governance: {
@@ -131,7 +131,7 @@ test("CAS runner plan facade rejects non-approved or non-record-only execution j
 
   assert.throws(
     () =>
-      createCasRunnerPlan(
+      createRunnerPlan(
         planInput({
           executionJob: executionJob({
             governance: {
@@ -150,7 +150,7 @@ function planInput(overrides = {}) {
   return {
     executionJob: executionJob(),
     thread_name: "agent-mesh/job-o",
-    cas_roles: ["implementer", "reviewer_qa"],
+    runner_roles: ["implementer", "reviewer_qa"],
     operation_mode: "code_edit",
     approval_policy: "ask_before_write",
     allowed_actions: ["read", "edit_package_files", "run_tests"],
@@ -168,7 +168,7 @@ function executionJob(overrides = {}) {
       requested_by_agent_id: "agent.software_engineer",
       workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
-      summary: "Record a local CAS runner plan.",
+      summary: "Record a local runner plan.",
       policy_profile: "software_business_standard",
       endpoint_id: "default",
       workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
@@ -182,7 +182,7 @@ function executionJob(overrides = {}) {
       approval_profile: "phase-2-local-stub",
       approval_status: "approved_stubbed",
       no_external_execution: true,
-      reason: "CAS runner is stub-only.",
+      reason: "runner is stub-only.",
       evaluated_at: "2026-05-10T17:20:00.000Z",
       workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev"

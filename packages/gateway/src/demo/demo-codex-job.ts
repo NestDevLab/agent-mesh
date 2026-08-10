@@ -25,7 +25,7 @@ export async function runCodexJobDemo(): Promise<Record<string, unknown>> {
     content: {
       summary: "Create a stub-only Codex execution job for Phase 1.",
       policy_profile: "software_business_standard",
-      endpoint_id: "cas-stub-local",
+      endpoint_id: "runner-stub-local",
       workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
       repo_scope: "openclaw-agent-mesh-gateway",
       approval_profile: "phase-1-stub-only",

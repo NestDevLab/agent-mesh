@@ -92,7 +92,7 @@ export function createPolicyDecisionRecord(
     evaluated_at: isoNow(options.clock),
     metadata: {
       stub_only: true,
-      no_real_cas_discord_memory_cron_or_tool_side_effects: true,
+      no_real_runner_discord_memory_cron_or_tool_side_effects: true,
       ...(input.domain_id !== undefined ? { domain_id: input.domain_id } : {}),
       ...(input.project_id !== undefined ? { project_id: input.project_id } : {}),
       ...(input.metadata ?? {})

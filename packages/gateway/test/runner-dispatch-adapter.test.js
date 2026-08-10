@@ -7,17 +7,17 @@ import test from "node:test";
 import "./ts-extension-resolver.mjs";
 
 const {
-  StrictCasRunnerDispatchAdapter,
+  StrictRunnerDispatchAdapter,
   createStrictDispatchInputFromPlan,
   evaluateDispatchGate
-} = await import("../src/adapters/cas-runner-dispatch-adapter.ts");
-const { createCasRunnerPlan } = await import("../src/core/cas-runner-planner.ts");
-const { CasRunnerDispatchStore } = await import(
-  "../src/core/cas-runner-dispatch-store.ts"
+} = await import("../src/adapters/runner-dispatch-adapter.ts");
+const { createRunnerPlan } = await import("../src/core/runner-planner.ts");
+const { RunnerDispatchStore } = await import(
+  "../src/core/runner-dispatch-store.ts"
 );
 const { createPolicyDecisionRecord } = await import("../src/core/risk-classifier.ts");
-const { validateCasRunnerDispatchRecord } = await import(
-  "../src/schema/cas-runner-dispatch.ts"
+const { validateRunnerDispatchRecord } = await import(
+  "../src/schema/runner-dispatch.ts"
 );
 
 const fixedClock = {
@@ -26,10 +26,10 @@ const fixedClock = {
   }
 };
 
-test("strict CAS dispatch adapter calls the injected dispatcher exactly once for approved input", async () => {
-  const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-cas-dispatch-"));
+test("strict runner dispatch adapter calls the injected dispatcher exactly once for approved input", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-runner-dispatch-"));
   const fake = fakeDispatcher();
-  const adapter = new StrictCasRunnerDispatchAdapter(fake, { stateDir, clock: fixedClock });
+  const adapter = new StrictRunnerDispatchAdapter(fake, { stateDir, clock: fixedClock });
   const input = approvedDispatchInput();
 
   const result = await adapter.dispatch(input);
@@ -40,16 +40,16 @@ test("strict CAS dispatch adapter calls the injected dispatcher exactly once for
   assert.equal(result.result.dispatcher_called, true);
   assert.equal(result.result.dispatcher_result_id, "fake-dispatch-result-1");
 
-  const records = await new CasRunnerDispatchStore({ stateDir }).list();
+  const records = await new RunnerDispatchStore({ stateDir }).list();
   assert.equal(records.length, 2);
   assert.equal(records[0].kind, "attempt");
   assert.equal(records[0].dispatcher_called, false);
   assert.equal(records[1].kind, "result");
   assert.equal(records[1].dispatcher_called, true);
-  assert.equal(validateCasRunnerDispatchRecord(records[1]).ok, true);
+  assert.equal(validateRunnerDispatchRecord(records[1]).ok, true);
 });
 
-test("strict CAS dispatch adapter never calls dispatcher unless every gate passes", async () => {
+test("strict runner dispatch adapter never calls dispatcher unless every gate passes", async () => {
   const cases = [
     {
       name: "real dispatch flag disabled",
@@ -95,9 +95,9 @@ test("strict CAS dispatch adapter never calls dispatcher unless every gate passe
   ];
 
   for (const item of cases) {
-    const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-cas-dispatch-blocked-"));
+    const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-runner-dispatch-blocked-"));
     const fake = fakeDispatcher();
-    const adapter = new StrictCasRunnerDispatchAdapter(fake, { stateDir, clock: fixedClock });
+    const adapter = new StrictRunnerDispatchAdapter(fake, { stateDir, clock: fixedClock });
     const input = { ...approvedDispatchInput(), ...item.patch };
 
     const result = await adapter.dispatch(input);
@@ -106,7 +106,7 @@ test("strict CAS dispatch adapter never calls dispatcher unless every gate passe
     assert.equal(fake.calls.length, 0, item.name);
     assert.match(result.error.message, item.reason, item.name);
 
-    const records = await new CasRunnerDispatchStore({ stateDir }).list();
+    const records = await new RunnerDispatchStore({ stateDir }).list();
     assert.equal(records.length, 1, item.name);
     assert.equal(records[0].kind, "attempt", item.name);
     assert.equal(records[0].status, "blocked", item.name);
@@ -124,16 +124,16 @@ test("dispatch gate allows read-only jobs without write approval only when other
 
   assert.deepEqual(evaluateDispatchGate(input), {
     ok: true,
-    reason: "Real CAS dispatch gates passed."
+    reason: "Real runner dispatch gates passed."
   });
 });
 
 function approvedDispatchInput(overrides = {}) {
-  const plan = createCasRunnerPlan(
+  const plan = createRunnerPlan(
     {
       executionJob: executionJob(),
       thread_name: "agent-mesh/job-s",
-      cas_roles: ["implementer", "reviewer_qa"],
+      runner_roles: ["implementer", "reviewer_qa"],
       operation_mode: "code_edit",
       approval_policy: "ask_before_write",
       allowed_actions: ["read", "edit_package_files", "run_tests"],
@@ -146,7 +146,7 @@ function approvedDispatchInput(overrides = {}) {
     ...createStrictDispatchInputFromPlan(plan, {
       enable_real_dispatch: true,
       policy_decision: policyDecision({
-        subject_kind: "cas_runner_plan",
+        subject_kind: "runner_plan",
         subject_id: plan.id
       })
     }),
@@ -172,8 +172,8 @@ function fakeDispatcher() {
 function policyDecision(overrides = {}) {
   return createPolicyDecisionRecord(
     {
-      subject_kind: "cas_runner_plan",
-      subject_id: "cas_runner_plan_1",
+      subject_kind: "runner_plan",
+      subject_id: "runner_plan_1",
       sensitivity: "internal",
       external_side_effects: false,
       no_external_side_effects: true,
@@ -202,7 +202,7 @@ function executionJob() {
       requested_by_agent_id: "agent.software_engineer",
       workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev",
-      summary: "Dispatch through the strict CAS runner boundary.",
+      summary: "Dispatch through the strict runner boundary.",
       policy_profile: "software_business_standard",
       endpoint_id: "default",
       workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
@@ -216,7 +216,7 @@ function executionJob() {
       approval_profile: "phase-2-local-stub",
       approval_status: "approved_stubbed",
       no_external_execution: true,
-      reason: "CAS runner plan is locally approved.",
+      reason: "runner plan is locally approved.",
       evaluated_at: "2026-05-10T18:05:00.000Z",
       workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev"

@@ -1,6 +1,6 @@
 import { AuditStore } from "./audit-store.js";
 import { ApprovalStore } from "./approval-store.js";
-import { CasRunnerPlanStore } from "./cas-runner-plan-store.js";
+import { RunnerPlanStore } from "./runner-plan-store.js";
 import { DeadLetterStore } from "./dead-letter-store.js";
 import { DeliveryStore } from "./delivery-store.js";
 import { DiscordDeliveryPlanStore } from "./discord-delivery-plan-store.js";
@@ -21,7 +21,7 @@ export interface StartupRecoverySummary {
       idempotency_events: number;
       execution_jobs: number;
       approval_events: number;
-      cas_runner_plans: number;
+      runner_plans: number;
       heartbeats: number;
       dead_letter_records: number;
       gateway_control_events: number;
@@ -41,7 +41,7 @@ export async function recoverStartupState(
     idempotency,
     executionJobs,
     approvalEvents,
-    casRunnerPlans,
+    runnerPlans,
     heartbeats,
     deadLetters,
     gatewayControl
@@ -54,7 +54,7 @@ export async function recoverStartupState(
       new IdempotencyStore(options).hydrate(),
       new ExecutionJobStore(options).replay(),
       new ApprovalStore(options).replay(),
-      new CasRunnerPlanStore(options).replay(),
+      new RunnerPlanStore(options).replay(),
       new HeartbeatStore(options).replay(),
       new DeadLetterStore(options).replay(),
       new GatewayControlStore(options).replay()
@@ -68,7 +68,7 @@ export async function recoverStartupState(
     idempotency_events: idempotency.records.length,
     execution_jobs: executionJobs.records.length,
     approval_events: approvalEvents.records.length,
-    cas_runner_plans: casRunnerPlans.records.length,
+    runner_plans: runnerPlans.records.length,
     heartbeats: heartbeats.records.length,
     dead_letter_records: deadLetters.records.length,
     gateway_control_events: gatewayControl.records.length
@@ -81,7 +81,7 @@ export async function recoverStartupState(
     ...idempotency.warnings,
     ...executionJobs.warnings,
     ...approvalEvents.warnings,
-    ...casRunnerPlans.warnings,
+    ...runnerPlans.warnings,
     ...heartbeats.warnings,
     ...deadLetters.warnings,
     ...gatewayControl.warnings
