@@ -101,6 +101,31 @@ if [[ ${#PASSTHRU[@]} -gt 0 ]]; then
     done
 fi
 
+_passthru_overrides_knob() {
+    local knob="$1" arg pattern patterns=()
+
+    case "$knob" in
+        model)
+            if declare -p AGENT_MODEL_PASSTHRU_PATTERNS >/dev/null 2>&1; then
+                patterns=("${AGENT_MODEL_PASSTHRU_PATTERNS[@]}")
+            fi
+            ;;
+        effort)
+            if declare -p AGENT_EFFORT_PASSTHRU_PATTERNS >/dev/null 2>&1; then
+                patterns=("${AGENT_EFFORT_PASSTHRU_PATTERNS[@]}")
+            fi
+            ;;
+        *) return 1 ;;
+    esac
+
+    for arg in "${PASSTHRU[@]}"; do
+        for pattern in "${patterns[@]}"; do
+            [[ "$arg" == $pattern ]] && return 0
+        done
+    done
+    return 1
+}
+
 # ── launch-option mapping ────────────────────────────────────────────────────
 # Configs declare support and an argument template array for each first-class
 # knob. Keeping the mapping in the config makes model/effort selection agent-
@@ -160,27 +185,27 @@ _build_launch_options() {
     # the desktop config; explicit --model/--effort still apply afterwards.
     pin_env="${AGENT_PIN_ENABLE_ENV:-}"
     pin_value=""
+    model_value=""
+    effort_value=""
     [[ -n "$pin_env" ]] && pin_value="${!pin_env-}"
     if [[ -n "$pin_env" && "$pin_value" != "0" ]]; then
-        [[ -n "${AGENT_PIN_DEFAULT_MODEL:-}" ]] \
-            && _append_agent_option model "$AGENT_PIN_DEFAULT_MODEL"
-        [[ -n "${AGENT_PIN_DEFAULT_EFFORT:-}" ]] \
-            && _append_agent_option effort "$AGENT_PIN_DEFAULT_EFFORT"
+        model_value="${AGENT_PIN_DEFAULT_MODEL:-}"
+        effort_value="${AGENT_PIN_DEFAULT_EFFORT:-}"
 
         model_env="${AGENT_PIN_MODEL_ENV:-}"
         effort_env="${AGENT_PIN_EFFORT_ENV:-}"
-        model_value=""
-        effort_value=""
-        [[ -n "$model_env" ]] && model_value="${!model_env-}"
-        [[ -n "$effort_env" ]] && effort_value="${!effort_env-}"
-        [[ -n "$model_env" && -n "$model_value" ]] \
-            && _append_agent_option model "$model_value"
-        [[ -n "$effort_env" && -n "$effort_value" ]] \
-            && _append_agent_option effort "$effort_value"
+        [[ -n "$model_env" && -n "${!model_env-}" ]] && model_value="${!model_env}"
+        [[ -n "$effort_env" && -n "${!effort_env-}" ]] && effort_value="${!effort_env}"
     fi
 
-    [[ -n "$SESSION_MODEL" ]] && _append_agent_option model "$SESSION_MODEL"
-    [[ -n "$SESSION_EFFORT" ]] && _append_agent_option effort "$SESSION_EFFORT"
+    [[ -n "$SESSION_MODEL" ]] && model_value="$SESSION_MODEL"
+    [[ -n "$SESSION_EFFORT" ]] && effort_value="$SESSION_EFFORT"
+    if [[ -n "$model_value" ]] && ! _passthru_overrides_knob model; then
+        _append_agent_option model "$model_value"
+    fi
+    if [[ -n "$effort_value" ]] && ! _passthru_overrides_knob effort; then
+        _append_agent_option effort "$effort_value"
+    fi
     [[ -n "$SESSION_APPROVAL_POLICY" ]] \
         && _append_agent_option approval-policy "$SESSION_APPROVAL_POLICY"
     return 0
@@ -223,6 +248,10 @@ _print_attach_hint() {
     echo "ATTACH: tmux -L mesh attach -t $TARGET" >&2
 }
 
+_print_launch_warning() {
+    [[ -z "${AGENT_LAUNCH_WARNING:-}" ]] || echo "WARN: $AGENT_LAUNCH_WARNING" >&2
+}
+
 # ── commands ──────────────────────────────────────────────────────────────────
 cmd="${1:-}"; shift || true
 
@@ -256,6 +285,7 @@ case "$cmd" in
                 --agent "$AGENT_NAME" --session "$SESSION_ID" --require-free
         fi
 
+        _print_launch_warning
         RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD"
         mtmux new-session -d -s "$TARGET"
         mesh_tmux_harden
@@ -280,6 +310,7 @@ case "$cmd" in
             echo "$TARGET"; exit 0
         fi
 
+        _print_launch_warning
         mtmux new-session -d -s "$TARGET" -c "$CWD"
         mesh_tmux_harden
         # {CWD} placeholder lets an agent conf pin the working root (e.g. codex --cd).

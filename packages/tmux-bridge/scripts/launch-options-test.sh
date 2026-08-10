@@ -45,6 +45,10 @@ trap cleanup EXIT INT TERM
         || { echo "FAIL: Claude effort support is not enabled" >&2; exit 1; }
     [[ "${AGENT_EFFORT_ARGS[*]:-}" == "--effort {VALUE}" ]] \
         || { echo "FAIL: Claude effort mapping is not '--effort {VALUE}'" >&2; exit 1; }
+    [[ "${AGENT_MODEL_PASSTHRU_PATTERNS[*]:-}" == "--model --model=*" ]] \
+        || { echo "FAIL: Claude raw model override patterns are incorrect" >&2; exit 1; }
+    [[ "${AGENT_EFFORT_PASSTHRU_PATTERNS[*]:-}" == "--effort --effort=*" ]] \
+        || { echo "FAIL: Claude raw effort override patterns are incorrect" >&2; exit 1; }
 
     # Keep the accepted Codex policy values and native mapping tied to the
     # real adapter. This must not invoke the Codex CLI.
@@ -56,6 +60,25 @@ trap cleanup EXIT INT TERM
         || { echo "FAIL: Codex approval-policy mapping is not '-a {VALUE}'" >&2; exit 1; }
     [[ "${AGENT_APPROVAL_POLICY_VALUES:-}" == "untrusted on-request never" ]] \
         || { echo "FAIL: Codex approval-policy values are incorrect" >&2; exit 1; }
+    [[ " ${AGENT_MODEL_PASSTHRU_PATTERNS[*]:-} " == *" model=* "* ]] \
+        || { echo "FAIL: Codex raw model override pattern is missing" >&2; exit 1; }
+    [[ " ${AGENT_EFFORT_PASSTHRU_PATTERNS[*]:-} " == *" model_reasoning_effort=* "* ]] \
+        || { echo "FAIL: Codex raw effort override pattern is missing" >&2; exit 1; }
+)
+
+(
+    mkdir -p "$WORKDIR/no-remote-home"
+    unset CODEX_REMOTE_SOCK CODEX_NO_REMOTE AGENT_LAUNCH_WARNING
+    HOME="$WORKDIR/no-remote-home"
+    # shellcheck source=/dev/null
+    source "$AGENTS_DIR/codex.conf"
+    [[ "${AGENT_LAUNCH_WARNING:-}" == *"standalone tmux-only"* ]] \
+        || { echo "FAIL: missing Codex standalone fallback warning" >&2; exit 1; }
+
+    CODEX_NO_REMOTE=1
+    source "$AGENTS_DIR/codex.conf"
+    [[ -z "${AGENT_LAUNCH_WARNING:-}" ]] \
+        || { echo "FAIL: explicit Codex standalone mode should not warn" >&2; exit 1; }
 )
 
 cat > "$FAKE_CLI" <<'CLI'
@@ -79,8 +102,15 @@ AGENT_SESSION_DIR="$WORKDIR"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\\n" "\$PWD"'
 AGENT_SUPPORTS_MODEL="true"
 AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=(--model "--model=*")
 AGENT_SUPPORTS_EFFORT="true"
 AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=(--effort "--effort=*")
+AGENT_PIN_ENABLE_ENV="FAKE_MESH_PIN"
+AGENT_PIN_DEFAULT_MODEL="default-model"
+AGENT_PIN_DEFAULT_EFFORT="medium"
+AGENT_PIN_MODEL_ENV="FAKE_MESH_MODEL"
+AGENT_PIN_EFFORT_ENV="FAKE_MESH_EFFORT"
 AGENT_SUPPORTS_APPROVAL_POLICY="true"
 AGENT_APPROVAL_POLICY_ARGS=(-a "{VALUE}")
 AGENT_APPROVAL_POLICY_VALUES="untrusted on-request never"
@@ -128,9 +158,25 @@ run_and_check() {
 }
 
 run_and_check new launch-options-new-$$ \
-    "--new --model model-one --effort high -a never --model raw-model --effort low "
+    "--new -a never --model raw-model --effort low "
 run_and_check resume launch-options-resume-$$ \
-    "--resume session-123 --model model-one --effort high -a never --model raw-model --effort low "
+    "--resume session-123 -a never --model raw-model --effort low "
+
+# A later invocation must rebuild its launch options from scratch. This proves
+# the preceding raw flags cannot leak into a new spawn.
+: > "$LOG_FILE"
+default_target="launch-options-default-after-raw-$$"
+"$SESSION_BIN" --agent "launch-options-supported-$$" \
+    new "$WORKDIR" "$default_target" >/dev/null
+TARGETS+=("$default_target")
+assert_argv "--new --model default-model --effort medium "
+
+: > "$LOG_FILE"
+first_class_target="launch-options-first-class-$$"
+"$SESSION_BIN" --agent "launch-options-supported-$$" \
+    --model model-one --effort high new "$WORKDIR" "$first_class_target" >/dev/null
+TARGETS+=("$first_class_target")
+assert_argv "--new --model model-one --effort high "
 
 if "$SESSION_BIN" --agent "launch-options-unsupported-$$" --effort high \
     new "$WORKDIR" launch-options-unsupported-$$ >/dev/null 2>"$WORKDIR/error"; then
