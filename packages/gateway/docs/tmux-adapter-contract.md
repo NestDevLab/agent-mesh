@@ -47,6 +47,7 @@ export interface TmuxRoute {
   target_agent_id: string;
   tmux_target: string;        // tmux session name
   enable_real_send?: boolean; // default false => stubbed (dry-run-first, like Discord)
+  capacity?: CapacityRoutePolicy; // explicit provider/harness/class for governed work
 }
 ```
 
@@ -60,6 +61,7 @@ export interface TmuxTransportAdapterOptions {
   clock?: StoreClock;
   history?: readonly AgentMessageEnvelopeV1[]; // for anti-loop
   maxRepliesPerConversation?: number;
+  capacityBroker?: CapacityAdmissionBroker; // injected Limen boundary
 }
 ```
 
@@ -76,8 +78,11 @@ export interface TmuxTransportAdapterOptions {
 5. **Dry-run gate**: if `route.enable_real_send !== true` → record `status:"stubbed"`, `sender_called:false`,
    reason `"dry_run_no_real_send"`; return `{ status:"stubbed", external_id:<record.id>, details:{ tmux_target, prompt_preview } }`.
    **Do not call the sender.**
-6. **Real send**: call `sender.send(...)`. `ok:true` → `status:"delivered"`; else → `status:"failed"` with `reason:error`.
-7. **Record** a `TmuxDispatchRecord` to `TmuxDispatchStore` and **return** an `AdapterDispatchResult` whose
+6. **Capacity admission** (when the route declares it): call the injected broker before the atomic
+   send claim. On defer, persist the full item as `waiting_capacity`, return its exact `retryAt`, and
+   do not call the sender. A missing/failed broker admits only default L1; L2/L3 remain queued.
+7. **Real send**: call `sender.send(...)`. `ok:true` → `status:"delivered"`; else → `status:"failed"` with `reason:error`.
+8. **Record** a `TmuxDispatchRecord` to `TmuxDispatchStore` and **return** an `AdapterDispatchResult` whose
    `details` echoes `trace_id`, `correlation_id`, `causation_id`, `tmux_target`, and `target_agent_id`.
 
 ## Audit record
@@ -90,7 +95,7 @@ export interface TmuxDispatchRecord {
   target_agent_id: string;
   tmux_target: string;
   idempotency_key: string;
-  status: "delivered" | "failed" | "stubbed";
+  status: "delivered" | "failed" | "stubbed" | "waiting_capacity";
   sender_called: boolean;
   reason: string;
   trace_id?: string | null;
@@ -102,6 +107,17 @@ export interface TmuxDispatchRecord {
 
 `TmuxDispatchStore` (NDJSON, file `tmux-dispatch-events.ndjson`) exposes:
 `append(record)`, `list()`, `listByIdempotencyKey(key)`.
+
+## Capacity queue and resume
+
+`CapacityQueueStore` is append-only NDJSON. Its latest event per idempotency key is authoritative;
+waiting items sort by L1, L2, L3, then `retryAt`, then key. `drainCapacityQueue(now, limit)` retries
+only due items and never sleeps. The host is responsible for calling it at the earliest retry time.
+Delivery is not synthesized into a TUI and a deferred prompt is never sent.
+
+`LimenCliBroker` converts a request to `limen admit` argv through an injected command runner, without
+a shell, and accepts only the documented exit 0/75 plus JSON protocol. Turn completion remains a
+separate harness/caller signal; message delivery alone does not prove LLM work completed.
 
 ## Concurrency & idempotency
 

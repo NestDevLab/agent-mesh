@@ -4,6 +4,11 @@ Phase 1 implementation slice for a sidecar Agent Mesh gateway.
 
 This package is intentionally separate from OpenClaw core. It currently covers envelope validation, context and agent registries, gateway routing, delivery lifecycle, append-only audit/storage replay, Discord transcript mapping stubs, a governed Codex runner stub, and injectable Discord runtime boundaries.
 
+The tmux transport can optionally use an injected Limen admission broker. Capacity-deferred work is
+persisted with an explicit `waiting_capacity` status and exact `retryAt`; the host calls the bounded
+drain method to resume due work. The adapter does not sleep, inspect a spinner, reinject a prompt, or
+kill work already delivered. Routes declare L1/L2/L3; omission inside a capacity policy means L1.
+
 It is also intentionally separate from `openclaw-federation-bridge`. The federation bridge is a request routing and policy boundary between OpenClaw instances or bridge peers. This package is the higher-level orchestration mesh: it coordinates logical agents and records how their messages map onto bridge-style request, correlation, reply-parent, idempotency, policy, and adapter concepts.
 
 ## Scope
