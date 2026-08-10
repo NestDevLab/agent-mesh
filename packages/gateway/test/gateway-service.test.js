@@ -454,7 +454,7 @@ test("codex runner adapter persists execution job stubs only", async () => {
       content: {
         summary: "Inspect a failing unit test.",
         policy_profile: "software_business_standard",
-        endpoint_id: "cas-stub-nestdev",
+        endpoint_id: "runner-stub-nestdev",
         workspace_dir: "/workspace/openclaw-agent-mesh-gateway",
         repo_scope: "openclaw-agent-mesh-gateway",
         approval_profile: "phase-1-stub",
@@ -469,14 +469,14 @@ test("codex runner adapter persists execution job stubs only", async () => {
     result.deliveries.map((delivery) => [delivery.adapter_id, delivery.status]),
     [
       ["discord-transcript-stub", "stubbed"],
-      ["codex-runner-stub", "stubbed"]
+      ["runner-stub", "stubbed"]
     ]
   );
 
   const jobs = await new ExecutionJobStore({ stateDir, clock: fixedClock }).list();
   assert.equal(jobs.length, 1);
   assert.equal(jobs[0].status, "stubbed");
-  assert.equal(jobs[0].request.endpoint_id, "cas-stub-nestdev");
+  assert.equal(jobs[0].request.endpoint_id, "runner-stub-nestdev");
   assert.equal(jobs[0].request.workspace_dir, "/workspace/openclaw-agent-mesh-gateway");
   assert.equal(jobs[0].request.approval_profile, "phase-1-stub");
   assert.equal(jobs[0].request.conversation_id, "conversation-1");
@@ -512,7 +512,7 @@ test("codex execution job approval gate records allow-once and deny decisions lo
     domain_id: "domain.nestdev",
     summary: "Record a safe local stub job.",
     policy_profile: "software_business_standard",
-    endpoint_id: "cas-stub-local",
+    endpoint_id: "runner-stub-local",
     workspace_dir: "/workspace/openclaw-agent-mesh-gateway",
     repo_scope: "openclaw-agent-mesh-gateway",
     approval_profile: "phase-2-local-stub",
@@ -525,7 +525,7 @@ test("codex execution job approval gate records allow-once and deny decisions lo
     domain_id: "domain.nestdev",
     summary: "Record a denied local stub job.",
     policy_profile: "deny_all",
-    endpoint_id: "cas-stub-local",
+    endpoint_id: "runner-stub-local",
     workspace_dir: "/workspace/openclaw-agent-mesh-gateway",
     repo_scope: "openclaw-agent-mesh-gateway",
     approval_profile: "phase-2-local-stub",
@@ -551,7 +551,7 @@ test("codex execution job approval gate records allow-once and deny decisions lo
   assert.equal(audit.filter((event) => event.type === "approval.decided").length, 2);
 });
 
-test("codex runner adapter records pause and cancel intents without contacting CAS", async () => {
+test("codex runner adapter records pause and cancel intents without contacting runner", async () => {
   const stateDir = await createStateDir();
   const gateway = createGateway(stateDir);
 
@@ -563,7 +563,7 @@ test("codex runner adapter records pause and cancel intents without contacting C
       content: {
         summary: "Pause the current stub job.",
         policy_profile: "software_business_standard",
-        endpoint_id: "cas-stub-nestdev",
+        endpoint_id: "runner-stub-nestdev",
         workspace_dir: "/workspace/openclaw-agent-mesh-gateway",
         repo_scope: "openclaw-agent-mesh-gateway",
         approval_profile: "phase-1-stub",
@@ -580,7 +580,7 @@ test("codex runner adapter records pause and cancel intents without contacting C
       content: {
         summary: "Cancel the current stub job.",
         policy_profile: "software_business_standard",
-        endpoint_id: "cas-stub-nestdev",
+        endpoint_id: "runner-stub-nestdev",
         workspace_dir: "/workspace/openclaw-agent-mesh-gateway",
         repo_scope: "openclaw-agent-mesh-gateway",
         approval_profile: "phase-1-stub",

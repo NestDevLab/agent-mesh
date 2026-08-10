@@ -4,22 +4,22 @@ import test from "node:test";
 import "./ts-extension-resolver.mjs";
 
 const {
-  CAS_HOST_PROMPT_GUARDRAILS,
-  CasHostBindingFacade,
-  createHostCasInvocationRequest
-} = await import("../src/adapters/cas-host-binding-facade.ts");
-const { StrictCasRunnerDispatchAdapter } = await import(
-  "../src/adapters/cas-runner-dispatch-adapter.ts"
+  RUNNER_HOST_PROMPT_GUARDRAILS,
+  RunnerHostBindingFacade,
+  createHostRunnerInvocationRequest
+} = await import("../src/adapters/runner-host-binding-facade.ts");
+const { StrictRunnerDispatchAdapter } = await import(
+  "../src/adapters/runner-dispatch-adapter.ts"
 );
 const { createPolicyDecisionRecord } = await import("../src/core/risk-classifier.ts");
 
-test("CAS host binding facade calls the host invoker exactly once for a /tmp workspace", async () => {
+test("runner host binding facade calls the host invoker exactly once for a /tmp workspace", async () => {
   const calls = [];
-  const facade = new CasHostBindingFacade(async (request) => {
+  const facade = new RunnerHostBindingFacade(async (request) => {
     calls.push(request);
     return {
-      invocationId: "host-cas-invocation-1",
-      summary: "Host CAS invocation accepted.",
+      invocationId: "host-runner-invocation-1",
+      summary: "Host runner invocation accepted.",
       metadata: { fake_host: true }
     };
   });
@@ -28,18 +28,18 @@ test("CAS host binding facade calls the host invoker exactly once for a /tmp wor
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].endpointId, "default");
-  assert.equal(calls[0].workspaceDir, "/tmp/openclaw-agent-mesh-cas-host-smoke");
+  assert.equal(calls[0].workspaceDir, "/tmp/openclaw-agent-mesh-runner-host-smoke");
   assert.equal(calls[0].threadName, "agent-mesh/job-v-host-binding");
   assert.equal(calls[0].safety.smokeMode, true);
   assert.equal(calls[0].safety.tempWorkspaceRequired, true);
-  assert.equal(result.dispatcher_result_id, "host-cas-invocation-1");
+  assert.equal(result.dispatcher_result_id, "host-runner-invocation-1");
   assert.equal(result.status, "dispatched");
   assert.equal(result.metadata.fake_host, true);
 });
 
-test("CAS host binding facade rejects non-/tmp workspaces by default", async () => {
+test("runner host binding facade rejects non-/tmp workspaces by default", async () => {
   let callCount = 0;
-  const facade = new CasHostBindingFacade(async () => {
+  const facade = new RunnerHostBindingFacade(async () => {
     callCount += 1;
     return { invocationId: "should-not-run", summary: "should not run" };
   });
@@ -51,13 +51,13 @@ test("CAS host binding facade rejects non-/tmp workspaces by default", async () 
   assert.equal(callCount, 0);
 });
 
-test("CAS host binding prompt includes exact required guardrails", () => {
-  const request = createHostCasInvocationRequest(payload());
+test("runner host binding prompt includes exact required guardrails", () => {
+  const request = createHostRunnerInvocationRequest(payload());
 
-  for (const guardrail of CAS_HOST_PROMPT_GUARDRAILS) {
+  for (const guardrail of RUNNER_HOST_PROMPT_GUARDRAILS) {
     assert.match(request.prompt, new RegExp(`- ${escapeRegExp(guardrail)}`));
   }
-  assert.match(request.prompt, /Workspace: \/tmp\/openclaw-agent-mesh-cas-host-smoke/);
+  assert.match(request.prompt, /Workspace: \/tmp\/openclaw-agent-mesh-runner-host-smoke/);
   assert.equal(request.safety.workspaceOnly, true);
   assert.equal(request.safety.noPushPublishDeployRestartDelete, true);
   assert.equal(request.safety.noSecrets, true);
@@ -66,19 +66,19 @@ test("CAS host binding prompt includes exact required guardrails", () => {
   assert.equal(request.safety.noCodexWorkersRunTask, true);
 });
 
-test("CAS host binding facade maps host failure to dispatcher error", async () => {
-  const facade = new CasHostBindingFacade(async () => {
-    throw new Error("host CAS unavailable");
+test("runner host binding facade maps host failure to dispatcher error", async () => {
+  const facade = new RunnerHostBindingFacade(async () => {
+    throw new Error("host runner unavailable");
   });
 
-  await assert.rejects(facade.dispatch(payload()), /host CAS unavailable/);
+  await assert.rejects(facade.dispatch(payload()), /host runner unavailable/);
 });
 
-test("strict CAS dispatch maps host binding failure to a failed result record", async () => {
-  const hostFacade = new CasHostBindingFacade(async () => {
-    throw new Error("host CAS unavailable");
+test("strict runner dispatch maps host binding failure to a failed result record", async () => {
+  const hostFacade = new RunnerHostBindingFacade(async () => {
+    throw new Error("host runner unavailable");
   });
-  const adapter = new StrictCasRunnerDispatchAdapter(hostFacade, { clock: fixedClock });
+  const adapter = new StrictRunnerDispatchAdapter(hostFacade, { clock: fixedClock });
 
   const result = await adapter.dispatch({
     ...payload(),
@@ -89,7 +89,7 @@ test("strict CAS dispatch maps host binding failure to a failed result record", 
   assert.equal(result.ok, false);
   assert.equal(result.result.status, "failed");
   assert.equal(result.result.dispatcher_called, true);
-  assert.match(result.error.message, /host CAS unavailable/);
+  assert.match(result.error.message, /host runner unavailable/);
 });
 
 const fixedClock = {
@@ -101,12 +101,12 @@ const fixedClock = {
 function payload(overrides = {}) {
   return {
     execution_job_id: "execution_job_v",
-    plan_id: "cas_runner_plan_v",
+    plan_id: "runner_plan_v",
     endpoint_id: "default",
-    workspace_dir: "/tmp/openclaw-agent-mesh-cas-host-smoke",
-    repo_scope: "openclaw-agent-mesh-cas-host-smoke",
+    workspace_dir: "/tmp/openclaw-agent-mesh-runner-host-smoke",
+    repo_scope: "openclaw-agent-mesh-runner-host-smoke",
     thread_name: "agent-mesh/job-v-host-binding",
-    cas_roles: ["implementer"],
+    runner_roles: ["implementer"],
     operation_mode: "code_edit",
     approval_policy: "ask_before_write",
     allowed_actions: ["read", "edit_package_files", "run_tests"],
@@ -118,11 +118,11 @@ function payload(overrides = {}) {
       "delete",
       "openclaw_core_edit",
       "external_message",
-      "real_cas_adapter_call",
+      "real_runner_adapter_call",
       "codex_workers_run_task"
     ],
     metadata: {
-      summary: "Add the safe CAS host binding smoke facade."
+      summary: "Add the safe runner host binding smoke facade."
     },
     ...overrides
   };
@@ -135,8 +135,8 @@ function escapeRegExp(value) {
 function policyDecision() {
   return createPolicyDecisionRecord(
     {
-      subject_kind: "cas_runner_plan",
-      subject_id: "cas_runner_plan_v",
+      subject_kind: "runner_plan",
+      subject_id: "runner_plan_v",
       sensitivity: "internal",
       external_side_effects: false,
       no_external_side_effects: true,

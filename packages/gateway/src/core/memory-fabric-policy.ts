@@ -81,7 +81,7 @@ export function selectMemoryFabricPolicyDecision(
     risk_flags: riskFlags,
     metadata: {
       stub_only: true,
-      no_real_mem0_wiki_folder_discord_or_cas_adapters: true,
+      no_real_mem0_wiki_folder_discord_or_runner_adapters: true,
       scope_breadth: scopeBreadth(proposal.scope ?? null),
       target_write_stubbed: selected.decision !== "deny"
     }

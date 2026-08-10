@@ -10,8 +10,8 @@ import { LocalApprovalGate } from "../core/approval-gate.js";
 import { ExecutionJobStore } from "../core/execution-job-store.js";
 import { isoNow, newEventId, type StoreClock } from "../core/ndjson-store.js";
 
-export class CodexRunnerStubAdapter implements MeshTransportAdapter {
-  readonly id = "codex-runner-stub";
+export class RunnerStubAdapter implements MeshTransportAdapter {
+  readonly id = "runner-stub";
   private readonly executionJobStore: ExecutionJobStore;
   private readonly approvalGate: LocalApprovalGate;
   private readonly clock?: StoreClock;
@@ -39,9 +39,9 @@ export class CodexRunnerStubAdapter implements MeshTransportAdapter {
       ...(envelope.correlation_id !== undefined ? { correlation_id: envelope.correlation_id } : {}),
       source_message_id: envelope.message_id,
       control_intent: controlIntentField(content),
-      summary: stringField(content, "summary", `Stub Codex job for ${envelope.message_id}`),
+      summary: stringField(content, "summary", `Stub runner job for ${envelope.message_id}`),
       policy_profile: stringField(content, "policy_profile", "phase_1_stub_only"),
-      endpoint_id: stringField(content, "endpoint_id", "cas-stub-local"),
+      endpoint_id: stringField(content, "endpoint_id", "runner-stub-local"),
       workspace_dir: stringField(content, "workspace_dir", "/workspace/stub"),
       repo_scope: stringField(content, "repo_scope", "none"),
       approval_profile: stringField(content, "approval_profile", "stub-no-external-actions"),
@@ -113,7 +113,7 @@ function controlIntentField(content: JsonObject): "run" | "pause" | "cancel" {
 
 function governanceMetadata(content: JsonObject): JsonObject {
   return {
-    source: "codex-runner-stub-adapter",
+    source: "runner-stub-adapter",
     ...(typeof content.requested_capability === "string"
       ? { requested_capability: content.requested_capability }
       : {})
@@ -150,8 +150,8 @@ function buildStubGovernance(
     decision === "blocked_by_policy"
       ? (approval?.decision.reason ?? "Execution job was denied by local approval policy.")
       : decision === "record_only"
-        ? "CAS runner is stub-only; governance state was recorded without external execution."
-        : "CAS control intent was recorded by the stub runner without contacting CAS.";
+        ? "runner is stub-only; governance state was recorded without external execution."
+        : "runner control intent was recorded by the stub runner without contacting runner.";
 
   return {
     decision,

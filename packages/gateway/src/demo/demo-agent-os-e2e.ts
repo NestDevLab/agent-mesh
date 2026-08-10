@@ -88,7 +88,7 @@ export function buildAgentOsE2eDemo() {
         action: "single bounded Discord task-thread smoke test",
         target: "approved existing test surface",
         single_use: true,
-        constraints: ["no new channels", "no CAS real dispatch", "no restart without separate approval"]
+        constraints: ["no new channels", "no runner real dispatch", "no restart without separate approval"]
       },
       next_task_state: "ready_for_live_bounded_smoke",
       state_update_refs: ["memory/tasks/agent-mesh-bootstrap-taskflow.md"]
@@ -143,7 +143,7 @@ export function buildAgentOsE2eDemo() {
     guardrails: {
       dry_run: true,
       no_real_discord_send: true,
-      no_real_cas_dispatch: true,
+      no_real_runner_dispatch: true,
       no_restart: true,
       no_new_channel_creation: true
     },

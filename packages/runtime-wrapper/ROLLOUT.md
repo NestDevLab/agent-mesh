@@ -8,7 +8,7 @@ Current verified behavior:
 
 - `mode: "plan"`;
 - `dryRun: true`;
-- `allowRealCasDispatch: false`;
+- `allowRealRunnerDispatch: false`;
 - `allowRealDiscordSend: false`;
 - Discord bridge forwarding is being moved from cron/controller polling to an immediate `message_received` listener in the private runtime plugin;
 - `agent_mesh_plan_runtime_action` is visible from the main runtime and fresh subagents;

@@ -16,7 +16,7 @@ import type {
 } from "../schema/envelope.js";
 import { validateAgentMessageEnvelopeV1 } from "../schema/envelope.js";
 import type { JsonObject } from "../schema/validation.js";
-import { CodexRunnerStubAdapter } from "../adapters/codex-runner-stub-adapter.js";
+import { RunnerStubAdapter } from "../adapters/runner-stub-adapter.js";
 import { DiscordTranscriptStubAdapter } from "../adapters/discord-transcript-stub-adapter.js";
 import { SimulatedAgentAdapter } from "../adapters/simulated-agent-adapter.js";
 import type { MeshTransportAdapter } from "../adapters/adapter.js";
@@ -51,6 +51,7 @@ export interface SubmitEnvelopeResult {
 
 export interface AgentMeshGateway {
   submitEnvelope(input: SubmitEnvelopeInput): Promise<SubmitEnvelopeResult>;
+  getEnvelope(messageId: string): Promise<AgentMessageEnvelopeV1 | undefined>;
   getDelivery(messageId: string): Promise<DeliveryRecord[]>;
   listAudit(filter?: AuditFilter): Promise<AuditEvent[]>;
   listApprovalEvaluations(): Promise<ApprovalGateEvaluation[]>;
@@ -121,7 +122,7 @@ export class GatewayService implements AgentMeshGateway {
       [
         new SimulatedAgentAdapter(),
         new DiscordTranscriptStubAdapter(),
-        new CodexRunnerStubAdapter({ stateDir: options.stateDir, clock: this.clock })
+        new RunnerStubAdapter({ stateDir: options.stateDir, clock: this.clock })
       ];
     this.adaptersById = new Map(adapters.map((adapter) => [adapter.id, adapter]));
   }
@@ -273,7 +274,7 @@ export class GatewayService implements AgentMeshGateway {
       auditEventIds.push(updatedAudit.id);
 
       if (
-        adapter.id === "codex-runner-stub" &&
+        adapter.id === "runner-stub" &&
         typeof result.details?.execution_job_id === "string"
       ) {
         if (typeof result.details.approval_request_id === "string") {
@@ -369,6 +370,10 @@ export class GatewayService implements AgentMeshGateway {
 
   async getDelivery(messageId: string): Promise<DeliveryRecord[]> {
     return this.deliveryStore.listByMessageId(messageId);
+  }
+
+  async getEnvelope(messageId: string): Promise<AgentMessageEnvelopeV1 | undefined> {
+    return (await this.envelopeStore.list()).find((envelope) => envelope.message_id === messageId);
   }
 
   async listAudit(filter?: AuditFilter): Promise<AuditEvent[]> {
@@ -587,7 +592,7 @@ export class GatewayService implements AgentMeshGateway {
   private adaptersForEnvelope(envelope: AgentMessageEnvelopeV1): MeshTransportAdapter[] {
     const ids =
       envelope.intent === "execution_job"
-        ? ["discord-transcript-stub", "codex-runner-stub"]
+        ? ["discord-transcript-stub", "runner-stub"]
         : ["simulated-agent", "discord-transcript-stub"];
 
     // Additively activate the tmux transport for agent-to-agent intents, but
@@ -840,8 +845,8 @@ function buildStubGovernance(
     decision === "blocked_by_policy"
       ? (approval?.decision.reason ?? "Execution job was denied by local approval policy.")
       : decision === "record_only"
-        ? "CAS runner is stub-only; governance state was recorded without external execution."
-        : "CAS control intent was recorded by the stub runner without contacting CAS.";
+        ? "runner is stub-only; governance state was recorded without external execution."
+        : "runner control intent was recorded by the stub runner without contacting runner.";
 
   return {
     decision,

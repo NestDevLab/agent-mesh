@@ -16,7 +16,7 @@ export const POLICY_DECISION_SCHEMA = "openclaw.agent.policy_decision.v1" as con
 
 export const POLICY_SUBJECT_KINDS = [
   "execution_job",
-  "cas_runner_plan",
+  "runner_plan",
   "memory_action",
   "discord_delivery",
   "tool_action",
