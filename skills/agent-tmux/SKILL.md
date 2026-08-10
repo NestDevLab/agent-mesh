@@ -96,9 +96,12 @@ $BIN/agent-read.sh --agent codex "$TARGET" --follow
 ```
 
 For governed mesh work, use `mesh-send.sh` with an explicit class and stable run
-ID. L2/L3 must not bypass Limen: configure `LIMEN_POLICY`, then schedule a drain
-at the returned `retryAt`. Exit 75 means queued, not failed. Neither submit nor
-drain sleeps or pastes a deferred prompt.
+ID. For Codex and Claude it discovers the fleet policy at
+`${XDG_CONFIG_HOME:-$HOME/.config}/limen/<provider>-shadow-policy.json`; set
+`LIMEN_POLICY` only to override that location explicitly. L2/L3 fail closed if
+no policy is available. Schedule a drain at the returned `retryAt`. Exit 75
+means queued, not failed. Neither submit nor drain sleeps or pastes a deferred
+prompt.
 
 ```bash
 export LIMEN_POLICY=/path/to/limen-policy.json

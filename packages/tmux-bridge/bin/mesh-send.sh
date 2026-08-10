@@ -89,10 +89,6 @@ case "$INTENT" in
     *) echo "ERROR: invalid --intent '$INTENT' (use request|reply|notification)" >&2; exit 1 ;;
 esac
 case "$WORK_CLASS" in L1|L2|L3) ;; *) echo "ERROR: invalid capacity class '$WORK_CLASS'" >&2; exit 1 ;; esac
-if [[ "$WORK_CLASS" != "L1" && -z "${LIMEN_POLICY:-}" ]]; then
-    echo "ERROR: L2/L3 mesh work requires LIMEN_POLICY; background may not bypass admission" >&2
-    exit 1
-fi
 
 if [[ -n "${MESH_REGISTRY:-}" ]]; then
     [[ -f "$MESH_REGISTRY" ]] || { echo "ERROR: registry not found: $MESH_REGISTRY" >&2; exit 1; }
@@ -224,6 +220,15 @@ if [[ -n "$FROM_AGENT" || -n "$FROM_TARGET" ]]; then
     if [[ -n "$FROM_AGENT" && -n "$FROM_TARGET" ]]; then
         HEADER="$(printf '%s\n# Return command: %s/agent-send.sh --agent %s %q \"<message>\" <checkpoint_seconds>' "$HEADER" "$BIN_DIR" "$FROM_AGENT" "$FROM_TARGET")"
     fi
+fi
+
+DEFAULT_LIMEN_POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/${R_TYPE}-shadow-policy.json"
+if [[ -z "${LIMEN_POLICY:-}" && ( "$R_TYPE" == "codex" || "$R_TYPE" == "claude" ) && -f "$DEFAULT_LIMEN_POLICY" ]]; then
+    LIMEN_POLICY="$DEFAULT_LIMEN_POLICY"
+fi
+if [[ "$WORK_CLASS" != "L1" && -z "${LIMEN_POLICY:-}" ]]; then
+    echo "ERROR: L2/L3 mesh work requires a Limen policy; expected LIMEN_POLICY or $DEFAULT_LIMEN_POLICY" >&2
+    exit 1
 fi
 
 PROMPT="$(printf '%s\n%s' "$HEADER" "$BODY")"
