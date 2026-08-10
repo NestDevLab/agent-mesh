@@ -13,7 +13,7 @@
       "killSwitch": { "type": "boolean", "default": false },
       "paused": { "type": "boolean", "default": false },
       "dryRun": { "type": "boolean", "default": true },
-      "allowRealCasDispatch": { "type": "boolean", "default": false },
+      "allowRealRunnerDispatch": { "type": "boolean", "default": false },
       "allowRealDiscordSend": { "type": "boolean", "default": false },
       "discordAllowlist": {
         "type": "array",
@@ -33,7 +33,7 @@
           ]
         }
       },
-      "casAllowlist": {
+      "runnerAllowlist": {
         "type": "array",
         "default": [{ "tempOnly": true, "workspacePrefix": "/tmp/" }],
         "items": {

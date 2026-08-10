@@ -29,7 +29,7 @@ export default definePluginEntry({
         type: "object",
         additionalProperties: true,
         properties: {
-          kind: { type: "string", enum: ["cas_dispatch", "discord_send", "discord_bridge_turn", "discord_mention_correction", "discord_event_task_turn", "mesh_v1_dispatch"] }
+          kind: { type: "string", enum: ["runner_dispatch", "discord_send", "discord_bridge_turn", "discord_mention_correction", "discord_event_task_turn", "mesh_v1_dispatch"] }
         },
         required: ["kind"]
       },

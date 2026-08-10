@@ -109,7 +109,7 @@ test("captureHumanDecision records decision and updates request state", () => {
         action: "post one bounded lifecycle message",
         target: "approved test thread",
         single_use: true,
-        constraints: ["no CAS", "no new channels"]
+        constraints: ["no runner", "no new channels"]
       },
       next_task_state: "task_resumed",
       state_update_refs: ["memory/tasks/agent-mesh-bootstrap-taskflow.md"]

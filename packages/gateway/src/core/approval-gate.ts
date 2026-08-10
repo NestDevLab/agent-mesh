@@ -81,7 +81,7 @@ export class LocalApprovalGate {
 }
 
 function executionJobRiskFlags(request: CodexExecutionJobRequest): string[] {
-  const flags = ["execution_job", "cas-runner-stub", "no-external-execution"];
+  const flags = ["execution_job", "runner-stub", "no-external-execution"];
   if (request.approval_required) {
     flags.push("approval-required");
   }

@@ -21,7 +21,7 @@ test("Agent OS E2E demo links the full dry-run lifecycle", () => {
   assert.deepEqual(demo.guardrails, {
     dry_run: true,
     no_real_discord_send: true,
-    no_real_cas_dispatch: true,
+    no_real_runner_dispatch: true,
     no_restart: true,
     no_new_channel_creation: true
   });
