@@ -125,6 +125,45 @@ test("calls the sender once and returns delivered for an enabled route", async (
   assert.match(sender.calls[0].prompt, /review the failing test/i);
 });
 
+test("rejects MCP ingress unless the exact tmux route opts in", async () => {
+  const stateDir = await freshStateDir();
+  const sender = fakeSender();
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const result = await adapter.dispatch(
+    baseDelivery(),
+    baseEnvelope({ metadata: { ingress: "mcp" } })
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.details.reason, "mcp_ingress_not_allowed");
+  assert.equal(sender.calls.length, 0);
+});
+
+test("allows MCP ingress only on an explicitly opted-in route", async () => {
+  const stateDir = await freshStateDir();
+  const sender = fakeSender();
+  const adapter = new TmuxTransportAdapter({
+    sender,
+    routes: [{ ...realSendRoute[0], allow_mcp_ingress: true }],
+    stateDir,
+    clock: fixedClock
+  });
+
+  const result = await adapter.dispatch(
+    baseDelivery(),
+    baseEnvelope({ metadata: { ingress: "mcp" } })
+  );
+
+  assert.equal(result.status, "delivered");
+  assert.equal(sender.calls.length, 1);
+});
+
 test("records an audit event to the store", async () => {
   const stateDir = await freshStateDir();
   const adapter = new TmuxTransportAdapter({

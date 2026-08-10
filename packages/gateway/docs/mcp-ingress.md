@@ -13,19 +13,25 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | `mesh_send` | Sends an A2A request to one exposed endpoint. |
 | `mesh_delivery_status` | Reads recorded delivery lifecycle events. |
 
-The host provides the requesting mesh identity, the exact allowed endpoints,
-and a configured `AgentMeshGateway`. Codex and Claude are ordinary endpoint
-records; no provider-specific API is part of the MCP surface.
+The host provides a verified request-scoped principal, its exact tool, agent,
+workspace, and domain scopes, a shared rate limiter, and a configured
+`AgentMeshGateway`. Codex and Claude are ordinary endpoint records; no
+provider-specific API is part of the MCP surface. Delivery status is visible
+only to the principal that submitted the corresponding request.
 
 ## Serving safely
 
 Mount `createMeshMcpHandler(options).fetch` at `/mcp` using a Streamable HTTP
-host. Keep the handler behind an OAuth-aware reverse proxy or another token
-validator which passes verified authentication to the handler. Do not expose
-the endpoint directly to the public Internet without authentication, request
-limits, and TLS. The handler rejects legacy MCP traffic and does not start a
-listener by itself.
+host. The handler fails closed unless the host passes validated `AuthInfo` and
+the configured resolver maps it to a principal. Keep it behind an OAuth-aware
+reverse proxy and validate the proxy assertion at the origin. The optional
+Cloudflare Access adapter validates signature, issuer, audience, expiry, and an
+explicit user or service binding. Do not expose the endpoint directly to the
+public Internet without authentication, request limits, and TLS. The handler
+rejects legacy MCP traffic and does not start a listener by itself.
 
 For a real Codex or Claude route, inject the existing `TmuxTransportAdapter`
-with an explicit route whose `enable_real_send` is true. The adapter remains
-dry-run-first when no such route is configured.
+with an explicit route whose `enable_real_send` and `allow_mcp_ingress` are
+both true. These are independent gates: an existing real tmux route does not
+accept MCP-originated prompts automatically. Initially expose only a dedicated,
+least-privilege ingress agent; never point public ingress at an operator session.

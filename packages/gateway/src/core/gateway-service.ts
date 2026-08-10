@@ -51,6 +51,7 @@ export interface SubmitEnvelopeResult {
 
 export interface AgentMeshGateway {
   submitEnvelope(input: SubmitEnvelopeInput): Promise<SubmitEnvelopeResult>;
+  getEnvelope(messageId: string): Promise<AgentMessageEnvelopeV1 | undefined>;
   getDelivery(messageId: string): Promise<DeliveryRecord[]>;
   listAudit(filter?: AuditFilter): Promise<AuditEvent[]>;
   listApprovalEvaluations(): Promise<ApprovalGateEvaluation[]>;
@@ -369,6 +370,10 @@ export class GatewayService implements AgentMeshGateway {
 
   async getDelivery(messageId: string): Promise<DeliveryRecord[]> {
     return this.deliveryStore.listByMessageId(messageId);
+  }
+
+  async getEnvelope(messageId: string): Promise<AgentMessageEnvelopeV1 | undefined> {
+    return (await this.envelopeStore.list()).find((envelope) => envelope.message_id === messageId);
   }
 
   async listAudit(filter?: AuditFilter): Promise<AuditEvent[]> {
