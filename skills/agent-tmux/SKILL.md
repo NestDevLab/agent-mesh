@@ -188,14 +188,16 @@ and resumed sessions, independent of the Desktop model picker. Set
 `CODEX_MESH_MODEL` and/or `CODEX_MESH_EFFORT` to replace those defaults, or
 `CODEX_MESH_PIN=0` to follow the Desktop config. Precedence (weakest to
 strongest): pinned default, environment override, `--model`/`--effort`, raw
-passthrough after `--`.
+passthrough after `--`. The bridge renders only the strongest mapped value for
+each knob. If raw passthrough already sets that knob, it omits the mapped value
+entirely, so the process command line does not contain stale-looking duplicates.
 
 Anything after `--` is forwarded verbatim to the agent CLI, so per-session knobs
 no longer require a hand-rolled command (which is how sessions historically lost
 `--remote` and `--cd`):
 
 ```bash
-# Raw flags are last and override first-class flags when the CLI supports both:
+# Raw flags replace the mapped value for the same knob:
 $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
   --effort high -- -c model_reasoning_effort=low
 ```
@@ -231,9 +233,9 @@ mobile over the remote-control tunnel. No env var to remember.
 
 - `codex.conf` checks the known app-server socket candidates in order and adds
   `--remote unix://…` only for the first candidate that is actually listening; if
-  none is live, it falls back to a standalone tmux-only session. It also passes
-  `--cd "<dir>"` in remote mode (the app-server ignores `tmux -c`, so this keeps
-  the session in the right project).
+  none is live, it prints a warning and falls back to a standalone tmux-only
+  session. It also passes `--cd "<dir>"` in remote mode (the app-server ignores
+  `tmux -c`, so this keeps the session in the right project).
 - Use `agent-session.sh --agent codex --title "<short title>" new ...` for a
   readable Desktop title. The bridge stores the title for that tmux target and
   `agent-send.sh` prepends it as the first line of the first real prompt, so no
