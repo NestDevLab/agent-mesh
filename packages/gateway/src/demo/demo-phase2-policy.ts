@@ -1,21 +1,21 @@
 import {
-  StrictCasRunnerDispatchAdapter,
+  StrictRunnerDispatchAdapter,
   createStrictDispatchInputFromPlan
-} from "../adapters/cas-runner-dispatch-adapter.js";
+} from "../adapters/runner-dispatch-adapter.js";
 import { ControlledDiscordAdapter } from "../adapters/controlled-discord-adapter.js";
-import { createCasRunnerPlan } from "../core/cas-runner-planner.js";
+import { createRunnerPlan } from "../core/runner-planner.js";
 import { planDiscordDelivery } from "../core/discord-delivery-planner.js";
 import { selectMemoryFabricPolicyDecision } from "../core/memory-fabric-policy.js";
 import {
-  type CasTeamSizingRecommendation,
-  recommendCasTeamSize,
+  type RunnerTeamSizingRecommendation,
+  recommendRunnerTeamSize,
   selectModelProfile
 } from "../core/model-selection.js";
 import { selectStaleBacklogProposals } from "../core/proactivity-selectors.js";
 import { createPolicyDecisionRecord } from "../core/risk-classifier.js";
 import type { PolicyRiskInput } from "../core/risk-classifier.js";
-import type { CasRunnerDispatchRecord } from "../schema/cas-runner-dispatch.js";
-import type { CasRunnerPlanRecord } from "../schema/cas-runner-plan.js";
+import type { RunnerDispatchRecord } from "../schema/runner-dispatch.js";
+import type { RunnerPlanRecord } from "../schema/runner-plan.js";
 import type { DiscordDeliveryPlan } from "../schema/discord-delivery-plan.js";
 import type { DiscordSendAttemptRecord } from "../schema/discord-send-attempt.js";
 import type { ExecutionJob } from "../schema/execution-job.js";
@@ -36,7 +36,7 @@ export interface Phase2PolicyDemoResult {
   memory_proposal_decision: MemoryFabricPolicyDecision;
   stale_backlog_proactivity_proposal: ProactivityRecord;
   model_selection_for_code_implementation: ModelSelectionRecord;
-  cas_team_sizing: CasTeamSizingRecommendation;
+  runner_team_sizing: RunnerTeamSizingRecommendation;
   guardrails: {
     no_external_execution: true;
     no_external_write: true;
@@ -51,14 +51,14 @@ export interface Phase2PolicyCompletionDemoResult extends Phase2PolicyDemoResult
     memory: PolicyDecisionRecord;
     proactivity: PolicyDecisionRecord;
     model_selection: PolicyDecisionRecord;
-    cas_plan: PolicyDecisionRecord;
-    cas_dispatch: PolicyDecisionRecord;
+    runner_plan: PolicyDecisionRecord;
+    runner_dispatch: PolicyDecisionRecord;
     discord_plan: PolicyDecisionRecord;
     discord_send: PolicyDecisionRecord;
   };
-  cas_runner_plan: CasRunnerPlanRecord;
-  cas_dispatch_attempt: CasRunnerDispatchRecord;
-  cas_dispatch_result: CasRunnerDispatchRecord;
+  runner_plan: RunnerPlanRecord;
+  runner_dispatch_attempt: RunnerDispatchRecord;
+  runner_dispatch_result: RunnerDispatchRecord;
   discord_delivery_plan: DiscordDeliveryPlan;
   discord_send_attempt: DiscordSendAttemptRecord;
   injected_adapters: {
@@ -118,7 +118,7 @@ export function buildPhase2PolicyDemo(): Phase2PolicyDemoResult {
     created_at: DEMO_NOW
   });
 
-  const casTeamSizing = recommendCasTeamSize({
+  const runnerTeamSizing = recommendRunnerTeamSize({
     task_kind: "code_implementation",
     complexity: "medium",
     risk: "medium",
@@ -131,7 +131,7 @@ export function buildPhase2PolicyDemo(): Phase2PolicyDemoResult {
     memory_proposal_decision: memoryDecision,
     stale_backlog_proactivity_proposal: staleBacklogProposal,
     model_selection_for_code_implementation: modelSelection,
-    cas_team_sizing: casTeamSizing,
+    runner_team_sizing: runnerTeamSizing,
     guardrails: {
       no_external_execution: true,
       no_external_write: true,
@@ -144,12 +144,12 @@ export function buildPhase2PolicyDemo(): Phase2PolicyDemoResult {
 export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCompletionDemoResult> {
   const base = buildPhase2PolicyDemo();
   const executionJob = buildExecutionJob();
-  const casPlan = {
-    ...createCasRunnerPlan(
+  const runnerPlan = {
+    ...createRunnerPlan(
       {
         executionJob,
         thread_name: "agent-mesh/job-u-policy-completion",
-        cas_roles: base.cas_team_sizing.roles,
+        runner_roles: base.runner_team_sizing.roles,
         operation_mode: "code_edit",
         approval_policy: "ask_before_write",
         allowed_actions: ["read", "edit_package_files", "run_tests"],
@@ -161,7 +161,7 @@ export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCom
       },
       fixedClock(DEMO_NOW)
     ),
-    id: "cas_runner_plan_phase2_completion",
+    id: "runner_plan_phase2_completion",
     created_at: DEMO_NOW
   };
 
@@ -241,20 +241,20 @@ export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCom
         }
       }
     ),
-    cas_plan: deterministicPolicyDecision("policy_decision_cas_plan_phase2_completion", {
-      subject_kind: "cas_runner_plan",
-      subject_id: casPlan.id,
+    runner_plan: deterministicPolicyDecision("policy_decision_runner_plan_phase2_completion", {
+      subject_kind: "runner_plan",
+      subject_id: runnerPlan.id,
       target: "local_package_files",
       tool_capability: "read",
       metadata: {
-        source_schema: casPlan.schema
+        source_schema: runnerPlan.schema
       }
     }),
-    cas_dispatch: deterministicPolicyDecision(
-      "policy_decision_cas_dispatch_phase2_completion",
+    runner_dispatch: deterministicPolicyDecision(
+      "policy_decision_runner_dispatch_phase2_completion",
       {
-        subject_kind: "cas_runner_plan",
-        subject_id: casPlan.id,
+        subject_kind: "runner_plan",
+        subject_id: runnerPlan.id,
         target: "local_package_files",
         tool_capability: "read",
         metadata: {
@@ -291,14 +291,14 @@ export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCom
   };
 
   const fakeDispatcher = createFakeDispatcher();
-  const dispatchAdapter = new StrictCasRunnerDispatchAdapter(fakeDispatcher, {
+  const dispatchAdapter = new StrictRunnerDispatchAdapter(fakeDispatcher, {
     stateDir: DEMO_STATE_DIR,
     clock: fixedClock(DEMO_NOW)
   });
   const dispatch = await dispatchAdapter.dispatch(
-    createStrictDispatchInputFromPlan(casPlan, {
+    createStrictDispatchInputFromPlan(runnerPlan, {
       enable_real_dispatch: true,
-      policy_decision: policyDecisions.cas_dispatch,
+      policy_decision: policyDecisions.runner_dispatch,
       metadata: {
         demo: "phase2-policy-completion",
         injected_dispatcher_only: true
@@ -307,7 +307,7 @@ export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCom
   );
 
   if (!dispatch.result) {
-    throw new Error("Phase 2 policy completion demo expected fake CAS dispatch result.");
+    throw new Error("Phase 2 policy completion demo expected fake runner dispatch result.");
   }
 
   const fakeSender = createFakeSender();
@@ -346,15 +346,15 @@ export async function buildPhase2PolicyCompletionDemo(): Promise<Phase2PolicyCom
     ...base,
     demo: "phase2-policy-completion",
     unified_policy_decisions: policyDecisions,
-    cas_runner_plan: casPlan,
-    cas_dispatch_attempt: {
+    runner_plan: runnerPlan,
+    runner_dispatch_attempt: {
       ...dispatch.attempt,
-      id: "cas_runner_dispatch_attempt_phase2_completion",
+      id: "runner_dispatch_attempt_phase2_completion",
       created_at: DEMO_NOW
     },
-    cas_dispatch_result: {
+    runner_dispatch_result: {
       ...dispatch.result,
-      id: "cas_runner_dispatch_result_phase2_completion",
+      id: "runner_dispatch_result_phase2_completion",
       created_at: DEMO_NOW
     },
     discord_delivery_plan: discordPlan,
@@ -420,7 +420,7 @@ function buildExecutionJob(): ExecutionJob {
       project_id: "project.agent_mesh",
       task_id: "task.phase2.policy_completion",
       conversation_id: "conversation.phase2.policy",
-      summary: "Record the local-only CAS runner plan for Phase 2 policy completion.",
+      summary: "Record the local-only runner plan for Phase 2 policy completion.",
       policy_profile: "software_business_standard",
       endpoint_id: "default",
       workspace_dir: "/path/to/runtime/workspace/openclaw-agent-mesh-gateway",
@@ -445,7 +445,7 @@ function buildExecutionJob(): ExecutionJob {
       task_id: "task.phase2.policy_completion",
       conversation_id: "conversation.phase2.policy",
       metadata: {
-        no_real_cas_or_codex_workers: true
+        no_real_runner_or_codex_workers: true
       }
     },
     created_at: DEMO_NOW,
@@ -492,10 +492,10 @@ function createFakeDispatcher() {
       return {
         dispatcher_result_id: "fake-dispatch-result-phase2-completion",
         status: "dispatched" as const,
-        summary: "Injected fake dispatcher accepted the local-only CAS dispatch.",
+        summary: "Injected fake dispatcher accepted the local-only runner dispatch.",
         metadata: {
           fake: true,
-          no_cas_or_codex_workers_call: true
+          no_runner_or_codex_workers_call: true
         }
       };
     }

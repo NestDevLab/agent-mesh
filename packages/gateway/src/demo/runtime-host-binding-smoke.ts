@@ -1,9 +1,9 @@
 import {
-  CasHostBindingFacade,
-  createHostCasInvocationRequest,
-  type HostCasInvocationRequest
-} from "../adapters/cas-host-binding-facade.js";
-import type { CasRunnerDispatchPayload } from "../adapters/cas-runner-dispatch-adapter.js";
+  RunnerHostBindingFacade,
+  createHostRunnerInvocationRequest,
+  type HostRunnerInvocationRequest
+} from "../adapters/runner-host-binding-facade.js";
+import type { RunnerDispatchPayload } from "../adapters/runner-dispatch-adapter.js";
 import {
   OpenClawHostMessageSender,
   toHostMessageSendRequest,
@@ -24,8 +24,8 @@ export interface RuntimeHostBindingSmokeResult {
     temp_workspace_required_default: true;
     real_send_enabled: false;
   };
-  cas: {
-    request: HostCasInvocationRequest;
+  runner: {
+    request: HostRunnerInvocationRequest;
     facade_result: {
       dispatcher_result_id: string;
       status: "dispatched";
@@ -41,8 +41,8 @@ export interface RuntimeHostBindingSmokeResult {
     };
   };
   injected_fakes: {
-    fake_cas_invoker_called: boolean;
-    fake_cas_invoker_call_count: number;
+    fake_runner_invoker_called: boolean;
+    fake_runner_invoker_call_count: number;
     fake_discord_host_sender_called: boolean;
     fake_discord_host_sender_call_count: number;
     direct_openclaw_tool_called: false;
@@ -52,9 +52,9 @@ export interface RuntimeHostBindingSmokeResult {
 }
 
 export async function buildRuntimeHostBindingSmokeDemo(): Promise<RuntimeHostBindingSmokeResult> {
-  const casPayload = sampleCasPayload();
+  const runnerPayload = sampleRunnerPayload();
   const discordPayload = sampleDiscordPayload();
-  const expectedCasRequest = createHostCasInvocationRequest(casPayload, {
+  const expectedRunnerRequest = createHostRunnerInvocationRequest(runnerPayload, {
     smokeMode: true,
     tempWorkspaceRequired: true
   });
@@ -69,12 +69,12 @@ export async function buildRuntimeHostBindingSmokeDemo(): Promise<RuntimeHostBin
     }
   });
 
-  const casCalls: HostCasInvocationRequest[] = [];
-  const casFacade = new CasHostBindingFacade(async (request) => {
-    casCalls.push(request);
+  const runnerCalls: HostRunnerInvocationRequest[] = [];
+  const runnerFacade = new RunnerHostBindingFacade(async (request) => {
+    runnerCalls.push(request);
     return {
-      invocationId: "fake-cas-invocation-runtime-smoke",
-      summary: "Fake CAS host invoker accepted the dry-run smoke request.",
+      invocationId: "fake-runner-invocation-runtime-smoke",
+      summary: "Fake runner host invoker accepted the dry-run smoke request.",
       metadata: {
         fake_host_invoker: true,
         dry_run: true,
@@ -107,7 +107,7 @@ export async function buildRuntimeHostBindingSmokeDemo(): Promise<RuntimeHostBin
     }
   });
 
-  const casResult = await casFacade.dispatch(casPayload);
+  const runnerResult = await runnerFacade.dispatch(runnerPayload);
   const discordResult = await discordSender.sendMessage(discordPayload);
 
   return {
@@ -121,17 +121,17 @@ export async function buildRuntimeHostBindingSmokeDemo(): Promise<RuntimeHostBin
       temp_workspace_required_default: true,
       real_send_enabled: false
     },
-    cas: {
-      request: casCalls[0] ?? expectedCasRequest,
-      facade_result: casResult
+    runner: {
+      request: runnerCalls[0] ?? expectedRunnerRequest,
+      facade_result: runnerResult
     },
     discord: {
       request: discordCalls[0] ?? expectedDiscordRequest,
       facade_result: discordResult
     },
     injected_fakes: {
-      fake_cas_invoker_called: casCalls.length > 0,
-      fake_cas_invoker_call_count: casCalls.length,
+      fake_runner_invoker_called: runnerCalls.length > 0,
+      fake_runner_invoker_call_count: runnerCalls.length,
       fake_discord_host_sender_called: discordCalls.length > 0,
       fake_discord_host_sender_call_count: discordCalls.length,
       direct_openclaw_tool_called: false,
@@ -141,15 +141,15 @@ export async function buildRuntimeHostBindingSmokeDemo(): Promise<RuntimeHostBin
   };
 }
 
-function sampleCasPayload(): CasRunnerDispatchPayload {
+function sampleRunnerPayload(): RunnerDispatchPayload {
   return {
     execution_job_id: "execution_job_runtime_smoke",
-    plan_id: "cas_runner_plan_runtime_smoke",
+    plan_id: "runner_plan_runtime_smoke",
     endpoint_id: "default",
     workspace_dir: "/tmp/openclaw-agent-mesh-runtime-wrapper-smoke",
     repo_scope: "openclaw-agent-mesh-runtime-wrapper-smoke",
     thread_name: "agent-mesh/runtime-host-binding-smoke",
-    cas_roles: ["implementer"],
+    runner_roles: ["implementer"],
     operation_mode: "code_edit",
     approval_policy: "ask_before_write",
     allowed_actions: ["read", "edit_package_files", "run_tests"],
@@ -161,11 +161,11 @@ function sampleCasPayload(): CasRunnerDispatchPayload {
       "delete",
       "openclaw_core_edit",
       "external_message",
-      "real_cas_adapter_call",
+      "real_runner_adapter_call",
       "codex_workers_run_task"
     ],
     metadata: {
-      summary: "Dry-run wrapper smoke for host CAS binding facades.",
+      summary: "Dry-run wrapper smoke for host runner binding facades.",
       demo: "runtime-host-binding-smoke"
     }
   };

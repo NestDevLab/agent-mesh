@@ -4,7 +4,7 @@ import {
   buildAgentAddressBook,
   extractEventTaskRunId,
   formatAgentAddressBook,
-  isCasWorkspaceAllowed,
+  isRunnerWorkspaceAllowed,
   isDiscordTargetAllowed,
   normalizeConfig,
   normalizeBridgeTurn,
@@ -15,14 +15,14 @@ import {
   planRuntimeAction
 } from "../policy.js";
 
-test("defaults to observe dry-run with temp-only CAS", () => {
+test("defaults to observe dry-run with temp-only runner", () => {
   const cfg = normalizeConfig({});
   assert.equal(cfg.mode, "observe");
   assert.equal(cfg.dryRun, true);
-  assert.equal(cfg.allowRealCasDispatch, false);
+  assert.equal(cfg.allowRealRunnerDispatch, false);
   assert.equal(cfg.allowRealDiscordSend, false);
-  assert.equal(isCasWorkspaceAllowed(cfg.casAllowlist, "/tmp/openclaw-agent-mesh-demo", "demo"), true);
-  assert.equal(isCasWorkspaceAllowed(cfg.casAllowlist, "/var/repo", "demo"), false);
+  assert.equal(isRunnerWorkspaceAllowed(cfg.runnerAllowlist, "/tmp/openclaw-agent-mesh-demo", "demo"), true);
+  assert.equal(isRunnerWorkspaceAllowed(cfg.runnerAllowlist, "/var/repo", "demo"), false);
 });
 
 test("observe mode accepts planning but never side effects", () => {
@@ -33,8 +33,8 @@ test("observe mode accepts planning but never side effects", () => {
 });
 
 test("kill-switch and pause block actions", () => {
-  assert.equal(planRuntimeAction({ killSwitch: true }, { kind: "cas_dispatch" }).reason, "kill_switch_active");
-  assert.equal(planRuntimeAction({ paused: true }, { kind: "cas_dispatch" }).reason, "wrapper_paused");
+  assert.equal(planRuntimeAction({ killSwitch: true }, { kind: "runner_dispatch" }).reason, "kill_switch_active");
+  assert.equal(planRuntimeAction({ paused: true }, { kind: "runner_dispatch" }).reason, "wrapper_paused");
 });
 
 test("Discord target allowlist is exact on channel/thread/guild", () => {
@@ -77,46 +77,46 @@ test("Discord target allowlist inherits from parent channel and category", () =>
   );
 });
 
-test("plan mode allows dry-run CAS only for allowlisted temp workspace", () => {
+test("plan mode allows dry-run runner only for allowlisted temp workspace", () => {
   const cfg = {
     mode: "plan",
-    casAllowlist: [{ tempOnly: true, workspacePrefix: "/tmp/openclaw-agent-mesh-" }]
+    runnerAllowlist: [{ tempOnly: true, workspacePrefix: "/tmp/openclaw-agent-mesh-" }]
   };
   const accepted = planRuntimeAction(cfg, {
-    kind: "cas_dispatch",
+    kind: "runner_dispatch",
     workspaceDir: "/tmp/openclaw-agent-mesh-demo",
     repoScope: "demo"
   });
   assert.equal(accepted.accepted, true);
-  assert.equal(accepted.reason, "cas_dry_run_only");
+  assert.equal(accepted.reason, "runner_dry_run_only");
   assert.equal(accepted.sideEffectsAllowed, false);
 
   const denied = planRuntimeAction(cfg, {
-    kind: "cas_dispatch",
+    kind: "runner_dispatch",
     workspaceDir: "/tmp/other",
     repoScope: "demo"
   });
   assert.equal(denied.accepted, false);
-  assert.equal(denied.reason, "cas_workspace_not_allowlisted");
+  assert.equal(denied.reason, "runner_workspace_not_allowlisted");
 });
 
 test("plan mode accepts nested request payloads used by runtime smoke", () => {
   const cfg = {
     mode: "plan",
-    casAllowlist: [{ tempOnly: true, workspacePrefix: "/tmp/openclaw-agent-mesh-" }],
+    runnerAllowlist: [{ tempOnly: true, workspacePrefix: "/tmp/openclaw-agent-mesh-" }],
     discordAllowlist: [{ guildId: "g1", channelId: "c1", threadId: "t1" }]
   };
 
-  const cas = planRuntimeAction(cfg, {
-    kind: "cas_dispatch",
+  const runner = planRuntimeAction(cfg, {
+    kind: "runner_dispatch",
     request: {
       workspace: "/tmp/openclaw-agent-mesh-demo",
       repoScope: "demo"
     }
   });
-  assert.equal(cas.accepted, true);
-  assert.equal(cas.reason, "cas_dry_run_only");
-  assert.equal(cas.sideEffectsAllowed, false);
+  assert.equal(runner.accepted, true);
+  assert.equal(runner.reason, "runner_dry_run_only");
+  assert.equal(runner.sideEffectsAllowed, false);
 
   const discord = planRuntimeAction(cfg, {
     kind: "discord_send",
@@ -742,12 +742,12 @@ test("event task planner supports multiple source bots for one task", () => {
       taskId: "multi-agent-smoke",
       source: { botId: "222" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r1", content: "AgentReport: Agent Gamma / CAS\nStatus: ready" }]
+      messages: [{ id: "r1", content: "AgentReport: Agent Gamma / runner\nStatus: ready" }]
     },
     state: { status: "awaiting_status", itemCount: 0 }
   });
   assert.equal(plan.reason, "event_task_follow_up_required");
-  assert.equal(plan.item, "Agent Gamma / CAS");
+  assert.equal(plan.item, "Agent Gamma / runner");
   assert.match(plan.followUpMessage, /^<@222>/);
   assert.match(plan.followUpMessage, /Multi-agent test complete/);
 });
@@ -871,7 +871,7 @@ test("event task planner only enables the current phase source and expands delib
       taskId: "multi-agent-smoke",
       source: { botId: "222" },
       target: { guildId: "g1", channelId: "c1" },
-      messages: [{ id: "r0", content: "AgentReport: Agent Gamma / CAS\nStatus: too early" }]
+      messages: [{ id: "r0", content: "AgentReport: Agent Gamma / runner\nStatus: too early" }]
     },
     state: { status: "awaiting_status", itemCount: 0, phaseIndex: 0 }
   });

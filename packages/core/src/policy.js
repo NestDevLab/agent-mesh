@@ -11,10 +11,10 @@ export function normalizeConfig(raw = {}) {
     killSwitch: raw.killSwitch === true,
     paused: raw.paused === true,
     dryRun: raw.dryRun !== false || mode === "observe",
-    allowRealCasDispatch: raw.allowRealCasDispatch === true && mode === "enforce",
+    allowRealRunnerDispatch: raw.allowRealRunnerDispatch === true && mode === "enforce",
     allowRealDiscordSend: raw.allowRealDiscordSend === true && mode === "enforce",
     discordAllowlist: normalizeDiscordAllowlist(raw.discordAllowlist),
-    casAllowlist: normalizeCasAllowlist(raw.casAllowlist),
+    runnerAllowlist: normalizeRunnerAllowlist(raw.runnerAllowlist),
     localParticipant: optionalString(raw.localParticipant),
     bridge: normalizeBridgeConfig(raw.bridge),
     eventController: normalizeEventControllerConfig(raw.eventController),
@@ -44,8 +44,8 @@ export function planRuntimeAction(config, action) {
     return { ...base, accepted: true, reason: "observe_only", sideEffectsAllowed: false };
   }
 
-  if (action?.kind === "cas_dispatch") {
-    return planCasAction(cfg, action, base);
+  if (action?.kind === "runner_dispatch") {
+    return planRunnerAction(cfg, action, base);
   }
   if (action?.kind === "discord_send") {
     return planDiscordAction(cfg, action, base);
@@ -629,8 +629,8 @@ export function isDiscordTargetAllowed(allowlist, target = {}) {
   });
 }
 
-export function isCasWorkspaceAllowed(allowlist, workspaceDir = "", repoScope = "") {
-  const normalized = normalizeCasAllowlist(allowlist);
+export function isRunnerWorkspaceAllowed(allowlist, workspaceDir = "", repoScope = "") {
+  const normalized = normalizeRunnerAllowlist(allowlist);
   return normalized.some((allowed) => {
     if (allowed.tempOnly && !workspaceDir.startsWith("/tmp/")) return false;
     if (allowed.workspacePrefix && !workspaceDir.startsWith(allowed.workspacePrefix)) return false;
@@ -639,7 +639,7 @@ export function isCasWorkspaceAllowed(allowlist, workspaceDir = "", repoScope = 
   });
 }
 
-function planCasAction(cfg, action, base) {
+function planRunnerAction(cfg, action, base) {
   const workspaceDir = action?.workspaceDir
     ?? action?.workspace
     ?? action?.request?.workspaceDir
@@ -649,13 +649,13 @@ function planCasAction(cfg, action, base) {
     ?? action?.request?.repoScope
     ?? "";
 
-  if (!isCasWorkspaceAllowed(cfg.casAllowlist, workspaceDir, repoScope)) {
-    return { ...base, reason: "cas_workspace_not_allowlisted" };
+  if (!isRunnerWorkspaceAllowed(cfg.runnerAllowlist, workspaceDir, repoScope)) {
+    return { ...base, reason: "runner_workspace_not_allowlisted" };
   }
-  if (!cfg.allowRealCasDispatch) {
-    return { ...base, accepted: true, reason: "cas_dry_run_only", sideEffectsAllowed: false };
+  if (!cfg.allowRealRunnerDispatch) {
+    return { ...base, accepted: true, reason: "runner_dry_run_only", sideEffectsAllowed: false };
   }
-  return { ...base, accepted: true, dryRun: false, reason: "cas_allow_once_required", sideEffectsAllowed: false };
+  return { ...base, accepted: true, dryRun: false, reason: "runner_allow_once_required", sideEffectsAllowed: false };
 }
 
 function planDiscordAction(cfg, action, base) {
@@ -697,7 +697,7 @@ function discordChannelMatches(allowed, target = {}) {
     || matchesOptionalId(allowed.channelId, target.parentId);
 }
 
-function normalizeCasAllowlist(value) {
+function normalizeRunnerAllowlist(value) {
   if (!Array.isArray(value)) return [{ tempOnly: true, workspacePrefix: "/tmp/" }];
   return value.map((entry) => ({
     tempOnly: entry?.tempOnly !== false,

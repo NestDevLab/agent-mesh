@@ -25,14 +25,14 @@ export interface ModelSelectionInput {
   created_at?: string;
 }
 
-export interface CasTeamSizingInput {
+export interface RunnerTeamSizingInput {
   task_kind: ModelTaskKind;
   complexity: TaskComplexity;
   risk?: TaskRisk;
   external_side_effects_possible?: boolean;
 }
 
-export interface CasTeamSizingRecommendation {
+export interface RunnerTeamSizingRecommendation {
   orchestration: "none" | "one_worker" | "two_roles" | "three_plus_roles" | "design_review_first";
   roles: string[];
   approval_required: boolean;
@@ -102,15 +102,15 @@ export function selectModelProfile(input: ModelSelectionInput): ModelSelectionRe
   };
 }
 
-export function recommendCasTeamSize(
-  input: CasTeamSizingInput
-): CasTeamSizingRecommendation {
+export function recommendRunnerTeamSize(
+  input: RunnerTeamSizingInput
+): RunnerTeamSizingRecommendation {
   if (input.task_kind !== "code_implementation") {
     return {
       orchestration: "none",
       roles: [],
       approval_required: false,
-      reason: "CAS team sizing only applies to code implementation tasks."
+      reason: "runner team sizing only applies to code implementation tasks."
     };
   }
 
@@ -145,7 +145,7 @@ export function recommendCasTeamSize(
     orchestration: "one_worker",
     roles: ["implementer"],
     approval_required: false,
-    reason: "Low complexity implementation can use one scoped CAS worker when safe."
+    reason: "Low complexity implementation can use one scoped runner worker when safe."
   };
 }
 
@@ -219,7 +219,7 @@ function selectionReason(
     case "safety_review":
       return `Security, approval, or high-risk work should use the safety review profile.${approvalSuffix}`;
     case "specialist_coding":
-      return `Code implementation should use the specialist coding profile with CAS-aware guardrails.${approvalSuffix}`;
+      return `Code implementation should use the specialist coding profile with runner-aware guardrails.${approvalSuffix}`;
     case "deep_reasoning":
       return `High complexity or code review work should use deeper reasoning.${approvalSuffix}`;
     case "routine_fast":

@@ -6,7 +6,7 @@
       "dryRun": true,
       "killSwitch": false,
       "paused": false,
-      "allowRealCasDispatch": false,
+      "allowRealRunnerDispatch": false,
       "allowRealDiscordSend": false,
       "discordAllowlist": [
         {
@@ -15,7 +15,7 @@
           "threadId": "DISCORD_ID_PLACEHOLDER"
         }
       ],
-      "casAllowlist": [
+      "runnerAllowlist": [
         {
           "tempOnly": true,
           "workspacePrefix": "/tmp/openclaw-agent-mesh-"

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import "./ts-extension-resolver.mjs";
 
-const { recommendCasTeamSize, selectModelProfile } = await import(
+const { recommendRunnerTeamSize, selectModelProfile } = await import(
   "../src/core/model-selection.js"
 );
 const { validateModelSelectionRecord } = await import(
@@ -87,8 +87,8 @@ test("requires approval when private context cannot use local private", () => {
   assert.equal(selection.approval_required, true);
 });
 
-test("sizes medium code implementation as two CAS roles", () => {
-  const recommendation = recommendCasTeamSize({
+test("sizes medium code implementation as two runner roles", () => {
+  const recommendation = recommendRunnerTeamSize({
     task_kind: "code_implementation",
     complexity: "medium",
     risk: "medium"

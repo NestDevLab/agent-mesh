@@ -1,59 +1,59 @@
 import { isAbsolute, normalize, sep } from "path";
 import type {
-  CasRunnerApprovalPolicy,
-  CasRunnerOperationMode,
-  CasRunnerPlanRecord
-} from "../schema/cas-runner-plan.js";
+  RunnerApprovalPolicy,
+  RunnerOperationMode,
+  RunnerPlanRecord
+} from "../schema/runner-plan.js";
 import {
-  CAS_RUNNER_DISPATCH_RECORD_SCHEMA,
-  type CasRunnerDispatchRecord
-} from "../schema/cas-runner-dispatch.js";
+  RUNNER_DISPATCH_RECORD_SCHEMA,
+  type RunnerDispatchRecord
+} from "../schema/runner-dispatch.js";
 import type { PolicyDecisionRecord } from "../schema/policy-decision.js";
 import type { JsonObject } from "../schema/validation.js";
-import { CasRunnerDispatchStore } from "../core/cas-runner-dispatch-store.js";
+import { RunnerDispatchStore } from "../core/runner-dispatch-store.js";
 import { isoNow, newEventId, type StoreClock } from "../core/ndjson-store.js";
 
-export interface CasRunnerDispatchPayload {
+export interface RunnerDispatchPayload {
   execution_job_id: string;
   plan_id?: string;
   endpoint_id: string;
   workspace_dir: string;
   repo_scope: string;
   thread_name: string;
-  cas_roles: string[];
-  operation_mode: CasRunnerOperationMode;
-  approval_policy: CasRunnerApprovalPolicy;
+  runner_roles: string[];
+  operation_mode: RunnerOperationMode;
+  approval_policy: RunnerApprovalPolicy;
   allowed_actions: string[];
   forbidden_actions: string[];
   metadata?: JsonObject;
 }
 
-export interface CasRunnerDispatcherResult {
+export interface RunnerDispatcherResult {
   dispatcher_result_id: string;
   status: "dispatched";
   summary: string;
   metadata?: JsonObject;
 }
 
-export interface CasRunnerDispatcher {
-  dispatch(payload: CasRunnerDispatchPayload): Promise<CasRunnerDispatcherResult>;
+export interface RunnerDispatcher {
+  dispatch(payload: RunnerDispatchPayload): Promise<RunnerDispatcherResult>;
 }
 
-export interface StrictCasRunnerDispatchInput extends CasRunnerDispatchPayload {
+export interface StrictRunnerDispatchInput extends RunnerDispatchPayload {
   enable_real_dispatch: boolean;
   policy_decision: PolicyDecisionRecord;
 }
 
-export interface StrictCasRunnerDispatchOptions {
+export interface StrictRunnerDispatchOptions {
   stateDir?: string;
   clock?: StoreClock;
 }
 
-export interface StrictCasRunnerDispatchResult {
+export interface StrictRunnerDispatchResult {
   ok: boolean;
-  attempt: CasRunnerDispatchRecord;
-  result?: CasRunnerDispatchRecord;
-  dispatcher_result?: CasRunnerDispatcherResult;
+  attempt: RunnerDispatchRecord;
+  result?: RunnerDispatchRecord;
+  dispatcher_result?: RunnerDispatcherResult;
   error?: Error;
 }
 
@@ -65,22 +65,22 @@ const PROHIBITED_ACTIONS = [
   "delete",
   "external_message",
   "openclaw_core_edit",
-  "real_cas_adapter_call",
+  "real_runner_adapter_call",
   "codex_workers_run_task"
 ] as const;
 
-export class StrictCasRunnerDispatchAdapter {
-  private readonly dispatcher: CasRunnerDispatcher;
-  private readonly store: CasRunnerDispatchStore;
+export class StrictRunnerDispatchAdapter {
+  private readonly dispatcher: RunnerDispatcher;
+  private readonly store: RunnerDispatchStore;
   private readonly clock?: StoreClock;
 
-  constructor(dispatcher: CasRunnerDispatcher, options: StrictCasRunnerDispatchOptions = {}) {
+  constructor(dispatcher: RunnerDispatcher, options: StrictRunnerDispatchOptions = {}) {
     this.dispatcher = dispatcher;
-    this.store = new CasRunnerDispatchStore(options);
+    this.store = new RunnerDispatchStore(options);
     this.clock = options.clock;
   }
 
-  async dispatch(input: StrictCasRunnerDispatchInput): Promise<StrictCasRunnerDispatchResult> {
+  async dispatch(input: StrictRunnerDispatchInput): Promise<StrictRunnerDispatchResult> {
     const gate = evaluateDispatchGate(input);
     if (!gate.ok) {
       const attempt = createDispatchRecord(input, {
@@ -98,7 +98,7 @@ export class StrictCasRunnerDispatchAdapter {
       kind: "attempt",
       status: "dispatched",
       dispatcher_called: false,
-      reason: "Strict CAS runner adapter accepted the request for injected dispatch.",
+      reason: "Strict runner adapter accepted the request for injected dispatch.",
       clock: this.clock
     });
     await this.store.append(attempt);
@@ -130,19 +130,19 @@ export class StrictCasRunnerDispatchAdapter {
     }
   }
 
-  async listRecords(): Promise<CasRunnerDispatchRecord[]> {
+  async listRecords(): Promise<RunnerDispatchRecord[]> {
     return this.store.list();
   }
 }
 
 export function createStrictDispatchInputFromPlan(
-  plan: CasRunnerPlanRecord,
+  plan: RunnerPlanRecord,
   input: {
     enable_real_dispatch: boolean;
     policy_decision: PolicyDecisionRecord;
     metadata?: JsonObject;
   }
-): StrictCasRunnerDispatchInput {
+): StrictRunnerDispatchInput {
   return {
     execution_job_id: plan.execution_job_id,
     plan_id: plan.id,
@@ -150,7 +150,7 @@ export function createStrictDispatchInputFromPlan(
     workspace_dir: plan.workspace_dir,
     repo_scope: plan.repo_scope,
     thread_name: plan.thread_name,
-    cas_roles: plan.cas_roles,
+    runner_roles: plan.runner_roles,
     operation_mode: plan.operation_mode,
     approval_policy: plan.approval_policy,
     allowed_actions: plan.allowed_actions,
@@ -165,42 +165,42 @@ export function createStrictDispatchInputFromPlan(
   };
 }
 
-export function evaluateDispatchGate(input: StrictCasRunnerDispatchInput): {
+export function evaluateDispatchGate(input: StrictRunnerDispatchInput): {
   ok: boolean;
   reason: string;
 } {
   if (input.enable_real_dispatch !== true) {
-    return { ok: false, reason: "Real CAS dispatch requires enable_real_dispatch=true." };
+    return { ok: false, reason: "Real runner dispatch requires enable_real_dispatch=true." };
   }
   if (input.policy_decision.decision !== "allow-once") {
     return {
       ok: false,
-      reason: `Real CAS dispatch requires an allow-once policy decision; got ${input.policy_decision.decision}.`
+      reason: `Real runner dispatch requires an allow-once policy decision; got ${input.policy_decision.decision}.`
     };
   }
   if (input.policy_decision.subject_id !== input.execution_job_id && input.policy_decision.subject_id !== input.plan_id) {
     return {
       ok: false,
-      reason: "Real CAS dispatch requires a policy decision scoped to this execution job or plan."
+      reason: "Real runner dispatch requires a policy decision scoped to this execution job or plan."
     };
   }
   if (!isScopedWorkspace(input.workspace_dir, input.repo_scope)) {
     return {
       ok: false,
-      reason: "Real CAS dispatch requires an absolute workspace_dir scoped to repo_scope."
+      reason: "Real runner dispatch requires an absolute workspace_dir scoped to repo_scope."
     };
   }
   if (input.allowed_actions.length === 0 || input.forbidden_actions.length === 0) {
     return {
       ok: false,
-      reason: "Real CAS dispatch requires explicit non-empty allowed_actions and forbidden_actions."
+      reason: "Real runner dispatch requires explicit non-empty allowed_actions and forbidden_actions."
     };
   }
   const allowedProhibited = findProhibitedAction(input.allowed_actions);
   if (allowedProhibited !== undefined) {
     return {
       ok: false,
-      reason: `Real CAS dispatch cannot allow prohibited action: ${allowedProhibited}.`
+      reason: `Real runner dispatch cannot allow prohibited action: ${allowedProhibited}.`
     };
   }
   const missingForbidden = PROHIBITED_ACTIONS.find(
@@ -209,20 +209,20 @@ export function evaluateDispatchGate(input: StrictCasRunnerDispatchInput): {
   if (missingForbidden !== undefined) {
     return {
       ok: false,
-      reason: `Real CAS dispatch requires forbidden_actions to include ${missingForbidden}.`
+      reason: `Real runner dispatch requires forbidden_actions to include ${missingForbidden}.`
     };
   }
   if (isWriteCapable(input) && input.approval_policy === "not_required_read_only") {
     return {
       ok: false,
-      reason: "Real CAS dispatch for write-capable jobs requires at least ask_before_write."
+      reason: "Real runner dispatch for write-capable jobs requires at least ask_before_write."
     };
   }
-  return { ok: true, reason: "Real CAS dispatch gates passed." };
+  return { ok: true, reason: "Real runner dispatch gates passed." };
 }
 
 function createDispatchRecord(
-  input: StrictCasRunnerDispatchInput,
+  input: StrictRunnerDispatchInput,
   options: {
     kind: "attempt" | "result";
     status: "blocked" | "dispatched" | "failed";
@@ -232,10 +232,10 @@ function createDispatchRecord(
     metadata?: JsonObject;
     clock?: StoreClock;
   }
-): CasRunnerDispatchRecord {
+): RunnerDispatchRecord {
   return {
-    schema: CAS_RUNNER_DISPATCH_RECORD_SCHEMA,
-    id: newEventId("cas_runner_dispatch"),
+    schema: RUNNER_DISPATCH_RECORD_SCHEMA,
+    id: newEventId("runner_dispatch"),
     kind: options.kind,
     execution_job_id: input.execution_job_id,
     ...(input.plan_id !== undefined ? { plan_id: input.plan_id } : {}),
@@ -256,7 +256,7 @@ function createDispatchRecord(
       ? { dispatcher_result_id: options.dispatcher_result_id }
       : {}),
     metadata: {
-      adapter: "strict-cas-runner-dispatch-adapter",
+      adapter: "strict-runner-dispatch-adapter",
       no_direct_openclaw_tool_call: true,
       no_direct_codex_workers_call: true,
       ...(input.metadata ?? {}),
@@ -265,7 +265,7 @@ function createDispatchRecord(
   };
 }
 
-function toPayload(input: StrictCasRunnerDispatchInput): CasRunnerDispatchPayload {
+function toPayload(input: StrictRunnerDispatchInput): RunnerDispatchPayload {
   return {
     execution_job_id: input.execution_job_id,
     ...(input.plan_id !== undefined ? { plan_id: input.plan_id } : {}),
@@ -273,7 +273,7 @@ function toPayload(input: StrictCasRunnerDispatchInput): CasRunnerDispatchPayloa
     workspace_dir: input.workspace_dir,
     repo_scope: input.repo_scope,
     thread_name: input.thread_name,
-    cas_roles: input.cas_roles,
+    runner_roles: input.runner_roles,
     operation_mode: input.operation_mode,
     approval_policy: input.approval_policy,
     allowed_actions: input.allowed_actions,
@@ -299,7 +299,7 @@ function findProhibitedAction(actions: string[]): string | undefined {
   );
 }
 
-function isWriteCapable(input: StrictCasRunnerDispatchInput): boolean {
+function isWriteCapable(input: StrictRunnerDispatchInput): boolean {
   if (input.operation_mode === "code_edit") {
     return true;
   }

@@ -12,22 +12,22 @@ import {
   type ValidationResult
 } from "./validation.js";
 
-export const CAS_RUNNER_DISPATCH_RECORD_SCHEMA =
-  "openclaw.agent.cas_runner_dispatch_record.v1" as const;
+export const RUNNER_DISPATCH_RECORD_SCHEMA =
+  "openclaw.agent.runner_dispatch_record.v1" as const;
 
-export const CAS_RUNNER_DISPATCH_RECORD_KINDS = ["attempt", "result"] as const;
-export type CasRunnerDispatchRecordKind = (typeof CAS_RUNNER_DISPATCH_RECORD_KINDS)[number];
+export const RUNNER_DISPATCH_RECORD_KINDS = ["attempt", "result"] as const;
+export type RunnerDispatchRecordKind = (typeof RUNNER_DISPATCH_RECORD_KINDS)[number];
 
-export const CAS_RUNNER_DISPATCH_STATUSES = ["blocked", "dispatched", "failed"] as const;
-export type CasRunnerDispatchStatus = (typeof CAS_RUNNER_DISPATCH_STATUSES)[number];
+export const RUNNER_DISPATCH_STATUSES = ["blocked", "dispatched", "failed"] as const;
+export type RunnerDispatchStatus = (typeof RUNNER_DISPATCH_STATUSES)[number];
 
-export interface CasRunnerDispatchRecord {
-  schema: typeof CAS_RUNNER_DISPATCH_RECORD_SCHEMA;
+export interface RunnerDispatchRecord {
+  schema: typeof RUNNER_DISPATCH_RECORD_SCHEMA;
   id: string;
-  kind: CasRunnerDispatchRecordKind;
+  kind: RunnerDispatchRecordKind;
   execution_job_id: string;
   plan_id?: string;
-  status: CasRunnerDispatchStatus;
+  status: RunnerDispatchStatus;
   enable_real_dispatch: boolean;
   endpoint_id: string;
   workspace_dir: string;
@@ -44,20 +44,20 @@ export interface CasRunnerDispatchRecord {
   metadata?: JsonObject;
 }
 
-export function validateCasRunnerDispatchRecord(
+export function validateRunnerDispatchRecord(
   input: unknown
-): ValidationResult<CasRunnerDispatchRecord> {
+): ValidationResult<RunnerDispatchRecord> {
   if (!isRecord(input)) {
     return fail([{ path: "$", message: "must be a JSON object" }]);
   }
 
   const issues: ValidationIssue[] = [];
-  const schema = requireEnum(input, "schema", [CAS_RUNNER_DISPATCH_RECORD_SCHEMA], issues);
+  const schema = requireEnum(input, "schema", [RUNNER_DISPATCH_RECORD_SCHEMA], issues);
   const id = requireString(input, "id", issues);
-  const kind = requireEnum(input, "kind", CAS_RUNNER_DISPATCH_RECORD_KINDS, issues);
+  const kind = requireEnum(input, "kind", RUNNER_DISPATCH_RECORD_KINDS, issues);
   const executionJobId = requireString(input, "execution_job_id", issues);
   const planId = optionalString(input, "plan_id", issues);
-  const status = requireEnum(input, "status", CAS_RUNNER_DISPATCH_STATUSES, issues);
+  const status = requireEnum(input, "status", RUNNER_DISPATCH_STATUSES, issues);
   const enableRealDispatch = requireBoolean(input, "enable_real_dispatch", issues);
   const endpointId = requireString(input, "endpoint_id", issues);
   const workspaceDir = requireString(input, "workspace_dir", issues);
