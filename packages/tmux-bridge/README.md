@@ -19,6 +19,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-watch.py` | Follow persisted Codex/Claude transcripts by session id |
 | `bin/agent-link.mjs` | Connect two watched sessions with a bounded Mesh v1 relay |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
+| `bin/mesh-capacity-dispatch.mjs` | Persist/retry Limen-deferred work without sleeping |
 | `bin/mesh-send.sh` | Send to an agent by name or capability using live tmux discovery |
 
 ## Agent Configs
@@ -81,6 +82,15 @@ $BIN/agent-session.sh --agent codex list
 $BIN/mesh-list-agents.sh
 $BIN/mesh-send.sh --to codex "summarize the current branch" 120
 
+# Governed background work: no prompt is pasted until Limen admits it.
+export LIMEN_POLICY=/path/to/limen-policy.json
+$BIN/mesh-send.sh --to codex --class L3 --run-id nightly-42 \
+  "continue the authorized backlog" 300
+
+# The caller schedules this at the earliest retryAt; the drain never sleeps.
+node $BIN/mesh-capacity-dispatch.mjs drain \
+  --state "${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json"
+
 # Send with source identity and optional return coordinates
 $BIN/mesh-send.sh --to claude \
   --from codex-main \
@@ -98,6 +108,13 @@ the newest matching transcript on each poll, writes only the caller-provided
 cursor file, and supports Codex and Claude without requiring a tmux target. Its
 structured output is intended for existing Mesh transports; the watcher does
 not dispatch, resume, or wake an agent by itself.
+
+When `LIMEN_POLICY` is set, `mesh-send.sh` calls the admission broker before
+`agent-send.sh`. A defer is written to a mode-0600 caller-owned queue and exits
+75 with `retryAt`, `decisionId`, `configHash`, class, and reasons. L1 is the
+only fail-open default; explicit L2/L3 refuses to run when no policy is present.
+The dispatcher never polls a spinner to decide capacity and never reinjects a
+deferred prompt. A successful foreground send reconciles its Limen lease.
 
 `agent-link.mjs` composes that watcher with `agent-send.sh` and the existing
 Mesh v1 `final`, `seen`, `hop`, and `dispatch_once` policy. It buffers transcript
