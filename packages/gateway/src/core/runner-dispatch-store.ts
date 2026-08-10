@@ -1,4 +1,4 @@
-import type { CasRunnerDispatchRecord } from "../schema/cas-runner-dispatch.js";
+import type { RunnerDispatchRecord } from "../schema/runner-dispatch.js";
 import {
   appendStoreEvent,
   replayStoreEvents,
@@ -8,24 +8,24 @@ import {
   type StoreEventEnvelope
 } from "./ndjson-store.js";
 
-export type CasRunnerDispatchStoreEvent = StoreEventEnvelope<
-  CasRunnerDispatchRecord & Record<string, unknown>
+export type RunnerDispatchStoreEvent = StoreEventEnvelope<
+  RunnerDispatchRecord & Record<string, unknown>
 >;
 
-export class CasRunnerDispatchStore {
+export class RunnerDispatchStore {
   private readonly filePath: string;
   private readonly clock?: StoreClock;
 
   constructor(options: { stateDir?: string; clock?: StoreClock } = {}) {
-    this.filePath = stateFilePath("cas-runner-dispatch.ndjson", options.stateDir);
+    this.filePath = stateFilePath("runner-dispatch.ndjson", options.stateDir);
     this.clock = options.clock;
   }
 
-  async append(record: CasRunnerDispatchRecord): Promise<CasRunnerDispatchStoreEvent> {
+  async append(record: RunnerDispatchRecord): Promise<RunnerDispatchStoreEvent> {
     return appendStoreEvent(
       this.filePath,
-      `cas_runner_dispatch.${record.kind}`,
-      record as CasRunnerDispatchRecord & Record<string, unknown>,
+      `runner_dispatch.${record.kind}`,
+      record as RunnerDispatchRecord & Record<string, unknown>,
       {
         eventId: record.id,
         clock: this.clock
@@ -33,11 +33,11 @@ export class CasRunnerDispatchStore {
     );
   }
 
-  async replay(): Promise<ReplayResult<CasRunnerDispatchRecord & Record<string, unknown>>> {
+  async replay(): Promise<ReplayResult<RunnerDispatchRecord & Record<string, unknown>>> {
     return replayStoreEvents(this.filePath, { quarantineCorruptFinalLine: true });
   }
 
-  async list(): Promise<CasRunnerDispatchRecord[]> {
+  async list(): Promise<RunnerDispatchRecord[]> {
     const replay = await this.replay();
     return replay.records.map((record) => record.data);
   }

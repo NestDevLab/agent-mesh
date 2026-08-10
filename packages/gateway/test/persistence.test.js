@@ -143,7 +143,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
       domain_id: "domain.nestdev",
       summary: "stub",
       policy_profile: "software_business_standard",
-      endpoint_id: "cas-stub-local",
+      endpoint_id: "runner-stub-local",
       workspace_dir: "/workspace/stub",
       repo_scope: "openclaw-agent-mesh-gateway",
       approval_profile: "stub-no-external-actions"
@@ -154,7 +154,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
       approval_profile: "stub-no-external-actions",
       approval_status: "not_required",
       no_external_execution: true,
-      reason: "CAS runner is stub-only.",
+      reason: "runner is stub-only.",
       evaluated_at: "2026-05-09T12:00:00.000Z",
       workspace_id: "workspace.the operator",
       domain_id: "domain.nestdev"
@@ -210,7 +210,7 @@ test("startup recovery summary reports gateway recovered counts", async () => {
     idempotency_events: 0,
     execution_jobs: 1,
     approval_events: 0,
-    cas_runner_plans: 0,
+    runner_plans: 0,
     heartbeats: 1,
     dead_letter_records: 0,
     gateway_control_events: 0
@@ -238,7 +238,7 @@ async function loadPersistenceModules() {
   const [
     auditStore,
     approvalStore,
-    casRunnerPlanStore,
+    runnerPlanStore,
     deliveryStore,
     discordDeliveryPlanStore,
     envelopeStore,
@@ -249,7 +249,7 @@ async function loadPersistenceModules() {
   ] = await Promise.all([
     import("../src/core/audit-store.ts"),
     import("../src/core/approval-store.ts"),
-    import("../src/core/cas-runner-plan-store.ts"),
+    import("../src/core/runner-plan-store.ts"),
     import("../src/core/delivery-store.ts"),
     import("../src/core/discord-delivery-plan-store.ts"),
     import("../src/core/envelope-store.ts"),
@@ -262,7 +262,7 @@ async function loadPersistenceModules() {
   return {
     AuditStore: auditStore.AuditStore,
     ApprovalStore: approvalStore.ApprovalStore,
-    CasRunnerPlanStore: casRunnerPlanStore.CasRunnerPlanStore,
+    RunnerPlanStore: runnerPlanStore.RunnerPlanStore,
     DeliveryStore: deliveryStore.DeliveryStore,
     DiscordDeliveryPlanStore: discordDeliveryPlanStore.DiscordDeliveryPlanStore,
     EnvelopeStore: envelopeStore.EnvelopeStore,

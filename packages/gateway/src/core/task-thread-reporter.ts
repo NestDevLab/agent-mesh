@@ -85,7 +85,7 @@ function classifyTask(task: TaskThreadTaskInput, taskId: string): TaskThreadClas
   } else if (matches(haystack, ["nestdev", "client-ops", "vendor", "ticketing"])) {
     domain = "nestdev";
     reasons.push("NestDev/client-ops keywords matched");
-  } else if (matches(haystack, ["openclaw", "memory", "docs", "documentation", "gateway", "codex", "cas"])) {
+  } else if (matches(haystack, ["openclaw", "memory", "docs", "documentation", "gateway", "codex", "runner"])) {
     domain = "openclaw";
     reasons.push("OpenClaw platform keywords matched");
   } else if (matches(haystack, ["agent os", "agent-os", "agent mesh", "task thread", "heartbeat", "proactivity"]) || /^(AO|AM)-/i.test(taskId)) {

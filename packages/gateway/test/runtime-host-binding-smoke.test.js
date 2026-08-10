@@ -14,20 +14,20 @@ test("runtime host binding smoke demo returns deterministic dry-run JSON", async
   );
 });
 
-test("runtime host binding smoke demo includes CAS and Discord host requests", async () => {
+test("runtime host binding smoke demo includes runner and Discord host requests", async () => {
   const demo = await buildRuntimeHostBindingSmokeDemo();
 
   assert.equal(demo.demo, "runtime-host-binding-smoke");
   assert.equal(demo.generated_at, "2026-05-10T19:06:00.000Z");
-  assert.equal(demo.cas.request.endpointId, "default");
+  assert.equal(demo.runner.request.endpointId, "default");
   assert.equal(
-    demo.cas.request.workspaceDir,
+    demo.runner.request.workspaceDir,
     "/tmp/openclaw-agent-mesh-runtime-wrapper-smoke"
   );
-  assert.equal(demo.cas.request.safety.noDirectOpenClawTools, true);
-  assert.equal(demo.cas.request.safety.noCodexWorkersRunTask, true);
-  assert.equal(demo.cas.facade_result.dispatcher_result_id, "fake-cas-invocation-runtime-smoke");
-  assert.equal(demo.cas.facade_result.metadata.fake_host_invoker, true);
+  assert.equal(demo.runner.request.safety.noDirectOpenClawTools, true);
+  assert.equal(demo.runner.request.safety.noCodexWorkersRunTask, true);
+  assert.equal(demo.runner.facade_result.dispatcher_result_id, "fake-runner-invocation-runtime-smoke");
+  assert.equal(demo.runner.facade_result.metadata.fake_host_invoker, true);
 
   assert.equal(demo.discord.request.channel, "discord");
   assert.deepEqual(demo.discord.request.target, {
@@ -56,8 +56,8 @@ test("runtime host binding smoke demo exposes explicit operational guardrails", 
     temp_workspace_required_default: true,
     real_send_enabled: false
   });
-  assert.equal(demo.cas.request.safety.tempWorkspaceRequired, true);
-  assert.equal(demo.cas.request.safety.smokeMode, true);
+  assert.equal(demo.runner.request.safety.tempWorkspaceRequired, true);
+  assert.equal(demo.runner.request.safety.smokeMode, true);
   assert.equal(demo.discord.request.metadata.no_core_config_change, true);
   assert.equal(demo.discord.request.metadata.no_direct_tool_calls, true);
   assert.equal(demo.discord.request.metadata.real_send_enabled, false);
@@ -67,8 +67,8 @@ test("runtime host binding smoke demo calls only injected fake host functions", 
   const demo = await buildRuntimeHostBindingSmokeDemo();
 
   assert.deepEqual(demo.injected_fakes, {
-    fake_cas_invoker_called: true,
-    fake_cas_invoker_call_count: 1,
+    fake_runner_invoker_called: true,
+    fake_runner_invoker_call_count: 1,
     fake_discord_host_sender_called: true,
     fake_discord_host_sender_call_count: 1,
     direct_openclaw_tool_called: false,
