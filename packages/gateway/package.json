@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "start:mcp": "node dist/mcp/serve.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test"
   },
@@ -19,6 +20,7 @@
     "zod": "^4.2.0"
   },
   "devDependencies": {
+    "@types/node": "^24.13.3",
     "typescript": "^5.9.0"
   }
 }

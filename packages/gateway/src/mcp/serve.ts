@@ -1,0 +1,243 @@
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { AgentRegistry } from "../core/agent-registry.js";
+import { ContextRegistry } from "../core/context-registry.js";
+import { GatewayService } from "../core/gateway-service.js";
+import { validateMeshAgentRecord, type MeshAgentRecord } from "../schema/agent.js";
+import { validateMeshContextRecord, type MeshContextRecord } from "../schema/context.js";
+import {
+  CloudflareAccessAuthenticator,
+  cloudflarePrincipalId,
+  requireCloudflareAccess,
+  resolveCloudflareAccessPrincipal,
+  type CloudflareAccessBinding
+} from "./cloudflare-access.js";
+import {
+  createMeshMcpHandler,
+  FixedWindowMeshMcpRateLimiter,
+  type MeshMcpAgent
+} from "./mesh-mcp.js";
+
+const DEFAULT_HOST = "127.0.0.1";
+const DEFAULT_PORT = 8790;
+const MCP_PATH = "/agent-mesh";
+const MAX_BODY_BYTES = 1_048_576;
+
+interface RuntimeAgent extends MeshAgentRecord {
+  provider: MeshMcpAgent["provider"];
+}
+
+interface RuntimeConfig {
+  stateDir: string;
+  agents: RuntimeAgent[];
+  contexts: MeshContextRecord[];
+  bindings: CloudflareAccessBinding[];
+}
+
+export async function startMeshMcpServer(env = process.env): Promise<() => Promise<void>> {
+  const host = env.AGENT_MESH_MCP_HOST ?? DEFAULT_HOST;
+  if (host !== "127.0.0.1" && host !== "::1") {
+    throw new Error("AGENT_MESH_MCP_HOST must be a loopback address.");
+  }
+  const port = parsePort(env.AGENT_MESH_MCP_PORT);
+  const teamDomain = requiredEnv(env, "AGENT_MESH_MCP_TEAM_DOMAIN");
+  const audience = requiredEnv(env, "AGENT_MESH_MCP_AUDIENCE");
+  const configPath = resolve(requiredEnv(env, "AGENT_MESH_MCP_CONFIG"));
+  const config = await readRuntimeConfig(configPath);
+
+  const requesterAgents: MeshAgentRecord[] = config.bindings.map((binding) => {
+    const principalId = cloudflarePrincipalId(binding.kind, binding.selector);
+    return {
+      id: `agent.mcp.${binding.kind}.${principalId}`,
+      name: `Cloudflare Access ${binding.kind} requester`,
+      role: "mcp_ingress",
+      status: "online",
+      phase_1_active: true,
+      capabilities: ["submit_request"],
+      enabled_contexts: unique([
+        ...binding.allowedWorkspaceIds,
+        ...binding.allowedDomainIds
+      ])
+    };
+  });
+  const gateway = new GatewayService({
+    stateDir: resolve(config.stateDir),
+    contextRegistry: new ContextRegistry(config.contexts),
+    agentRegistry: new AgentRegistry([...requesterAgents, ...config.agents])
+  });
+  const bindings = config.bindings;
+  const handler = requireCloudflareAccess(
+    createMeshMcpHandler({
+      gateway,
+      agents: config.agents.map(({ id, name, provider, capabilities }) => ({
+        id,
+        name,
+        provider,
+        capabilities
+      })),
+      rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+      resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
+    }),
+    new CloudflareAccessAuthenticator({ teamDomain, audience })
+  );
+
+  const server = createServer((request, response) => {
+    void serveRequest(request, response, handler.fetch, host, port);
+  });
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolveListen();
+    });
+  });
+  process.stdout.write(`Agent Mesh MCP listening on http://${host}:${port}${MCP_PATH}\n`);
+  return async () => {
+    await handler.close();
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => (error === undefined ? resolveClose() : reject(error)))
+    );
+  };
+}
+
+async function serveRequest(
+  incoming: IncomingMessage,
+  outgoing: ServerResponse,
+  fetchHandler: (request: Request) => Promise<Response>,
+  host: string,
+  port: number
+): Promise<void> {
+  try {
+    const url = new URL(incoming.url ?? "/", `http://${host}:${port}`);
+    if (url.pathname !== MCP_PATH) {
+      sendJson(outgoing, 404, { error: "Not found." });
+      return;
+    }
+    const method = incoming.method ?? "GET";
+    const body =
+      method === "GET" || method === "HEAD"
+        ? undefined
+        : Uint8Array.from(await readBody(incoming)).buffer;
+    const request = new Request(url, {
+      method,
+      headers: headersFromIncoming(incoming),
+      ...(body === undefined ? {} : { body })
+    });
+    const response = await fetchHandler(request);
+    outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
+    outgoing.end(Buffer.from(await response.arrayBuffer()));
+  } catch (error) {
+    const status = error instanceof BodyTooLargeError ? 413 : 500;
+    sendJson(outgoing, status, {
+      error: status === 413 ? "Request body too large." : "Internal server error."
+    });
+  }
+}
+
+async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {
+  const parsed = JSON.parse(await readFile(filePath, "utf8")) as Partial<RuntimeConfig>;
+  if (
+    typeof parsed.stateDir !== "string" ||
+    !Array.isArray(parsed.agents) ||
+    !Array.isArray(parsed.contexts) ||
+    !Array.isArray(parsed.bindings) ||
+    parsed.bindings.length === 0
+  ) {
+    throw new Error("Invalid Agent Mesh MCP runtime config.");
+  }
+  const agents = parsed.agents.map((agent, index) => {
+    const validated = validateMeshAgentRecord(agent);
+    const provider = (agent as Partial<RuntimeAgent>).provider;
+    if (!validated.ok || !["codex", "claude", "other"].includes(provider ?? "")) {
+      throw new Error(`Invalid MCP runtime agent at index ${index}.`);
+    }
+    return { ...validated.value!, provider: provider! };
+  });
+  const contexts = parsed.contexts.map((context, index) => {
+    const validated = validateMeshContextRecord(context);
+    if (!validated.ok) throw new Error(`Invalid MCP runtime context at index ${index}.`);
+    return validated.value!;
+  });
+  for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
+  return { stateDir: parsed.stateDir, agents, contexts, bindings: parsed.bindings };
+}
+
+function validateBinding(
+  binding: CloudflareAccessBinding,
+  index: number,
+  agents: readonly RuntimeAgent[]
+): void {
+  if (
+    (binding.kind !== "user" && binding.kind !== "service") ||
+    typeof binding.selector !== "string" ||
+    binding.selector.length === 0 ||
+    !Array.isArray(binding.allowedTools) ||
+    !Array.isArray(binding.allowedAgentIds) ||
+    !Array.isArray(binding.allowedWorkspaceIds) ||
+    !Array.isArray(binding.allowedDomainIds)
+  ) {
+    throw new Error(`Invalid MCP runtime binding at index ${index}.`);
+  }
+  const exposed = new Set(agents.map((agent) => agent.id));
+  if (binding.allowedAgentIds.some((agentId) => !exposed.has(agentId))) {
+    throw new Error(`MCP runtime binding ${index} refers to an unknown agent.`);
+  }
+}
+
+async function readBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > MAX_BODY_BYTES) throw new BodyTooLargeError();
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+function headersFromIncoming(request: IncomingMessage): Headers {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) value.forEach((item) => headers.append(name, item));
+    else if (value !== undefined) headers.set(name, value);
+  }
+  return headers;
+}
+
+function sendJson(response: ServerResponse, status: number, value: unknown): void {
+  response.writeHead(status, { "content-type": "application/json" });
+  response.end(JSON.stringify(value));
+}
+
+function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
+  const value = env[name]?.trim();
+  if (!value) throw new Error(`${name} is required.`);
+  return value;
+}
+
+function parsePort(value: string | undefined): number {
+  if (value === undefined) return DEFAULT_PORT;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("AGENT_MESH_MCP_PORT must be a valid TCP port.");
+  }
+  return port;
+}
+
+function unique(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
+class BodyTooLargeError extends Error {}
+
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  startMeshMcpServer().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : "Unknown startup error";
+    process.stderr.write(`Agent Mesh MCP failed to start: ${message}\n`);
+    process.exitCode = 1;
+  });
+}
