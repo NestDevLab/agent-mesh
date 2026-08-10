@@ -144,10 +144,7 @@ export function resolveCloudflareAccessPrincipal(
   if (binding === undefined) {
     throw new Error("Cloudflare Access identity is not bound to an MCP principal.");
   }
-  const principalId = createHash("sha256")
-    .update(`${identity.kind}:${identity.subject}`)
-    .digest("hex")
-    .slice(0, 24);
+  const principalId = cloudflarePrincipalId(identity.kind, identity.selector);
   return {
     id: principalId,
     kind: identity.kind,
@@ -157,6 +154,21 @@ export function resolveCloudflareAccessPrincipal(
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
     allowedDomainIds: [...binding.allowedDomainIds]
   };
+}
+
+/**
+ * Returns the stable opaque identifier a deployment must register as the MCP
+ * source agent. The selector is signed by Access and matched to an explicit
+ * binding before this value is used.
+ */
+export function cloudflarePrincipalId(
+  kind: CloudflareAccessIdentity["kind"],
+  selector: string
+): string {
+  return createHash("sha256")
+    .update(`${kind}:${normalizedSelector(kind, selector)}`)
+    .digest("hex")
+    .slice(0, 24);
 }
 
 function isCloudflareAccessIdentity(value: unknown): value is CloudflareAccessIdentity {
