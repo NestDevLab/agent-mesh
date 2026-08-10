@@ -16,7 +16,8 @@ export const DELIVERY_STATUSES = [
   "delivered",
   "failed",
   "expired",
-  "stubbed"
+  "stubbed",
+  "waiting_capacity"
 ] as const;
 
 export type DeliveryStatus = (typeof DELIVERY_STATUSES)[number];
