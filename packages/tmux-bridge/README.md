@@ -171,7 +171,8 @@ desktop app-server has a listening socket — no env var to remember. `codex.con
 checks the known app-server socket candidates in order and adds `--remote
 unix://…` only for the first candidate that is actually listening. If no
 candidate is live, the bridge falls back to a standalone tmux-only Codex session
-instead of failing on a stale socket file. Overrides:
+instead of failing on a stale socket file. The fallback prints a warning to
+stderr so a missing Desktop attachment is visible at spawn time. Overrides:
 
 | Want | Do |
 |---|---|
@@ -213,7 +214,10 @@ $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
 ```
 
 `--remote` and `-c` overrides (e.g. `model_reasoning_effort=xhigh`) are verified
-to coexist — the remote app-server honors the per-session override.
+to coexist. When raw passthrough already sets `model` or
+`model_reasoning_effort`, the bridge omits its default pin for that key instead
+of emitting two competing values. Each invocation rebuilds this command from
+its own arguments, so no passthrough state is shared between spawns.
 
 ## Claude Remote Control visibility
 
