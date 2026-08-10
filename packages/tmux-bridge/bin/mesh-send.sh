@@ -26,6 +26,9 @@
 #   MESH_FROM_AGENT     default source agent type for return-path metadata
 #   MESH_FROM_TARGET    default source tmux target for return-path metadata
 #   TMUX_SESSION_PREFIX tmux name prefix (default: "mesh")
+#   LIMEN_POLICY        optional Limen policy; when set, admission precedes delivery
+#   LIMEN_BIN           Limen executable (default: limen)
+#   MESH_CAPACITY_STATE persistent caller-owned queue path
 
 set -euo pipefail
 
@@ -48,6 +51,11 @@ INTENT="request"
 FROM="${MESH_FROM:-mesh}"
 FROM_AGENT="${MESH_FROM_AGENT:-}"
 FROM_TARGET="${MESH_FROM_TARGET:-}"
+WORK_CLASS="L1"
+RUN_ID=""
+PROJECT=""
+MODEL=""
+EFFORT=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -58,6 +66,11 @@ while [[ $# -gt 0 ]]; do
         --from)       FROM="$2"; shift 2 ;;
         --from-agent) FROM_AGENT="$2"; shift 2 ;;
         --from-target) FROM_TARGET="$2"; shift 2 ;;
+        --class)       WORK_CLASS="$2"; shift 2 ;;
+        --run-id)      RUN_ID="$2"; shift 2 ;;
+        --project)     PROJECT="$2"; shift 2 ;;
+        --model)       MODEL="$2"; shift 2 ;;
+        --effort)      EFFORT="$2"; shift 2 ;;
         -h|--help)    sed -n '/^#/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)            ARGS+=("$1"); shift ;;
     esac
@@ -75,6 +88,11 @@ case "$INTENT" in
     request|reply|notification) ;;
     *) echo "ERROR: invalid --intent '$INTENT' (use request|reply|notification)" >&2; exit 1 ;;
 esac
+case "$WORK_CLASS" in L1|L2|L3) ;; *) echo "ERROR: invalid capacity class '$WORK_CLASS'" >&2; exit 1 ;; esac
+if [[ "$WORK_CLASS" != "L1" && -z "${LIMEN_POLICY:-}" ]]; then
+    echo "ERROR: L2/L3 mesh work requires LIMEN_POLICY; background may not bypass admission" >&2
+    exit 1
+fi
 
 if [[ -n "${MESH_REGISTRY:-}" ]]; then
     [[ -f "$MESH_REGISTRY" ]] || { echo "ERROR: registry not found: $MESH_REGISTRY" >&2; exit 1; }
@@ -208,4 +226,19 @@ if [[ -n "$FROM_AGENT" || -n "$FROM_TARGET" ]]; then
     fi
 fi
 
-exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$(printf '%s\n%s' "$HEADER" "$BODY")" "$TIMEOUT"
+PROMPT="$(printf '%s\n%s' "$HEADER" "$BODY")"
+if [[ "$WORK_CLASS" != "L1" && "$R_TYPE" != "codex" && "$R_TYPE" != "claude" ]]; then
+    echo "ERROR: Limen M1 does not govern background agent type '$R_TYPE'" >&2
+    exit 1
+fi
+if [[ -n "${LIMEN_POLICY:-}" && ( "$R_TYPE" == "codex" || "$R_TYPE" == "claude" ) ]]; then
+    DISPATCHER="$BIN_DIR/mesh-capacity-dispatch.mjs"
+    STATE="${MESH_CAPACITY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json}"
+    [[ -n "$RUN_ID" ]] || RUN_ID="mesh-${R_TARGET}-$(date +%s%N)"
+    CAPACITY_ARGS=(submit --state "$STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_POLICY" --provider "$R_TYPE" --harness "$R_TYPE" --run-id "$RUN_ID" --class "$WORK_CLASS" --session "$R_TARGET")
+    [[ -n "$PROJECT" ]] && CAPACITY_ARGS+=(--project "$PROJECT")
+    [[ -n "$MODEL" ]] && CAPACITY_ARGS+=(--model "$MODEL")
+    [[ -n "$EFFORT" ]] && CAPACITY_ARGS+=(--effort "$EFFORT")
+    exec node "$DISPATCHER" "${CAPACITY_ARGS[@]}" -- "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+fi
+exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"

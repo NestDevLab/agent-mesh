@@ -95,6 +95,20 @@ $BIN/agent-read.sh --agent codex "$TARGET" --full
 $BIN/agent-read.sh --agent codex "$TARGET" --follow
 ```
 
+For governed mesh work, use `mesh-send.sh` with an explicit class and stable run
+ID. L2/L3 must not bypass Limen: configure `LIMEN_POLICY`, then schedule a drain
+at the returned `retryAt`. Exit 75 means queued, not failed. Neither submit nor
+drain sleeps or pastes a deferred prompt.
+
+```bash
+export LIMEN_POLICY=/path/to/limen-policy.json
+$BIN/mesh-send.sh --to codex --class L3 --run-id backlog-item-42 \
+  "continue the externally authorized item" 300
+
+node "$BIN/mesh-capacity-dispatch.mjs" drain \
+  --state "${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json"
+```
+
 ### Watch any persisted Codex or Claude session
 
 Transcript watching does not require the session to have been started by this
