@@ -38,6 +38,8 @@ export interface TmuxRoute {
   tmux_target: string;
   /** Default false => stubbed (dry-run-first, like the Discord adapter). */
   enable_real_send?: boolean;
+  /** Default false => MCP-originated prompts cannot enter this tmux session. */
+  allow_mcp_ingress?: boolean;
   /** When present, admission is required before a real send. */
   capacity?: CapacityRoutePolicy;
 }
@@ -109,6 +111,14 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       const reason = "no_route_for_target";
       await this.record(delivery, envelope, "", "failed", false, reason);
       return { status: "failed", details: { reason, ...correlation } };
+    }
+
+    // Public MCP ingress is a separate trust boundary. A real route must opt
+    // in explicitly; enabling real sends alone never authorizes web prompts.
+    if (envelope.metadata?.ingress === "mcp" && route.allow_mcp_ingress !== true) {
+      const reason = "mcp_ingress_not_allowed";
+      await this.record(delivery, envelope, route.tmux_target, "failed", false, reason);
+      return { status: "failed", details: { reason, tmux_target: route.tmux_target, ...correlation } };
     }
 
     // 3. Idempotency dedup.
