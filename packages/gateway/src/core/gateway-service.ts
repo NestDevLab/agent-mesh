@@ -792,8 +792,8 @@ export class GatewayService implements AgentMeshGateway {
   }
 }
 
-function isAdapterFinalStatus(status: string): status is "delivered" | "failed" | "stubbed" {
-  return status === "delivered" || status === "failed" || status === "stubbed";
+function isAdapterFinalStatus(status: string): status is "delivered" | "failed" | "stubbed" | "waiting_capacity" {
+  return status === "delivered" || status === "failed" || status === "stubbed" || status === "waiting_capacity";
 }
 
 function isValidDeliveryTransition(
@@ -802,11 +802,12 @@ function isValidDeliveryTransition(
 ): boolean {
   const allowed: Record<DeliveryRecord["status"], readonly DeliveryRecord["status"][]> = {
     queued: ["dispatching", "expired"],
-    dispatching: ["dispatching", "delivered", "failed", "stubbed", "expired"],
+    dispatching: ["dispatching", "delivered", "failed", "stubbed", "expired", "waiting_capacity"],
     delivered: [],
     failed: [],
     expired: [],
-    stubbed: []
+    stubbed: [],
+    waiting_capacity: ["dispatching", "delivered", "failed", "expired"]
   };
   return allowed[from].includes(to);
 }

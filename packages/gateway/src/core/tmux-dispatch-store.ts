@@ -17,7 +17,7 @@ export interface TmuxDispatchRecord {
   target_agent_id: string;
   tmux_target: string;
   idempotency_key: string;
-  status: "delivered" | "failed" | "stubbed";
+  status: "delivered" | "failed" | "stubbed" | "waiting_capacity";
   sender_called: boolean;
   reason: string;
   trace_id?: string | null;

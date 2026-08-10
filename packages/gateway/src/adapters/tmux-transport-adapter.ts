@@ -7,6 +7,8 @@ import {
   TmuxDispatchStore,
   type TmuxDispatchRecord
 } from "../core/tmux-dispatch-store.js";
+import { CapacityQueueStore, type CapacityQueueRecord } from "../core/capacity-queue-store.js";
+import type { CapacityAdmissionBroker, CapacityAdmissionResult, CapacityRoutePolicy } from "../schema/capacity-admission.js";
 
 export interface TmuxSendInput {
   target_agent_id: string;
@@ -36,6 +38,8 @@ export interface TmuxRoute {
   tmux_target: string;
   /** Default false => stubbed (dry-run-first, like the Discord adapter). */
   enable_real_send?: boolean;
+  /** When present, admission is required before a real send. */
+  capacity?: CapacityRoutePolicy;
 }
 
 export interface TmuxTransportAdapterOptions {
@@ -45,6 +49,7 @@ export interface TmuxTransportAdapterOptions {
   clock?: StoreClock;
   history?: readonly AgentMessageEnvelopeV1[];
   maxRepliesPerConversation?: number;
+  capacityBroker?: CapacityAdmissionBroker;
 }
 
 export class TmuxTransportAdapter implements MeshTransportAdapter {
@@ -56,6 +61,8 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
   private readonly clock?: StoreClock;
   private readonly history?: readonly AgentMessageEnvelopeV1[];
   private readonly maxRepliesPerConversation?: number;
+  private readonly capacityBroker?: CapacityAdmissionBroker;
+  private readonly capacityQueue: CapacityQueueStore;
 
   constructor(options: TmuxTransportAdapterOptions) {
     this.sender = options.sender;
@@ -67,6 +74,8 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
     this.clock = options.clock;
     this.history = options.history;
     this.maxRepliesPerConversation = options.maxRepliesPerConversation;
+    this.capacityBroker = options.capacityBroker;
+    this.capacityQueue = new CapacityQueueStore({ stateDir: options.stateDir, clock: options.clock });
   }
 
   async dispatch(
@@ -105,7 +114,7 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
     // 3. Idempotency dedup.
     const prior = (
       await this.store.listByIdempotencyKey(envelope.idempotency_key)
-    ).find((candidate) => candidate.status !== "failed");
+    ).find((candidate) => candidate.status !== "failed" && candidate.status !== "waiting_capacity");
     if (prior !== undefined) {
       return {
         status: prior.status,
@@ -138,7 +147,19 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       };
     }
 
-    // 6. Atomic claim — prevents concurrent same-key dispatches from double
+    // 6. Capacity admission. Deferred work is durably queued; no prompt is
+    // delivered and no TUI state is inspected or synthesized.
+    if (route.capacity !== undefined) {
+      const admission = await this.admit(route.capacity, envelope);
+      if (admission.decision === "defer") {
+        const retryAt = admission.retryAt ?? this.nowMs() + (route.capacity.observerRetryMs ?? 60_000);
+        await this.queue(delivery, envelope, route.capacity, admission, retryAt, admission.reasons.join(",") || "capacity_deferred");
+        const record = await this.record(delivery, envelope, route.tmux_target, "waiting_capacity", false, admission.reasons.join(",") || "capacity_deferred");
+        return { status: "waiting_capacity", external_id: record.id, details: { retryAt, decisionId: admission.decisionId, configHash: admission.configHash, workClass: admission.workClass, reasons: admission.reasons, tmux_target: route.tmux_target, ...correlation } };
+      }
+    }
+
+    // 7. Atomic claim — prevents concurrent same-key dispatches from double
     // sending. The step-3 lookup only catches an already-completed send; this
     // closes the check-then-send window for in-flight concurrency.
     const claimed = await this.store.claim(envelope.idempotency_key);
@@ -154,7 +175,7 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       };
     }
 
-    // 7. Real send through the injected sender.
+    // 8. Real send through the injected sender.
     let result: TmuxSendResult;
     try {
       result = await this.sender.send({
@@ -202,6 +223,7 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       // needed to guard the in-flight send window.
       await this.store.releaseClaim(envelope.idempotency_key);
     }
+    await this.finishQueued(delivery, envelope, route.capacity, status, reason);
 
     return {
       status,
@@ -214,6 +236,43 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
       }
     };
   }
+
+  /** Retry due items. The host schedules calls at the earliest retryAt; this method never sleeps. */
+  async drainCapacityQueue(now = this.nowMs(), limit = 32): Promise<AdapterDispatchResult[]> {
+    const due = (await this.capacityQueue.waiting(now)).slice(0, Math.max(0, limit));
+    const results: AdapterDispatchResult[] = [];
+    for (const item of due) results.push(await this.dispatch(item.delivery, item.envelope));
+    return results;
+  }
+
+  private async admit(policy: CapacityRoutePolicy, envelope: AgentMessageEnvelopeV1): Promise<CapacityAdmissionResult> {
+    const workClass = policy.workClass ?? "L1";
+    if (!this.capacityBroker) {
+      if (workClass === "L1") return { decision: "admit", retryAt: null, decisionId: "broker-unavailable-l1", configHash: "unavailable", workClass, concurrencyTarget: 0, reasons: ["capacity_broker_unavailable_l1_fail_open"] };
+      return { decision: "defer", retryAt: this.nowMs() + (policy.observerRetryMs ?? 60_000), decisionId: "broker-unavailable-background", configHash: "unavailable", workClass, concurrencyTarget: 0, reasons: ["capacity_broker_unavailable"] };
+    }
+    try {
+      return await this.capacityBroker.admit({ runId: envelope.idempotency_key, provider: policy.provider, harness: policy.harness, workClass, ...(policy.project ? { project: policy.project } : {}), session: envelope.conversation_id, ...(policy.model ? { model: policy.model } : {}), ...(policy.effort ? { effort: policy.effort } : {}) });
+    } catch {
+      if (workClass === "L1") return { decision: "admit", retryAt: null, decisionId: "broker-error-l1", configHash: "unavailable", workClass, concurrencyTarget: 0, reasons: ["capacity_broker_error_l1_fail_open"] };
+      return { decision: "defer", retryAt: this.nowMs() + (policy.observerRetryMs ?? 60_000), decisionId: "broker-error-background", configHash: "unavailable", workClass, concurrencyTarget: 0, reasons: ["capacity_broker_error"] };
+    }
+  }
+
+  private async queue(delivery: DeliveryRecord, envelope: AgentMessageEnvelopeV1, route: CapacityRoutePolicy, decision: CapacityAdmissionResult, retryAt: number, reason: string): Promise<void> {
+    const previous = (await this.capacityQueue.latest()).find(item => item.idempotency_key === envelope.idempotency_key);
+    const record: CapacityQueueRecord = { id: previous?.id ?? `capacity_${envelope.message_id}`, idempotency_key: envelope.idempotency_key, work_class: decision.workClass, status: "waiting_capacity", retry_at: retryAt, attempts: (previous?.attempts ?? 0) + 1, delivery, envelope, route, decision, reason, updated_at: new Date(this.nowMs()).toISOString() };
+    await this.capacityQueue.append(record);
+  }
+
+  private async finishQueued(delivery: DeliveryRecord, envelope: AgentMessageEnvelopeV1, route: CapacityRoutePolicy | undefined, status: "delivered" | "failed", reason: string): Promise<void> {
+    if (!route) return;
+    const previous = (await this.capacityQueue.latest()).find(item => item.idempotency_key === envelope.idempotency_key);
+    if (!previous) return;
+    await this.capacityQueue.append({ ...previous, status: status === "delivered" ? "dispatched" : "failed", retry_at: this.nowMs(), attempts: previous.attempts + 1, delivery, envelope, route, reason, updated_at: new Date(this.nowMs()).toISOString() });
+  }
+
+  private nowMs(): number { return this.clock?.now().getTime() ?? Date.now(); }
 
   private async record(
     delivery: DeliveryRecord,

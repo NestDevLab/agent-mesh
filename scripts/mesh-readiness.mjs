@@ -13,6 +13,7 @@ const agentTmuxBundleFiles = [
   "bin/agent-session.sh",
   "bin/agent-wait.sh",
   "bin/mesh-list-agents.sh",
+  "bin/mesh-capacity-dispatch.mjs",
   "bin/mesh-models.sh",
   "bin/mesh-send.sh",
   "bin/session-writer-status.mjs",
