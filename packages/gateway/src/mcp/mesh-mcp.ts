@@ -226,8 +226,14 @@ const deliveryStatusSchema = z.object({
 
 /** Creates a fresh MCP server instance for one HTTP serving unit. */
 export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
-  const facade = new MeshMcpFacade(options);
   const server = new McpServer({ name: "agent-mesh-bridge", version: "0.9.0" });
+  registerMeshMcpTools(server, options);
+  return server;
+}
+
+/** Registers the Agent Mesh surface on a standalone or aggregated MCP server. */
+export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions): void {
+  const facade = new MeshMcpFacade(options);
 
   if (options.principal.allowedTools.includes("mesh_list_agents")) server.registerTool(
     "mesh_list_agents",
@@ -300,7 +306,6 @@ export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
     }
   );
 
-  return server;
 }
 
 /**
