@@ -12,9 +12,12 @@ import {
   CloudflareAccessAuthenticator,
   cloudflarePrincipalId,
   requireCloudflareAccess,
+  resolveCloudflareAccessBinding,
   resolveCloudflareAccessPrincipal,
   type CloudflareAccessBinding
 } from "./cloudflare-access.js";
+import { GogGoogleWorkspaceRunner, type GoogleWorkspaceAccount } from "./google-workspace.js";
+import { createMcpHubHandler, type McpHubProfile } from "./hub-mcp.js";
 import {
   createMeshMcpHandler,
   FixedWindowMeshMcpRateLimiter,
@@ -23,7 +26,7 @@ import {
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8790;
-const MCP_PATH = "/agent-mesh";
+const AGENT_MESH_PATH = "/agent-mesh";
 const MAX_BODY_BYTES = 1_048_576;
 
 interface RuntimeAgent extends MeshAgentRecord {
@@ -35,6 +38,12 @@ interface RuntimeConfig {
   agents: RuntimeAgent[];
   contexts: MeshContextRecord[];
   bindings: CloudflareAccessBinding[];
+  googleWorkspace?: {
+    accounts: {
+      work: GoogleWorkspaceAccount;
+      personal: GoogleWorkspaceAccount;
+    };
+  };
 }
 
 export async function startMeshMcpServer(env = process.env): Promise<() => Promise<void>> {
@@ -69,7 +78,8 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
     agentRegistry: new AgentRegistry([...requesterAgents, ...config.agents])
   });
   const bindings = config.bindings;
-  const handler = requireCloudflareAccess(
+  const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
+  const meshHandler = requireCloudflareAccess(
     createMeshMcpHandler({
       gateway,
       agents: config.agents.map(({ id, name, provider, capabilities }) => ({
@@ -83,9 +93,40 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
     }),
     new CloudflareAccessAuthenticator({ teamDomain, audience })
   );
+  handlers.set(AGENT_MESH_PATH, meshHandler);
+
+  const googleRunner = config.googleWorkspace === undefined
+    ? undefined
+    : new GogGoogleWorkspaceRunner(config.googleWorkspace.accounts);
+  for (const profile of hubProfiles(env)) {
+    if (googleRunner === undefined && profile.name !== "memory") {
+      throw new Error(`Google Workspace configuration is required for /${profile.name}.`);
+    }
+    const hubHandler = createMcpHubHandler({
+      profile: profile.name,
+      gateway,
+      agents: config.agents.map(({ id, name, provider, capabilities }) => ({
+        id, name, provider, capabilities
+      })),
+      rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+      googleRunner: googleRunner ?? unavailableGoogleRunner,
+      memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
+      resolvePrincipal: (authInfo) => {
+        const binding = resolveCloudflareAccessBinding(authInfo, bindings);
+        return {
+          mesh: resolveCloudflareAccessPrincipal(authInfo, bindings),
+          allowedGoogleAccounts: binding.allowedGoogleAccounts ?? []
+        };
+      }
+    });
+    handlers.set(`/${profile.name}`, requireCloudflareAccess(
+      hubHandler,
+      new CloudflareAccessAuthenticator({ teamDomain, audience: profile.audience })
+    ));
+  }
 
   const server = createServer((request, response) => {
-    void serveRequest(request, response, handler.fetch, host, port);
+    void serveRequest(request, response, handlers, host, port);
   });
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
@@ -94,9 +135,9 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       resolveListen();
     });
   });
-  process.stdout.write(`Agent Mesh MCP listening on http://${host}:${port}${MCP_PATH}\n`);
+  process.stdout.write(`MCP hub listening on http://${host}:${port} (${[...handlers.keys()].join(", ")})\n`);
   return async () => {
-    await handler.close();
+    await Promise.all([...handlers.values()].map((handler) => handler.close()));
     await new Promise<void>((resolveClose, reject) =>
       server.close((error) => (error === undefined ? resolveClose() : reject(error)))
     );
@@ -106,13 +147,14 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
 async function serveRequest(
   incoming: IncomingMessage,
   outgoing: ServerResponse,
-  fetchHandler: (request: Request) => Promise<Response>,
+  handlers: ReadonlyMap<string, { fetch(request: Request): Promise<Response> }>,
   host: string,
   port: number
 ): Promise<void> {
   try {
     const url = new URL(incoming.url ?? "/", `http://${host}:${port}`);
-    if (url.pathname !== MCP_PATH) {
+    const handler = handlers.get(url.pathname);
+    if (handler === undefined) {
       sendJson(outgoing, 404, { error: "Not found." });
       return;
     }
@@ -126,7 +168,7 @@ async function serveRequest(
       headers: headersFromIncoming(incoming),
       ...(body === undefined ? {} : { body })
     });
-    const response = await fetchHandler(request);
+    const response = await handler.fetch(request);
     outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     outgoing.end(Buffer.from(await response.arrayBuffer()));
   } catch (error) {
@@ -162,7 +204,14 @@ async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {
     return validated.value!;
   });
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
-  return { stateDir: parsed.stateDir, agents, contexts, bindings: parsed.bindings };
+  validateGoogleWorkspace(parsed.googleWorkspace);
+  return {
+    stateDir: parsed.stateDir,
+    agents,
+    contexts,
+    bindings: parsed.bindings,
+    ...(parsed.googleWorkspace === undefined ? {} : { googleWorkspace: parsed.googleWorkspace })
+  };
 }
 
 function validateBinding(
@@ -177,7 +226,10 @@ function validateBinding(
     !Array.isArray(binding.allowedTools) ||
     !Array.isArray(binding.allowedAgentIds) ||
     !Array.isArray(binding.allowedWorkspaceIds) ||
-    !Array.isArray(binding.allowedDomainIds)
+    !Array.isArray(binding.allowedDomainIds) ||
+    (binding.allowedGoogleAccounts !== undefined &&
+      (!Array.isArray(binding.allowedGoogleAccounts) ||
+        binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))
   ) {
     throw new Error(`Invalid MCP runtime binding at index ${index}.`);
   }
@@ -186,6 +238,45 @@ function validateBinding(
     throw new Error(`MCP runtime binding ${index} refers to an unknown agent.`);
   }
 }
+
+function validateGoogleWorkspace(value: RuntimeConfig["googleWorkspace"]): void {
+  if (value === undefined) return;
+  for (const alias of ["work", "personal"] as const) {
+    const account = value.accounts?.[alias];
+    if (
+      account === undefined ||
+      typeof account.account !== "string" ||
+      account.account.length === 0 ||
+      (account.client !== undefined && (typeof account.client !== "string" || account.client.length === 0))
+    ) {
+      throw new Error(`Invalid Google Workspace ${alias} account configuration.`);
+    }
+  }
+}
+
+function hubProfiles(env: NodeJS.ProcessEnv): Array<{ name: McpHubProfile; audience: string }> {
+  const definitions: Array<[McpHubProfile, string]> = [
+    ["workspace", "AGENT_MESH_MCP_WORKSPACE_AUDIENCE"],
+    ["google-workspace", "AGENT_MESH_MCP_GOOGLE_WORKSPACE_AUDIENCE"],
+    ["memory", "AGENT_MESH_MCP_MEMORY_AUDIENCE"]
+  ];
+  return definitions.flatMap(([name, variable]) => {
+    const audience = env[variable]?.trim();
+    return audience ? [{ name, audience }] : [];
+  });
+}
+
+function parseMemoryState(value: string | undefined): "setup_required" | "ready" | "degraded" {
+  if (value === undefined || value === "setup_required") return "setup_required";
+  if (value === "ready" || value === "degraded") return value;
+  throw new Error("AGENT_MESH_MCP_MEMORY_STATE is invalid.");
+}
+
+const unavailableGoogleRunner = {
+  async run(): Promise<unknown> {
+    throw new Error("Google Workspace is not configured.");
+  }
+};
 
 async function readBody(request: IncomingMessage): Promise<Buffer> {
   const chunks: Buffer[] = [];

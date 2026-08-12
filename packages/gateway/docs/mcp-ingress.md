@@ -1,4 +1,4 @@
-# Agent Mesh MCP ingress
+# MCP hub ingress
 
 `src/mcp/mesh-mcp.ts` exposes a provider-neutral, Streamable HTTP MCP handler.
 It converts a web-chat request into a normal Agent Mesh A2A `request` envelope.
@@ -29,6 +29,38 @@ Cloudflare Access adapter validates signature, issuer, audience, expiry, and an
 explicit user or service binding. Do not expose the endpoint directly to the
 public Internet without authentication, request limits, and TLS. The handler
 rejects legacy MCP traffic and does not start a listener by itself.
+
+## Modular profiles
+
+The HTTP host keeps Agent Mesh as the communication core while exposing
+separate least-privilege MCP profiles on one hostname:
+
+| Path | Surface |
+| --- | --- |
+| `/agent-mesh` | Existing governed A2A request and delivery tools. |
+| `/google-workspace` | Read-only Drive search, Gmail search, and Calendar event listing. |
+| `/memory` | Memory backend availability only until a dedicated AMF principal is provisioned. |
+| `/workspace` | Aggregated Agent Mesh and Google Workspace tools plus memory availability. |
+
+Each enabled path has its own Cloudflare Access audience. Set
+`AGENT_MESH_MCP_WORKSPACE_AUDIENCE`,
+`AGENT_MESH_MCP_GOOGLE_WORKSPACE_AUDIENCE`, and
+`AGENT_MESH_MCP_MEMORY_AUDIENCE` to enable the corresponding optional profile.
+The original `AGENT_MESH_MCP_AUDIENCE` remains mandatory and applies only to
+`/agent-mesh`.
+
+Google account addresses and OAuth client selection live in the protected
+runtime configuration under `googleWorkspace.accounts`. Access bindings must
+also name `allowedGoogleAccounts` (`work`, `personal`, or both). The adapter
+executes the absolute `gog` binary without a shell, forces JSON and
+non-interactive mode, caps result counts, time, and output size, and exposes no
+Google mutation command.
+
+Do not point the memory profile at an existing human or harness credential.
+Activate AMF search/read tools only after provisioning a dedicated MCP
+principal with explicit vault and scope grants. Until then, keep
+`AGENT_MESH_MCP_MEMORY_STATE=setup_required`; the status tool makes that
+boundary visible without pretending the backend is connected.
 
 For a real Codex or Claude route, inject the existing `TmuxTransportAdapter`
 with an explicit route whose `enable_real_send` and `allow_mcp_ingress` are
