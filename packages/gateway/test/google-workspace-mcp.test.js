@@ -74,7 +74,7 @@ test("Google Workspace profile advertises only the read-only Google surface", as
     resolvePrincipal: () => ({ mesh: meshPrincipal, allowedGoogleAccounts: ["work"] })
   });
   const requestOptions = {
-    authInfo: { token: "verified", clientId: "test", scopes: [] }
+    authInfo: { token: "x", clientId: "test", scopes: [] }
   };
   const request = new Request("https://mcp.example.test/google-workspace", {
     method: "POST",
