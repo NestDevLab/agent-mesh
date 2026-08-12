@@ -96,10 +96,12 @@ $BIN/agent-read.sh --agent codex "$TARGET" --follow
 ```
 
 For governed mesh work, use `mesh-send.sh` with an explicit class and stable run
-ID. For Codex and Claude it prefers the additive fleet policy at
-`${XDG_CONFIG_HOME:-$HOME/.config}/limen/<provider>-shadow-policy-v2.json` and
-falls back to `<provider>-shadow-policy.json` during migration. Set
-`LIMEN_POLICY` only to override both locations explicitly. L2/L3 fail closed if
+ID. For explicit L3 work on Codex and Claude it prefers the fleet-owned broker
+policy at `${XDG_CONFIG_HOME:-$HOME/.config}/limen/<provider>-broker-policy-v2.json`.
+L1/L2, or L3 before that policy is installed, use
+`<provider>-shadow-policy-v2.json` and then the legacy
+`<provider>-shadow-policy.json` during migration. Set `LIMEN_POLICY` only to
+override all discovered locations explicitly. L2/L3 fail closed if
 no policy is available. Schedule a drain at the returned `retryAt`. Exit 75
 means queued, not failed. Neither submit nor drain sleeps or pastes a deferred
 prompt.

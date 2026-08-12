@@ -223,17 +223,20 @@ if [[ -n "$FROM_AGENT" || -n "$FROM_TARGET" ]]; then
 fi
 
 LIMEN_POLICY_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/limen"
+BROKER_LIMEN_POLICY="$LIMEN_POLICY_ROOT/${R_TYPE}-broker-policy-v2.json"
 DEFAULT_LIMEN_POLICY="$LIMEN_POLICY_ROOT/${R_TYPE}-shadow-policy-v2.json"
 LEGACY_LIMEN_POLICY="$LIMEN_POLICY_ROOT/${R_TYPE}-shadow-policy.json"
 if [[ -z "${LIMEN_POLICY:-}" && ( "$R_TYPE" == "codex" || "$R_TYPE" == "claude" ) ]]; then
-    if [[ -f "$DEFAULT_LIMEN_POLICY" ]]; then
+    if [[ "$WORK_CLASS" == "L3" && -f "$BROKER_LIMEN_POLICY" ]]; then
+        LIMEN_POLICY="$BROKER_LIMEN_POLICY"
+    elif [[ -f "$DEFAULT_LIMEN_POLICY" ]]; then
         LIMEN_POLICY="$DEFAULT_LIMEN_POLICY"
     elif [[ -f "$LEGACY_LIMEN_POLICY" ]]; then
         LIMEN_POLICY="$LEGACY_LIMEN_POLICY"
     fi
 fi
 if [[ "$WORK_CLASS" != "L1" && -z "${LIMEN_POLICY:-}" ]]; then
-    echo "ERROR: L2/L3 mesh work requires a Limen policy; expected LIMEN_POLICY, $DEFAULT_LIMEN_POLICY, or $LEGACY_LIMEN_POLICY" >&2
+    echo "ERROR: L2/L3 mesh work requires a Limen policy; expected LIMEN_POLICY, $BROKER_LIMEN_POLICY, $DEFAULT_LIMEN_POLICY, or $LEGACY_LIMEN_POLICY" >&2
     exit 1
 fi
 
