@@ -109,10 +109,11 @@ cursor file, and supports Codex and Claude without requiring a tmux target. Its
 structured output is intended for existing Mesh transports; the watcher does
 not dispatch, resume, or wake an agent by itself.
 
-For Codex and Claude, `mesh-send.sh` first discovers
-`<provider>-shadow-policy-v2.json`, then falls back to the legacy
-`<provider>-shadow-policy.json` during additive fleet migration. An explicit
-`LIMEN_POLICY` overrides both. When a policy is available, the script calls the
+For Codex and Claude, `mesh-send.sh` first discovers the dedicated
+`<provider>-broker-policy-v2.json`, then falls back to
+`<provider>-shadow-policy-v2.json` and the legacy `<provider>-shadow-policy.json`
+during additive fleet migration. An explicit `LIMEN_POLICY` overrides all three.
+This keeps broker enforcement independent from harness hook telemetry. When a policy is available, the script calls the
 admission broker before `agent-send.sh`. A defer is written to a mode-0600
 caller-owned queue and exits 75 with `retryAt`, `decisionId`, `configHash`,
 class, and reasons. L1 is the only fail-open default; explicit L2/L3 refuses to
