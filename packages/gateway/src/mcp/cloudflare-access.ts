@@ -3,6 +3,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 import type { AuthInfo, McpHttpHandler } from "@modelcontextprotocol/server";
 import type { MeshMcpPrincipal, MeshMcpTool } from "./mesh-mcp.js";
+import type { GoogleWorkspaceAccountAlias } from "./google-workspace.js";
 
 export interface CloudflareAccessIdentity {
   subject: string;
@@ -19,6 +20,7 @@ export interface CloudflareAccessBinding {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  allowedGoogleAccounts?: readonly GoogleWorkspaceAccountAlias[];
 }
 
 export interface CloudflareAccessAuthenticatorOptions {
@@ -135,15 +137,7 @@ export function resolveCloudflareAccessPrincipal(
   if (!isCloudflareAccessIdentity(identity)) {
     throw new Error("Verified Cloudflare Access identity is missing.");
   }
-  const binding = bindings.find(
-    (candidate) =>
-      candidate.kind === identity.kind &&
-      normalizedSelector(candidate.kind, candidate.selector) ===
-        normalizedSelector(identity.kind, identity.selector)
-  );
-  if (binding === undefined) {
-    throw new Error("Cloudflare Access identity is not bound to an MCP principal.");
-  }
+  const binding = resolveCloudflareAccessBinding(authInfo, bindings);
   const principalId = cloudflarePrincipalId(identity.kind, identity.selector);
   return {
     id: principalId,
@@ -154,6 +148,26 @@ export function resolveCloudflareAccessPrincipal(
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
     allowedDomainIds: [...binding.allowedDomainIds]
   };
+}
+
+export function resolveCloudflareAccessBinding(
+  authInfo: AuthInfo,
+  bindings: readonly CloudflareAccessBinding[]
+): CloudflareAccessBinding {
+  const identity = authInfo.extra?.cloudflareAccessIdentity;
+  if (!isCloudflareAccessIdentity(identity)) {
+    throw new Error("Verified Cloudflare Access identity is missing.");
+  }
+  const binding = bindings.find(
+    (candidate) =>
+      candidate.kind === identity.kind &&
+      normalizedSelector(candidate.kind, candidate.selector) ===
+        normalizedSelector(identity.kind, identity.selector)
+  );
+  if (binding === undefined) {
+    throw new Error("Cloudflare Access identity is not bound to an MCP principal.");
+  }
+  return binding;
 }
 
 /**
