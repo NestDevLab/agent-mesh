@@ -119,6 +119,22 @@ class, and reasons. L1 is the only fail-open default; explicit L2/L3 refuses to
 run when no policy is present.
 The dispatcher never polls a spinner to decide capacity and never reinjects a
 deferred prompt. A successful foreground send reconciles its Limen lease.
+It also appends a mode-0600 replay stream at `<state>.events.ndjson` by default
+or the explicit `--events` path. Events contain only a SHA-256 run identity,
+provider, harness, class, lifecycle status, attempt/backlog counts, bounded
+reason, and decision/config identifiers. Raw run/session IDs, commands, prompts,
+and task bodies are excluded. Pass that stream to `limen replay --queue` together
+with Limen's schema-v4 evidence. `--eligible-work` lets a governed caller declare
+its current authorized backlog size; drain derives it from the claimed due set.
+After delivery begins, a persistence failure is classified as `dispatch_unknown`
+and never retried automatically. This leaves a visible reconciliation item instead
+of risking a duplicate prompt.
+
+Governed Codex mesh sessions start with
+`agents.max_concurrent_threads_per_session=2`. This statically bounds the
+aggregate native-subagent exposure that Limen cannot intercept per spawn. Set
+`CODEX_MESH_SUBAGENT_CAP` to a positive integer for an explicitly governed run;
+the normal raw `-c` passthrough remains the strongest single-run override.
 
 `agent-link.mjs` composes that watcher with `agent-send.sh` and the existing
 Mesh v1 `final`, `seen`, `hop`, and `dispatch_once` policy. It buffers transcript
