@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
@@ -26,6 +26,61 @@ test("deferred tmux work persists, exits 75, and drains in class priority", asyn
   assert.deepEqual((await readFile(sends, "utf8")).trim().split("\n"), ["L1", "L2", "L3"]);
   const ledger = JSON.parse(await readFile(state, "utf8"));
   assert.ok(ledger.jobs.every(job => job.status === "dispatched"));
+  const eventPath = `${state}.events.ndjson`;
+  assert.equal((await stat(eventPath)).mode & 0o777, 0o600);
+  const events = (await readFile(eventPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+  assert.ok(events.some(event => event.status === "waiting_capacity"));
+  assert.ok(events.some(event => event.status === "claimed"));
+  assert.equal(events.filter(event => event.status === "dispatched").length, 3);
+  assert.ok(events.every(event => event.event === "limen.queue" && /^[a-f0-9]{64}$/.test(event.runHash)));
+  assert.doesNotMatch(JSON.stringify(events), /run-L[123]/);
+});
+
+test("completion preserves the admission session lineage", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-session-"));
+  const state = join(dir, "queue.json"), argsFile = join(dir, "complete-args.txt");
+  const limen = join(dir, "fake-limen.sh"), sender = join(dir, "fake-send.sh");
+  await writeFile(limen, `#!/bin/sh\nif [ "$1" = complete ]; then printf '%s\\n' "$@" > '${argsFile}'; echo '{"status":"completed"}'; exit 0; fi\necho '{"decision":"admit","retryAt":null,"decisionId":"d","configHash":"c","workClass":"L2","concurrencyTarget":1,"reasons":["available"]}'\n`);
+  await writeFile(sender, "#!/bin/sh\nexit 0\n");
+  await chmod(limen, 0o700); await chmod(sender, 0o700);
+  const result = await run(["submit", "--state", state, "--limen", limen, "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "private-run", "--class", "L2", "--session", "session-1", "--", sender]);
+  assert.equal(result.code, 0);
+  assert.match(await readFile(argsFile, "utf8"), /--session\nsession-1/);
+  const events = await readFile(`${state}.events.ndjson`, "utf8");
+  assert.doesNotMatch(events, /private-run|session-1/);
+});
+
+test("post-dispatch evidence failure never converts a delivered command into a retry", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-evidence-"));
+  const state = join(dir, "queue.json"), events = join(dir, "events.ndjson");
+  const limen = join(dir, "fake-limen.sh"), sender = join(dir, "fake-send.sh");
+  await writeFile(limen, "#!/bin/sh\nif [ \"$1\" = complete ]; then echo '{\"status\":\"completed\"}'; exit 0; fi\necho '{\"decision\":\"admit\",\"decisionId\":\"d\",\"configHash\":\"c\",\"workClass\":\"L2\",\"reasons\":[\"available\"]}'\n");
+  await writeFile(sender, `#!/bin/sh\nrm '${events}'\nmkdir '${events}'\nexit 0\n`);
+  await chmod(limen, 0o700); await chmod(sender, 0o700);
+  const result = await run(["submit", "--state", state, "--events", events, "--limen", limen, "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "one-shot", "--class", "L2", "--", sender]);
+  assert.equal(result.code, 0);
+  assert.match(result.stderr, /evidence unavailable after dispatch/);
+});
+
+test("uncertain post-dispatch state is quarantined and never automatically redelivered", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-uncertain-"));
+  const state = join(dir, "queue.json"), lock = `${state}.lock`, marker = join(dir, "admit"), sends = join(dir, "sends.txt");
+  const limen = join(dir, "fake-limen.sh"), sender = join(dir, "fake-send.sh");
+  await writeFile(limen, `#!/bin/sh\nif [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi\nif [ -f '${marker}' ]; then echo '{"decision":"admit","decisionId":"d","configHash":"c","workClass":"L3","reasons":["available"]}'; exit 0; fi\necho '{"decision":"defer","retryAt":0,"decisionId":"w","configHash":"c","workClass":"L3","reasons":["over_pace"]}'; exit 75\n`);
+  await writeFile(sender, `#!/bin/sh\nprintf 'sent\\n' >> '${sends}'\nmkdir '${lock}'\nexit 0\n`);
+  await chmod(limen, 0o700); await chmod(sender, 0o700);
+  const submitted = await run(["submit", "--state", state, "--limen", limen, "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "uncertain", "--class", "L3", "--", sender]);
+  assert.equal(submitted.code, 75);
+  await writeFile(marker, "admit\n");
+  const first = await run(["drain", "--state", state, "--now", "1"]);
+  assert.equal(first.code, 1);
+  assert.match(first.stdout, /dispatch_unknown/);
+  await rm(lock, { recursive: true });
+  const second = await run(["drain", "--state", state, "--now", "2"]);
+  assert.equal(second.code, 0);
+  assert.equal((await readFile(sends, "utf8")).trim().split("\n").length, 1);
+  const events = await readFile(`${state}.events.ndjson`, "utf8");
+  assert.match(events, /dispatch_unknown/);
 });
 
 test("invalid Limen protocol never delivers a prompt", async () => {
