@@ -64,6 +64,18 @@ trap cleanup EXIT INT TERM
         || { echo "FAIL: Codex raw model override pattern is missing" >&2; exit 1; }
     [[ " ${AGENT_EFFORT_PASSTHRU_PATTERNS[*]:-} " == *" model_reasoning_effort=* "* ]] \
         || { echo "FAIL: Codex raw effort override pattern is missing" >&2; exit 1; }
+    [[ "$AGENT_NEW_CMD" == *"agents.max_concurrent_threads_per_session=2"* \
+        && "$AGENT_RESUME_CMD" == *"agents.max_concurrent_threads_per_session=2"* ]] \
+        || { echo "FAIL: governed Codex commands lack the static subagent cap" >&2; exit 1; }
+)
+
+(
+    export CODEX_NO_REMOTE=1 CODEX_MESH_SUBAGENT_CAP=invalid
+    # shellcheck source=/dev/null
+    source "$AGENTS_DIR/codex.conf"
+    [[ "$AGENT_NEW_CMD" == *"agents.max_concurrent_threads_per_session=2"* \
+        && "$AGENT_LAUNCH_WARNING" == *"invalid CODEX_MESH_SUBAGENT_CAP"* ]] \
+        || { echo "FAIL: invalid Codex subagent cap did not fail safely" >&2; exit 1; }
 )
 
 (
