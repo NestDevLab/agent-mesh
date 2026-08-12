@@ -227,7 +227,7 @@ BROKER_LIMEN_POLICY="$LIMEN_POLICY_ROOT/${R_TYPE}-broker-policy-v2.json"
 DEFAULT_LIMEN_POLICY="$LIMEN_POLICY_ROOT/${R_TYPE}-shadow-policy-v2.json"
 LEGACY_LIMEN_POLICY="$LIMEN_POLICY_ROOT/${R_TYPE}-shadow-policy.json"
 if [[ -z "${LIMEN_POLICY:-}" && ( "$R_TYPE" == "codex" || "$R_TYPE" == "claude" ) ]]; then
-    if [[ -f "$BROKER_LIMEN_POLICY" ]]; then
+    if [[ "$WORK_CLASS" == "L3" && -f "$BROKER_LIMEN_POLICY" ]]; then
         LIMEN_POLICY="$BROKER_LIMEN_POLICY"
     elif [[ -f "$DEFAULT_LIMEN_POLICY" ]]; then
         LIMEN_POLICY="$DEFAULT_LIMEN_POLICY"
