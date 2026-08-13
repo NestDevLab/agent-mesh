@@ -11,6 +11,9 @@ const {
 } = await import(
   "../src/mcp/mesh-mcp.ts"
 );
+const { adaptMcpRequestBody, wrapSingletonJsonRpcResponse } = await import(
+  "../src/mcp/serve.ts"
+);
 
 function createGateway() {
   return {
@@ -205,4 +208,51 @@ test("MCP server and strict Streamable HTTP handler can be composed", async () =
   assert.equal(typeof handler.fetch, "function");
   const unauthenticated = await handler.fetch(new Request("https://mcp.example.test/mcp"));
   assert.equal(unauthenticated.status, 401);
+});
+
+test("ChatGPT singleton tools/call batches are adapted without enabling general batching", () => {
+  const request = {
+    jsonrpc: "2.0",
+    id: 7,
+    method: "tools/call",
+    params: { name: "mesh_list_agents", arguments: {} }
+  };
+  const singleton = adaptMcpRequestBody(
+    Buffer.from(JSON.stringify([request])),
+    "2026-07-28",
+    "tools/call"
+  );
+  assert.equal(singleton.wrapJsonRpcResponse, true);
+  assert.deepEqual(JSON.parse(Buffer.from(singleton.body).toString("utf8")), request);
+
+  const multiple = adaptMcpRequestBody(
+    Buffer.from(JSON.stringify([request, { ...request, id: 8 }])),
+    "2026-07-28",
+    "tools/call"
+  );
+  assert.equal(multiple.wrapJsonRpcResponse, false);
+  assert.deepEqual(
+    JSON.parse(Buffer.from(multiple.body).toString("utf8")),
+    [request, { ...request, id: 8 }]
+  );
+});
+
+test("ChatGPT singleton compatibility wraps only JSON-RPC responses", async () => {
+  const jsonRpc = await wrapSingletonJsonRpcResponse(Response.json({
+    jsonrpc: "2.0",
+    id: 7,
+    result: { content: [] }
+  }));
+  assert.deepEqual(await jsonRpc.json(), [{
+    jsonrpc: "2.0",
+    id: 7,
+    result: { content: [] }
+  }]);
+
+  const authError = await wrapSingletonJsonRpcResponse(Response.json(
+    { error: "unauthorized" },
+    { status: 401 }
+  ));
+  assert.equal(authError.status, 401);
+  assert.deepEqual(await authError.json(), { error: "unauthorized" });
 });
