@@ -18,6 +18,7 @@ import {
 } from "./cloudflare-access.js";
 import { GogGoogleWorkspaceRunner, type GoogleWorkspaceAccount } from "./google-workspace.js";
 import { createMcpHubHandler, type McpHubProfile } from "./hub-mcp.js";
+import { StdioMemoryRecallRunner, type MemoryRecallConfig } from "./memory-recall.js";
 import {
   createMeshMcpHandler,
   FixedWindowMeshMcpRateLimiter,
@@ -44,6 +45,7 @@ interface RuntimeConfig {
       personal: GoogleWorkspaceAccount;
     };
   };
+  memoryRecall?: MemoryRecallConfig;
 }
 
 export interface McpRequestBodyCompatibility {
@@ -103,6 +105,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
   const googleRunner = config.googleWorkspace === undefined
     ? undefined
     : new GogGoogleWorkspaceRunner(config.googleWorkspace.accounts);
+  const memoryRunner = config.memoryRecall === undefined ? undefined : new StdioMemoryRecallRunner(config.memoryRecall);
   for (const profile of hubProfiles(env)) {
     if (googleRunner === undefined && profile.name !== "memory") {
       throw new Error(`Google Workspace configuration is required for /${profile.name}.`);
@@ -116,6 +119,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
+      memoryRunner,
       resolvePrincipal: (authInfo) => {
         const binding = resolveCloudflareAccessBinding(authInfo, bindings);
         return {
@@ -283,13 +287,24 @@ async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {
   });
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
   validateGoogleWorkspace(parsed.googleWorkspace);
+  validateMemoryRecall(parsed.memoryRecall);
   return {
     stateDir: parsed.stateDir,
     agents,
     contexts,
     bindings: parsed.bindings,
-    ...(parsed.googleWorkspace === undefined ? {} : { googleWorkspace: parsed.googleWorkspace })
+    ...(parsed.googleWorkspace === undefined ? {} : { googleWorkspace: parsed.googleWorkspace }),
+    ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall })
   };
+}
+
+function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
+  if (value === undefined) return;
+  for (const field of ["command", "script", "handoffDir"] as const) {
+    if (typeof value[field] !== "string" || !value[field].startsWith("/")) {
+      throw new Error(`Invalid memory recall ${field} configuration.`);
+    }
+  }
 }
 
 function validateBinding(
