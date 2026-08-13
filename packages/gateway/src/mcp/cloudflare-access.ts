@@ -1,9 +1,16 @@
-import { createHash } from "crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 import type { AuthInfo, McpHttpHandler } from "@modelcontextprotocol/server";
 import type { MeshMcpPrincipal, MeshMcpTool } from "./mesh-mcp.js";
 import type { GoogleWorkspaceAccountAlias } from "./google-workspace.js";
+
+// jose uses the Web Crypto global. Some non-interactive Node service launches
+// do not expose it even on supported Node versions, so install Node's native
+// implementation before the first JWT verification instead of failing open.
+if (globalThis.crypto === undefined) {
+  Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+}
 
 export interface CloudflareAccessIdentity {
   subject: string;
