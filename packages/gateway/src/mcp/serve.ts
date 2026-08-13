@@ -46,6 +46,11 @@ interface RuntimeConfig {
   };
 }
 
+export interface McpRequestBodyCompatibility {
+  body: ArrayBuffer;
+  wrapJsonRpcResponse: boolean;
+}
+
 export async function startMeshMcpServer(env = process.env): Promise<() => Promise<void>> {
   const host = env.AGENT_MESH_MCP_HOST ?? DEFAULT_HOST;
   if (host !== "127.0.0.1" && host !== "::1") {
@@ -162,13 +167,20 @@ async function serveRequest(
     const body =
       method === "GET" || method === "HEAD"
         ? undefined
-        : Uint8Array.from(await readBody(incoming)).buffer;
+        : adaptMcpRequestBody(
+            await readBody(incoming),
+            incoming.headers["mcp-protocol-version"],
+            incoming.headers["mcp-method"]
+          );
     const request = new Request(url, {
       method,
       headers: headersFromIncoming(incoming),
-      ...(body === undefined ? {} : { body })
+      ...(body === undefined ? {} : { body: body.body })
     });
-    const response = await handler.fetch(request);
+    const handlerResponse = await handler.fetch(request);
+    const response = body?.wrapJsonRpcResponse === true
+      ? await wrapSingletonJsonRpcResponse(handlerResponse)
+      : handlerResponse;
     outgoing.writeHead(response.status, Object.fromEntries(response.headers.entries()));
     outgoing.end(Buffer.from(await response.arrayBuffer()));
   } catch (error) {
@@ -177,6 +189,72 @@ async function serveRequest(
       error: status === 413 ? "Request body too large." : "Internal server error."
     });
   }
+}
+
+/**
+ * ChatGPT currently sends one modern tools/call request in a JSON-RPC batch.
+ * MCP 2026 forbids batches, so accept only that singleton compatibility shape
+ * and keep multi-request batches on the SDK's normal rejection path.
+ */
+export function adaptMcpRequestBody(
+  body: Buffer,
+  protocolVersion: string | string[] | undefined,
+  mcpMethod: string | string[] | undefined
+): McpRequestBodyCompatibility {
+  const unchanged = (): McpRequestBodyCompatibility => ({
+    body: Uint8Array.from(body).buffer,
+    wrapJsonRpcResponse: false
+  });
+  if (protocolVersion !== "2026-07-28" || mcpMethod !== "tools/call") return unchanged();
+
+  try {
+    const parsed = JSON.parse(body.toString("utf8")) as unknown;
+    if (
+      !Array.isArray(parsed) ||
+      parsed.length !== 1 ||
+      typeof parsed[0] !== "object" ||
+      parsed[0] === null ||
+      Array.isArray(parsed[0]) ||
+      (parsed[0] as { jsonrpc?: unknown }).jsonrpc !== "2.0" ||
+      (parsed[0] as { method?: unknown }).method !== "tools/call"
+    ) {
+      return unchanged();
+    }
+    return {
+      body: Uint8Array.from(Buffer.from(JSON.stringify(parsed[0]))).buffer,
+      wrapJsonRpcResponse: true
+    };
+  } catch {
+    return unchanged();
+  }
+}
+
+export async function wrapSingletonJsonRpcResponse(response: Response): Promise<Response> {
+  if (!response.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
+    return response;
+  }
+  const text = await response.text();
+  let body = text;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as { jsonrpc?: unknown }).jsonrpc === "2.0"
+    ) {
+      body = JSON.stringify([parsed]);
+    }
+  } catch {
+    // Preserve non-JSON bodies even if an upstream mislabeled the response.
+  }
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
 }
 
 async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {

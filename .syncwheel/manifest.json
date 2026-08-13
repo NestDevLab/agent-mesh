@@ -90,6 +90,22 @@
       "meta": {
         "purpose": "Keep the agent-tmux skill bundle byte-identical to tmux-bridge"
       }
+    },
+    {
+      "id": "chatgpt-singleton-batch",
+      "branch": "fix/chatgpt-singleton-batch",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Adapt ChatGPT singleton JSON-RPC tools/call batches without enabling general MCP batching"
+      }
     }
   ],
   "syncwheel_worktree_root": "var/syncwheel",
