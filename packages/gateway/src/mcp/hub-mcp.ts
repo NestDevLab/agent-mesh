@@ -16,6 +16,7 @@ import {
   type MeshMcpHttpOptions,
   type MeshMcpPrincipal
 } from "./mesh-mcp.js";
+import { registerMemoryRecallTools, type MemoryRecallRunner } from "./memory-recall.js";
 
 export type McpHubProfile = "google-workspace" | "memory" | "workspace";
 
@@ -29,6 +30,7 @@ export interface McpHubOptions extends Omit<MeshMcpHttpOptions, "resolvePrincipa
   googleRunner: GoogleWorkspaceRunner;
   resolvePrincipal(authInfo: AuthInfo, request: Request): McpHubPrincipal | Promise<McpHubPrincipal>;
   memoryState: "setup_required" | "ready" | "degraded";
+  memoryRunner?: MemoryRecallRunner;
 }
 
 export function createMcpHubHandler(options: McpHubOptions): McpHttpHandler {
@@ -48,6 +50,7 @@ export function createMcpHubHandler(options: McpHubOptions): McpHttpHandler {
       });
     }
     if (options.profile === "workspace" || options.profile === "memory") {
+      if (options.memoryRunner !== undefined) registerMemoryRecallTools(server, options.memoryRunner);
       server.registerTool(
         "memory_backend_status",
         {
@@ -61,10 +64,13 @@ export function createMcpHubHandler(options: McpHubOptions): McpHttpHandler {
           },
           inputSchema: z.object({})
         },
-        async () => ({
-          content: [{ type: "text", text: JSON.stringify({ state: options.memoryState }) }],
-          structuredContent: { state: options.memoryState }
-        })
+        async () => {
+          const state = options.memoryRunner === undefined ? options.memoryState : await options.memoryRunner.status();
+          return {
+            content: [{ type: "text", text: JSON.stringify({ state }) }],
+            structuredContent: { state }
+          };
+        }
       );
     }
     return server;
