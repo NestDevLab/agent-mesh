@@ -67,8 +67,8 @@ external config paths supported by the script. Do not commit real mappings.
 
 ```bash
 mesh-hydrate --to facilitator --body "Is it commonly found in a home?"
-mesh-hydrate --to agent-alpha --to example-tenant --body "Answer: yes."
-mesh-hydrate --to agent-alpha,example-tenant --body "Answer: yes."
+mesh-hydrate --to agent-alpha --to agent-beta --body "Answer: yes."
+mesh-hydrate --to agent-alpha,agent-beta --body "Answer: yes."
 ```
 
 With a configured `facilitator` participant, the script emits:
@@ -85,9 +85,9 @@ go next. For multi-turn workflows, use your workflow state or the bundled
 `mesh-session` helper:
 
 ```bash
-mesh-session start --session-id demo-channel --channel-id channel-id --participants agent-alpha,example-tenant --policy round_robin --active agent-alpha
+mesh-session start --session-id demo-channel --channel-id channel-id --participants agent-alpha,agent-beta --policy round_robin --active agent-alpha
 mesh-session next --state state/demo-channel.json --from agent-alpha
-mesh-session next --state state/demo-channel.json --from example-tenant --selected agent-alpha
+mesh-session next --state state/demo-channel.json --from agent-beta --selected agent-alpha
 ```
 
 Supported policies are `round_robin`, `facilitator_selected`,

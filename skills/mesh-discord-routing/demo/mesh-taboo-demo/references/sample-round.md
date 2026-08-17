@@ -3,7 +3,7 @@
 Facilitator to first guesser:
 
 ```bash
-mesh-hydrate --to agent-alpha --body "Taboo Advanced round: agent-alpha starts. Limit: 6 turns. Session state: state/taboo-20260529T093115Z-demo.json. Ask one yes/no question, or make a guess when ready."
+mesh-hydrate --to agent-alpha --body "Taboo Advanced round: Agent Alpha starts. Limit: 6 turns. Session state: state/taboo-20260529T093115Z-demo.json. Ask one yes/no question, or make a guess when ready."
 ```
 
 Session state file:
@@ -13,9 +13,9 @@ Session state file:
   "sessionId": "taboo-20260529T093115Z-demo",
   "channelId": "demo",
   "facilitator": "main",
-  "guessers": ["agent-alpha", "example-tenant"],
+  "guessers": ["agent-alpha", "agent-beta"],
   "activeGuesser": "agent-alpha",
-  "guesserQueue": ["agent-alpha", "example-tenant"],
+  "guesserQueue": ["agent-alpha", "agent-beta"],
   "target": "key",
   "bannedWords": ["lock", "door", "metal", "open"],
   "turnLimit": 6,
@@ -56,7 +56,7 @@ If the guess is incorrect, the facilitator advances the queue and invites only
 the next guesser:
 
 ```bash
-mesh-hydrate --to example-tenant --body "Incorrect. example-tenant's turn. Ask one yes/no question, or make a guess when ready."
+mesh-hydrate --to agent-beta --body "Incorrect. Agent Beta's turn. Ask one yes/no question, or make a guess when ready."
 ```
 
 ## Facilitator Reminder

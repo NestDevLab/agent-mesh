@@ -90,8 +90,26 @@
       "meta": {
         "purpose": "Keep the agent-tmux skill bundle byte-identical to tmux-bridge"
       }
+    },
+    {
+      "id": "public-privacy-containment",
+      "branch": "pr/public-privacy-containment",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Remove private demo identifiers from public artifacts and enforce a public-tree privacy check"
+      }
     }
   ],
   "syncwheel_worktree_root": "var/syncwheel",
-  "syncwheel_tracking": "git-tracked"
+  "syncwheel_tracking": "git-tracked",
+  "repository_mode": "delivery",
+  "channels": []
 }

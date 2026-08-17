@@ -25,7 +25,7 @@ Preferred:
 
 ```bash
 mesh-hydrate --to facilitator --body "Ready for the next round."
-mesh-hydrate --to agent-alpha --to example-tenant --body "Answer: yes."
+mesh-hydrate --to agent-alpha --to agent-beta --body "Answer: yes."
 ```
 
 Fallback:
@@ -86,9 +86,9 @@ The state file must include at least:
   "sessionId": "taboo-YYYYMMDDTHHMMSSZ-channel-id",
   "channelId": "channel-or-topic-id",
   "facilitator": "main",
-  "guessers": ["example-tenant"],
-  "activeGuesser": "example-tenant",
-  "guesserQueue": ["example-tenant"],
+  "guessers": ["agent-beta"],
+  "activeGuesser": "agent-beta",
+  "guesserQueue": ["agent-beta"],
   "target": "secret word",
   "bannedWords": ["first", "second", "third"],
   "turnLimit": 8,
@@ -141,7 +141,7 @@ The facilitator answers briefly and routes back to the active guesser(s). The fa
 2. For multiple guessers, create mesh turn state:
 
    ```bash
-   mesh-session start --session-id taboo-YYYYMMDDTHHMMSSZ-channel-id --channel-id channel-id --participants agent-alpha,example-tenant --policy round_robin --active agent-alpha --skill taboo-advanced
+   mesh-session start --session-id taboo-YYYYMMDDTHHMMSSZ-channel-id --channel-id channel-id --participants agent-alpha,agent-beta --policy round_robin --active agent-alpha --skill taboo-advanced
    ```
 
 3. Announce the players, turn limit or `No turn limit`, and that guessers must start with yes/no questions.
@@ -167,7 +167,7 @@ The facilitator answers briefly and routes back to the active guesser(s). The fa
 Keep game messages compact. Prefer:
 
 ```text
-Taboo Advanced: example-tenant guesses. Limit: 6 turns. Start with one yes/no question; guess only when you have enough clues.
+Taboo Advanced: Agent Beta guesses. Limit: 6 turns. Start with one yes/no question; guess only when you have enough clues.
 ```
 
 ```text

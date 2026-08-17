@@ -62,8 +62,8 @@ Hydrate example:
 
 ```bash
 mesh-hydrate --to facilitator --body "Is it commonly found in a home?"
-mesh-hydrate --to agent-alpha --to example-tenant --body "Answer: yes."
-mesh-hydrate --to agent-alpha,example-tenant --body "Answer: yes."
+mesh-hydrate --to agent-alpha --to agent-beta --body "Answer: yes."
+mesh-hydrate --to agent-alpha,agent-beta --body "Answer: yes."
 ```
 
 Manual fallback checklist:
@@ -86,9 +86,9 @@ The command/script outputs the Discord-ready message with `cc-mesh:` and mention
 Session helper:
 
 ```bash
-mesh-session start --session-id demo-channel --channel-id channel-id --participants agent-alpha,example-tenant --policy round_robin --active agent-alpha --turn-budget 12
+mesh-session start --session-id demo-channel --channel-id channel-id --participants agent-alpha,agent-beta --policy round_robin --active agent-alpha --turn-budget 12
 mesh-session next --state state/demo-channel.json --from agent-alpha
-mesh-session next --state state/demo-channel.json --from example-tenant --selected agent-alpha
+mesh-session next --state state/demo-channel.json --from agent-beta --selected agent-alpha
 mesh-session stop --state state/demo-channel.json --status completed --reason "task done"
 ```
 
