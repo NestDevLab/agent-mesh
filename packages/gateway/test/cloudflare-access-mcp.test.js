@@ -24,7 +24,7 @@ const binding = {
   selector: "joseph@example.test",
   allowedTools: ["mesh_list_agents", "mesh_send", "mesh_delivery_status"],
   allowedAgentIds: ["agent.ingress"],
-  allowedWorkspaceIds: ["workspace.example-business"],
+  allowedWorkspaceIds: ["workspace.example"],
   allowedDomainIds: ["domain.agent-mesh"]
 };
 
@@ -141,9 +141,9 @@ test("registered Access requester can submit through the real gateway", async ()
       stateDir,
       contextRegistry: new ContextRegistry([
         {
-          id: "workspace.example-business",
+          id: "workspace.example",
           type: "workspace",
-          name: "example-business",
+          name: "Example Business",
           parent_id: null,
           policy_profile: "private",
           status: "active"
@@ -152,7 +152,7 @@ test("registered Access requester can submit through the real gateway", async ()
           id: "domain.agent-mesh",
           type: "project",
           name: "Agent Mesh",
-          parent_id: "workspace.example-business",
+          parent_id: "workspace.example",
           policy_profile: "private",
           status: "active"
         }
@@ -165,7 +165,7 @@ test("registered Access requester can submit through the real gateway", async ()
           status: "online",
           phase_1_active: true,
           capabilities: ["submit_request"],
-          enabled_contexts: ["workspace.example-business", "domain.agent-mesh"]
+          enabled_contexts: ["workspace.example", "domain.agent-mesh"]
         },
         {
           id: "agent.ingress",
@@ -174,7 +174,7 @@ test("registered Access requester can submit through the real gateway", async ()
           status: "simulated",
           phase_1_active: true,
           capabilities: ["acknowledge_request"],
-          enabled_contexts: ["workspace.example-business", "domain.agent-mesh"]
+          enabled_contexts: ["workspace.example", "domain.agent-mesh"]
         }
       ])
     });
@@ -187,7 +187,7 @@ test("registered Access requester can submit through the real gateway", async ()
 
     const submitted = await facade.dispatch({
       targetAgentId: "agent.ingress",
-      workspaceId: "workspace.example-business",
+      workspaceId: "workspace.example",
       domainId: "domain.agent-mesh",
       conversationId: "cloudflare-canary",
       message: "Verify the protected MCP ingress."

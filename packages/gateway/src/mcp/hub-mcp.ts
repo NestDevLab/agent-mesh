@@ -91,7 +91,7 @@ export function createMcpHubHandler(options: McpHubOptions): McpHttpHandler {
 }
 
 function profileName(profile: McpHubProfile): string {
-  return profile === "workspace" ? "example-business-workspace" : `example-business-${profile}`;
+  return profile === "workspace" ? "agent-mesh-workspace" : `agent-mesh-${profile}`;
 }
 
 function isHubPrincipal(value: unknown): value is McpHubPrincipal {
