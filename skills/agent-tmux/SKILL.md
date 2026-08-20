@@ -1,6 +1,6 @@
 ---
 name: agent-tmux-bridge
-description: "Use only when tmux/agent-mesh is the requested transport: start/resume persistent CLI sessions, inspect/message existing mesh sessions, bridge different runtimes, or recover lost MCP sessions. For same-runtime subagents, use native delegation by default; use this bridge only if the user asks for tmux/agent-mesh/session resume or native delegation is unavailable."
+description: "Use only when tmux/agent-mesh is the requested transport: start/resume persistent CLI sessions, inspect/message existing mesh sessions, bridge different runtimes, or recover lost MCP sessions. For Codex Desktop task-to-task work and same-runtime subagents, use native capabilities by default; use this bridge only if the user asks for tmux/agent-mesh/session resume or native control is unavailable."
 allowed-tools: [Bash]
 ---
 
@@ -17,11 +17,24 @@ can pilot supported CLI agents through persistent tmux sessions.
 
 ## Use Policy
 
-- Same-runtime fan-out uses native delegation by default.
-- Do not use this bridge just to create another worker of your own runtime.
+- In Codex Desktop, use native task capabilities for Codex-to-Codex work when
+  they are exposed: `send_message_to_thread` for an existing task,
+  `wait_threads` or `read_thread` for observation, `create_thread` for a new
+  user-visible task only after an explicit user request, and `fork_thread` when
+  completed source history should carry over. Run `list_projects` before
+  project-backed creation and use a worktree by default for Git projects.
+- A task still being prepared may return only `clientThreadId`; wait for a real
+  `threadId` before trying to read, wait on, or message it.
+- Same-runtime subagent fan-out uses native delegation by default. Desktop tasks
+  and subagents are different surfaces: do not create a user-owned Desktop task
+  merely to obtain a hidden worker.
+- Do not use this bridge just to create or message another Codex Desktop task.
 - Use it for explicit tmux/agent-mesh, session start/resume, existing mesh
-  session control, cross-runtime delegation, or native-unavailable fallback.
+  session control, persistent CLI ownership, cross-runtime delegation, on-disk
+  recovery, terminal-level control, or native-unavailable fallback.
 - If using it as fallback, state why.
+- Never emulate a missing native capability by editing Codex state or calling an
+  undocumented app-server protocol method.
 
 ## Setup
 

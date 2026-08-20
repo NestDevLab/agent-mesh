@@ -4,6 +4,21 @@ Agnostic tmux bridge for **CLI-to-CLI agent intercommunication**.
 
 Any agent CLI (Codex, Claude Code, Gemini…) can control any other via tmux — no MCP server restart required, works with on-disk sessions.
 
+## Native Codex Desktop first
+
+This package is not the default transport between two user-visible Codex Desktop
+tasks when the host exposes native task tools. Use `send_message_to_thread` for
+an existing task, `wait_threads` / `read_thread` to observe it,
+`create_thread` for an explicitly requested new task, and `fork_thread` when
+completed source history should be inherited.
+
+Use this tmux bridge for persistent CLI sessions, cross-runtime communication,
+on-disk recovery, terminal-level control, explicit tmux/agent-mesh requests, or
+when native task control is unavailable. Native Desktop task calls are a host
+control surface; they are not automatically a Mesh transport and do not inherit
+the envelope, audit, anti-loop, idempotency, or approval guarantees implemented
+by gateway adapters.
+
 ## Why
 
 MCP servers keep session state in memory only — a restart loses everything. But agent CLIs persist full conversation logs to disk and support `--resume <UUID>`. The tmux bridge reopens those sessions and allows programmatic prompt dispatch from any caller.
