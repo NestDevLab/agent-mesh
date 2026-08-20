@@ -222,6 +222,31 @@ $BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
   --effort high -- -c model_reasoning_effort=low
 ```
 
+### Verifying the effort a Codex session actually got
+
+Codex accepts `minimal|low|medium|high|xhigh|max|ultra`, but each model declares
+its own subset — `codex debug models` is the authority (`gpt-5.6-sol` and
+`gpt-5.6-terra` support everything up to `ultra`). The bridge passes the value
+through untouched; `max` and `ultra` reach the session on both the standalone
+and the `--remote` path.
+
+Read the effort back from the rollout's `turn_context`, but note the trap: a
+freshly spawned session writes **no rollout file until its first prompt is
+submitted**. Picking the newest file with `ls -t | head -1` therefore reads some
+*other* live session's rollout — which is how a session that really ran at `max`
+gets misread as clamped to `high`. Snapshot the directory first, send a prompt,
+then diff:
+
+```bash
+before=$(mktemp); ls ~/.codex/sessions/*/*/*/*.jsonl | sort > "$before"
+TARGET=$($BIN/agent-session.sh --agent codex new "$PWD" mesh-codex-probe \
+  -- -c model="gpt-5.6-sol" -c model_reasoning_effort=max)
+$BIN/agent-send.sh --agent codex "$TARGET" "Reply with exactly: ok"
+comm -13 "$before" <(ls ~/.codex/sessions/*/*/*/*.jsonl | sort) \
+  | xargs -r jq -c 'select(.type=="turn_context") | .payload | {model, effort}' \
+  | tail -1
+```
+
 ### Model discovery and pin freshness
 
 `$BIN/mesh-models.sh [--agent codex|claude|--all] [--json] [--refresh]` reports
