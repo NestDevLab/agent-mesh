@@ -50,6 +50,13 @@ scripts and agent configs it needs under its own `bin/` and `agents/`
 directories. The canonical script source remains `packages/tmux-bridge/bin` in
 this repo; no generated script copies are committed.
 
+When Codex Desktop exposes native task tools, Codex-to-Codex coordination uses
+those tools before tmux: create or fork user-visible tasks natively, message an
+existing task directly, and observe it through thread reads or waits. The tmux
+bridge remains the path for persistent CLI sessions, cross-runtime work,
+on-disk recovery, explicit tmux requests, and native-unavailable fallback. See
+`docs/transports.md` for the capability-gated routing rule.
+
 Repository mode remains supported by setting `AGENT_MESH_ROOT` and using
 `$AGENT_MESH_ROOT/packages/tmux-bridge/bin` directly.
 

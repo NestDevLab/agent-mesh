@@ -6,6 +6,36 @@ do not own protocol, routing, anti-loop, idempotency, or audit logic — they sh
 one coordination core and only differ in how a rendered delivery reaches its
 destination.
 
+## Native Codex Desktop task control
+
+Codex Desktop task tools are a host control surface, not a
+`MeshTransportAdapter`. When both endpoints are user-visible Codex Desktop
+tasks and the native tools are exposed, prefer that surface before tmux:
+
+| Need | Preferred native capability |
+| --- | --- |
+| Continue an existing task | `send_message_to_thread` |
+| Observe progress without attaching | `wait_threads` |
+| Read recent task state | `read_thread` |
+| Create a new user-owned task after an explicit user request | `list_projects`, then `create_thread` |
+| Derive a task from completed thread history | `fork_thread` |
+
+Creation is asynchronous. Treat a returned `clientThreadId` as setup-in-progress;
+only a ready `threadId` may be passed to read, wait, or send operations. Project
+tasks should use a worktree by default for Git repositories and the saved project
+directory for non-Git projects, unless the user explicitly chooses otherwise.
+
+Use the tmux bridge instead when the user requests tmux/agent-mesh, the task must
+remain a persistent CLI session, the endpoints cross runtimes, an on-disk session
+must be recovered, terminal-level control is required, or the native capabilities
+are unavailable. Do not emulate missing native tools by editing Codex state or by
+calling undocumented app-server protocol methods.
+
+Native task operations do not automatically inherit Mesh envelope, anti-loop,
+idempotency, approval, or audit semantics. A future native transport adapter must
+implement those guarantees explicitly before it can be treated as a peer of the
+adapters below.
+
 ## The shared interface
 
 Every transport adapter implements:

@@ -41,16 +41,24 @@ $BIN/mesh-list-agents.sh
 
 ## Decision tree
 
-1. Session ID given → `agent-session.sh --agent <type> resume <ID>`
-2. MCP reply tool returns "Session not found" → fall back here
-3. Fresh session needed → `agent-session.sh --agent <type> new <dir>`
-4. Talk to an already-running agent → `mesh-send.sh --to <name>`
+1. Codex Desktop task tools exposed and both endpoints are Desktop tasks → use
+   `send_message_to_thread`, `wait_threads` / `read_thread`, `create_thread`, or
+   `fork_thread` as appropriate
+2. Session ID given for persistent CLI control →
+   `agent-session.sh --agent <type> resume <ID>`
+3. Native task control unavailable or an MCP reply tool returns "Session not
+   found" → fall back here and state why
+4. Fresh persistent CLI session needed →
+   `agent-session.sh --agent <type> new <dir>`
+5. Talk to an already-running mesh agent → `mesh-send.sh --to <name>`
 
 ## Important
 
 - Always use `agent-send.sh` — it handles the per-agent submit key (`C-m` for
   Codex, `Enter` for Claude) and reconnection polling. Never `tmux send-keys …
   Enter` directly.
+- Native Codex Desktop tasks are user-visible peers. Create one only after an
+  explicit user request; use native subagents for hidden same-turn worker fan-out.
 - Codex sessions auto-attach to the desktop app-server when its socket is live
   (visible in Codex Desktop / mobile). `CODEX_NO_REMOTE=1` forces standalone.
 - For Codex Desktop title hygiene, pass `--title "<short title>"` to
