@@ -5,15 +5,58 @@
     "publication_remote": "fork",
     "base_branch": "main",
     "base_ref": "origin/main",
-    "integration_membership": "legacy"
+    "integration_membership": "required"
   },
   "integration": {
     "branch": "main-integration",
     "base": "origin/main",
     "strategy": "cherry-pick",
-    "stacks": []
+    "stacks": [
+      "google-workspace-read-tools",
+      "chatgpt-singleton-batch"
+    ]
   },
-  "stacks": [],
+  "stacks": [
+    {
+      "id": "google-workspace-read-tools",
+      "branch": "fix/google-workspace-read-tools",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "9d2eb7774edbfe4e3cd075a7ba7e5c327c85a604"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Read-only Drive/Sheets content reads for the Itermodus MCP hub"
+      }
+    },
+    {
+      "id": "chatgpt-singleton-batch",
+      "branch": "fix/chatgpt-singleton-batch",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "916902e132bf06eeeac3da4002ff3afa6a5b41ca",
+        "df359914b764df595f8ac9d93bbee9ce947a8b91",
+        "22f3c7ea8e6f3373cd6db6665a784f2481558cec",
+        "6ef78d639ddcd17ae992b52d98301f27414fb884"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Adapt ChatGPT singleton JSON-RPC tool batches and harden Access JWT verification"
+      }
+    }
+  ],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked",
   "repository_mode": "delivery",
