@@ -38,7 +38,7 @@ separate least-privilege MCP profiles on one hostname:
 | Path | Surface |
 | --- | --- |
 | `/agent-mesh` | Existing governed A2A request and delivery tools. |
-| `/google-workspace` | Read-only Drive search, Gmail search, and Calendar event listing. |
+| `/google-workspace` | Read-only Drive search/list/read, Sheets metadata/ranges, Gmail search, and Calendar event listing. |
 | `/memory` | Memory backend availability only until a dedicated AMF principal is provisioned. |
 | `/workspace` | Aggregated Agent Mesh and Google Workspace tools plus memory availability. |
 
@@ -55,6 +55,26 @@ also name `allowedGoogleAccounts` (`work`, `personal`, or both). The adapter
 executes the absolute `gog` binary without a shell, forces JSON and
 non-interactive mode, caps result counts, time, and output size, and exposes no
 Google mutation command.
+
+The Google Workspace profile exposes:
+
+| Tool | Read-only behavior |
+| --- | --- |
+| `google_drive_search` | Full-text search with source metadata and `next_page_token`. |
+| `google_drive_list` | Bounded folder listing with `next_page_token`. |
+| `google_drive_read` | Reads Docs, PDF, and text-compatible content by ID; returns Sheets metadata and directs range reads to the dedicated tool. |
+| `google_sheets_metadata` | Lists spreadsheet title, locale, timezone, sheet names, IDs, and grid sizes. |
+| `google_sheets_read_range` | Reads an explicit A1 range as formatted values, raw values, or formulas. |
+| `google_gmail_search` | Bounded Gmail thread search without message or label mutation. |
+| `google_calendar_events` | Bounded event listing without calendar mutation. |
+
+Text and PDF reads use `start_char` and `max_chars` continuation fields. Every
+Drive content response carries the account alias, source ID, name, MIME type,
+modification time, link, retrieval time, and a reminder that source timestamps
+do not prove every statement is currently true. Unsupported binary formats are
+reported without returning their bytes. OAuth failures use the stable
+`oauth_reconnect_required` code and do not expose provider diagnostics or
+credentials.
 
 Do not point the memory profile at an existing human or harness credential.
 Activate AMF search/read tools only after provisioning a dedicated MCP
