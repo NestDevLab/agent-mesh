@@ -13,7 +13,8 @@
     "strategy": "cherry-pick",
     "stacks": [
       "google-workspace-read-tools",
-      "chatgpt-singleton-batch"
+      "chatgpt-singleton-batch",
+      "mcp-tmux-ingress-route"
     ]
   },
   "stacks": [
@@ -60,6 +61,27 @@
         "71b10e6c998adee290a3466008267e1e7e21779c",
         "79feb192b200653a535a233e3fe06a39aaf0cca0",
         "32d433d68b03f2c6bf6cdfaa9d7191707a08cf8a"
+      ]
+    },
+    {
+      "id": "mcp-tmux-ingress-route",
+      "branch": "feat/mcp-tmux-ingress-route",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "f66863efacfa04f1e85cad800f871b6982257cec"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Wire delegated tmux ingress routes through the MCP runtime config (needs google-workspace-read-tools + chatgpt-singleton-batch first)"
+      },
+      "integration_commits": [
+        "98d79456cea870140243963356239bdaab06935c"
       ]
     }
   ],
