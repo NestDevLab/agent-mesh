@@ -17,6 +17,11 @@ import {
   type CloudflareAccessBinding
 } from "./cloudflare-access.js";
 import { GogGoogleWorkspaceRunner, type GoogleWorkspaceAccount } from "./google-workspace.js";
+import { ShellTmuxSender } from "../adapters/shell-tmux-sender.js";
+import { TmuxTransportAdapter, type TmuxRoute } from "../adapters/tmux-transport-adapter.js";
+import { SimulatedAgentAdapter } from "../adapters/simulated-agent-adapter.js";
+import { DiscordTranscriptStubAdapter } from "../adapters/discord-transcript-stub-adapter.js";
+import { RunnerStubAdapter } from "../adapters/runner-stub-adapter.js";
 import { createMcpHubHandler, type McpHubProfile } from "./hub-mcp.js";
 import { StdioMemoryRecallRunner, type MemoryRecallConfig } from "./memory-recall.js";
 import {
@@ -46,6 +51,15 @@ interface RuntimeConfig {
     };
   };
   memoryRecall?: MemoryRecallConfig;
+  tmuxIngress?: TmuxIngressConfig;
+}
+
+interface TmuxIngressConfig {
+  agentSendPath: string;
+  agentType: string;
+  meshSocket?: string;
+  timeoutSeconds?: number;
+  routes: TmuxRoute[];
 }
 
 export interface McpRequestBodyCompatibility {
@@ -79,10 +93,14 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ])
     };
   });
+  const stateDir = resolve(config.stateDir);
   const gateway = new GatewayService({
-    stateDir: resolve(config.stateDir),
+    stateDir,
     contextRegistry: new ContextRegistry(config.contexts),
-    agentRegistry: new AgentRegistry([...requesterAgents, ...config.agents])
+    agentRegistry: new AgentRegistry([...requesterAgents, ...config.agents]),
+    ...(config.tmuxIngress === undefined
+      ? {}
+      : { adapters: tmuxIngressAdapters(config.tmuxIngress, stateDir) })
   });
   const bindings = config.bindings;
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
@@ -261,7 +279,7 @@ export async function wrapSingletonJsonRpcResponse(response: Response): Promise<
   });
 }
 
-async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {
+export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {
   const parsed = JSON.parse(await readFile(filePath, "utf8")) as Partial<RuntimeConfig>;
   if (
     typeof parsed.stateDir !== "string" ||
@@ -288,14 +306,69 @@ async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig> {
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
   validateGoogleWorkspace(parsed.googleWorkspace);
   validateMemoryRecall(parsed.memoryRecall);
+  validateTmuxIngress(parsed.tmuxIngress, agents);
   return {
     stateDir: parsed.stateDir,
     agents,
     contexts,
     bindings: parsed.bindings,
     ...(parsed.googleWorkspace === undefined ? {} : { googleWorkspace: parsed.googleWorkspace }),
-    ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall })
+    ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
+    ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress })
   };
+}
+
+function validateTmuxIngress(
+  value: RuntimeConfig["tmuxIngress"],
+  agents: readonly RuntimeAgent[]
+): void {
+  if (value === undefined) return;
+  if (typeof value.agentSendPath !== "string" || !value.agentSendPath.startsWith("/")) {
+    throw new Error("Invalid tmux ingress agentSendPath configuration.");
+  }
+  if (value.agentType !== "codex" && value.agentType !== "claude") {
+    throw new Error("Invalid tmux ingress agentType configuration.");
+  }
+  if (!Array.isArray(value.routes) || value.routes.length === 0) {
+    throw new Error("Invalid tmux ingress routes configuration.");
+  }
+  for (const [index, route] of value.routes.entries()) {
+    if (
+      typeof route.target_agent_id !== "string" ||
+      typeof route.tmux_target !== "string" ||
+      route.tmux_target.length === 0
+    ) {
+      throw new Error(`Invalid tmux ingress route at index ${index}.`);
+    }
+    // A route may only target an agent this config declares; otherwise a typo
+    // would silently create an unreachable, unaudited delivery path.
+    if (!agents.some((agent) => agent.id === route.target_agent_id)) {
+      throw new Error(`Unknown tmux ingress route target at index ${index}.`);
+    }
+  }
+}
+
+/**
+ * The gateway defaults are replaced wholesale once adapters are supplied, so
+ * the stock three must be rebuilt alongside the tmux transport or
+ * adaptersForEnvelope throws on the simulated path.
+ */
+function tmuxIngressAdapters(config: TmuxIngressConfig, stateDir: string) {
+  return [
+    new SimulatedAgentAdapter(),
+    new DiscordTranscriptStubAdapter(),
+    new RunnerStubAdapter({ stateDir }),
+    new TmuxTransportAdapter({
+      sender: new ShellTmuxSender({
+        agentSendPath: config.agentSendPath,
+        agentType: config.agentType,
+        ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
+        ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds })
+      }),
+      routes: config.routes,
+      stateDir
+    })
+  ];
 }
 
 function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {

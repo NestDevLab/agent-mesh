@@ -82,8 +82,41 @@ principal with explicit vault and scope grants. Until then, keep
 `AGENT_MESH_MCP_MEMORY_STATE=setup_required`; the status tool makes that
 boundary visible without pretending the backend is connected.
 
-For a real Codex or Claude route, inject the existing `TmuxTransportAdapter`
-with an explicit route whose `enable_real_send` and `allow_mcp_ingress` are
-both true. These are independent gates: an existing real tmux route does not
-accept MCP-originated prompts automatically. Initially expose only a dedicated,
-least-privilege ingress agent; never point public ingress at an operator session.
+## Delegated agent ingress
+
+A real Codex or Claude route is declared under `tmuxIngress` in the protected
+runtime configuration. Omit the block and the gateway keeps its stock adapters,
+so every `mesh_send` stays simulated:
+
+```json
+"tmuxIngress": {
+  "agentSendPath": "/opt/nestdev/tmux-bridge/bin/agent-send.sh",
+  "agentType": "codex",
+  "meshSocket": "mesh-ingress",
+  "timeoutSeconds": 180,
+  "routes": [
+    {
+      "target_agent_id": "agent.ingress.codex",
+      "tmux_target": "mesh-codex-ingress",
+      "enable_real_send": true,
+      "allow_mcp_ingress": true
+    }
+  ]
+}
+```
+
+`enable_real_send` and `allow_mcp_ingress` are independent gates and both
+default to false: an existing real tmux route does not accept MCP-originated
+prompts until it says so. A route may only name an agent the same config
+declares, so a typo fails startup instead of creating an unaudited path.
+
+The MCP caller never receives a shell. It submits a prompt, and a local agent
+executes under its own sandbox and approval policy; the reply comes back
+through `mesh_delivery_status`. Point a route at a dedicated, least-privilege
+ingress session — never at an operator session.
+
+Keep this route off any profile that also reads untrusted content. A caller
+holding both `/workspace` Gmail and Drive reads and a live agent route can be
+steered by text it reads, which turns an injected document into execution on
+the host. Expose the agent route through `/agent-mesh` and the Google reads
+through `/google-workspace`, as separate connectors.
