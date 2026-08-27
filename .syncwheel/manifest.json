@@ -54,7 +54,13 @@
       },
       "meta": {
         "purpose": "Adapt ChatGPT singleton JSON-RPC tool batches and harden Access JWT verification"
-      }
+      },
+      "integration_commits": [
+        "08220bf6dd82bfa13cb42bcdca9fe0aa488d6fcb",
+        "71b10e6c998adee290a3466008267e1e7e21779c",
+        "79feb192b200653a535a233e3fe06a39aaf0cca0",
+        "32d433d68b03f2c6bf6cdfaa9d7191707a08cf8a"
+      ]
     }
   ],
   "syncwheel_worktree_root": "var/syncwheel",
