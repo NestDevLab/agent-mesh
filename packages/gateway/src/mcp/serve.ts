@@ -275,6 +275,9 @@ function parseMemoryState(value: string | undefined): "setup_required" | "ready"
 const unavailableGoogleRunner = {
   async run(): Promise<unknown> {
     throw new Error("Google Workspace is not configured.");
+  },
+  async readFile(): Promise<unknown> {
+    throw new Error("Google Workspace is not configured.");
   }
 };
 
