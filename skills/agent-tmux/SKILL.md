@@ -83,9 +83,12 @@ TARGET=$($BIN/agent-session.sh --agent codex \
   --title "agent-mesh: review tmux adapter" \
   new /path/to/project mesh-codex-review)
 
-# Model and effort are first-class launch options for both new and resume:
+# Governed launches name a profile, never a model. The configuration path is
+# explicit; a dry-run only informs a plan, while the actual spawn acquires its
+# own route and lease:
 TARGET=$($BIN/agent-session.sh --agent codex \
-  --model gpt-5.6-luna --effort xhigh \
+  --profile implementation.spec-defined \
+  --limen-config /path/to/limen-policy.json \
   new /path/to/project mesh-codex-review)
 
 # Resume an on-disk session by ID:
@@ -197,11 +200,27 @@ or relaunch the worker with an explicit `--approval-policy` (below).
 state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --stall 180)
 ```
 
-### Model, effort, and raw launch flags
+### Profile routing and exceptional launch overrides
+
+Choose a named profile for planned work, then inspect it without reserving a
+run:
+
+```bash
+limen route --dry-run --config /path/to/limen-policy.json \
+  --profile implementation.spec-defined --harness codex
+```
+
+`--config` is mandatory. Do not infer a policy from a shell default: different
+policies can choose different candidate sets. The real `agent-session.sh`
+launch above runs through the governed route, obtains a lease carrying the
+candidate identity, and renews that lease while the session is alive. A session
+that has a lease is never routed again by `agent-send.sh`.
 
 `--model <name>` and `--effort <level>` work with `new` and `resume`. Their
 per-agent mapping lives in `agents/<type>.conf`: Claude maps both flags directly
-to its CLI, while Codex maps them to its config overrides.
+to its CLI, while Codex maps them to its config overrides. They are exceptional,
+recorded overrides after profile selection, not the normal way to choose an
+execution shape.
 
 `--approval-policy <policy>` (Codex only) is an opt-in knob for `new` and
 `resume` that maps to `codex -a/--ask-for-approval`. Accepted values are
@@ -216,11 +235,10 @@ TARGET=$($BIN/agent-session.sh --agent codex --approval-policy never \
   new /path/to/project mesh-codex-unattended)
 ```
 
-Codex workers pin `gpt-5.6-terra` with `high` reasoning by default on both new
-and resumed sessions, independent of the Desktop model picker. Set
-`CODEX_MESH_MODEL` and/or `CODEX_MESH_EFFORT` to replace those defaults, or
+Codex has a configured bridge pin for fail-open launches and explicit overrides.
+Set `CODEX_MESH_MODEL` and/or `CODEX_MESH_EFFORT` to replace it, or
 `CODEX_MESH_PIN=0` to follow the Desktop config. Precedence (weakest to
-strongest): pinned default, environment override, `--model`/`--effort`, raw
+strongest): configured pin, environment override, `--model`/`--effort`, raw
 passthrough after `--`. The bridge renders only the strongest mapped value for
 each knob. If raw passthrough already sets that knob, it omits the mapped value
 entirely, so the process command line does not contain stale-looking duplicates.
