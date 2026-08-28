@@ -49,6 +49,27 @@ STALL="${AGENT_STALL_TIMEOUT:-300}"
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
 mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
+
+# A session created through the governed launcher owns one lease for its whole
+# life. Sending another prompt uses that existing lease; it must never create a
+# second route for a live target. The monitor renews and closes it separately.
+SESSION_LEASE_STATE="${MESH_CAPACITY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json}"
+if [[ -r "$SESSION_LEASE_STATE" ]]; then
+    LEASE_SUMMARY="$(node -e '
+const fs = require("fs");
+try {
+  const state = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  const session = Array.isArray(state.sessions) && state.sessions.find(item => item.target === process.argv[2]);
+  if (session?.candidate?.key && session?.candidate?.model && session?.candidate?.effort) {
+    process.stdout.write(`${session.status}\t${session.candidate.model}\t${session.candidate.effort}`);
+  }
+} catch {}
+' "$SESSION_LEASE_STATE" "$TARGET")"
+    if [[ -n "$LEASE_SUMMARY" ]]; then
+        IFS=$'\t' read -r LEASE_STATUS LEASE_MODEL LEASE_EFFORT <<<"$LEASE_SUMMARY"
+        echo "Limen session lease: status=$LEASE_STATUS candidate=$LEASE_MODEL/$LEASE_EFFORT (no reroute)" >&2
+    fi
+fi
 # New configs declare a precise alive pattern. Fall back to the existing agent
 # lifecycle fields for portable third-party configs until they add one.
 AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PATTERN:-${AGENT_WORKING_PATTERN:-}|${AGENT_IDLE_PATTERN:-}|${AGENT_PROMPT_CHAR:-}}"

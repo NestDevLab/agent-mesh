@@ -213,8 +213,10 @@ limen route --dry-run --config /path/to/limen-policy.json \
 `--config` is mandatory. Do not infer a policy from a shell default: different
 policies can choose different candidate sets. The real `agent-session.sh`
 launch above runs through the governed route, obtains a lease carrying the
-candidate identity, and renews that lease while the session is alive. A session
-that has a lease is never routed again by `agent-send.sh`.
+candidate identity, and renews that lease while the configured agent process is
+alive. If only its tmux shell remains, the bridge treats the process as gone and
+attempts `complete`; a session that has a lease is never routed again by
+`agent-send.sh`.
 
 `--model <name>` and `--effort <level>` work with `new` and `resume`. Their
 per-agent mapping lives in `agents/<type>.conf`: Claude maps both flags directly

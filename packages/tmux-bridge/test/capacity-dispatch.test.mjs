@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 
 const dispatcher = new URL("../bin/mesh-capacity-dispatch.mjs", import.meta.url).pathname;
 const meshSend = new URL("../bin/mesh-send.sh", import.meta.url).pathname;
+const sessionBin = new URL("../bin/agent-session.sh", import.meta.url).pathname;
 
 test("deferred tmux work persists, exits 75, and drains in class priority", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-"));
@@ -44,10 +45,97 @@ test("completion preserves the admission session lineage", async () => {
   await writeFile(sender, "#!/bin/sh\nexit 0\n");
   await chmod(limen, 0o700); await chmod(sender, 0o700);
   const result = await run(["submit", "--state", state, "--limen", limen, "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "private-run", "--class", "L2", "--session", "session-1", "--", sender]);
-  assert.equal(result.code, 0);
+  assert.equal(result.code, 0, result.stderr);
   assert.match(await readFile(argsFile, "utf8"), /--session\nsession-1/);
   const events = await readFile(`${state}.events.ndjson`, "utf8");
   assert.doesNotMatch(events, /private-run|session-1/);
+});
+
+test("profile routing records a candidate lease and closes a disappeared session", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-route-"));
+  const state = join(dir, "queue.json"), seenRoute = join(dir, "route.json");
+  const limen = join(dir, "fake-limen.sh"), launcher = join(dir, "fake-launch.sh");
+  await writeFile(limen, `#!/bin/sh
+if [ "$1" = route ]; then
+  printf '%s\\n' "$@" > '${seenRoute}'
+  echo '{"decision":"route","provider":"codex","model":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'
+  exit 0
+fi
+if [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi
+if [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}'; exit 0; fi
+exit 2
+`);
+  await writeFile(launcher, `#!/bin/sh
+node -e 'const r=JSON.parse(process.env.MESH_LIMEN_ROUTE); if (r.model !== "gpt-5.6-terra" || r.effort !== "high") process.exit(2)'
+`);
+  await chmod(limen, 0o700); await chmod(launcher, 0o700);
+  const result = await run(["submit", "--state", state, "--limen", limen, "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "session-run", "--class", "L2", "--profile", "implementation.spec-defined", "--lifecycle", "session", "--session", "mesh-gone", "--target", "mesh-gone", "--renew-ms", "10", "--", launcher]);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(await readFile(seenRoute, "utf8"), /--profile\nimplementation\.spec-defined/);
+  await new Promise(resolve => setTimeout(resolve, 200));
+  const ledger = JSON.parse(await readFile(state, "utf8"));
+  assert.deepEqual(ledger.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "gpt-5.6-terra", effort: "high", capacityCostBase: null });
+  assert.equal(ledger.sessions[0].status, "completed");
+  const events = await readFile(`${state}.events.ndjson`, "utf8");
+  assert.match(events, /session_active/);
+  assert.match(events, /"completed"/);
+  assert.match(events, /capacityCostBase/);
+});
+
+test("agent-session uses a routed candidate and closes its lease after the agent process disappears", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-route-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), state = join(dir, "queue.json"), limen = join(bin, "limen"), codex = join(bin, "fake-codex"), launchArgs = join(dir, "codex-args.txt");
+  const socket = `mesh-route-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-route-${process.pid}`;
+  await mkdir(bin); await mkdir(agents);
+  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then echo '{"decision":"route","provider":"codex","model":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_ALIVE_PROCESS_PATTERN="^(fake-codex|sleep)$"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SESSION_CWD_EXTRACTOR='printf "?\\n"'\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
+  await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "10", AGENT_MESH_AGENTS_DIR: agents };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
+    assert.equal(launched.code, 0, launched.stderr);
+    assert.equal(launched.stdout.trim(), target);
+    await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
+    assert.match(await readFile(launchArgs, "utf8"), /--model gpt-5\.6-terra/);
+    assert.match(await readFile(launchArgs, "utf8"), /--effort high/);
+    const opened = JSON.parse(await readFile(state, "utf8"));
+    assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "gpt-5.6-terra", effort: "high", capacityCostBase: null });
+    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"));
+    await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 3_000);
+    assert.equal((await runCommand("tmux", ["-L", socket, "has-session", "-t", target], env)).code, 0, "the tmux shell remains after the agent process exits");
+    const events = await readFile(`${state}.events.ndjson`, "utf8");
+    assert.match(events, /session_active/);
+    assert.match(events, /"completed"/);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-session remains fail-open when Limen is unavailable before launch", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-fail-open-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), launchArgs = join(dir, "codex-args.txt");
+  const socket = `mesh-fail-open-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-fail-open-${process.pid}`;
+  await mkdir(bin); await mkdir(agents);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
+  const codex = join(bin, "fake-codex");
+  await writeFile(codex, `#!/bin/sh\nprintf '%s|%s\\n' "$*" "\${MESH_LIMEN_ROUTE:-}" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
+  await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: join(bin, "missing-limen"), MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
+    assert.equal(launched.code, 0, launched.stderr);
+    assert.equal(launched.stdout.trim(), target);
+    assert.match(launched.stderr, /Limen governed launch unavailable/);
+    await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
+    assert.doesNotMatch(await readFile(launchArgs, "utf8"), /\{\"provider\"/);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("post-dispatch evidence failure never converts a delivered command into a retry", async () => {
@@ -109,7 +197,7 @@ test("mesh send prefers the dedicated broker policy before queueing L3 work", as
   await writeFile(tmux, "#!/bin/sh\nexit 0\n");
   await writeFile(limen, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '{"decision":"defer","retryAt":0,"decisionId":"defer-L3","configHash":"cfg","workClass":"L3","concurrencyTarget":0,"reasons":["over_pace"]}'\nexit 75\n`);
   await chmod(tmux, 0o700); await chmod(limen, 0o700);
-  const result = await runCommand(meshSend, ["--to", "codex", "--class", "L3", "--run-id", "run-auto-policy", "background work"], {
+  const result = await runCommand(meshSend, ["--to", "codex", "--class", "L3", "--run-id", "run-auto-policy", "--profile", "implementation.spec-defined", "background work"], {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     MESH_REGISTRY: registry,
@@ -137,7 +225,7 @@ test("mesh send falls back to the additive v2 shadow policy during migration", a
   await writeFile(tmux, "#!/bin/sh\nexit 0\n");
   await writeFile(limen, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '{"decision":"defer","retryAt":0,"decisionId":"defer-L2","configHash":"cfg","workClass":"L2","concurrencyTarget":0,"reasons":["over_pace"]}'\nexit 75\n`);
   await chmod(tmux, 0o700); await chmod(limen, 0o700);
-  const result = await runCommand(meshSend, ["--to", "claude", "--class", "L2", "--run-id", "run-v2-shadow-policy", "background work"], {
+  const result = await runCommand(meshSend, ["--to", "claude", "--class", "L2", "--run-id", "run-v2-shadow-policy", "--profile", "implementation.spec-defined", "background work"], {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     MESH_REGISTRY: registry,
@@ -163,7 +251,7 @@ test("mesh send falls back to the legacy provider policy during migration", asyn
   await writeFile(tmux, "#!/bin/sh\nexit 0\n");
   await writeFile(limen, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\necho '{"decision":"defer","retryAt":0,"decisionId":"defer-L2","configHash":"cfg","workClass":"L2","concurrencyTarget":0,"reasons":["over_pace"]}'\nexit 75\n`);
   await chmod(tmux, 0o700); await chmod(limen, 0o700);
-  const result = await runCommand(meshSend, ["--to", "claude", "--class", "L2", "--run-id", "run-legacy-policy", "background work"], {
+  const result = await runCommand(meshSend, ["--to", "claude", "--class", "L2", "--run-id", "run-legacy-policy", "--profile", "implementation.spec-defined", "background work"], {
     ...process.env,
     PATH: `${bin}:${process.env.PATH}`,
     MESH_REGISTRY: registry,
@@ -192,4 +280,13 @@ function runCommand(command, args, env) {
     child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
     child.on("error", reject); child.on("close", code => resolve({ code, stdout, stderr }));
   });
+}
+
+async function waitFor(check, timeoutMs = 1_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try { if (await check()) return; } catch {}
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  throw new Error("timed out waiting for session lifecycle update");
 }

@@ -10,16 +10,18 @@ const priority = { L1: 0, L2: 1, L3: 2 };
 
 export async function main(argv, io = process) {
   const [command, ...rest] = argv;
-  if (command !== "submit" && command !== "drain") return usage(io);
+  if (command !== "submit" && command !== "drain" && command !== "monitor") return usage(io);
   const parsed = parse(rest, command);
   if (!parsed) return usage(io);
   if (command === "submit") return submit(parsed, io);
+  if (command === "monitor") return monitor(parsed, io);
   return drain(parsed, io);
 }
 
 async function submit(options, io) {
   const request = admissionArgs(options);
   const admission = await runLimen(options.limen, request);
+  verifyRouteTarget(options, admission);
   if (admission.decision === "defer") {
     const retryAt = admission.retryAt ?? Date.now() + options.retryMs;
     await updateLedger(options.state, ledger => {
@@ -43,6 +45,7 @@ async function drain(options, io) {
     try {
       await recordEvent(restored, "claimed", { attempts: job.attempts, eligibleWork: due.length });
       const admission = await runLimen(restored.limen, admissionArgs(restored));
+      verifyRouteTarget(restored, admission);
       if (admission.decision === "defer") {
         const retryAt = admission.retryAt ?? Date.now() + restored.retryMs;
         await transition(options.state, job.id, { status: "waiting_capacity", retryAt, admission, updatedAt: Date.now() });
@@ -75,9 +78,19 @@ async function drain(options, io) {
 
 async function deliver(options, io, admission) {
   await recordEvent(options, "admitted", { admission, eligibleWork: options.eligibleWork });
-  const result = await execute(options.command[0], options.command.slice(1), { stdout: "inherit", stderr: "inherit" });
+  const result = await execute(options.command[0], options.command.slice(1), {
+    stdout: "inherit",
+    stderr: "inherit",
+    env: admission.lease?.candidate ? { MESH_LIMEN_ROUTE: JSON.stringify({ provider: admission.provider, model: admission.model, effort: admission.effort, decisionId: admission.decisionId, candidate: admission.lease.candidate }) } : undefined,
+  });
   const dispatched = result.code === 0 || result.code === 4 || result.code === 124;
   await recordEventAfterDispatch(options, dispatched ? "dispatched" : "failed", { admission, reason: dispatched ? "command_dispatched" : `command_exit_${result.code}`, eligibleWork: options.eligibleWork }, io);
+  if (dispatched && options.lifecycle === "session") {
+    await upsertSession(options.state, options, admission, "active");
+    await recordEventAfterDispatch(options, "session_active", { admission, reason: "session_lease_open", eligibleWork: options.eligibleWork }, io);
+    startMonitor(options);
+    return result.code;
+  }
   if (result.code === 0) {
     const complete = ["complete", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId];
     if (options.session) complete.push("--session", options.session);
@@ -91,10 +104,22 @@ async function deliver(options, io, admission) {
 }
 
 function admissionArgs(options) {
+  if (options.profile) {
+    const args = ["route", "--config", options.policy, "--profile", options.profile, "--harness", options.harness, "--run-id", options.runId, "--class", options.workClass];
+    for (const [flag, value] of [["--project", options.project], ["--session", options.session]]) if (value) args.push(flag, value);
+    if (Number.isSafeInteger(options.eligibleWork)) args.push("--eligible-work", String(options.eligibleWork));
+    return args;
+  }
   const args = ["admit", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--class", options.workClass];
   for (const [flag, value] of [["--project", options.project], ["--session", options.session], ["--model", options.model], ["--effort", options.effort]]) if (value) args.push(flag, value);
   if (Number.isSafeInteger(options.eligibleWork)) args.push("--eligible-work", String(options.eligibleWork));
   return args;
+}
+
+function verifyRouteTarget(options, admission) {
+  if (options.profile && admission.decision === "route" && admission.provider !== options.provider) {
+    throw new Error(`routed provider ${admission.provider} does not match target ${options.provider}`);
+  }
 }
 
 async function runLimen(executable, args) {
@@ -102,30 +127,36 @@ async function runLimen(executable, args) {
   if (result.code !== 0 && result.code !== EXIT_DEFER) throw new Error(`limen exit ${result.code}: ${result.stderr.slice(0, 160)}`);
   let output;
   try { output = JSON.parse(result.stdout.trim()); } catch { throw new Error("limen returned invalid JSON"); }
-  if ((output.decision !== "admit" && output.decision !== "defer") || (result.code === 0) !== (output.decision === "admit")) throw new Error("limen exit/payload mismatch");
+  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && output.effort);
+  const admitted = output.decision === "admit";
+  if ((!admitted && !routed && output.decision !== "defer") || (result.code === 0) !== (admitted || routed)) throw new Error("limen exit/payload mismatch");
   return output;
 }
 
 function parse(args, command) {
-  const values = { limen: "limen", retryMs: 60_000, limit: 32, now: Date.now(), eligibleWork: 1 };
+  const values = { limen: "limen", retryMs: 60_000, renewMs: 60_000, limit: 32, now: Date.now(), eligibleWork: 1 };
   const tail = args.indexOf("--");
   const flags = tail >= 0 ? args.slice(0, tail) : args;
   values.command = tail >= 0 ? args.slice(tail + 1) : [];
   for (let index = 0; index < flags.length; index += 2) {
     const flag = flags[index], value = flags[index + 1];
     if (!flag?.startsWith("--") || value === undefined) return null;
-    const key = { "--state": "state", "--events": "events", "--limen": "limen", "--policy": "policy", "--provider": "provider", "--harness": "harness", "--run-id": "runId", "--class": "workClass", "--project": "project", "--session": "session", "--model": "model", "--effort": "effort", "--eligible-work": "eligibleWork", "--retry-ms": "retryMs", "--limit": "limit", "--now": "now" }[flag];
+    const key = { "--state": "state", "--events": "events", "--limen": "limen", "--policy": "policy", "--provider": "provider", "--harness": "harness", "--run-id": "runId", "--class": "workClass", "--project": "project", "--session": "session", "--target": "target", "--alive-pattern": "alivePattern", "--profile": "profile", "--lifecycle": "lifecycle", "--model": "model", "--effort": "effort", "--eligible-work": "eligibleWork", "--retry-ms": "retryMs", "--renew-ms": "renewMs", "--limit": "limit", "--now": "now" }[flag];
     if (!key) return null;
-    values[key] = ["retryMs", "limit", "now", "eligibleWork"].includes(key) ? Number(value) : value;
+    values[key] = ["retryMs", "renewMs", "limit", "now", "eligibleWork"].includes(key) ? Number(value) : value;
   }
-  if (!values.state || !Number.isSafeInteger(values.limit) || values.limit < 1 || !Number.isSafeInteger(values.now) || values.now < 0 || !Number.isSafeInteger(values.eligibleWork) || values.eligibleWork < 0) return null;
+  if (!values.state || !Number.isSafeInteger(values.limit) || values.limit < 1 || !Number.isSafeInteger(values.now) || values.now < 0 || !Number.isSafeInteger(values.eligibleWork) || values.eligibleWork < 0 || !Number.isSafeInteger(values.renewMs) || values.renewMs < 1) return null;
   values.events ||= `${values.state}.events.ndjson`;
   if (command === "drain") return values;
-  return values.policy && values.runId && (values.provider === "codex" || values.provider === "claude") && (values.harness === "codex" || values.harness === "claude") && classes.has(values.workClass) && values.command.length ? values : null;
+  const validLimen = values.policy && values.runId && (values.provider === "codex" || values.provider === "claude") && (values.harness === "codex" || values.harness === "claude") && classes.has(values.workClass);
+  if (command === "monitor") return validLimen && values.session && values.target ? values : null;
+  if (!validLimen || !values.command.length || (values.lifecycle && values.lifecycle !== "session")) return null;
+  if (values.lifecycle === "session" && (!values.profile || !values.target || values.model || values.effort)) return null;
+  return values;
 }
 
 const serializable = options => Object.fromEntries(Object.entries(options).filter(([key]) => key !== "now" && key !== "limit"));
-const empty = () => ({ schemaVersion: 1, jobs: [] });
+const empty = () => ({ schemaVersion: 1, jobs: [], sessions: [] });
 
 async function updateLedger(path, update) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
@@ -134,7 +165,8 @@ async function updateLedger(path, update) {
   try {
     let ledger = empty();
     try { ledger = JSON.parse(await readFile(path, "utf8")); } catch (error) { if (error.code !== "ENOENT") throw error; }
-    if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.jobs)) throw new Error("invalid capacity queue");
+    if (ledger.schemaVersion !== 1 || !Array.isArray(ledger.jobs) || ledger.sessions !== undefined && !Array.isArray(ledger.sessions)) throw new Error("invalid capacity queue");
+    ledger.sessions ||= [];
     await update(ledger);
     const temporary = join(dirname(path), `.${process.pid}.${randomUUID()}.tmp`);
     await writeFile(temporary, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
@@ -153,11 +185,35 @@ async function claimDue(path, now, limit) {
 }
 
 const transition = (path, id, patch) => updateLedger(path, ledger => { const job = ledger.jobs.find(item => item.id === id); if (!job) throw new Error("capacity job missing"); Object.assign(job, patch); });
+const transitionSession = (path, runId, patch) => updateLedger(path, ledger => { const session = ledger.sessions.find(item => item.runId === runId); if (!session) throw new Error("capacity session missing"); Object.assign(session, patch); });
 const bounded = error => (error instanceof Error ? error.message : String(error)).replace(/[\r\n]+/g, " ").slice(0, 240);
+
+async function upsertSession(path, options, admission, status) {
+  await updateLedger(path, ledger => {
+    const record = {
+      runId: options.runId,
+      target: options.target || options.session,
+      provider: admission.provider,
+      harness: options.harness,
+      workClass: options.workClass,
+      profile: options.profile,
+      policy: options.policy,
+      candidate: admission.lease?.candidate,
+      decisionId: admission.decisionId,
+      configHash: admission.configHash,
+      status,
+      updatedAt: Date.now(),
+    };
+    const existing = ledger.sessions.find(item => item.runId === options.runId);
+    if (existing) Object.assign(existing, record);
+    else ledger.sessions.push({ ...record, createdAt: Date.now() });
+  });
+}
 
 const runHash = options => createHash("sha256").update([options.provider, options.harness, options.session, options.runId].filter(Boolean).join("|")).digest("hex");
 async function recordEvent(options, status, details = {}) {
   const admission = details.admission;
+  const candidate = admission?.lease?.candidate || admission?.candidate;
   const event = {
     schemaVersion: 1,
     event: "limen.queue",
@@ -173,6 +229,7 @@ async function recordEvent(options, status, details = {}) {
     ...(Number.isSafeInteger(details.retryAt) ? { retryAt: details.retryAt } : {}),
     ...(admission?.decisionId ? { decisionId: admission.decisionId } : {}),
     ...(admission?.configHash ? { configHash: admission.configHash } : {}),
+    ...(candidate ? { candidate } : {}),
     ...(details.reason ? { reason: bounded(details.reason) } : {}),
   };
   await mkdir(dirname(options.events), { recursive: true, mode: 0o700 });
@@ -187,12 +244,97 @@ async function recordEventAfterDispatch(options, status, details, io) {
 
 function execute(executable, args, streams) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { stdio: ["ignore", streams.stdout, streams.stderr], shell: false });
+    const child = spawn(executable, args, { stdio: ["ignore", streams.stdout, streams.stderr], shell: false, ...(streams.env ? { env: { ...process.env, ...streams.env } } : {}) });
     let stdout = "", stderr = "";
     child.stdout?.on("data", chunk => { stdout += chunk; }); child.stderr?.on("data", chunk => { stderr += chunk; });
     child.on("error", reject); child.on("close", code => resolve({ code: code ?? 1, stdout, stderr }));
   });
 }
 
-function usage(io) { io.stderr.write("usage: mesh-capacity-dispatch.mjs submit --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 [--eligible-work N] -- COMMAND... | drain --state FILE [--events FILE] [--now MS] [--limit N]\n"); return 2; }
+function startMonitor(options) {
+  const args = [process.argv[1], "monitor", "--state", options.state, "--events", options.events, "--limen", options.limen, "--policy", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--class", options.workClass, "--session", options.session, "--target", options.target || options.session, "--renew-ms", String(options.renewMs)];
+  if (options.profile) args.push("--profile", options.profile);
+  if (options.alivePattern) args.push("--alive-pattern", options.alivePattern);
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: process.env });
+  child.unref();
+}
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const completionArgs = options => {
+  const args = ["complete", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId];
+  if (options.session) args.push("--session", options.session);
+  return args;
+};
+
+const parseJson = text => { try { return JSON.parse(text.trim()); } catch { return null; } };
+
+async function liveTarget(options) {
+  const exists = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "has-session", "-t", options.target], { stdout: "ignore", stderr: "ignore" });
+  if (exists.code !== 0) return false;
+  const pane = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "display-message", "-p", "-t", options.target, "#{pane_pid}"], { stdout: "pipe", stderr: "ignore" });
+  const panePid = Number(pane.stdout.trim());
+  if (pane.code !== 0 || !Number.isSafeInteger(panePid) || panePid < 1) return false;
+  const processes = await execute("ps", ["-eo", "pid=,ppid=,comm="], { stdout: "pipe", stderr: "ignore" });
+  if (processes.code !== 0) return false;
+  const children = new Map();
+  for (const line of processes.stdout.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]), parent = Number(match[2]), command = match[3].trim();
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push({ pid, command });
+  }
+  const pattern = options.alivePattern || `^${options.provider}$`;
+  try {
+    const expression = new RegExp(pattern);
+    const pending = [panePid];
+    while (pending.length) {
+      const parent = pending.pop();
+      for (const child of children.get(parent) || []) {
+        if (expression.test(child.command)) return true;
+        pending.push(child.pid);
+      }
+    }
+    return false;
+  }
+  catch { return false; }
+}
+
+async function monitor(options, io) {
+  while (true) {
+    if (await liveTarget(options)) {
+      const renewal = await execute(options.limen, ["renew", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--session", options.session], { stdout: "pipe", stderr: "pipe" });
+      const output = parseJson(renewal.stdout);
+      if (renewal.code === 0 && output?.status === "renewed") {
+        await transitionSession(options.state, options.runId, { status: "active", expiresAt: output.expiresAt, updatedAt: Date.now() });
+        await recordEvent(options, "lease_renewed", { admission: output, reason: "lease_renewed" });
+      } else if (output?.status === "expired") {
+        await transitionSession(options.state, options.runId, { status: "expired", updatedAt: Date.now() });
+        await recordEvent(options, "lease_expired", { admission: output, reason: "lease_expired" });
+        return 2;
+      } else {
+        await transitionSession(options.state, options.runId, { status: "renewal_pending", reason: `limen_renew_exit_${renewal.code}`, updatedAt: Date.now() });
+        await recordEvent(options, "renewal_pending", { reason: `limen_renew_exit_${renewal.code}` });
+      }
+    } else {
+      const complete = await execute(options.limen, completionArgs(options), { stdout: "pipe", stderr: "pipe" });
+      const output = parseJson(complete.stdout);
+      if (complete.code === 0 && output?.status === "completed") {
+        await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
+        await recordEvent(options, "completed", { admission: output, reason: "session_gone_completed" });
+        return 0;
+      }
+      if (output?.status === "expired") {
+        await transitionSession(options.state, options.runId, { status: "expired", updatedAt: Date.now() });
+        await recordEvent(options, "lease_expired", { admission: output, reason: "session_gone_expired" });
+        return 2;
+      }
+      await transitionSession(options.state, options.runId, { status: "completion_pending", reason: `limen_complete_exit_${complete.code}`, updatedAt: Date.now() });
+      await recordEvent(options, "completion_pending", { reason: `limen_complete_exit_${complete.code}` });
+    }
+    await delay(options.renewMs);
+  }
+}
+
+function usage(io) { io.stderr.write("usage: mesh-capacity-dispatch.mjs submit --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 [--profile NAME] [--eligible-work N] -- COMMAND... | drain --state FILE [--events FILE] [--now MS] [--limit N] | monitor --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 --session ID --target TMUX_TARGET\n"); return 2; }
 if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => { console.error(bounded(error)); process.exitCode = 2; });

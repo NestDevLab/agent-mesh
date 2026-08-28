@@ -107,6 +107,7 @@ $BIN/mesh-send.sh --to codex "summarize the current branch" 120
 # Governed background work: no prompt is pasted until Limen admits it.
 export LIMEN_POLICY=/path/to/limen-policy.json
 $BIN/mesh-send.sh --to codex --class L3 --run-id nightly-42 \
+  --profile implementation.spec-defined \
   "continue the authorized backlog" 300
 
 # The caller schedules this at the earliest retryAt; the drain never sleeps.
@@ -158,8 +159,9 @@ For a session spawn, the governed route owns a session lease rather than a
 per-prompt reroute. `agent-session.sh --profile NAME --limen-config PATH` calls
 `limen route` (not `--dry-run`) before launch and retains the returned candidate
 identity. `agent-send.sh` uses that session's lease and never routes a live
-session again. The bridge renews the lease while tmux reports the session live;
-on disappearance it attempts `complete`. A failed completion remains a visible
+session again. The bridge renews the lease only while tmux reports the configured
+agent process live; a surviving shell after the agent exits is treated as a
+disappearance and triggers `complete`. A failed completion remains a visible
 `completion_pending` queue event, and an expired lease is never counted as a
 valid observation. Limen absent, disabled, slow, or erroneous leaves the
 existing launch and close behaviour fail-open.
