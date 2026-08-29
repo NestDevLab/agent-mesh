@@ -105,8 +105,8 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
 
 export interface MeshDispatchInput {
   targetAgentId: string;
-  workspaceId: string;
-  domainId: string;
+  workspaceId?: string;
+  domainId?: string;
   conversationId: string;
   message: string;
   idempotencyKey?: string;
@@ -140,22 +140,29 @@ export class MeshMcpFacade {
       }));
   }
 
+  allowedScopes(): { workspaceIds: readonly string[]; domainIds: readonly string[] } {
+    return {
+      workspaceIds: [...this.options.principal.allowedWorkspaceIds],
+      domainIds: [...this.options.principal.allowedDomainIds]
+    };
+  }
+
   async dispatch(input: MeshDispatchInput): Promise<MeshDispatchResult> {
     this.assertAllowed("mesh_send");
     const target = this.options.agents.find((agent) => agent.id === input.targetAgentId);
     if (target === undefined || !this.options.principal.allowedAgentIds.includes(target.id)) {
       throw new Error(`Target agent is not exposed through this MCP bridge: ${input.targetAgentId}`);
     }
-    assertScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
-    assertScope("domain", input.domainId, this.options.principal.allowedDomainIds);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    const domainId = resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds);
 
     const messageId = `mcp_${randomUUID()}`;
     const result = await this.options.gateway.submitEnvelope({
       schema: "openclaw.agent.message.v1",
       message_id: messageId,
       created_at: (this.options.now?.() ?? new Date()).toISOString(),
-      workspace_id: input.workspaceId,
-      domain_id: input.domainId,
+      workspace_id: workspaceId,
+      domain_id: domainId,
       conversation_id: input.conversationId,
       from: this.options.principal.requesterId,
       to: target.id,
@@ -212,8 +219,8 @@ export class MeshMcpFacade {
 const identifierSchema = z.string().min(1).max(MAX_IDENTIFIER_LENGTH);
 const dispatchInputSchema = z.object({
   target_agent_id: identifierSchema,
-  workspace_id: identifierSchema,
-  domain_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  domain_id: identifierSchema.optional(),
   conversation_id: identifierSchema,
   message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
   idempotency_key: z.string().min(1).max(MAX_IDEMPOTENCY_KEY_LENGTH).optional(),
@@ -248,7 +255,7 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
       },
       inputSchema: z.object({})
     },
-    async () => result({ agents: facade.listAgents() })
+    async () => result({ agents: facade.listAgents(), allowed_scopes: facade.allowedScopes() })
   );
 
   if (options.principal.allowedTools.includes("mesh_send")) server.registerTool(
@@ -306,6 +313,15 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     }
   );
 
+}
+
+function resolveScope(kind: "workspace" | "domain", supplied: string | undefined, allowed: readonly string[]): string {
+  if (supplied !== undefined) {
+    assertScope(kind, supplied, allowed);
+    return supplied;
+  }
+  if (allowed.length !== 1) throw new Error(`${kind} must be specified because the MCP principal has multiple allowed scopes.`);
+  return allowed[0];
 }
 
 /**

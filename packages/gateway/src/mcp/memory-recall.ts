@@ -10,10 +10,14 @@ export interface MemoryRecallConfig {
   command: string;
   script: string;
   handoffDir: string;
+  governedWrite?: boolean;
 }
 
+export type MemoryRecallTool = "memory_search" | "memory_read" | "memory_upsert" | "memory_proposal_status";
+
 export interface MemoryRecallRunner {
-  call(name: "memory_search" | "memory_read", args: Record<string, unknown>): Promise<unknown>;
+  readonly governedWrite: boolean;
+  call(name: MemoryRecallTool, args: Record<string, unknown>): Promise<unknown>;
   status(): Promise<"ready" | "degraded">;
 }
 
@@ -28,6 +32,7 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
   private readonly config: MemoryRecallConfig;
   private readonly timeoutMs: number;
   private readonly execute: MemoryProcessExecutor;
+  readonly governedWrite: boolean;
 
   constructor(
     config: MemoryRecallConfig,
@@ -35,11 +40,12 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
     execute: MemoryProcessExecutor = executeProcess
   ) {
     this.config = config;
+    this.governedWrite = config.governedWrite === true;
     this.timeoutMs = timeoutMs;
     this.execute = execute;
   }
 
-  async call(name: "memory_search" | "memory_read", args: Record<string, unknown>): Promise<unknown> {
+  async call(name: MemoryRecallTool, args: Record<string, unknown>): Promise<unknown> {
     const response = await this.rpc({
       jsonrpc: "2.0",
       id: 1,
@@ -56,7 +62,9 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
     try {
       const response = await this.rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" });
       const names = response.result?.tools?.map((tool: { name?: unknown }) => tool.name);
-      return Array.isArray(names) && names.includes("memory_search") && names.includes("memory_read")
+      const required = ["memory_search", "memory_read",
+        ...(this.governedWrite ? ["memory_upsert", "memory_proposal_status"] : [])];
+      return Array.isArray(names) && required.every((name) => names.includes(name))
         ? "ready"
         : "degraded";
     } catch { return "degraded"; }
@@ -101,6 +109,30 @@ export function registerMemoryRecallTools(server: McpServer, runner: MemoryRecal
     annotations: readOnlyAnnotations,
     inputSchema: z.object({ id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$/) })
   }, async (input) => result(await runner.call("memory_read", input)));
+
+  if (runner.governedWrite) {
+    server.registerTool("memory_upsert", {
+      title: "Propose canonical memory upsert",
+      description: "Queues a revision-aware canonical memory proposal for AMF curation; it never writes canonical state directly.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: z.object({
+        record: z.record(z.string(), z.unknown()),
+        rationale: z.string().min(1).max(4096),
+        expected_revision: z.number().int().min(0).nullable(),
+        idempotency_key: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$/)
+      })
+    }, async (input) => result(await runner.call("memory_upsert", {
+      record: input.record, rationale: input.rationale, expectedRevision: input.expected_revision,
+      idempotencyKey: input.idempotency_key
+    })));
+
+    server.registerTool("memory_proposal_status", {
+      title: "Read memory proposal status",
+      description: "Reads the lifecycle status of a governed AMF proposal.",
+      annotations: readOnlyAnnotations,
+      inputSchema: z.object({ id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$/) })
+    }, async (input) => result(await runner.call("memory_proposal_status", input)));
+  }
 }
 
 const readOnlyAnnotations = {

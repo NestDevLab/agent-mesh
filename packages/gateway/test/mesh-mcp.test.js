@@ -120,6 +120,23 @@ test("MCP facade converts a web request to a governed mesh request envelope", as
   });
 });
 
+test("MCP facade injects the principal's only authorized workspace and domain", async () => {
+  const gateway = createGateway(); const facade = new MeshMcpFacade(options(gateway));
+  const response = await facade.dispatch({ targetAgentId: "agent.codex", conversationId: "conversation-defaults",
+    message: "Use the exact governed scope." });
+  assert.match(response.messageId, /^mcp_/);
+  assert.equal(gateway.submitted[0].workspace_id, "workspace.demo");
+  assert.equal(gateway.submitted[0].domain_id, "domain.demo");
+  assert.deepEqual(facade.allowedScopes(), { workspaceIds: ["workspace.demo"], domainIds: ["domain.demo"] });
+});
+
+test("MCP facade requires explicit scope when a principal has more than one", async () => {
+  const setup = options(); setup.principal.allowedWorkspaceIds = ["workspace.demo", "workspace.other"];
+  const facade = new MeshMcpFacade(setup);
+  await assert.rejects(facade.dispatch({ targetAgentId: "agent.codex", domainId: "domain.demo",
+    conversationId: "conversation-ambiguous", message: "Fail closed." }), /workspace must be specified/);
+});
+
 test("MCP facade rejects a target that the deployment did not expose", async () => {
   const facade = new MeshMcpFacade(options());
   await assert.rejects(
