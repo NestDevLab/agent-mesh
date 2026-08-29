@@ -31,12 +31,16 @@ export interface TmuxSendInput {
   tmux_target: string;
   prompt: string;
   message_id: string;
+  context_id: string;
+  task_id?: string;
+  correlation_id?: string;
   idempotency_key: string;
 }
 export interface TmuxSendResult {
   ok: boolean;
   reply?: string;
   error?: string;
+  result_error_code?: "result_no_output" | "result_uncorrelated" | "result_parsing_failure" | "result_timeout";
 }
 ```
 
@@ -81,7 +85,9 @@ export interface TmuxTransportAdapterOptions {
 6. **Capacity admission** (when the route declares it): call the injected broker before the atomic
    send claim. On defer, persist the full item as `waiting_capacity`, return its exact `retryAt`, and
    do not call the sender. A missing/failed broker admits only default L1; L2/L3 remain queued.
-7. **Real send**: call `sender.send(...)`. `ok:true` → `status:"delivered"`; else → `status:"failed"` with `reason:error`.
+7. **Real send**: call `sender.send(...)`. `ok:true` means the prompt was delivered, even if
+   `result_error_code` reports a later collection failure. Only a transport failure returns
+   `ok:false` / `status:"failed"`.
 8. **Record** a `TmuxDispatchRecord` to `TmuxDispatchStore` and **return** an `AdapterDispatchResult` whose
    `details` echoes `trace_id`, `correlation_id`, `causation_id`, `tmux_target`, and `target_agent_id`.
 
@@ -153,8 +159,10 @@ opt-in `TmuxSessionSender` that drives the bridge by spawning
 out; the adapter stays pure. Options: `agentSendPath`, `agentType`
 (`codex`/`claude`/…), `timeoutSeconds`, `meshSocket` (forwarded as
 `MESH_TMUX_SOCKET`), and an injectable `run` (tests pass a fake; default uses
-`execFile`). Exit 0 → `{ok:true, reply:<stdout>}`; non-zero/throw →
-`{ok:false, error}`.
+`execFile`). Correlated task sends pass a deterministic result token. Exit 0 returns the
+textual result; exits 4/65/66/67/124 preserve delivered transport while identifying timeout,
+no output, uncorrelated output, or parsing failure. Other non-zero exits remain
+transport failures.
 
 ## Discord-compatibility invariants honored
 

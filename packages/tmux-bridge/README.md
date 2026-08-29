@@ -70,6 +70,10 @@ TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
 
+# Governed tasks use an explicit task correlation and deterministic result token
+$BIN/agent-send.sh --agent codex --correlation-id mesh_task_123 \
+  --result-token 0123456789abcdef "$TARGET" "return the requested result"
+
 # Check status, read last reply
 $BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | approval-pending | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
@@ -117,6 +121,12 @@ $BIN/mesh-send.sh --to claude \
 # Long waits use checkpoint semantics
 $BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --stall 180
 ```
+
+With correlation flags, the bridge anchors capture on the short token, reads scrollback instead
+of only the visible pane, and requires the final result between injected markers. This prevents
+wrapped or scrolled prompts from losing task correlation and distinguishes transport delivery
+from no output, uncorrelated output, parsing failure, and timeout. Existing callers without these
+flags retain the legacy extraction behavior.
 
 `agent-watch.py` is read-only with respect to the watched session. It resolves
 the newest matching transcript on each poll, writes only the caller-provided
