@@ -516,7 +516,12 @@ export function publicTask(task: MeshTaskRecord) {
 export async function executeMeshTask(
   gateway: MeshMcpGateway,
   task: MeshTaskRecord,
-  now: () => Date = () => new Date()
+  now: () => Date = () => new Date(),
+  options: {
+    resultWaitMs?: number;
+    resultPollMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {}
 ) {
   const submitted = await gateway.submitEnvelope({
     schema: "openclaw.agent.message.v1",
@@ -532,6 +537,9 @@ export async function executeMeshTask(
     hop_count: 0,
     idempotency_key: task.idempotency_key,
     content: { text: task.message },
+    trace_id: task.context_id,
+    correlation_id: task.task_id,
+    task_id: task.task_id,
     sensitivity: "private",
     redaction_state: "required",
     metadata: {
@@ -546,14 +554,70 @@ export async function executeMeshTask(
   const tmux = [...submitted.deliveries].reverse()
     .find((delivery) => delivery.adapter_id === "tmux-transport");
   if (tmux === undefined || tmux.status !== "delivered") {
-    throw new Error(`Agent transport did not deliver a result: ${tmux?.status ?? "missing"}.`);
+    throw new MeshTaskExecutionError("transport_failure", `Agent transport did not deliver the request: ${tmux?.status ?? "missing"}.`);
   }
-  const audits = await gateway.listAudit({ type: "delivery.updated", message_id: task.message_id });
-  const reply = [...audits].reverse().map((event) => event.details.adapter_details)
-    .find((details) => typeof details === "object" && details !== null && typeof (details as { reply?: unknown }).reply === "string") as { reply: string } | undefined;
-  if (reply === undefined || reply.reply.trim().length === 0) throw new Error("Agent completed without a correlated textual result.");
-  if (reply.reply.length > 131_072) throw new Error("Agent result exceeds the MCP task result limit.");
-  return { text: reply.reply, artifacts: [] };
+  const deadline = Date.now() + (options.resultWaitMs ?? 2_000);
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let observedEmpty = false;
+  let observedUncorrelated = false;
+  do {
+    const audits = await gateway.listAudit({ type: "delivery.updated", message_id: task.message_id });
+    for (const event of [...audits].reverse()) {
+      const details = event.details.adapter_details;
+      if (typeof details !== "object" || details === null) continue;
+      const adapter = details as Record<string, unknown>;
+      if (event.details.adapter_id !== "tmux-transport") continue;
+      if (adapter.correlation_id !== task.task_id) {
+        if (typeof adapter.reply === "string" || typeof adapter.result_error_code === "string") observedUncorrelated = true;
+        continue;
+      }
+      if (typeof adapter.result_error_code === "string") {
+        const code = adapter.result_error_code;
+        if (isResultErrorCode(code)) {
+          throw new MeshTaskExecutionError(code, typeof adapter.result_error === "string" ? adapter.result_error : resultErrorMessage(code));
+        }
+      }
+      if (typeof adapter.reply === "string") {
+        if (adapter.reply.trim().length === 0) {
+          observedEmpty = true;
+          continue;
+        }
+        if (adapter.reply.length > 131_072) throw new MeshTaskExecutionError("result_too_large", "Agent result exceeds the MCP task result limit.");
+        return { text: adapter.reply, artifacts: [] };
+      }
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(Math.min(options.resultPollMs ?? 50, Math.max(1, deadline - Date.now())));
+  } while (true);
+  if (observedUncorrelated) throw new MeshTaskExecutionError("result_uncorrelated", "Agent output was produced with a correlation ID that does not match the task.");
+  if (observedEmpty) throw new MeshTaskExecutionError("result_no_output", "Agent produced no textual result for the correlated task.");
+  throw new MeshTaskExecutionError("result_timeout", "The result collector did not persist a correlated result before the grace period expired.");
+}
+
+type ResultErrorCode = "result_no_output" | "result_uncorrelated" | "result_parsing_failure" | "result_timeout";
+
+class MeshTaskExecutionError extends Error {
+  readonly code: ResultErrorCode | "transport_failure" | "result_too_large";
+
+  constructor(code: ResultErrorCode | "transport_failure" | "result_too_large", message: string) {
+    super(message);
+    this.name = "MeshTaskExecutionError";
+    this.code = code;
+  }
+}
+
+function isResultErrorCode(value: string): value is ResultErrorCode {
+  return ["result_no_output", "result_uncorrelated", "result_parsing_failure", "result_timeout"].includes(value);
+}
+
+function resultErrorMessage(code: ResultErrorCode): string {
+  const messages: Record<ResultErrorCode, string> = {
+    result_no_output: "Agent produced no textual result.",
+    result_uncorrelated: "Agent output was produced but did not match the task correlation ID.",
+    result_parsing_failure: "Agent output was correlated but could not be parsed.",
+    result_timeout: "Agent result collection timed out."
+  };
+  return messages[code];
 }
 
 function resolveScope(kind: "workspace" | "domain", supplied: string | undefined, allowed: readonly string[]): string {

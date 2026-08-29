@@ -1,6 +1,14 @@
 import type { MeshTaskArtifact, MeshTaskRecord, MeshTaskStoreLike } from "./mesh-task-store.js";
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+const EXECUTION_ERROR_CODES = new Set([
+  "transport_failure",
+  "result_no_output",
+  "result_uncorrelated",
+  "result_parsing_failure",
+  "result_timeout",
+  "result_too_large"
+]);
 
 export interface MeshTaskExecutionResult {
   text: string;
@@ -98,10 +106,18 @@ export class MeshTaskCoordinator {
         ...latest,
         status: "failed",
         error: {
-          code: "agent_execution_failed",
+          code: executionErrorCode(error),
           message: error instanceof Error ? error.message : String(error)
         }
       });
     }
   }
+}
+
+function executionErrorCode(error: unknown): string {
+  if (typeof error === "object" && error !== null && "code" in error) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && EXECUTION_ERROR_CODES.has(code)) return code;
+  }
+  return "agent_execution_failed";
 }

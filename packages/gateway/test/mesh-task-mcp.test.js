@@ -69,6 +69,23 @@ test("mesh_submit is idempotent per principal and rejects changed input", async 
   );
 });
 
+test("two concurrent tasks retain distinct message, task, context, and result correlation", async () => {
+  const { facade } = await setup(async (task) => {
+    await new Promise((resolve) => setTimeout(resolve, task.message === "first" ? 10 : 1));
+    return { text: `${task.context_id}:${task.task_id}:${task.message_id}:${task.message}` };
+  });
+  const [first, second] = await Promise.all([
+    facade.callTask(input({ message: "first", contextId: "thread-a", idempotencyKey: "request-a" }), 2_000),
+    facade.callTask(input({ message: "second", contextId: "thread-b", idempotencyKey: "request-b" }), 2_000)
+  ]);
+  for (const item of [first.task, second.task]) {
+    assert.equal(item.status, "completed");
+    assert.equal(item.result.text, `${item.context_id}:${item.task_id}:${item.message_id}:${item.message}`);
+  }
+  assert.notEqual(first.task.task_id, second.task.task_id);
+  assert.notEqual(first.task.message_id, second.task.message_id);
+});
+
 test("task and thread reads are isolated to the authenticated principal", async () => {
   const { facade, taskCoordinator, principal } = await setup();
   const task = (await facade.callTask(input(), 2_000)).task;
@@ -119,6 +136,9 @@ test("executeMeshTask selects the latest terminal delivery and audit reply", asy
   const gateway = {
     async submitEnvelope(envelope) {
       assert.equal(envelope.metadata.principal_kind, "service");
+      assert.equal(envelope.task_id, task.task_id);
+      assert.equal(envelope.trace_id, task.context_id);
+      assert.equal(envelope.correlation_id, task.task_id);
       return {
         envelope,
         duplicate: true,
@@ -130,8 +150,85 @@ test("executeMeshTask selects the latest terminal delivery and audit reply", asy
       };
     },
     async listAudit() {
-      return [{ type: "delivery.updated", details: { adapter_details: { reply: "Codex result" } } }];
+      return [{ type: "delivery.updated", details: { adapter_id: "tmux-transport", adapter_details: { correlation_id: task.task_id, reply: "Codex result" } } }];
     }
   };
   assert.deepEqual(await executeMeshTask(gateway, task), { text: "Codex result", artifacts: [] });
+});
+
+function executionTask() {
+  return {
+    schema: "agent-mesh.mcp-task.v1",
+    task_id: "mesh_task_result_test",
+    context_id: "context-result-test",
+    message_id: "mcp_result_test",
+    principal_id: "principal-owner",
+    principal_kind: "service",
+    requester_id: "agent.web_chat",
+    target_agent_id: "agent.codex",
+    workspace_id: "workspace.demo",
+    domain_id: "domain.demo",
+    message: "Return a multiline result.",
+    labels: [],
+    idempotency_key: "principal-owner:result-test",
+    input_hash: "hash",
+    status: "working",
+    created_at: "2026-08-29T12:00:00.000Z",
+    updated_at: "2026-08-29T12:00:00.000Z"
+  };
+}
+
+function executionGateway(task, listAudit, delivery = { adapter_id: "tmux-transport", status: "delivered" }) {
+  return {
+    async submitEnvelope() { return { deliveries: [delivery], auditEventIds: [], duplicate: false }; },
+    listAudit
+  };
+}
+
+test("executeMeshTask waits for delayed persistence and preserves multiline output", async () => {
+  const task = executionTask();
+  let polls = 0;
+  const gateway = executionGateway(task, async () => {
+    polls += 1;
+    return polls < 3 ? [] : [{ details: { adapter_id: "tmux-transport", adapter_details: {
+      correlation_id: task.task_id,
+      reply: "line one\nline two"
+    } } }];
+  });
+  const result = await executeMeshTask(gateway, task, () => new Date(), {
+    resultWaitMs: 100,
+    resultPollMs: 1,
+    sleep: async () => undefined
+  });
+  assert.equal(polls, 3);
+  assert.equal(result.text, "line one\nline two");
+});
+
+test("executeMeshTask distinguishes empty, uncorrelated, parsing, timeout, and transport failures", async () => {
+  const task = executionTask();
+  const correlated = (adapter_details) => [{ details: { adapter_id: "tmux-transport", adapter_details } }];
+  const cases = [
+    [correlated({ correlation_id: task.task_id, reply: "" }), "result_no_output"],
+    [correlated({ correlation_id: "mesh_task_wrong", reply: "wrong task" }), "result_uncorrelated"],
+    [correlated({ correlation_id: task.task_id, result_error_code: "result_parsing_failure", result_error: "bad markers" }), "result_parsing_failure"],
+    [[], "result_timeout"]
+  ];
+  for (const [audits, code] of cases) {
+    await assert.rejects(
+      executeMeshTask(executionGateway(task, async () => audits), task, () => new Date(), { resultWaitMs: 0 }),
+      (error) => error.code === code
+    );
+  }
+  await assert.rejects(
+    executeMeshTask(executionGateway(task, async () => [], { adapter_id: "tmux-transport", status: "failed" }), task),
+    (error) => error.code === "transport_failure"
+  );
+});
+
+test("coordinator persists a typed result error instead of generic agent_execution_failed", async () => {
+  const typed = Object.assign(new Error("bad result markers"), { code: "result_parsing_failure" });
+  const { facade } = await setup(async () => { throw typed; });
+  const completed = (await facade.callTask(input(), 2_000)).task;
+  assert.equal(completed.status, "failed");
+  assert.equal(completed.error.code, "result_parsing_failure");
 });
