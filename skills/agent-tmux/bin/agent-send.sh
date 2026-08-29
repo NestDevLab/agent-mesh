@@ -245,8 +245,8 @@ done
 PROMPT_HEAD="$PROMPT_MATCH_HEAD"
 FULL_OUTPUT="$(mtmux capture-pane -t "$TARGET" -p -S - 2>/dev/null || true)"
 SEGMENT="$(echo "$FULL_OUTPUT" \
-    | awk -v prompt="$PROMPT_HEAD" -v pc="$AGENT_PROMPT_CHAR" '
-        $0 ~ pc && index($0, prompt) { found=1; next }
+    | awk -v prompt="$PROMPT_HEAD" -v pc="$AGENT_PROMPT_CHAR" -v correlated="$RESULT_TOKEN" '
+        ((correlated != "" && index($0, prompt)) || (correlated == "" && $0 ~ pc && index($0, prompt))) { found=1; next }
         found && $0 ~ pc { exit }
         found { print }
     ')"
@@ -262,8 +262,14 @@ if [[ -n "$RESULT_TOKEN" ]]; then
     fi
     if grep -Fq "$RESULT_BEGIN" <<<"$SEGMENT" && grep -Fq "$RESULT_END" <<<"$SEGMENT"; then
         RESULT="$(awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
-            index($0, begin) { collecting=1; next }
-            collecting && index($0, end) { exit }
+            index($0, begin) {
+                tail=substr($0, index($0, begin) + length(begin))
+                if (index(tail, end)) { print substr(tail, 1, index(tail, end) - 1); exit }
+                collecting=1
+                if (tail != "") print tail
+                next
+            }
+            collecting && index($0, end) { print substr($0, 1, index($0, end) - 1); exit }
             collecting { print }
         ' <<<"$SEGMENT" | sed '/^[[:space:]]*$/d')"
         [[ -n "${RESULT//[[:space:]]/}" ]] \
