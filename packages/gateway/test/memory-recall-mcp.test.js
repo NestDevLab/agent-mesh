@@ -52,3 +52,41 @@ test("memory profile advertises only status, search, and read", async () => {
   ]);
   await handler.close();
 });
+
+test("governed memory write advertises proposal-only upsert and maps revision fields", async () => {
+  const calls = []; const meshPrincipal = { id: "p", kind: "user", requesterId: "agent.web", allowedTools: [],
+    allowedAgentIds: [], allowedWorkspaceIds: [], allowedDomainIds: [] };
+  const runner = { governedWrite: true, async status() { return "ready"; }, async call(name, input) {
+    calls.push({ name, input }); return { status: "queued", proposalId: "proposal:1" };
+  } };
+  const handler = createMcpHubHandler({ profile: "memory",
+    gateway: { async submitEnvelope() {}, async getEnvelope() {}, async getDelivery() { return []; } },
+    agents: [], rateLimiter: { consume() { return true; } }, googleRunner: { async run() { return []; } },
+    memoryState: "ready", memoryRunner: runner,
+    resolvePrincipal: () => ({ mesh: meshPrincipal, allowedGoogleAccounts: [] }) });
+  const authInfo = { token: "x", clientId: "test", scopes: [] };
+  const headers = { "content-type": "application/json", accept: "application/json, text/event-stream",
+    "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/list" };
+  const list = await handler.fetch(new Request("https://mcp.example.test/memory", { method: "POST", headers,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+      "io.modelcontextprotocol/clientCapabilities": {}
+    } } }) }), { authInfo });
+  const listed = await list.json();
+  assert.deepEqual(listed.result.tools.map(tool => tool.name).sort(), ["memory_backend_status", "memory_proposal_status",
+    "memory_read", "memory_search", "memory_upsert"]);
+  const call = await handler.fetch(new Request("https://mcp.example.test/memory", { method: "POST",
+    headers: { ...headers, "mcp-method": "tools/call", "mcp-name": "memory_upsert" }, body: JSON.stringify({ jsonrpc: "2.0", id: 2,
+      method: "tools/call", params: { name: "memory_upsert", arguments: { record: { id: "memory:new" },
+        rationale: "verified", expected_revision: 1, idempotency_key: "test-upsert" }, _meta: {
+          "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+          "io.modelcontextprotocol/clientCapabilities": {}
+        } } }) }), { authInfo });
+  const callPayload = await call.json();
+  assert.equal(call.status, 200, JSON.stringify(callPayload));
+  assert.deepEqual(calls[0], { name: "memory_upsert", input: { record: { id: "memory:new" }, rationale: "verified",
+    expectedRevision: 1, idempotencyKey: "test-upsert" } });
+  await handler.close();
+});

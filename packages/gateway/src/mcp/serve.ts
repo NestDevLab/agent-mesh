@@ -305,6 +305,9 @@ function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
       throw new Error(`Invalid memory recall ${field} configuration.`);
     }
   }
+  if (value.governedWrite !== undefined && typeof value.governedWrite !== "boolean") {
+    throw new Error("Invalid memory recall governedWrite configuration.");
+  }
 }
 
 function validateBinding(
