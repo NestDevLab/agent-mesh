@@ -64,7 +64,8 @@ if [[ -n "$CORRELATION_ID" || -n "$RESULT_TOKEN" ]]; then
     PROTOCOL_ANCHOR="[MESH:${RESULT_TOKEN}]"
     RESULT_BEGIN="[[R:${RESULT_TOKEN}]]"
     RESULT_END="[[/R:${RESULT_TOKEN}]]"
-    PROMPT="${PROTOCOL_ANCHOR} Put only your final task result between ${RESULT_BEGIN} and ${RESULT_END}."$'\n'"${PROMPT}"
+    PROMPT="${PROTOCOL_ANCHOR} Use the result protocol shown on the next line."$'\n'\
+"Final result markers: ${RESULT_BEGIN} ... ${RESULT_END}"$'\n'"${PROMPT}"
 fi
 mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
@@ -252,25 +253,32 @@ SEGMENT="$(echo "$FULL_OUTPUT" \
     ')"
 
 if [[ -n "$RESULT_TOKEN" ]]; then
-    if grep -Fq "$RESULT_BEGIN" <<<"$SEGMENT" && ! grep -Fq "$RESULT_END" <<<"$SEGMENT"; then
-        echo "PARSING-FAILURE: correlated result begin marker has no matching end marker for '$CORRELATION_ID'" >&2
+    BEGIN_COUNT="$(grep -Fo "$RESULT_BEGIN" <<<"$SEGMENT" | wc -l)"
+    END_COUNT="$(grep -Fo "$RESULT_END" <<<"$SEGMENT" | wc -l)"
+    if [[ "$BEGIN_COUNT" -ne "$END_COUNT" ]]; then
+        echo "PARSING-FAILURE: correlated result markers are unbalanced for '$CORRELATION_ID'" >&2
         exit 67
     fi
-    if ! grep -Fq "$RESULT_BEGIN" <<<"$SEGMENT" && grep -Fq "$RESULT_END" <<<"$SEGMENT"; then
-        echo "PARSING-FAILURE: correlated result end marker has no matching begin marker for '$CORRELATION_ID'" >&2
-        exit 67
-    fi
-    if grep -Fq "$RESULT_BEGIN" <<<"$SEGMENT" && grep -Fq "$RESULT_END" <<<"$SEGMENT"; then
+    # One pair is the protocol template echoed in the prompt. A correlated
+    # response contributes a second pair; always keep the last complete pair.
+    if [[ "$BEGIN_COUNT" -ge 2 ]]; then
         RESULT="$(awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
             index($0, begin) {
                 tail=substr($0, index($0, begin) + length(begin))
-                if (index(tail, end)) { print substr(tail, 1, index(tail, end) - 1); exit }
+                if (index(tail, end)) { candidate=substr(tail, 1, index(tail, end) - 1); collecting=0; next }
                 collecting=1
-                if (tail != "") print tail
+                buffer=tail
                 next
             }
-            collecting && index($0, end) { print substr($0, 1, index($0, end) - 1); exit }
-            collecting { print }
+            collecting && index($0, end) {
+                head=substr($0, 1, index($0, end) - 1)
+                if (head != "") buffer=buffer (buffer == "" ? "" : ORS) head
+                candidate=buffer
+                collecting=0
+                next
+            }
+            collecting { buffer=buffer (buffer == "" ? "" : ORS) $0 }
+            END { print candidate }
         ' <<<"$SEGMENT" | sed '/^[[:space:]]*$/d')"
         [[ -n "${RESULT//[[:space:]]/}" ]] \
             || { echo "NO-OUTPUT: agent returned an empty correlated result for '$CORRELATION_ID'" >&2; exit 65; }
