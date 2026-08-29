@@ -2,7 +2,8 @@
 
 `src/mcp/mesh-mcp.ts` exposes a provider-neutral, Streamable HTTP MCP handler.
 It converts a web-chat request into a normal Agent Mesh A2A `request` envelope.
-It does not create an execution job or a task, and it does not bypass the
+The task tools add a durable MCP-facing lifecycle around that same governed
+request path; they do not bypass the
 gateway's context, agent, policy, idempotency, audit, or transport controls.
 
 ## Tools
@@ -12,12 +13,21 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | `mesh_list_agents` | Lists the explicit endpoints exposed by the deployment. |
 | `mesh_send` | Sends an A2A request to one exposed endpoint. |
 | `mesh_delivery_status` | Reads recorded delivery lifecycle events. |
+| `mesh_call` | Submits a durable task and waits up to 120 seconds for its correlated result. |
+| `mesh_submit` | Submits a durable task and immediately returns its handle. |
+| `mesh_task_get` | Reads an owned task's status and result. |
+| `mesh_task_cancel` | Marks an owned task cancelled and ignores a late result. |
+| `mesh_thread_get` | Reads the ordered owned tasks in one context. |
 
 The host provides a verified request-scoped principal, its exact tool, agent,
 workspace, and domain scopes, a shared rate limiter, and a configured
 `AgentMeshGateway`. Codex and Claude are ordinary endpoint records; no
-provider-specific API is part of the MCP surface. Delivery status is visible
-only to the principal that submitted the corresponding request.
+provider-specific API is part of the MCP surface. Delivery and task state are
+visible only to the principal that submitted the corresponding request.
+Task state is append-only NDJSON and survives gateway restarts. Idempotency is
+scoped to the principal, and tasks targeting the same agent are serialized.
+Cancellation is cooperative: it makes the task terminal but does not terminate
+an already-running agent process.
 
 ## Serving safely
 
@@ -111,8 +121,10 @@ prompts until it says so. A route may only name an agent the same config
 declares, so a typo fails startup instead of creating an unaudited path.
 
 The MCP caller never receives a shell. It submits a prompt, and a local agent
-executes under its own sandbox and approval policy; the reply comes back
-through `mesh_delivery_status`. Point a route at a dedicated, least-privilege
+executes under its own sandbox and approval policy. `mesh_call` returns the
+correlated reply directly when it completes within the wait bound;
+`mesh_task_get` retrieves it later. `mesh_send` and `mesh_delivery_status`
+remain transport diagnostics. Point a route at a dedicated, least-privilege
 ingress session — never at an operator session.
 
 Keep this route off any profile that also reads untrusted content. A caller

@@ -26,9 +26,13 @@ import { createMcpHubHandler, type McpHubProfile } from "./hub-mcp.js";
 import { StdioMemoryRecallRunner, type MemoryRecallConfig } from "./memory-recall.js";
 import {
   createMeshMcpHandler,
+  executeMeshTask,
   FixedWindowMeshMcpRateLimiter,
+  MESH_MCP_TOOLS,
   type MeshMcpAgent
 } from "./mesh-mcp.js";
+import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
+import { MeshTaskStore } from "./mesh-task-store.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8790;
@@ -103,6 +107,11 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       : { adapters: tmuxIngressAdapters(config.tmuxIngress, stateDir) })
   });
   const bindings = config.bindings;
+  const taskCoordinator = new MeshTaskCoordinator({
+    store: new MeshTaskStore({ stateDir }),
+    execute: (task) => executeMeshTask(gateway, task)
+  });
+  await taskCoordinator.resume();
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
   const meshHandler = requireCloudflareAccess(
     createMeshMcpHandler({
@@ -113,6 +122,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         provider,
         capabilities
       })),
+      taskCoordinator,
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
     }),
@@ -134,6 +144,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       agents: config.agents.map(({ id, name, provider, capabilities }) => ({
         id, name, provider, capabilities
       })),
+      taskCoordinator,
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
@@ -393,6 +404,7 @@ function validateBinding(
     typeof binding.selector !== "string" ||
     binding.selector.length === 0 ||
     !Array.isArray(binding.allowedTools) ||
+    binding.allowedTools.some((tool) => !MESH_MCP_TOOLS.includes(tool)) ||
     !Array.isArray(binding.allowedAgentIds) ||
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||

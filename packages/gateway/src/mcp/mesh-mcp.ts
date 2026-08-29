@@ -8,15 +8,29 @@ import {
 import { z } from "zod";
 
 import type { DeliveryRecord } from "../schema/delivery.js";
+import type { AuditEvent, AuditFilter } from "../schema/audit.js";
 import type { AgentMessageEnvelopeV1 } from "../schema/envelope.js";
 import type { SubmitEnvelopeResult } from "../core/gateway-service.js";
+import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
+import type { MeshTaskRecord } from "./mesh-task-store.js";
 
 const MAX_IDENTIFIER_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 16_384;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
 const MAX_LABEL_LENGTH = 64;
 
-export type MeshMcpTool = "mesh_list_agents" | "mesh_send" | "mesh_delivery_status";
+export const MESH_MCP_TOOLS = [
+  "mesh_list_agents",
+  "mesh_send",
+  "mesh_delivery_status",
+  "mesh_call",
+  "mesh_submit",
+  "mesh_task_get",
+  "mesh_task_cancel",
+  "mesh_thread_get"
+] as const;
+
+export type MeshMcpTool = (typeof MESH_MCP_TOOLS)[number];
 
 /**
  * The narrow gateway surface the MCP ingress needs. Keeping this separate from
@@ -26,6 +40,7 @@ export interface MeshMcpGateway {
   submitEnvelope(input: unknown): Promise<SubmitEnvelopeResult>;
   getEnvelope(messageId: string): Promise<AgentMessageEnvelopeV1 | undefined>;
   getDelivery(messageId: string): Promise<DeliveryRecord[]>;
+  listAudit(filter?: AuditFilter): Promise<AuditEvent[]>;
 }
 
 export interface MeshMcpAgent {
@@ -42,6 +57,7 @@ export interface MeshMcpOptions {
   /** Explicit allow-list supplied by the deployment, never inferred from a model name. */
   agents: readonly MeshMcpAgent[];
   rateLimiter: MeshMcpRateLimiter;
+  taskCoordinator?: MeshTaskCoordinator;
   now?: () => Date;
 }
 
@@ -77,7 +93,12 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
     limits: Readonly<Record<MeshMcpTool, number>> = {
       mesh_list_agents: 60,
       mesh_send: 10,
-      mesh_delivery_status: 60
+      mesh_delivery_status: 60,
+      mesh_call: 6,
+      mesh_submit: 10,
+      mesh_task_get: 120,
+      mesh_task_cancel: 20,
+      mesh_thread_get: 60
     },
     windowMs = 60_000,
     nowMs: () => number = Date.now
@@ -117,6 +138,16 @@ export interface MeshDispatchResult {
   messageId: string;
   duplicate: boolean;
   deliveries: DeliveryRecord[];
+}
+
+export interface MeshTaskDispatchInput {
+  targetAgentId: string;
+  workspaceId?: string;
+  domainId?: string;
+  contextId?: string;
+  message: string;
+  idempotencyKey: string;
+  labels?: string[];
 }
 
 /**
@@ -206,6 +237,55 @@ export class MeshMcpFacade {
     return this.options.gateway.getDelivery(messageId);
   }
 
+  async submitTask(input: MeshTaskDispatchInput): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
+    this.assertAllowed("mesh_submit");
+    return this.coordinator().submit(this.taskInput(input));
+  }
+
+  async callTask(input: MeshTaskDispatchInput, waitMs: number): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
+    this.assertAllowed("mesh_call");
+    return this.coordinator().call(this.taskInput(input), waitMs);
+  }
+
+  async getTask(taskId: string): Promise<MeshTaskRecord> {
+    this.assertAllowed("mesh_task_get");
+    return this.coordinator().getOwned(taskId, this.options.principal.id);
+  }
+
+  async cancelTask(taskId: string): Promise<MeshTaskRecord> {
+    this.assertAllowed("mesh_task_cancel");
+    return this.coordinator().cancel(taskId, this.options.principal.id);
+  }
+
+  async getThread(contextId: string): Promise<MeshTaskRecord[]> {
+    this.assertAllowed("mesh_thread_get");
+    return this.coordinator().thread(contextId, this.options.principal.id);
+  }
+
+  private taskInput(input: MeshTaskDispatchInput) {
+    const target = this.options.agents.find((agent) => agent.id === input.targetAgentId);
+    if (target === undefined || !this.options.principal.allowedAgentIds.includes(target.id)) {
+      throw new Error(`Target agent is not exposed through this MCP bridge: ${input.targetAgentId}`);
+    }
+    return {
+      contextId: input.contextId ?? `mesh_context_${randomUUID()}`,
+      principalId: this.options.principal.id,
+      principalKind: this.options.principal.kind,
+      requesterId: this.options.principal.requesterId,
+      targetAgentId: target.id,
+      workspaceId: resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds),
+      domainId: resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds),
+      message: input.message,
+      labels: input.labels ?? [],
+      idempotencyKey: `${this.options.principal.id}:${input.idempotencyKey}`
+    };
+  }
+
+  private coordinator(): MeshTaskCoordinator {
+    if (this.options.taskCoordinator === undefined) throw new Error("Mesh task execution is not configured.");
+    return this.options.taskCoordinator;
+  }
+
   private assertAllowed(tool: MeshMcpTool): void {
     if (!this.options.principal.allowedTools.includes(tool)) {
       throw new Error(`MCP principal is not allowed to use ${tool}.`);
@@ -230,6 +310,23 @@ const dispatchInputSchema = z.object({
 const deliveryStatusSchema = z.object({
   message_id: identifierSchema
 });
+
+const taskDispatchInputSchema = z.object({
+  target_agent_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  domain_id: identifierSchema.optional(),
+  context_id: identifierSchema.optional(),
+  message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
+  idempotency_key: z.string().min(1).max(MAX_IDEMPOTENCY_KEY_LENGTH),
+  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(20).optional()
+});
+
+const taskCallInputSchema = taskDispatchInputSchema.extend({
+  wait_seconds: z.number().int().min(1).max(120).optional()
+});
+
+const taskIdSchema = z.object({ task_id: identifierSchema });
+const threadSchema = z.object({ context_id: identifierSchema });
 
 /** Creates a fresh MCP server instance for one HTTP serving unit. */
 export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
@@ -313,6 +410,150 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     }
   );
 
+  if (options.principal.allowedTools.includes("mesh_call")) server.registerTool(
+    "mesh_call",
+    {
+      title: "Call an Agent Mesh agent",
+      description: "Starts a governed agent task and waits for a bounded interval for its correlated result. Returns a durable task handle when still running.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      inputSchema: taskCallInputSchema
+    },
+    async (input) => {
+      try {
+        const output = await facade.callTask(taskInput(input), (input.wait_seconds ?? 90) * 1000);
+        return result({ duplicate: output.duplicate, task: publicTask(output.task) });
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_submit")) server.registerTool(
+    "mesh_submit",
+    {
+      title: "Submit an Agent Mesh task",
+      description: "Durably submits a governed agent task and returns immediately with a task handle.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      inputSchema: taskDispatchInputSchema
+    },
+    async (input) => {
+      try {
+        const output = await facade.submitTask(taskInput(input));
+        return result({ duplicate: output.duplicate, task: publicTask(output.task) });
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_task_get")) server.registerTool(
+    "mesh_task_get",
+    {
+      title: "Read an Agent Mesh task",
+      description: "Reads the status and correlated result of a task owned by the authenticated principal.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: taskIdSchema
+    },
+    async ({ task_id }) => {
+      try { return result({ task: publicTask(await facade.getTask(task_id)) }); }
+      catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_task_cancel")) server.registerTool(
+    "mesh_task_cancel",
+    {
+      title: "Cancel an Agent Mesh task",
+      description: "Requests cooperative cancellation of a task owned by the authenticated principal.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+      inputSchema: taskIdSchema
+    },
+    async ({ task_id }) => {
+      try { return result({ task: publicTask(await facade.cancelTask(task_id)) }); }
+      catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_thread_get")) server.registerTool(
+    "mesh_thread_get",
+    {
+      title: "Read an Agent Mesh thread",
+      description: "Returns the ordered task conversation owned by the authenticated principal for one context.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: threadSchema
+    },
+    async ({ context_id }) => {
+      try { return result({ context_id, tasks: (await facade.getThread(context_id)).map(publicTask) }); }
+      catch (error) { return errorResult(error); }
+    }
+  );
+
+}
+
+function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDispatchInput {
+  return {
+    targetAgentId: input.target_agent_id,
+    workspaceId: input.workspace_id,
+    domainId: input.domain_id,
+    contextId: input.context_id,
+    message: input.message,
+    idempotencyKey: input.idempotency_key,
+    labels: input.labels
+  };
+}
+
+export function publicTask(task: MeshTaskRecord) {
+  return {
+    task_id: task.task_id,
+    context_id: task.context_id,
+    message_id: task.message_id,
+    agent_id: task.target_agent_id,
+    status: task.status,
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    message: task.message,
+    ...(task.result === undefined ? {} : { result: task.result }),
+    ...(task.error === undefined ? {} : { error: task.error })
+  };
+}
+
+export async function executeMeshTask(
+  gateway: MeshMcpGateway,
+  task: MeshTaskRecord,
+  now: () => Date = () => new Date()
+) {
+  const submitted = await gateway.submitEnvelope({
+    schema: "openclaw.agent.message.v1",
+    message_id: task.message_id,
+    created_at: task.created_at || now().toISOString(),
+    workspace_id: task.workspace_id,
+    domain_id: task.domain_id,
+    conversation_id: task.context_id,
+    from: task.requester_id,
+    to: task.target_agent_id,
+    intent: "request",
+    ttl: 3,
+    hop_count: 0,
+    idempotency_key: task.idempotency_key,
+    content: { text: task.message },
+    sensitivity: "private",
+    redaction_state: "required",
+    metadata: {
+      ingress: "mcp",
+      a2a_operation: "task",
+      principal_id: task.principal_id,
+      principal_kind: task.principal_kind,
+      task_id: task.task_id
+    },
+    ...(task.labels.length === 0 ? {} : { labels: [...task.labels] })
+  });
+  const tmux = [...submitted.deliveries].reverse()
+    .find((delivery) => delivery.adapter_id === "tmux-transport");
+  if (tmux === undefined || tmux.status !== "delivered") {
+    throw new Error(`Agent transport did not deliver a result: ${tmux?.status ?? "missing"}.`);
+  }
+  const audits = await gateway.listAudit({ type: "delivery.updated", message_id: task.message_id });
+  const reply = [...audits].reverse().map((event) => event.details.adapter_details)
+    .find((details) => typeof details === "object" && details !== null && typeof (details as { reply?: unknown }).reply === "string") as { reply: string } | undefined;
+  if (reply === undefined || reply.reply.trim().length === 0) throw new Error("Agent completed without a correlated textual result.");
+  if (reply.reply.length > 131_072) throw new Error("Agent result exceeds the MCP task result limit.");
+  return { text: reply.reply, artifacts: [] };
 }
 
 function resolveScope(kind: "workspace" | "domain", supplied: string | undefined, allowed: readonly string[]): string {
