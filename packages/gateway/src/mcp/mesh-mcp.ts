@@ -11,6 +11,11 @@ import type { DeliveryRecord } from "../schema/delivery.js";
 import type { AuditEvent, AuditFilter } from "../schema/audit.js";
 import type { AgentMessageEnvelopeV1 } from "../schema/envelope.js";
 import type { SubmitEnvelopeResult } from "../core/gateway-service.js";
+import type {
+  AgentSessionPage,
+  AgentSessionRegistry,
+  AgentSessionSummary
+} from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
 
@@ -27,7 +32,9 @@ export const MESH_MCP_TOOLS = [
   "mesh_submit",
   "mesh_task_get",
   "mesh_task_cancel",
-  "mesh_thread_get"
+  "mesh_thread_get",
+  "mesh_agent_sessions_list",
+  "mesh_agent_session_get"
 ] as const;
 
 export type MeshMcpTool = (typeof MESH_MCP_TOOLS)[number];
@@ -58,6 +65,7 @@ export interface MeshMcpOptions {
   agents: readonly MeshMcpAgent[];
   rateLimiter: MeshMcpRateLimiter;
   taskCoordinator?: MeshTaskCoordinator;
+  sessionRegistry?: AgentSessionRegistry;
   now?: () => Date;
 }
 
@@ -98,7 +106,9 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_submit: 10,
       mesh_task_get: 120,
       mesh_task_cancel: 20,
-      mesh_thread_get: 60
+      mesh_thread_get: 60,
+      mesh_agent_sessions_list: 30,
+      mesh_agent_session_get: 60
     },
     windowMs = 60_000,
     nowMs: () => number = Date.now
@@ -142,6 +152,7 @@ export interface MeshDispatchResult {
 
 export interface MeshTaskDispatchInput {
   targetAgentId: string;
+  sessionId?: string;
   workspaceId?: string;
   domainId?: string;
   contextId?: string;
@@ -239,12 +250,12 @@ export class MeshMcpFacade {
 
   async submitTask(input: MeshTaskDispatchInput): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
     this.assertAllowed("mesh_submit");
-    return this.coordinator().submit(this.taskInput(input));
+    return this.coordinator().submit(await this.taskInput(input));
   }
 
   async callTask(input: MeshTaskDispatchInput, waitMs: number): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
     this.assertAllowed("mesh_call");
-    return this.coordinator().call(this.taskInput(input), waitMs);
+    return this.coordinator().call(await this.taskInput(input), waitMs);
   }
 
   async getTask(taskId: string): Promise<MeshTaskRecord> {
@@ -262,10 +273,51 @@ export class MeshMcpFacade {
     return this.coordinator().thread(contextId, this.options.principal.id);
   }
 
-  private taskInput(input: MeshTaskDispatchInput) {
-    const target = this.options.agents.find((agent) => agent.id === input.targetAgentId);
-    if (target === undefined || !this.options.principal.allowedAgentIds.includes(target.id)) {
-      throw new Error(`Target agent is not exposed through this MCP bridge: ${input.targetAgentId}`);
+  async listAgentSessions(input: {
+    targetAgentId: string;
+    workspaceId?: string;
+    cursor?: string;
+    limit: number;
+  }): Promise<AgentSessionPage> {
+    this.assertAllowed("mesh_agent_sessions_list");
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    return this.sessions(target.id).list(target.id, {
+      workspaceId,
+      cursor: input.cursor,
+      limit: input.limit
+    });
+  }
+
+  async getAgentSession(input: {
+    targetAgentId: string;
+    workspaceId?: string;
+    sessionId: string;
+  }): Promise<AgentSessionSummary> {
+    this.assertAllowed("mesh_agent_session_get");
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    const session = await this.sessions(target.id).get(target.id, {
+      workspaceId,
+      sessionId: input.sessionId
+    });
+    if (session === undefined) {
+      throw new Error("Agent session is not available in the authenticated workspace.");
+    }
+    return session;
+  }
+
+  private async taskInput(input: MeshTaskDispatchInput) {
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    if (input.sessionId !== undefined) {
+      const session = await this.sessions(target.id).get(target.id, {
+        workspaceId,
+        sessionId: input.sessionId
+      });
+      if (session === undefined) {
+        throw new Error("Agent session is not available in the authenticated workspace.");
+      }
     }
     return {
       contextId: input.contextId ?? `mesh_context_${randomUUID()}`,
@@ -273,12 +325,28 @@ export class MeshMcpFacade {
       principalKind: this.options.principal.kind,
       requesterId: this.options.principal.requesterId,
       targetAgentId: target.id,
-      workspaceId: resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds),
+      ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      workspaceId,
       domainId: resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds),
       message: input.message,
       labels: input.labels ?? [],
       idempotencyKey: `${this.options.principal.id}:${input.idempotencyKey}`
     };
+  }
+
+  private allowedTarget(targetAgentId: string): MeshMcpAgent {
+    const target = this.options.agents.find((agent) => agent.id === targetAgentId);
+    if (target === undefined || !this.options.principal.allowedAgentIds.includes(target.id)) {
+      throw new Error(`Target agent is not exposed through this MCP bridge: ${targetAgentId}`);
+    }
+    return target;
+  }
+
+  private sessions(targetAgentId: string): AgentSessionRegistry {
+    if (this.options.sessionRegistry === undefined || !this.options.sessionRegistry.has(targetAgentId)) {
+      throw new Error(`Agent session access is not configured: ${targetAgentId}`);
+    }
+    return this.options.sessionRegistry;
   }
 
   private coordinator(): MeshTaskCoordinator {
@@ -313,6 +381,7 @@ const deliveryStatusSchema = z.object({
 
 const taskDispatchInputSchema = z.object({
   target_agent_id: identifierSchema,
+  session_id: identifierSchema.optional(),
   workspace_id: identifierSchema.optional(),
   domain_id: identifierSchema.optional(),
   context_id: identifierSchema.optional(),
@@ -327,6 +396,17 @@ const taskCallInputSchema = taskDispatchInputSchema.extend({
 
 const taskIdSchema = z.object({ task_id: identifierSchema });
 const threadSchema = z.object({ context_id: identifierSchema });
+const agentSessionsListSchema = z.object({
+  target_agent_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  cursor: z.string().min(1).max(512).optional(),
+  limit: z.number().int().min(1).max(100).optional()
+});
+const agentSessionGetSchema = z.object({
+  target_agent_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  session_id: identifierSchema
+});
 
 /** Creates a fresh MCP server instance for one HTTP serving unit. */
 export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
@@ -484,11 +564,51 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     }
   );
 
+  if (options.principal.allowedTools.includes("mesh_agent_sessions_list")) server.registerTool(
+    "mesh_agent_sessions_list",
+    {
+      title: "List Agent Mesh sessions",
+      description: "Lists provider sessions visible inside one authenticated workspace without exposing transcripts or host paths.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: agentSessionsListSchema
+    },
+    async (input) => {
+      try {
+        return result(await facade.listAgentSessions({
+          targetAgentId: input.target_agent_id,
+          workspaceId: input.workspace_id,
+          cursor: input.cursor,
+          limit: input.limit ?? 25
+        }));
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_agent_session_get")) server.registerTool(
+    "mesh_agent_session_get",
+    {
+      title: "Read an Agent Mesh session",
+      description: "Reads bounded metadata for one provider session visible inside the authenticated workspace.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: agentSessionGetSchema
+    },
+    async (input) => {
+      try {
+        return result({ session: await facade.getAgentSession({
+          targetAgentId: input.target_agent_id,
+          workspaceId: input.workspace_id,
+          sessionId: input.session_id
+        }) });
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
 }
 
 function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDispatchInput {
   return {
     targetAgentId: input.target_agent_id,
+    sessionId: input.session_id,
     workspaceId: input.workspace_id,
     domainId: input.domain_id,
     contextId: input.context_id,
@@ -504,6 +624,7 @@ export function publicTask(task: MeshTaskRecord) {
     context_id: task.context_id,
     message_id: task.message_id,
     agent_id: task.target_agent_id,
+    ...(task.session_id === undefined ? {} : { session_id: task.session_id }),
     status: task.status,
     created_at: task.created_at,
     updated_at: task.updated_at,
@@ -547,14 +668,16 @@ export async function executeMeshTask(
       a2a_operation: "task",
       principal_id: task.principal_id,
       principal_kind: task.principal_kind,
-      task_id: task.task_id
+      task_id: task.task_id,
+      ...(task.session_id === undefined ? {} : { session_id: task.session_id })
     },
     ...(task.labels.length === 0 ? {} : { labels: [...task.labels] })
   });
-  const tmux = [...submitted.deliveries].reverse()
-    .find((delivery) => delivery.adapter_id === "tmux-transport");
-  if (tmux === undefined || tmux.status !== "delivered") {
-    throw new MeshTaskExecutionError("transport_failure", `Agent transport did not deliver the request: ${tmux?.status ?? "missing"}.`);
+  const transportAdapterId = task.session_id === undefined ? "tmux-transport" : "agent-session-transport";
+  const transport = [...submitted.deliveries].reverse()
+    .find((delivery) => delivery.adapter_id === transportAdapterId);
+  if (transport === undefined || transport.status !== "delivered") {
+    throw new MeshTaskExecutionError("transport_failure", `Agent transport did not deliver the request: ${transport?.status ?? "missing"}.`);
   }
   const deadline = Date.now() + (options.resultWaitMs ?? 2_000);
   const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -566,7 +689,7 @@ export async function executeMeshTask(
       const details = event.details.adapter_details;
       if (typeof details !== "object" || details === null) continue;
       const adapter = details as Record<string, unknown>;
-      if (event.details.adapter_id !== "tmux-transport") continue;
+      if (event.details.adapter_id !== transportAdapterId) continue;
       if (adapter.correlation_id !== task.task_id) {
         if (typeof adapter.reply === "string" || typeof adapter.result_error_code === "string") observedUncorrelated = true;
         continue;

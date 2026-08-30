@@ -12,7 +12,10 @@ const { MeshMcpFacade, FixedWindowMeshMcpRateLimiter, executeMeshTask } = await 
   "../src/mcp/mesh-mcp.ts"
 );
 
-async function setup(execute = async (task) => ({ text: `reply:${task.message}` })) {
+async function setup(
+  execute = async (task) => ({ text: `reply:${task.message}` }),
+  sessionRegistry
+) {
   const stateDir = await mkdtemp(join(tmpdir(), "agent-mesh-task-test-"));
   const store = new MeshTaskStore({ stateDir });
   const taskCoordinator = new MeshTaskCoordinator({ store, execute });
@@ -20,7 +23,10 @@ async function setup(execute = async (task) => ({ text: `reply:${task.message}` 
     id: "principal-owner",
     kind: "service",
     requesterId: "agent.web_chat",
-    allowedTools: ["mesh_call", "mesh_submit", "mesh_task_get", "mesh_task_cancel", "mesh_thread_get"],
+    allowedTools: [
+      "mesh_call", "mesh_submit", "mesh_task_get", "mesh_task_cancel", "mesh_thread_get",
+      "mesh_agent_sessions_list", "mesh_agent_session_get"
+    ],
     allowedAgentIds: ["agent.codex"],
     allowedWorkspaceIds: ["workspace.demo"],
     allowedDomainIds: ["domain.demo"]
@@ -30,7 +36,8 @@ async function setup(execute = async (task) => ({ text: `reply:${task.message}` 
     principal,
     agents: [{ id: "agent.codex", name: "Codex", provider: "codex" }],
     rateLimiter: new FixedWindowMeshMcpRateLimiter(),
-    taskCoordinator
+    taskCoordinator,
+    ...(sessionRegistry === undefined ? {} : { sessionRegistry })
   });
   return { stateDir, store, taskCoordinator, principal, facade };
 }
@@ -53,6 +60,45 @@ test("mesh_call returns a durable correlated result and preserves service proven
   assert.equal(output.task.result.text, "reply:Do bounded work.");
   assert.equal(output.task.principal_kind, "service");
   assert.equal((await store.get(output.task.task_id)).message_id, output.task.message_id);
+});
+
+test("session discovery and targeted tasks remain scoped to the principal workspace", async () => {
+  const session = {
+    session_id: "session-1",
+    agent_id: "agent.codex",
+    provider: "codex",
+    workspace_id: "workspace.demo",
+    status: "available",
+    updated_at: "2026-08-30T12:00:00Z"
+  };
+  const registry = {
+    has: (agentId) => agentId === "agent.codex",
+    async list(_agentId, input) {
+      assert.equal(input.workspaceId, "workspace.demo");
+      return { sessions: [session], next_cursor: null };
+    },
+    async get(_agentId, input) {
+      return input.workspaceId === "workspace.demo" && input.sessionId === session.session_id
+        ? session
+        : undefined;
+    }
+  };
+  const { facade, store } = await setup(undefined, registry);
+  assert.deepEqual(
+    await facade.listAgentSessions({ targetAgentId: "agent.codex", limit: 25 }),
+    { sessions: [session], next_cursor: null }
+  );
+  assert.deepEqual(
+    await facade.getAgentSession({ targetAgentId: "agent.codex", sessionId: "session-1" }),
+    session
+  );
+  const output = await facade.callTask(input({ sessionId: "session-1" }), 2_000);
+  assert.equal(output.task.session_id, "session-1");
+  assert.equal((await store.get(output.task.task_id)).session_id, "session-1");
+  await assert.rejects(
+    facade.callTask(input({ sessionId: "session-outside", idempotencyKey: "outside" }), 2_000),
+    /not available in the authenticated workspace/
+  );
 });
 
 test("mesh_submit is idempotent per principal and rejects changed input", async () => {
@@ -154,6 +200,29 @@ test("executeMeshTask selects the latest terminal delivery and audit reply", asy
     }
   };
   assert.deepEqual(await executeMeshTask(gateway, task), { text: "Codex result", artifacts: [] });
+});
+
+test("executeMeshTask targets the session adapter and preserves session metadata", async () => {
+  const task = { ...executionTask(), session_id: "session-1" };
+  const gateway = {
+    async submitEnvelope(envelope) {
+      assert.equal(envelope.metadata.session_id, "session-1");
+      return {
+        envelope,
+        duplicate: false,
+        deliveries: [{ adapter_id: "agent-session-transport", status: "delivered" }],
+        auditEventIds: []
+      };
+    },
+    async listAudit() {
+      return [{ details: { adapter_id: "agent-session-transport", adapter_details: {
+        correlation_id: task.task_id,
+        session_id: "session-1",
+        reply: "SESSION_RESULT_OK"
+      } } }];
+    }
+  };
+  assert.deepEqual(await executeMeshTask(gateway, task), { text: "SESSION_RESULT_OK", artifacts: [] });
 });
 
 function executionTask() {

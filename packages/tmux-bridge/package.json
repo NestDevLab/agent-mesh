@@ -7,7 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "echo 'tmux-bridge: shell-only package, no build step'",
-    "test": "node --test test/capacity-dispatch.test.mjs && scripts/socket-isolation-test.sh && scripts/smoke-test.sh && python3 scripts/idle-expiry-test.py && scripts/launch-options-test.sh && scripts/mesh-cli-smoke.sh && scripts/session-writer-test.sh && scripts/session-watch-test.sh && scripts/session-link-test.sh && scripts/desktop-session-link-test.sh",
+    "test": "node --test test/*.test.mjs && scripts/socket-isolation-test.sh && scripts/smoke-test.sh && python3 scripts/idle-expiry-test.py && scripts/launch-options-test.sh && scripts/mesh-cli-smoke.sh && scripts/session-writer-test.sh && scripts/session-watch-test.sh && scripts/session-link-test.sh && scripts/desktop-session-link-test.sh",
     "smoke": "scripts/smoke-test.sh",
     "test:isolation": "scripts/socket-isolation-test.sh",
     "test:mesh-cli": "scripts/mesh-cli-smoke.sh",
@@ -15,6 +15,7 @@
   },
   "bin": {
     "agent-session": "./bin/agent-session.sh",
+    "agent-native-call": "./bin/agent-native-call.mjs",
     "agent-send": "./bin/agent-send.sh",
     "agent-read": "./bin/agent-read.sh",
     "agent-watch": "./bin/agent-watch.py",

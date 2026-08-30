@@ -15,14 +15,14 @@ const AGENT = {
   status: "online",
   phase_1_active: true,
   capabilities: ["submit_request"],
-  enabled_contexts: ["workspace.itermodus"],
+  enabled_contexts: ["workspace.example"],
   provider: "codex"
 };
 
 const CONTEXT = {
-  id: "workspace.itermodus",
+  id: "workspace.example",
   type: "workspace",
-  name: "Itermodus",
+  name: "Example Workspace",
   parent_id: null,
   owner_human: "Joseph",
   policy_profile: "private",
@@ -34,7 +34,7 @@ const BINDING = {
   selector: "someone@example.com",
   allowedTools: ["mesh_list_agents", "mesh_send", "mesh_delivery_status"],
   allowedAgentIds: ["agent.ingress.codex"],
-  allowedWorkspaceIds: ["workspace.itermodus"],
+  allowedWorkspaceIds: ["workspace.example"],
   allowedDomainIds: []
 };
 
@@ -90,4 +90,54 @@ test("tmux ingress rejects an unsupported agent type", async () => {
 test("tmux ingress requires an absolute agent-send path", async () => {
   const path = await writeConfig({ tmuxIngress: { ...ROUTE, agentSendPath: "agent-send.sh" } });
   await assert.rejects(readRuntimeConfig(path), /Invalid tmux ingress agentSendPath/);
+});
+
+const AGENT_SESSIONS = {
+  agentSessionPath: "/opt/mesh/agent-session.sh",
+  agentSendPath: "/opt/mesh/agent-send.sh",
+  agentNativeCallPath: "/opt/mesh/agent-native-call.mjs",
+  providers: [{
+    target_agent_id: "agent.ingress.codex",
+    agent_type: "codex",
+    workspace_roots: { "workspace.example": ["/srv/workspaces/example"] }
+  }]
+};
+
+test("runtime config accepts a workspace-scoped Codex session provider", async () => {
+  const config = await readRuntimeConfig(await writeConfig({ agentSessions: AGENT_SESSIONS }));
+  assert.equal(config.agentSessions.providers[0].agent_type, "codex");
+  assert.deepEqual(
+    config.agentSessions.providers[0].workspace_roots["workspace.example"],
+    ["/srv/workspaces/example"]
+  );
+});
+
+test("session native call path must be absolute when configured", async () => {
+  const path = await writeConfig({
+    agentSessions: { ...AGENT_SESSIONS, agentNativeCallPath: "agent-native-call.mjs" }
+  });
+  await assert.rejects(readRuntimeConfig(path), /Invalid agent sessions agentNativeCallPath/);
+});
+
+test("session providers must match the declared agent provider", async () => {
+  const path = await writeConfig({
+    agentSessions: {
+      ...AGENT_SESSIONS,
+      providers: [{ ...AGENT_SESSIONS.providers[0], agent_type: "claude" }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(path), /Invalid agent sessions provider/);
+});
+
+test("session provider workspace roots must be absolute", async () => {
+  const path = await writeConfig({
+    agentSessions: {
+      ...AGENT_SESSIONS,
+      providers: [{
+        ...AGENT_SESSIONS.providers[0],
+        workspace_roots: { "workspace.example": ["relative/project"] }
+      }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(path), /Invalid agent sessions workspace roots/);
 });
