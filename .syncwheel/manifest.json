@@ -11,33 +11,9 @@
     "branch": "main-integration",
     "base": "origin/main",
     "strategy": "cherry-pick",
-    "stacks": [
-      "session-link-guards"
-    ]
+    "stacks": []
   },
-  "stacks": [
-    {
-      "id": "session-link-guards",
-      "branch": "fix/session-link-guards",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "99523c5c17cc85e458f6d6297b4d2597df3dd874"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Rebuild the tmux send-readiness guards on main's exit-code contract"
-      },
-      "integration_commits": [
-        "c9172962a5ec67bc26a1996d92429e1aaad3bc91"
-      ]
-    }
-  ],
+  "stacks": [],
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked",
   "repository_mode": "delivery",
