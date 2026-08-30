@@ -2,13 +2,15 @@
 # agent-send.sh — Send a prompt to an AI agent CLI running in tmux, wait for reply.
 #
 # Usage:
-#   agent-send.sh [--quiet] --agent <NAME> <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
+#   agent-send.sh [--quiet] --agent <NAME> [--correlation-id <ID>]
+#     [--result-token <TOKEN>] <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
 #
 # --agent defaults to "codex". Prints the agent reply to stdout and streams
 # readable pane progress to stderr unless --quiet is supplied.
 # Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
 # 6 approval-pending (agent blocked on an interactive approval dialog that
-# needs a human), 124 stalled checkpoint.
+# needs a human), 65 no textual output, 66 output was not correlated,
+# 67 correlated output could not be parsed, 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
@@ -25,11 +27,15 @@ source "$SCRIPT_DIR/_mesh-tmux.sh"
 
 AGENT_NAME="codex"
 QUIET="false"
+CORRELATION_ID=""
+RESULT_TOKEN=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --agent) AGENT_NAME="$2"; shift 2 ;;
         --quiet) QUIET="true"; shift ;;
+        --correlation-id) CORRELATION_ID="$2"; shift 2 ;;
+        --result-token) RESULT_TOKEN="$2"; shift 2 ;;
         *)       ARGS+=("$1"); shift ;;
     esac
 done
@@ -47,6 +53,20 @@ STALL="${AGENT_STALL_TIMEOUT:-300}"
 
 [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_TARGET required" >&2; exit 1; }
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
+if [[ -n "$CORRELATION_ID" || -n "$RESULT_TOKEN" ]]; then
+    [[ -n "$CORRELATION_ID" && "$CORRELATION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] \
+        || { echo "ERROR: invalid or missing correlation ID" >&2; exit 1; }
+    [[ -n "$RESULT_TOKEN" && "$RESULT_TOKEN" =~ ^[a-f0-9]{16}$ ]] \
+        || { echo "ERROR: invalid or missing result token" >&2; exit 1; }
+    # The short first line is a stable terminal anchor even when the actual
+    # prompt wraps. Keeping both result markers on that skipped line prevents
+    # the collector from mistaking the protocol instruction for the response.
+    PROTOCOL_ANCHOR="[MESH:${RESULT_TOKEN}]"
+    RESULT_BEGIN="[[R:${RESULT_TOKEN}]]"
+    RESULT_END="[[/R:${RESULT_TOKEN}]]"
+    PROMPT="${PROTOCOL_ANCHOR} Use the result protocol shown on the next line."$'\n'\
+"Final result markers: ${RESULT_BEGIN} ... ${RESULT_END}"$'\n'"${PROMPT}"
+fi
 mtmux has-session -t "$TARGET" 2>/dev/null \
     || { echo "ERROR: tmux session '$TARGET' not found" >&2; exit 1; }
 
@@ -108,7 +128,7 @@ if mesh_pane_approval_pending "$_pane_before"; then
     exit 6
 fi
 
-PROMPT_MATCH_HEAD="${PROMPT%%$'\n'*}"
+PROMPT_MATCH_HEAD="${PROTOCOL_ANCHOR:-${PROMPT%%$'\n'*}}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
 
 if [[ "${AGENT_SUPPORTS_LAUNCH_TITLE:-false}" == "true" ]]; then
@@ -220,16 +240,60 @@ while true; do
     [[ $idle_rounds -ge $IDLE_NEEDED ]] && break
 done
 
-# Extract reply: lines between the echoed prompt and the next prompt character.
-# Multiline prompts are echoed over multiple pane lines, so anchor on the first
-# real submitted line instead of the launch-title prefix or whole prompt.
+# Extract reply from tmux scrollback, not only the visible pane. Task-mode sends
+# use a compact correlation anchor and explicit result markers. Legacy callers
+# retain the original prompt-head extraction contract.
 PROMPT_HEAD="$PROMPT_MATCH_HEAD"
-echo "$last_output" \
-    | awk -v prompt="$PROMPT_HEAD" -v pc="$AGENT_PROMPT_CHAR" '
-        $0 ~ pc && index($0, prompt) { found=1; next }
+FULL_OUTPUT="$(mtmux capture-pane -t "$TARGET" -p -S - 2>/dev/null || true)"
+SEGMENT="$(echo "$FULL_OUTPUT" \
+    | awk -v prompt="$PROMPT_HEAD" -v pc="$AGENT_PROMPT_CHAR" -v correlated="$RESULT_TOKEN" '
+        ((correlated != "" && index($0, prompt)) || (correlated == "" && $0 ~ pc && index($0, prompt))) { found=1; next }
         found && $0 ~ pc { exit }
         found { print }
-    ' \
+    ')"
+
+if [[ -n "$RESULT_TOKEN" ]]; then
+    BEGIN_COUNT="$(grep -Fo "$RESULT_BEGIN" <<<"$SEGMENT" | wc -l)"
+    END_COUNT="$(grep -Fo "$RESULT_END" <<<"$SEGMENT" | wc -l)"
+    if [[ "$BEGIN_COUNT" -ne "$END_COUNT" ]]; then
+        echo "PARSING-FAILURE: correlated result markers are unbalanced for '$CORRELATION_ID'" >&2
+        exit 67
+    fi
+    # One pair is the protocol template echoed in the prompt. A correlated
+    # response contributes a second pair; always keep the last complete pair.
+    if [[ "$BEGIN_COUNT" -ge 2 ]]; then
+        RESULT="$(awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
+            index($0, begin) {
+                tail=substr($0, index($0, begin) + length(begin))
+                if (index(tail, end)) { candidate=substr(tail, 1, index(tail, end) - 1); collecting=0; next }
+                collecting=1
+                buffer=tail
+                next
+            }
+            collecting && index($0, end) {
+                head=substr($0, 1, index($0, end) - 1)
+                if (head != "") buffer=buffer (buffer == "" ? "" : ORS) head
+                candidate=buffer
+                collecting=0
+                next
+            }
+            collecting { buffer=buffer (buffer == "" ? "" : ORS) $0 }
+            END { print candidate }
+        ' <<<"$SEGMENT" | sed '/^[[:space:]]*$/d')"
+        [[ -n "${RESULT//[[:space:]]/}" ]] \
+            || { echo "NO-OUTPUT: agent returned an empty correlated result for '$CORRELATION_ID'" >&2; exit 65; }
+        printf '%s\n' "$RESULT"
+        exit 0
+    fi
+    if [[ -n "${AGENT_RESPONSE_PATTERN:-}" ]] && ! grep -qE "$AGENT_RESPONSE_PATTERN" <<<"$SEGMENT"; then
+        echo "NO-OUTPUT: agent completed without a textual response for '$CORRELATION_ID'" >&2
+        exit 65
+    fi
+    echo "UNCORRELATED-OUTPUT: agent produced output without the expected result markers for '$CORRELATION_ID'" >&2
+    exit 66
+fi
+
+echo "$SEGMENT" \
     | sed 's/^[[:space:]]*//' \
     | grep -v '^[[:space:]]*$' \
     || true

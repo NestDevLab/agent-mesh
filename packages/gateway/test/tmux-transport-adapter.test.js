@@ -122,7 +122,26 @@ test("calls the sender once and returns delivered for an enabled route", async (
   assert.equal(sender.calls.length, 1);
   assert.equal(sender.calls[0].tmux_target, "mesh-codex-main");
   assert.equal(sender.calls[0].target_agent_id, "agent.software_engineer");
+  assert.equal(sender.calls[0].message_id, "msg-1");
+  assert.equal(sender.calls[0].context_id, "conv-1");
+  assert.equal(sender.calls[0].correlation_id, "corr-1");
   assert.match(sender.calls[0].prompt, /review the failing test/i);
+});
+
+test("records result collection failure without changing delivered transport status", async () => {
+  const stateDir = await freshStateDir();
+  const adapter = new TmuxTransportAdapter({
+    sender: fakeSender({ ok: true, result_error_code: "result_uncorrelated", error: "wrong marker" }),
+    routes: realSendRoute,
+    stateDir,
+    clock: fixedClock
+  });
+
+  const result = await adapter.dispatch(baseDelivery(), baseEnvelope());
+
+  assert.equal(result.status, "delivered");
+  assert.equal(result.details.result_error_code, "result_uncorrelated");
+  assert.equal(result.details.result_error, "wrong marker");
 });
 
 test("rejects MCP ingress unless the exact tmux route opts in", async () => {

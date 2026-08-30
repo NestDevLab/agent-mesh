@@ -1,9 +1,16 @@
-import { createHash } from "crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 import type { AuthInfo, McpHttpHandler } from "@modelcontextprotocol/server";
 import type { MeshMcpPrincipal, MeshMcpTool } from "./mesh-mcp.js";
 import type { GoogleWorkspaceAccountAlias } from "./google-workspace.js";
+
+// jose uses the Web Crypto global. Some non-interactive Node service launches
+// do not expose it even on supported Node versions, so install Node's native
+// implementation before the first JWT verification instead of failing open.
+if (globalThis.crypto === undefined) {
+  Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true });
+}
 
 export interface CloudflareAccessIdentity {
   subject: string;
@@ -34,6 +41,8 @@ export interface CloudflareAccessRequestAuthenticator {
     identity: CloudflareAccessIdentity;
   }>;
 }
+
+export type CloudflareAccessAuthenticationErrorReporter = (error: unknown) => void;
 
 /**
  * Validates the Access assertion at the origin. Cloudflare reaching the
@@ -86,14 +95,17 @@ export class CloudflareAccessAuthenticator {
 /** Wraps an MCP handler so no request reaches it without origin-side JWT validation. */
 export function requireCloudflareAccess(
   handler: McpHttpHandler,
-  authenticator: CloudflareAccessRequestAuthenticator
+  authenticator: CloudflareAccessRequestAuthenticator,
+  reportAuthenticationError: CloudflareAccessAuthenticationErrorReporter =
+    reportCloudflareAccessAuthenticationError
 ): McpHttpHandler {
   const fetch = handler.fetch;
   handler.fetch = async (request) => {
     try {
       const { authInfo } = await authenticator.authenticate(request);
       return fetch(request, { authInfo });
-    } catch {
+    } catch (error) {
+      reportAuthenticationError(error);
       return new Response(JSON.stringify({ error: "Cloudflare Access authentication required." }), {
         status: 401,
         headers: { "content-type": "application/json" }
@@ -101,6 +113,16 @@ export function requireCloudflareAccess(
     }
   };
   return handler;
+}
+
+function reportCloudflareAccessAuthenticationError(error: unknown): void {
+  const named = error as { name?: unknown; code?: unknown; message?: unknown };
+  const name = typeof named?.name === "string" ? named.name : "Error";
+  const code = typeof named?.code === "string" ? ` code=${named.code}` : "";
+  const message = typeof named?.message === "string"
+    ? named.message.replace(/[\r\n]+/g, " ").slice(0, 512)
+    : "Unknown authentication error";
+  process.stderr.write(`Cloudflare Access authentication failed: ${name}${code}: ${message}\n`);
 }
 
 export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAccessIdentity {

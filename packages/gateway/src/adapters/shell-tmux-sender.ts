@@ -1,4 +1,5 @@
 import { execFile } from "child_process";
+import { createHash } from "crypto";
 import { env as processEnv } from "process";
 import type {
   TmuxSendInput,
@@ -53,9 +54,14 @@ export class ShellTmuxSender implements TmuxSessionSender {
   }
 
   async send(input: TmuxSendInput): Promise<TmuxSendResult> {
+    const resultToken = input.correlation_id === undefined
+      ? undefined
+      : createHash("sha256").update(input.correlation_id).digest("hex").slice(0, 16);
     const args = [
       "--agent",
       this.agentType,
+      ...(input.correlation_id === undefined ? [] : ["--correlation-id", input.correlation_id]),
+      ...(resultToken === undefined ? [] : ["--result-token", resultToken]),
       input.tmux_target,
       input.prompt,
       String(this.timeoutSeconds)
@@ -72,9 +78,16 @@ export class ShellTmuxSender implements TmuxSessionSender {
     try {
       const result = await this.run(this.agentSendPath, args, { env, timeoutMs });
       if (result.code === 0) {
-        return { ok: true, reply: result.stdout.trim() };
+        const reply = result.stdout.trim();
+        return reply.length === 0
+          ? { ok: true, result_error_code: "result_no_output", error: "Agent produced no textual result." }
+          : { ok: true, reply };
       }
       const error = (result.stderr || `exit ${result.code}`).trim();
+      const resultErrorCode = resultCodeForExit(result.code);
+      if (resultErrorCode !== undefined) {
+        return { ok: true, result_error_code: resultErrorCode, error };
+      }
       return { ok: false, error };
     } catch (error) {
       return {
@@ -83,6 +96,14 @@ export class ShellTmuxSender implements TmuxSessionSender {
       };
     }
   }
+}
+
+function resultCodeForExit(code: number): TmuxSendResult["result_error_code"] | undefined {
+  if (code === 4 || code === 124) return "result_timeout";
+  if (code === 65) return "result_no_output";
+  if (code === 66) return "result_uncorrelated";
+  if (code === 67) return "result_parsing_failure";
+  return undefined;
 }
 
 function defaultRun(

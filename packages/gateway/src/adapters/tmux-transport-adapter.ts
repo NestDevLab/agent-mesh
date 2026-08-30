@@ -15,6 +15,9 @@ export interface TmuxSendInput {
   tmux_target: string;
   prompt: string;
   message_id: string;
+  context_id: string;
+  task_id?: string;
+  correlation_id?: string;
   idempotency_key: string;
 }
 
@@ -22,6 +25,7 @@ export interface TmuxSendResult {
   ok: boolean;
   reply?: string;
   error?: string;
+  result_error_code?: "result_no_output" | "result_uncorrelated" | "result_parsing_failure" | "result_timeout";
 }
 
 /**
@@ -193,6 +197,9 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
         tmux_target: route.tmux_target,
         prompt,
         message_id: envelope.message_id,
+        context_id: envelope.conversation_id,
+        ...(typeof envelope.task_id === "string" ? { task_id: envelope.task_id } : {}),
+        ...(typeof envelope.correlation_id === "string" ? { correlation_id: envelope.correlation_id } : {}),
         idempotency_key: envelope.idempotency_key
       });
     } catch (error) {
@@ -215,7 +222,7 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
     }
 
     const status = result.ok ? "delivered" : "failed";
-    const reason = result.ok ? "delivered" : result.error ?? "send_failed";
+    const reason = result.ok ? result.result_error_code ?? "delivered" : result.error ?? "send_failed";
     if (status === "failed") {
       // Release the claim so a retry of this failed send is allowed.
       await this.store.releaseClaim(envelope.idempotency_key);
@@ -242,6 +249,8 @@ export class TmuxTransportAdapter implements MeshTransportAdapter {
         tmux_target: route.tmux_target,
         ...(status === "failed" ? { reason } : {}),
         ...(result.reply !== undefined ? { reply: result.reply } : {}),
+        ...(result.result_error_code !== undefined ? { result_error_code: result.result_error_code } : {}),
+        ...(result.error !== undefined ? { result_error: result.error } : {}),
         ...correlation
       }
     };

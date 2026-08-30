@@ -110,11 +110,15 @@ test("Cloudflare wrapper never forwards an unauthenticated request", async () =>
     async notify() {},
     bus: {}
   };
-  const secured = requireCloudflareAccess(handler, {
-    async authenticate() {
-      throw new Error("invalid assertion");
-    }
-  });
+  const secured = requireCloudflareAccess(
+    handler,
+    {
+      async authenticate() {
+        throw new Error("invalid assertion");
+      }
+    },
+    () => {}
+  );
 
   const response = await secured.fetch(new Request("https://mcp.example.test/mcp"));
   assert.equal(response.status, 401);

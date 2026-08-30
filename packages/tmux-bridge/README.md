@@ -77,6 +77,10 @@ TARGET=$($BIN/agent-session.sh --agent codex \
   --limen-config /path/to/limen-policy.json \
   new /path/to/project mesh-codex-implementation)
 
+# Governed tasks use an explicit task correlation and deterministic result token
+$BIN/agent-send.sh --agent codex --correlation-id mesh_task_123 \
+  --result-token 0123456789abcdef "$TARGET" "return the requested result"
+
 # Check status, read last reply
 $BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | approval-pending | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
@@ -99,6 +103,13 @@ $BIN/agent-link.mjs --mode bidirectional --state "$STATE" \
 
 # List on-disk sessions + running tmux sessions
 $BIN/agent-session.sh --agent codex list
+$BIN/agent-session.sh --agent codex list --json --limit 25
+$BIN/agent-session.sh --agent claude inspect <SESSION_ID> --json
+$BIN/agent-session.sh --agent codex writer-status <SESSION_ID> --json
+
+# Queue into an already-active Codex session without creating a second writer.
+$BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
+  --correlation-id mesh_task_123 --message "return the requested result"
 
 # Discover live mesh agents and send by logical name
 $BIN/mesh-list-agents.sh
@@ -126,11 +137,24 @@ $BIN/mesh-send.sh --to claude \
 $BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --stall 180
 ```
 
+With correlation flags, the bridge anchors capture on the short token, reads scrollback instead
+of only the visible pane, and requires the final result between injected markers. This prevents
+wrapped or scrolled prompts from losing task correlation and distinguishes transport delivery
+from no output, uncorrelated output, parsing failure, and timeout. Existing callers without these
+flags retain the legacy extraction behavior.
+
 `agent-watch.py` is read-only with respect to the watched session. It resolves
 the newest matching transcript on each poll, writes only the caller-provided
 cursor file, and supports Codex and Claude without requiring a tmux target. Its
 structured output is intended for existing Mesh transports; the watcher does
 not dispatch, resume, or wake an agent by itself.
+
+`agent-session.sh ... resume` refuses to start a second writer for both Codex
+and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's
+native queue and waits for the uniquely marked turn in the transcript. Claude
+discovery and free-session resume use the same generic contract; an active
+Claude writer fails closed because the supported CLI currently exposes no
+equivalent safe queue command.
 
 For explicit L3 work on Codex and Claude, `mesh-send.sh` first discovers the
 dedicated `<provider>-broker-policy-v2.json`. L1/L2, or L3 before that policy is
