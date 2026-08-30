@@ -2,8 +2,8 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--profile <name> --limen-config <policy>] [--model <name>] [--effort <level>] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--profile <name> --limen-config <policy>] [--model <name>] [--effort <level>] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
@@ -30,7 +30,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_MESH_ROOT="${AGENT_MESH_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-AGENTS_DIR="$SCRIPT_DIR/../agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$SCRIPT_DIR/../agents}"
 TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 
 # Dedicated tmux socket + exit-empty off (see _mesh-tmux.sh).
@@ -43,6 +43,9 @@ SESSION_TITLE=""
 SESSION_MODEL=""
 SESSION_EFFORT=""
 SESSION_APPROVAL_POLICY=""
+SESSION_PROFILE=""
+LIMEN_CONFIG=""
+GOVERNED_CHILD="false"
 ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
@@ -66,6 +69,22 @@ while [[ $# -gt 0 ]]; do
             SESSION_EFFORT="$2"
             shift 2
             ;;
+        --profile)
+            [[ $# -ge 2 && -n "${2:-}" ]] \
+                || { echo "ERROR: --profile requires a non-empty value" >&2; exit 1; }
+            SESSION_PROFILE="$2"
+            shift 2
+            ;;
+        --limen-config)
+            [[ $# -ge 2 && -n "${2:-}" ]] \
+                || { echo "ERROR: --limen-config requires a non-empty value" >&2; exit 1; }
+            LIMEN_CONFIG="$2"
+            shift 2
+            ;;
+        --governed-child)
+            GOVERNED_CHILD="true"
+            shift
+            ;;
         --approval-policy)
             [[ $# -ge 2 && -n "${2:-}" ]] \
                 || { echo "ERROR: --approval-policy requires a non-empty value" >&2; exit 1; }
@@ -82,6 +101,18 @@ CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 [[ -f "$CONF" ]] || { echo "ERROR: no config for agent '$AGENT_NAME' ($CONF)" >&2; exit 1; }
 # shellcheck source=/dev/null
 source "$CONF"
+
+if [[ "$GOVERNED_CHILD" == "true" ]]; then
+    [[ -n "${MESH_LIMEN_ROUTE:-}" ]] \
+        || { echo "ERROR: governed launch is missing its Limen route" >&2; exit 1; }
+    ROUTE_LAUNCH_VALUES="$(node -e '
+const route = JSON.parse(process.argv[1]);
+if (!route || !/^[A-Za-z0-9_.:-]{1,96}$/.test(route.model || "") || !/^[A-Za-z0-9_.:-]{1,96}$/.test(route.effort || "")) process.exit(2);
+process.stdout.write(`${route.model}\t${route.effort}`);
+' "$MESH_LIMEN_ROUTE")" \
+        || { echo "ERROR: governed launch received an invalid Limen route" >&2; exit 1; }
+    IFS=$'\t' read -r SESSION_MODEL SESSION_EFFORT <<<"$ROUTE_LAUNCH_VALUES"
+fi
 
 if [[ -n "$SESSION_TITLE" ]]; then
     [[ "${AGENT_SUPPORTS_LAUNCH_TITLE:-false}" == "true" ]] \
@@ -259,10 +290,74 @@ if [[ -n "$SESSION_TITLE" && "$cmd" != "new" ]]; then
     echo "ERROR: --title is only supported with 'new'" >&2
     exit 1
 fi
+if [[ ( -n "$SESSION_PROFILE" || -n "$LIMEN_CONFIG" ) && "$cmd" != "new" && "$cmd" != "resume" ]]; then
+    echo "ERROR: --profile and --limen-config are only supported with 'new' or 'resume'" >&2
+    exit 1
+fi
 if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" || -n "$SESSION_APPROVAL_POLICY" ) \
     && "$cmd" != "new" && "$cmd" != "resume" ]]; then
     echo "ERROR: --model, --effort, and --approval-policy are only supported with 'new' or 'resume'" >&2
     exit 1
+fi
+if [[ "$GOVERNED_CHILD" != "true" && -n "$SESSION_PROFILE" ]]; then
+    [[ -n "$LIMEN_CONFIG" ]] \
+        || { echo "ERROR: --profile requires --limen-config; Limen policy selection must be explicit" >&2; exit 1; }
+    [[ -z "$SESSION_MODEL" && -z "$SESSION_EFFORT" ]] \
+        || { echo "ERROR: --profile cannot be combined with --model or --effort" >&2; exit 1; }
+    case "$cmd" in
+        resume)
+            SESSION_ID="${1:-}"
+            [[ -n "$SESSION_ID" ]] || { echo "ERROR: SESSION_ID required" >&2; exit 1; }
+            TARGET=$(_tmux_target "${2:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
+            CHILD_SESSION_ARGS=(resume "$SESSION_ID" "$TARGET")
+            ;;
+        new)
+            CWD="${1:-$PWD}"
+            TARGET=$(_tmux_target "${2:-}")
+            CHILD_SESSION_ARGS=(new "$CWD" "$TARGET")
+            ;;
+        *)
+            echo "ERROR: --profile is only supported with 'new' or 'resume'" >&2
+            exit 1
+            ;;
+    esac
+    if mtmux has-session -t "$TARGET" 2>/dev/null; then
+        _print_attach_hint
+        echo "$TARGET"
+        exit 0
+    fi
+    LIMEN_TIMEOUT_SECONDS="${LIMEN_ROUTE_TIMEOUT_SECONDS:-5}"
+    [[ "$LIMEN_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+        || { echo "ERROR: LIMEN_ROUTE_TIMEOUT_SECONDS must be a positive integer" >&2; exit 1; }
+    CAPACITY_STATE="${MESH_CAPACITY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json}"
+    LEASE_RENEW_MS="${MESH_LEASE_RENEW_MS:-60000}"
+    [[ "$LEASE_RENEW_MS" =~ ^[1-9][0-9]*$ ]] \
+        || { echo "ERROR: MESH_LEASE_RENEW_MS must be a positive integer" >&2; exit 1; }
+    RUN_ID="mesh-${TARGET}-$(date +%s%N)"
+    CHILD=("$0" --governed-child --agent "$AGENT_NAME")
+    [[ -n "$SESSION_TITLE" ]] && CHILD+=(--title "$SESSION_TITLE")
+    [[ -n "$SESSION_APPROVAL_POLICY" ]] && CHILD+=(--approval-policy "$SESSION_APPROVAL_POLICY")
+    CHILD+=("${CHILD_SESSION_ARGS[@]}")
+    [[ ${#PASSTHRU[@]} -gt 0 ]] && CHILD+=(-- "${PASSTHRU[@]}")
+    AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PROCESS_PATTERN:-^$AGENT_NAME$}"
+    DISPATCH=(node "$SCRIPT_DIR/mesh-capacity-dispatch.mjs" submit --state "$CAPACITY_STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_CONFIG" --provider "$AGENT_NAME" --harness "$AGENT_NAME" --run-id "$RUN_ID" --class "${LIMEN_WORK_CLASS:-L2}" --profile "$SESSION_PROFILE" --lifecycle session --session "$TARGET" --target "$TARGET" --renew-ms "$LEASE_RENEW_MS" --alive-pattern "$AGENT_ALIVE_PATTERN" -- "${CHILD[@]}")
+    set +e
+    timeout "$LIMEN_TIMEOUT_SECONDS" "${DISPATCH[@]}"
+    GOVERNED_CODE=$?
+    set -e
+    if [[ "$GOVERNED_CODE" -eq 0 ]]; then exit 0; fi
+    if [[ "$GOVERNED_CODE" -eq 75 ]]; then exit 75; fi
+    # A timeout/error may happen after the governed child has created the tmux
+    # target.  Retain that one session rather than starting a duplicate via the
+    # fail-open path; its monitor remains responsible for the lease lifecycle.
+    if mtmux has-session -t "$TARGET" 2>/dev/null; then
+        echo "WARN: Limen governed launch ended after target creation; retaining existing session" >&2
+        _print_attach_hint
+        echo "$TARGET"
+        exit 0
+    fi
+    echo "WARN: Limen governed launch unavailable (exit=$GOVERNED_CODE); starting with existing fail-open behavior" >&2
+    SESSION_PROFILE=""
 fi
 if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then
     _build_launch_options

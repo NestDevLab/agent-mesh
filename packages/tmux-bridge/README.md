@@ -70,6 +70,13 @@ TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
 
+# Governed session: a profile plus explicit Limen policy chooses the candidate.
+# It creates a session lease; model and effort are returned, not selected here.
+TARGET=$($BIN/agent-session.sh --agent codex \
+  --profile implementation.spec-defined \
+  --limen-config /path/to/limen-policy.json \
+  new /path/to/project mesh-codex-implementation)
+
 # Check status, read last reply
 $BIN/agent-read.sh --agent codex "$TARGET" --status      # idle | working | approval-pending | error
 $BIN/agent-read.sh --agent codex "$TARGET" --last-reply
@@ -100,6 +107,7 @@ $BIN/mesh-send.sh --to codex "summarize the current branch" 120
 # Governed background work: no prompt is pasted until Limen admits it.
 export LIMEN_POLICY=/path/to/limen-policy.json
 $BIN/mesh-send.sh --to codex --class L3 --run-id nightly-42 \
+  --profile implementation.spec-defined \
   "continue the authorized backlog" 300
 
 # The caller schedules this at the earliest retryAt; the drain never sleeps.
@@ -146,6 +154,17 @@ its current authorized backlog size; drain derives it from the claimed due set.
 After delivery begins, a persistence failure is classified as `dispatch_unknown`
 and never retried automatically. This leaves a visible reconciliation item instead
 of risking a duplicate prompt.
+
+For a session spawn, the governed route owns a session lease rather than a
+per-prompt reroute. `agent-session.sh --profile NAME --limen-config PATH` calls
+`limen route` (not `--dry-run`) before launch and retains the returned candidate
+identity. `agent-send.sh` uses that session's lease and never routes a live
+session again. The bridge renews the lease only while tmux reports the configured
+agent process live; a surviving shell after the agent exits is treated as a
+disappearance and triggers `complete`. A failed completion remains a visible
+`completion_pending` queue event, and an expired lease is never counted as a
+valid observation. Limen absent, disabled, slow, or erroneous leaves the
+existing launch and close behaviour fail-open.
 
 Governed Codex mesh sessions start with
 `agents.max_concurrent_threads_per_session=2`. This statically bounds the

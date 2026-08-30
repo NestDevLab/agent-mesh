@@ -56,6 +56,7 @@ RUN_ID=""
 PROJECT=""
 MODEL=""
 EFFORT=""
+PROFILE=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -71,6 +72,7 @@ while [[ $# -gt 0 ]]; do
         --project)     PROJECT="$2"; shift 2 ;;
         --model)       MODEL="$2"; shift 2 ;;
         --effort)      EFFORT="$2"; shift 2 ;;
+        --profile)     PROFILE="$2"; shift 2 ;;
         -h|--help)    sed -n '/^#/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)            ARGS+=("$1"); shift ;;
     esac
@@ -248,11 +250,20 @@ fi
 if [[ -n "${LIMEN_POLICY:-}" && ( "$R_TYPE" == "codex" || "$R_TYPE" == "claude" ) ]]; then
     DISPATCHER="$BIN_DIR/mesh-capacity-dispatch.mjs"
     STATE="${MESH_CAPACITY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json}"
+    if [[ -r "$STATE" ]] && node -e '
+const fs = require("fs");
+try {
+  const state = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+  process.exit(Array.isArray(state.sessions) && state.sessions.some(item => item.target === process.argv[2] && item.status === "active") ? 0 : 1);
+} catch { process.exit(1); }
+' "$STATE" "$R_TARGET"; then
+        exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+    fi
+    [[ -n "$PROFILE" ]] || { echo "ERROR: governed mesh delivery requires --profile; use a session lease or an authored profile" >&2; exit 1; }
+    [[ -z "$MODEL" && -z "$EFFORT" ]] || { echo "ERROR: --profile cannot be combined with --model or --effort" >&2; exit 1; }
     [[ -n "$RUN_ID" ]] || RUN_ID="mesh-${R_TARGET}-$(date +%s%N)"
-    CAPACITY_ARGS=(submit --state "$STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_POLICY" --provider "$R_TYPE" --harness "$R_TYPE" --run-id "$RUN_ID" --class "$WORK_CLASS" --session "$R_TARGET")
+    CAPACITY_ARGS=(submit --state "$STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_POLICY" --provider "$R_TYPE" --harness "$R_TYPE" --run-id "$RUN_ID" --class "$WORK_CLASS" --profile "$PROFILE" --session "$R_TARGET")
     [[ -n "$PROJECT" ]] && CAPACITY_ARGS+=(--project "$PROJECT")
-    [[ -n "$MODEL" ]] && CAPACITY_ARGS+=(--model "$MODEL")
-    [[ -n "$EFFORT" ]] && CAPACITY_ARGS+=(--effort "$EFFORT")
     exec node "$DISPATCHER" "${CAPACITY_ARGS[@]}" -- "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
 fi
 exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
