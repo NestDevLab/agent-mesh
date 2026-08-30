@@ -12,111 +12,29 @@
     "base": "origin/main",
     "strategy": "cherry-pick",
     "stacks": [
-      "google-workspace-read-tools",
-      "chatgpt-singleton-batch",
-      "mcp-tmux-ingress-route",
-      "chatgpt-mesh-tasks"
+      "session-link-guards"
     ]
   },
   "stacks": [
     {
-      "id": "google-workspace-read-tools",
-      "branch": "fix/google-workspace-read-tools",
+      "id": "session-link-guards",
+      "branch": "fix/session-link-guards",
       "base": "origin/main",
       "target_remote": "origin",
       "target_branch": "main",
       "integration_branch": "main-integration",
       "commits": [
-        "9d2eb7774edbfe4e3cd075a7ba7e5c327c85a604"
+        "99523c5c17cc85e458f6d6297b4d2597df3dd874"
       ],
       "state": "published",
       "publication": {
         "enabled": true
       },
       "meta": {
-        "purpose": "Read-only Drive/Sheets content reads for the example MCP hub"
+        "purpose": "Rebuild the tmux send-readiness guards on main's exit-code contract"
       },
       "integration_commits": [
-        "29d735be59d1ed1adba227573d756f7a8077cebe"
-      ]
-    },
-    {
-      "id": "chatgpt-singleton-batch",
-      "branch": "fix/chatgpt-singleton-batch",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "916902e132bf06eeeac3da4002ff3afa6a5b41ca",
-        "df359914b764df595f8ac9d93bbee9ce947a8b91",
-        "22f3c7ea8e6f3373cd6db6665a784f2481558cec",
-        "6ef78d639ddcd17ae992b52d98301f27414fb884",
-        "9387adb065216bb929863bc869687c95f3dca0d6"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Adapt ChatGPT singleton JSON-RPC tool batches and harden Access JWT verification"
-      },
-      "integration_commits": [
-        "692af3d6e7ec96e69f31b15391a0e4c9c2e26050",
-        "cd77d735cdc9e6200be013a245629d35453d959e",
-        "2774b79904941504443bb92df7ddd8ac602395bd",
-        "f5451b0b27fa9c9245a33f4fb19b97a3bcbc3a29",
-        "d37857acf1b3094fc9471810cd1c68f3c793ad20"
-      ]
-    },
-    {
-      "id": "mcp-tmux-ingress-route",
-      "branch": "feat/mcp-tmux-ingress-route",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "f66863efacfa04f1e85cad800f871b6982257cec"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Wire delegated tmux ingress routes through the MCP runtime config (needs google-workspace-read-tools + chatgpt-singleton-batch first)"
-      },
-      "integration_commits": [
-        "a1369a92e81649141eba89627a0c4713144223c8"
-      ]
-    },
-    {
-      "id": "chatgpt-mesh-tasks",
-      "branch": "fix/chatgpt-mesh-tasks",
-      "base": "1852be9e8aa56d1184ecbcee5709dfafc2fbc4d3",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "5f0a44c7618757a23a010a76472817987a4f3706",
-        "37cb6bed5080d857e5f729a642e5ffd7650a772b",
-        "5d56aec556e760322b8bcb9eb28f2759f5e3d91a",
-        "42d43577a4813cb5254fe735856dbdacaf471d1f",
-        "07fbfc31f0dd3afc51104a592eb3f3665a03a12d"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Durable MCP tasks, deterministic result correlation, and provider-neutral agent session targeting"
-      },
-      "integration_commits": [
-        "a03450f2f37550c6d606826257629b8ccb9b85c3",
-        "adb961b17a09ed9849c8d8c01920f245465d67f0",
-        "fdb6cfcdeb8e8dd4ed9398db4d8a173bc08fc08e",
-        "d74e5c31b923c2d5bd73c620d9718ad1c4cd7107",
-        "25605b2ad794859c2579e7fb52f5f45af60953d9"
+        "c9172962a5ec67bc26a1996d92429e1aaad3bc91"
       ]
     }
   ],

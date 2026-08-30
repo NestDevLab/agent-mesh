@@ -8,14 +8,15 @@
 # --agent defaults to "codex". Prints the agent reply to stdout and streams
 # readable pane progress to stderr unless --quiet is supplied.
 # Exit codes: 0 success, 4 progress checkpoint, 5 no live agent TUI,
-# 6 approval-pending (agent blocked on an interactive approval dialog that
-# needs a human), 65 no textual output, 66 output was not correlated,
+# 6 blocked (approval-pending, busy agent, occupied composer, or an
+# unconfirmed submit), 65 no textual output, 66 output was not correlated,
 # 67 correlated output could not be parsed, 124 stalled checkpoint.
 #
 # Environment overrides:
 #   AGENT_POLL_INTERVAL   seconds between polls (default: 2)
 #   AGENT_IDLE_ROUNDS     consecutive stable polls before declaring done (default: 3)
 #   AGENT_STALL_TIMEOUT   max seconds without pane changes before stalled (default: 300)
+#   AGENT_CONFIRM_FAST_IDLE allow changed+idle submit confirmation (default: false)
 
 set -euo pipefail
 
@@ -111,6 +112,37 @@ _require_live_agent_tui() {
     fi
 }
 
+_require_idle_agent_tui() {
+    local pane
+    [[ -n "${AGENT_WORKING_PATTERN:-}" ]] || return 0
+    pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+    if tail -n 24 <<<"$pane" | grep -qE "$AGENT_WORKING_PATTERN"; then
+        echo "BUSY: target '$TARGET' is processing another turn; prompt was not pasted" >&2
+        return 1
+    fi
+}
+
+_require_empty_composer() {
+    local pane cursor_x cursor_x_min
+    [[ -n "${AGENT_NONEMPTY_COMPOSER_PATTERN:-}" ]] || return 0
+    pane="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+    if tail -n 24 <<<"$pane" | grep -qE "$AGENT_NONEMPTY_COMPOSER_PATTERN"; then
+        # Some TUIs render ghost suggestions as text while keeping the logical
+        # cursor at the empty prompt. Count the match only after the cursor has
+        # moved into real input; fail closed if the cursor cannot be read.
+        if [[ -n "${AGENT_NONEMPTY_COMPOSER_CURSOR_X_MIN:-}" ]]; then
+            cursor_x="$(mtmux display-message -p -t "$TARGET" '#{cursor_x}' 2>/dev/null || true)"
+            cursor_x_min="$AGENT_NONEMPTY_COMPOSER_CURSOR_X_MIN"
+            if [[ "$cursor_x" =~ ^[0-9]+$ && "$cursor_x_min" =~ ^[0-9]+$ ]] \
+                && (( 10#$cursor_x < 10#$cursor_x_min )); then
+                return 0
+            fi
+        fi
+        echo "COMPOSER_OCCUPIED: target '$TARGET' contains unsent input; prompt was not pasted" >&2
+        return 1
+    fi
+}
+
 # A tmux session may survive after its agent CLI dies and leave a bare shell in
 # the pane. Never paste a prompt into that shell.
 _require_live_agent_tui || exit 5
@@ -127,6 +159,8 @@ if mesh_pane_approval_pending "$_pane_before"; then
     _approval_blocked_msg "prompt was not pasted"
     exit 6
 fi
+_require_idle_agent_tui || exit 6
+_require_empty_composer || exit 6
 
 PROMPT_MATCH_HEAD="${PROTOCOL_ANCHOR:-${PROMPT%%$'\n'*}}"
 [[ -n "$PROMPT_MATCH_HEAD" ]] || PROMPT_MATCH_HEAD="$PROMPT"
@@ -146,6 +180,14 @@ fi
 # special characters and multiline text (tmux send-keys would misinterpret them).
 mtmux send-keys -t "$TARGET" "" 2>/dev/null || true
 sleep 0.3
+_require_live_agent_tui || exit 5
+_pane_before="$(mtmux capture-pane -t "$TARGET" -p 2>/dev/null || true)"
+if mesh_pane_approval_pending "$_pane_before"; then
+    _approval_blocked_msg "prompt was not pasted"
+    exit 6
+fi
+_require_idle_agent_tui || exit 6
+_require_empty_composer || exit 6
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
 trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
@@ -174,7 +216,9 @@ done
 # renders) and NOT the done marker (the PREVIOUS turn's "Worked for …" lingers on
 # screen and would falsely confirm after a single dropped submit key). A new turn
 # always shows the working spinner, which a finished turn does not. Keep re-sending
-# until it appears; submit keys hitting an already-empty composer are harmless.
+# until it appears. Synthetic or genuinely instant agents may opt into
+# changed+idle confirmation with AGENT_CONFIRM_FAST_IDLE=true. Interactive AI
+# TUIs must keep this off because late paste rendering also changes an idle pane.
 submitted=0
 stream_previous="${_settle_now:-}"
 for _attempt in 1 2 3 4 5 6 7 8; do
@@ -196,8 +240,19 @@ for _attempt in 1 2 3 4 5 6 7 8; do
         stream_previous="$_now"
         break
     fi
+    if [[ "${AGENT_CONFIRM_FAST_IDLE:-false}" == "true" ]] \
+        && [[ "$_now" != "${_settle_now:-}" ]] \
+        && [[ -n "${AGENT_IDLE_PATTERN:-}" ]] \
+        && echo "$_now" | grep -qE "$AGENT_IDLE_PATTERN"; then
+        submitted=1
+        stream_previous="$_now"
+        break
+    fi
 done
-[[ "$submitted" -eq 1 ]] || echo "WARN: submission may not have registered for '$TARGET'" >&2
+if [[ "$submitted" -ne 1 ]]; then
+    echo "NOT_SUBMITTED: prompt was pasted into '$TARGET', but the turn did not start" >&2
+    exit 6
+fi
 
 deadline=$(( $(date +%s) + TIMEOUT ))
 idle_rounds=0

@@ -231,8 +231,12 @@ per-agent `AGENT_APPROVAL_PATTERN`, matched against the pane tail), the state is
 `approval-pending` with exit `6`: `agent-read.sh --status` reports it,
 `agent-wait.sh` and `agent-read.sh --follow` exit immediately, and
 `agent-send.sh` refuses to paste or submit because its submit key would
-blind-confirm the dialog. Only a human can answer it (attach to the tmux
-target), or relaunch the session with an explicit approval policy:
+blind-confirm the dialog. The send path also returns exit `6` without pasting
+when the target is processing a turn or its composer contains real unsent input;
+the per-agent cursor threshold distinguishes a ghost suggestion from typed text.
+It also returns `6` if a pasted prompt never starts a turn. Only a human can
+answer an approval dialog (attach to the tmux target), or relaunch the session
+with an explicit approval policy:
 `agent-session.sh --agent codex --approval-policy never new …` maps to
 `codex -a/--ask-for-approval` on both `new` and `resume`. Accepted values are
 `untrusted`, `on-request`, and `never`; they are validated before spawning,
