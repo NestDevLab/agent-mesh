@@ -96,6 +96,13 @@ $BIN/agent-link.mjs --mode bidirectional --state "$STATE" \
 
 # List on-disk sessions + running tmux sessions
 $BIN/agent-session.sh --agent codex list
+$BIN/agent-session.sh --agent codex list --json --limit 25
+$BIN/agent-session.sh --agent claude inspect <SESSION_ID> --json
+$BIN/agent-session.sh --agent codex writer-status <SESSION_ID> --json
+
+# Queue into an already-active Codex session without creating a second writer.
+$BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
+  --correlation-id mesh_task_123 --message "return the requested result"
 
 # Discover live mesh agents and send by logical name
 $BIN/mesh-list-agents.sh
@@ -133,6 +140,13 @@ the newest matching transcript on each poll, writes only the caller-provided
 cursor file, and supports Codex and Claude without requiring a tmux target. Its
 structured output is intended for existing Mesh transports; the watcher does
 not dispatch, resume, or wake an agent by itself.
+
+`agent-session.sh ... resume` refuses to start a second writer for both Codex
+and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's
+native queue and waits for the uniquely marked turn in the transcript. Claude
+discovery and free-session resume use the same generic contract; an active
+Claude writer fails closed because the supported CLI currently exposes no
+equivalent safe queue command.
 
 For explicit L3 work on Codex and Claude, `mesh-send.sh` first discovers the
 dedicated `<provider>-broker-policy-v2.json`. L1/L2, or L3 before that policy is

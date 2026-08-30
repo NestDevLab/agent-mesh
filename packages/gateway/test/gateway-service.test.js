@@ -58,6 +58,34 @@ test("gateway validates, persists, dispatches stub adapters, and audits delivery
   );
 });
 
+test("an explicit session id selects the session transport without invoking the static tmux route", async () => {
+  const stateDir = await createStateDir();
+  const calls = [];
+  const adapter = (id) => ({
+    id,
+    async dispatch() {
+      calls.push(id);
+      return { status: "delivered", details: { adapter_id: id } };
+    }
+  });
+  const gateway = createGateway(stateDir, {
+    adapters: [
+      adapter("simulated-agent"),
+      adapter("discord-transcript-stub"),
+      adapter("tmux-transport"),
+      adapter("agent-session-transport")
+    ]
+  });
+  await gateway.submitEnvelope(envelope({
+    metadata: { session_id: "session-1" }
+  }));
+  assert.deepEqual(calls, [
+    "simulated-agent",
+    "discord-transcript-stub",
+    "agent-session-transport"
+  ]);
+});
+
 test("gateway retries failed deliveries up to max_attempts and dead-letters exhaustion", async () => {
   const stateDir = await createStateDir();
   const failingAdapter = {

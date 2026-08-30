@@ -18,6 +18,8 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | `mesh_task_get` | Reads an owned task's status and result. |
 | `mesh_task_cancel` | Marks an owned task cancelled and ignores a late result. |
 | `mesh_thread_get` | Reads the ordered owned tasks in one context. |
+| `mesh_agent_sessions_list` | Lists bounded, path-free native session metadata inside one allowed workspace. |
+| `mesh_agent_session_get` | Reads bounded metadata for one allowed native session. |
 
 The host provides a verified request-scoped principal, its exact tool, agent,
 workspace, and domain scopes, a shared rate limiter, and a configured
@@ -28,6 +30,12 @@ Task state is append-only NDJSON and survives gateway restarts. Idempotency is
 scoped to the principal, and tasks targeting the same agent are serialized.
 Cancellation is cooperative: it makes the task terminal but does not terminate
 an already-running agent process.
+
+`mesh_call` and `mesh_submit` accept an optional `session_id`. When present,
+the gateway verifies the session against the target agent and authenticated
+workspace before creating the task. The task then preserves `session_id`,
+`task_id`, `message_id`, and `context_id` through delivery, audit, and result
+capture. A session ID is a routing coordinate, not an authorization grant.
 
 ## Serving safely
 
@@ -132,3 +140,53 @@ holding both `/workspace` Gmail and Drive reads and a live agent route can be
 steered by text it reads, which turns an injected document into execution on
 the host. Expose the agent route through `/agent-mesh` and the Google reads
 through `/google-workspace`, as separate connectors.
+
+## Native session discovery and targeting
+
+Session targeting reuses each provider's durable session store and CLI resume
+contract; Agent Mesh does not implement a second Codex or Claude session
+manager. Configure the generic host bridge separately from the static tmux
+route:
+
+```json
+"agentSessions": {
+  "agentSessionPath": "/opt/mesh/tmux-bridge/bin/agent-session.sh",
+  "agentSendPath": "/opt/mesh/tmux-bridge/bin/agent-send.sh",
+  "agentNativeCallPath": "/opt/mesh/tmux-bridge/bin/agent-native-call.mjs",
+  "meshSocket": "mesh-ingress",
+  "timeoutSeconds": 180,
+  "scanLimit": 500,
+  "providers": [
+    {
+      "target_agent_id": "agent.ingress.codex",
+      "agent_type": "codex",
+      "workspace_roots": {
+        "workspace.example": ["/srv/workspaces/example"]
+      }
+    },
+    {
+      "target_agent_id": "agent.ingress.claude",
+      "agent_type": "claude",
+      "workspace_roots": {
+        "workspace.example": ["/srv/workspaces/example"]
+      }
+    }
+  ]
+}
+```
+
+Grant `mesh_agent_sessions_list` and `mesh_agent_session_get` independently in
+the principal binding. Listing returns only session ID, logical agent/provider,
+workspace, discovery status, and update time; host paths and transcripts stay
+inside the provider adapter. A discovered session is not claimed to have a free
+writer. The bridge checks the live writer immediately before a prompt is sent.
+An active Codex session uses Codex's native queue and collects the result only
+after the uniquely marked user turn. A session without a writer uses the
+existing resume/tmux transport. An active Claude session fails closed because
+the currently supported Claude CLI exposes discovery/resume but no equivalent
+safe queue command; resumable Claude sessions remain supported.
+
+Static `tmuxIngress` remains unchanged for dedicated ingress sessions. A task
+without `session_id` continues to use that route. A task with `session_id` uses
+only `agent-session-transport` as its authoritative result transport, while
+the existing simulation and transcript audit adapters remain intact.

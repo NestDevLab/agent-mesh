@@ -5,7 +5,9 @@
 #   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> [--model <name>] [--effort <level>] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent <NAME> list
+#   agent-session.sh --agent <NAME> list [--json] [--limit <COUNT>]
+#   agent-session.sh --agent <NAME> inspect <SESSION_ID> [--json]
+#   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
 # --agent defaults to "codex". Config files: ../agents/<name>.conf
@@ -252,6 +254,56 @@ _print_launch_warning() {
     [[ -z "${AGENT_LAUNCH_WARNING:-}" ]] || echo "WARN: $AGENT_LAUNCH_WARNING" >&2
 }
 
+_session_file() {
+    local session_id="$1"
+    [[ -d "$AGENT_SESSION_DIR" ]] || return 0
+    find "$AGENT_SESSION_DIR" -type f -name "*${session_id}*.jsonl" -print -quit 2>/dev/null || true
+}
+
+_session_row() {
+    local file="$1" id cwd updated_epoch
+    id=$(basename "$file" \
+        | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+        | sed -n '1p' || true)
+    [[ -n "$id" ]] || return 0
+    cwd=$(eval "$AGENT_SESSION_CWD_EXTRACTOR \"$file\"" 2>/dev/null || echo "?")
+    updated_epoch=$(stat -c '%Y' "$file" 2>/dev/null || echo 0)
+    printf '%s\t%s\t%s\n' "$id" "$updated_epoch" "$cwd"
+}
+
+_session_rows() {
+    local limit="$1"
+    [[ -d "$AGENT_SESSION_DIR" ]] || return 0
+    find "$AGENT_SESSION_DIR" -type f -name '*.jsonl' -printf '%T@\t%p\n' 2>/dev/null \
+        | sort -t $'\t' -k1,1nr \
+        | sed -n "1,${limit}p" \
+        | cut -f2- \
+        | while IFS= read -r file; do
+            [[ -n "$file" ]] && _session_row "$file"
+        done
+}
+
+_session_rows_json() {
+    python3 -c '
+import datetime
+import json
+import sys
+
+agent_type = sys.argv[1]
+sessions = []
+for line in sys.stdin:
+    session_id, updated_epoch, cwd = line.rstrip("\n").split("\t", 2)
+    timestamp = datetime.datetime.fromtimestamp(int(updated_epoch), datetime.timezone.utc)
+    sessions.append({
+        "session_id": session_id,
+        "agent_type": agent_type,
+        "cwd": cwd,
+        "updated_at": timestamp.isoformat().replace("+00:00", "Z"),
+    })
+print(json.dumps({"agent_type": agent_type, "sessions": sessions}))
+' "$AGENT_NAME"
+}
+
 # ── commands ──────────────────────────────────────────────────────────────────
 cmd="${1:-}"; shift || true
 
@@ -329,21 +381,65 @@ case "$cmd" in
         ;;
 
     list)
+        LIST_JSON="false"
+        LIST_LIMIT=10
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --json) LIST_JSON="true"; shift ;;
+                --limit)
+                    [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -ge 1 && "$2" -le 1000 ]] \
+                        || { echo "ERROR: --limit must be an integer from 1 to 1000" >&2; exit 1; }
+                    LIST_LIMIT="$2"
+                    shift 2
+                    ;;
+                *) echo "ERROR: unknown list argument '$1'" >&2; exit 1 ;;
+            esac
+        done
+        if [[ "$LIST_JSON" == "true" ]]; then
+            _session_rows "$LIST_LIMIT" | _session_rows_json
+            exit 0
+        fi
         echo "=== Running tmux sessions (${AGENT_NAME}) ==="
         mtmux list-sessions 2>/dev/null \
             | grep "^${TMUX_SESSION_PREFIX}-${AGENT_NAME}" || echo "(none)"
         echo ""
-        echo "=== On-disk sessions — last 10 (${AGENT_NAME}) ==="
-        find "$AGENT_SESSION_DIR" -name "*.jsonl" 2>/dev/null \
-            | sort -r | head -10 \
-            | while read -r f; do
-                id=$(basename "$f" \
-                    | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-                    | head -1)
-                cwd=$(eval "$AGENT_SESSION_CWD_EXTRACTOR \"$f\"" 2>/dev/null || echo "?")
-                ts=$(stat -c '%y' "$f" 2>/dev/null | cut -d' ' -f1 || echo "?")
-                printf "  %s  %s  %s\n" "$id" "$ts" "$cwd"
-            done
+        echo "=== On-disk sessions — last ${LIST_LIMIT} (${AGENT_NAME}) ==="
+        _session_rows "$LIST_LIMIT" | while IFS=$'\t' read -r id updated_epoch cwd; do
+            ts=$(date --utc --date="@$updated_epoch" +%F 2>/dev/null || echo "?")
+            printf "  %s  %s  %s\n" "$id" "$ts" "$cwd"
+        done
+        ;;
+
+    inspect)
+        SESSION_ID="${1:-}"
+        shift || true
+        INSPECT_JSON="false"
+        [[ "$SESSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+            || { echo "ERROR: a complete session UUID is required" >&2; exit 1; }
+        if [[ "${1:-}" == "--json" ]]; then
+            INSPECT_JSON="true"
+            shift
+        fi
+        [[ $# -eq 0 ]] || { echo "ERROR: unknown inspect argument '$1'" >&2; exit 1; }
+        SESSION_FILE=$(_session_file "$SESSION_ID")
+        [[ -n "$SESSION_FILE" ]] || { echo "ERROR: session not found: $SESSION_ID" >&2; exit 3; }
+        if [[ "$INSPECT_JSON" == "true" ]]; then
+            _session_row "$SESSION_FILE" | _session_rows_json
+        else
+            _session_row "$SESSION_FILE"
+        fi
+        ;;
+
+    writer-status)
+        SESSION_ID="${1:-}"
+        shift || true
+        WRITER_ARGS=(--agent "$AGENT_NAME" --session "$SESSION_ID")
+        if [[ "${1:-}" == "--json" ]]; then
+            WRITER_ARGS+=(--json)
+            shift
+        fi
+        [[ $# -eq 0 ]] || { echo "ERROR: unknown writer-status argument '$1'" >&2; exit 1; }
+        node "$SCRIPT_DIR/session-writer-status.mjs" "${WRITER_ARGS[@]}"
         ;;
 
     kill)

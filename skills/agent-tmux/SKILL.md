@@ -93,8 +93,23 @@ TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
 # List configured agents + live sessions:
 $BIN/agent-session.sh --agent codex list
+$BIN/agent-session.sh --agent codex list --json --limit 25
+$BIN/agent-session.sh --agent claude inspect <SESSION_ID> --json
+$BIN/agent-session.sh --agent codex writer-status <SESSION_ID> --json
 $BIN/mesh-list-agents.sh            # all agents, live targets, capabilities
 ```
+
+Do not resume a persisted session that already has a writer. For a governed
+call to an active Codex session, use the native queue collector so the existing
+writer owns the turn and the result remains correlated:
+
+```bash
+$BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
+  --correlation-id <TASK_ID> --message "your prompt here"
+```
+
+Active Claude sessions fail closed: discovery and free-session resume are
+supported, but the supported Claude CLI does not expose a safe queue equivalent.
 
 ### Send a prompt, read the reply
 

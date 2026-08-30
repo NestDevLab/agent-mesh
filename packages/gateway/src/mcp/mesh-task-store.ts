@@ -44,6 +44,7 @@ export interface MeshTaskRecord {
   principal_kind: "user" | "service";
   requester_id: string;
   target_agent_id: string;
+  session_id?: string;
   workspace_id: string;
   domain_id: string;
   message: string;
@@ -63,6 +64,7 @@ export interface CreateMeshTaskInput {
   principalKind: "user" | "service";
   requesterId: string;
   targetAgentId: string;
+  sessionId?: string;
   workspaceId: string;
   domainId: string;
   message: string;
@@ -95,6 +97,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       principal_kind: input.principalKind,
       requester_id: input.requesterId,
       target_agent_id: input.targetAgentId,
+      ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
       workspace_id: input.workspaceId,
       domain_id: input.domainId,
       message: input.message,
@@ -120,6 +123,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       principal_kind: input.principalKind,
       requester_id: input.requesterId,
       target_agent_id: input.targetAgentId,
+      ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
       workspace_id: input.workspaceId,
       domain_id: input.domainId,
       message: input.message,

@@ -14,7 +14,8 @@
     "stacks": [
       "google-workspace-read-tools",
       "chatgpt-singleton-batch",
-      "mcp-tmux-ingress-route"
+      "mcp-tmux-ingress-route",
+      "chatgpt-mesh-tasks"
     ]
   },
   "stacks": [
@@ -33,7 +34,7 @@
         "enabled": true
       },
       "meta": {
-        "purpose": "Read-only Drive/Sheets content reads for the Itermodus MCP hub"
+        "purpose": "Read-only Drive/Sheets content reads for the example MCP hub"
       }
     },
     {
@@ -84,6 +85,27 @@
       "integration_commits": [
         "98d79456cea870140243963356239bdaab06935c"
       ]
+    },
+    {
+      "id": "chatgpt-mesh-tasks",
+      "branch": "fix/chatgpt-mesh-tasks",
+      "base": "1852be9e8aa56d1184ecbcee5709dfafc2fbc4d3",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "5f0a44c7618757a23a010a76472817987a4f3706",
+        "37cb6bed5080d857e5f729a642e5ffd7650a772b",
+        "5d56aec556e760322b8bcb9eb28f2759f5e3d91a",
+        "42d43577a4813cb5254fe735856dbdacaf471d1f"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Durable MCP tasks, deterministic result correlation, and provider-neutral agent session targeting"
+      }
     }
   ],
   "syncwheel_worktree_root": "var/syncwheel",

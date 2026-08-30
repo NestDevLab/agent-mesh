@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { AgentRegistry } from "../core/agent-registry.js";
 import { ContextRegistry } from "../core/context-registry.js";
 import { GatewayService } from "../core/gateway-service.js";
+import type { MeshTransportAdapter } from "../adapters/adapter.js";
 import { validateMeshAgentRecord, type MeshAgentRecord } from "../schema/agent.js";
 import { validateMeshContextRecord, type MeshContextRecord } from "../schema/context.js";
 import {
@@ -19,6 +20,11 @@ import {
 import { GogGoogleWorkspaceRunner, type GoogleWorkspaceAccount } from "./google-workspace.js";
 import { ShellTmuxSender } from "../adapters/shell-tmux-sender.js";
 import { TmuxTransportAdapter, type TmuxRoute } from "../adapters/tmux-transport-adapter.js";
+import {
+  AgentSessionRegistry,
+  ShellAgentSessionProvider
+} from "../adapters/agent-session-provider.js";
+import { AgentSessionTransportAdapter } from "../adapters/agent-session-transport-adapter.js";
 import { SimulatedAgentAdapter } from "../adapters/simulated-agent-adapter.js";
 import { DiscordTranscriptStubAdapter } from "../adapters/discord-transcript-stub-adapter.js";
 import { RunnerStubAdapter } from "../adapters/runner-stub-adapter.js";
@@ -56,6 +62,7 @@ interface RuntimeConfig {
   };
   memoryRecall?: MemoryRecallConfig;
   tmuxIngress?: TmuxIngressConfig;
+  agentSessions?: AgentSessionsConfig;
 }
 
 interface TmuxIngressConfig {
@@ -64,6 +71,20 @@ interface TmuxIngressConfig {
   meshSocket?: string;
   timeoutSeconds?: number;
   routes: TmuxRoute[];
+}
+
+interface AgentSessionsConfig {
+  agentSessionPath: string;
+  agentSendPath: string;
+  agentNativeCallPath?: string;
+  meshSocket?: string;
+  timeoutSeconds?: number;
+  scanLimit?: number;
+  providers: Array<{
+    target_agent_id: string;
+    agent_type: "codex" | "claude";
+    workspace_roots: Record<string, string[]>;
+  }>;
 }
 
 export interface McpRequestBodyCompatibility {
@@ -98,13 +119,14 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
     };
   });
   const stateDir = resolve(config.stateDir);
+  const sessionRegistry = createAgentSessionRegistry(config.agentSessions);
   const gateway = new GatewayService({
     stateDir,
     contextRegistry: new ContextRegistry(config.contexts),
     agentRegistry: new AgentRegistry([...requesterAgents, ...config.agents]),
-    ...(config.tmuxIngress === undefined
+    ...(config.tmuxIngress === undefined && sessionRegistry === undefined
       ? {}
-      : { adapters: tmuxIngressAdapters(config.tmuxIngress, stateDir) })
+      : { adapters: runtimeAdapters(config.tmuxIngress, sessionRegistry, stateDir) })
   });
   const bindings = config.bindings;
   const taskCoordinator = new MeshTaskCoordinator({
@@ -123,6 +145,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         capabilities
       })),
       taskCoordinator,
+      ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
     }),
@@ -145,6 +168,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         id, name, provider, capabilities
       })),
       taskCoordinator,
+      ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
@@ -318,6 +342,7 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
   validateGoogleWorkspace(parsed.googleWorkspace);
   validateMemoryRecall(parsed.memoryRecall);
   validateTmuxIngress(parsed.tmuxIngress, agents);
+  validateAgentSessions(parsed.agentSessions, agents, contexts);
   return {
     stateDir: parsed.stateDir,
     agents,
@@ -325,7 +350,8 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     bindings: parsed.bindings,
     ...(parsed.googleWorkspace === undefined ? {} : { googleWorkspace: parsed.googleWorkspace }),
     ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
-    ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress })
+    ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
+    ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions })
   };
 }
 
@@ -364,22 +390,101 @@ function validateTmuxIngress(
  * the stock three must be rebuilt alongside the tmux transport or
  * adaptersForEnvelope throws on the simulated path.
  */
-function tmuxIngressAdapters(config: TmuxIngressConfig, stateDir: string) {
-  return [
+function runtimeAdapters(
+  tmuxIngress: TmuxIngressConfig | undefined,
+  sessionRegistry: AgentSessionRegistry | undefined,
+  stateDir: string
+) {
+  const adapters: MeshTransportAdapter[] = [
     new SimulatedAgentAdapter(),
     new DiscordTranscriptStubAdapter(),
-    new RunnerStubAdapter({ stateDir }),
+    new RunnerStubAdapter({ stateDir })
+  ];
+  if (tmuxIngress !== undefined) adapters.push(
     new TmuxTransportAdapter({
       sender: new ShellTmuxSender({
-        agentSendPath: config.agentSendPath,
-        agentType: config.agentType,
-        ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
-        ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds })
+        agentSendPath: tmuxIngress.agentSendPath,
+        agentType: tmuxIngress.agentType,
+        ...(tmuxIngress.meshSocket === undefined ? {} : { meshSocket: tmuxIngress.meshSocket }),
+        ...(tmuxIngress.timeoutSeconds === undefined ? {} : { timeoutSeconds: tmuxIngress.timeoutSeconds })
       }),
-      routes: config.routes,
+      routes: tmuxIngress.routes,
       stateDir
     })
-  ];
+  );
+  if (sessionRegistry !== undefined) adapters.push(new AgentSessionTransportAdapter(sessionRegistry));
+  return adapters;
+}
+
+function validateAgentSessions(
+  value: RuntimeConfig["agentSessions"],
+  agents: readonly RuntimeAgent[],
+  contexts: readonly MeshContextRecord[]
+): void {
+  if (value === undefined) return;
+  for (const field of ["agentSessionPath", "agentSendPath"] as const) {
+    if (typeof value[field] !== "string" || !value[field].startsWith("/")) {
+      throw new Error(`Invalid agent sessions ${field} configuration.`);
+    }
+  }
+  if (
+    value.agentNativeCallPath !== undefined &&
+    (typeof value.agentNativeCallPath !== "string" || !value.agentNativeCallPath.startsWith("/"))
+  ) {
+    throw new Error("Invalid agent sessions agentNativeCallPath configuration.");
+  }
+  if (!Array.isArray(value.providers) || value.providers.length === 0) {
+    throw new Error("Invalid agent sessions providers configuration.");
+  }
+  if (
+    (value.meshSocket !== undefined &&
+      (typeof value.meshSocket !== "string" || !/^[A-Za-z0-9_.-]{1,64}$/.test(value.meshSocket))) ||
+    (value.timeoutSeconds !== undefined && (!Number.isInteger(value.timeoutSeconds) || value.timeoutSeconds < 1 || value.timeoutSeconds > 600)) ||
+    (value.scanLimit !== undefined && (!Number.isInteger(value.scanLimit) || value.scanLimit < 1 || value.scanLimit > 1000))
+  ) {
+    throw new Error("Invalid agent sessions runtime limits configuration.");
+  }
+  const seen = new Set<string>();
+  for (const [index, provider] of value.providers.entries()) {
+    const agent = agents.find((candidate) => candidate.id === provider.target_agent_id);
+    if (
+      agent === undefined ||
+      agent.provider !== provider.agent_type ||
+      (provider.agent_type !== "codex" && provider.agent_type !== "claude") ||
+      seen.has(provider.target_agent_id) ||
+      typeof provider.workspace_roots !== "object" ||
+      provider.workspace_roots === null ||
+      Array.isArray(provider.workspace_roots) ||
+      Object.keys(provider.workspace_roots).length === 0
+    ) {
+      throw new Error(`Invalid agent sessions provider at index ${index}.`);
+    }
+    for (const [workspaceId, roots] of Object.entries(provider.workspace_roots)) {
+      const workspace = contexts.find((context) => context.id === workspaceId);
+      if (!Array.isArray(roots) || roots.length === 0 || roots.some((root) => typeof root !== "string" || !root.startsWith("/"))) {
+        throw new Error(`Invalid agent sessions workspace roots at index ${index}.`);
+      }
+      if (workspace === undefined || workspace.type !== "workspace") {
+        throw new Error(`Unknown agent sessions workspace at index ${index}: ${workspaceId}`);
+      }
+    }
+    seen.add(provider.target_agent_id);
+  }
+}
+
+function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): AgentSessionRegistry | undefined {
+  if (config === undefined) return undefined;
+  return new AgentSessionRegistry(config.providers.map((provider) => new ShellAgentSessionProvider({
+    agentId: provider.target_agent_id,
+    agentType: provider.agent_type,
+    agentSessionPath: config.agentSessionPath,
+    agentSendPath: config.agentSendPath,
+    ...(config.agentNativeCallPath === undefined ? {} : { agentNativeCallPath: config.agentNativeCallPath }),
+    workspaceRoots: provider.workspace_roots,
+    ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
+    ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds }),
+    ...(config.scanLimit === undefined ? {} : { scanLimit: config.scanLimit })
+  })));
 }
 
 function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
