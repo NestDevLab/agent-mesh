@@ -81,13 +81,17 @@ async function deliver(options, io, admission) {
   const result = await execute(options.command[0], options.command.slice(1), {
     stdout: "inherit",
     stderr: "inherit",
-    env: admission.lease?.candidate ? { MESH_LIMEN_ROUTE: JSON.stringify({ provider: admission.provider, model: admission.model, effort: admission.effort, decisionId: admission.decisionId, candidate: admission.lease.candidate }) } : undefined,
+    env: admission.lease?.candidate ? { MESH_LIMEN_ROUTE: JSON.stringify({ provider: admission.provider, model: admission.model, nativeModel: admission.nativeModel, effort: admission.effort, decisionId: admission.decisionId, candidate: admission.lease.candidate }) } : undefined,
   });
   const dispatched = result.code === 0 || result.code === 4 || result.code === 124;
   await recordEventAfterDispatch(options, dispatched ? "dispatched" : "failed", { admission, reason: dispatched ? "command_dispatched" : `command_exit_${result.code}`, eligibleWork: options.eligibleWork }, io);
   if (dispatched && options.lifecycle === "session") {
     await upsertSession(options.state, options, admission, "active");
     await recordEventAfterDispatch(options, "session_active", { admission, reason: "session_lease_open", eligibleWork: options.eligibleWork }, io);
+    // A target can disappear between launch returning and the detached monitor
+    // receiving its first time slice. Reconcile that edge before returning so
+    // its candidate lease is not left active merely because scheduling lagged.
+    if (!(await liveTarget(options))) return completeSession(options);
     startMonitor(options);
     return result.code;
   }
@@ -127,7 +131,7 @@ async function runLimen(executable, args) {
   if (result.code !== 0 && result.code !== EXIT_DEFER) throw new Error(`limen exit ${result.code}: ${result.stderr.slice(0, 160)}`);
   let output;
   try { output = JSON.parse(result.stdout.trim()); } catch { throw new Error("limen returned invalid JSON"); }
-  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && output.effort);
+  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && /^[A-Za-z0-9_.:-]{1,96}$/.test(output.nativeModel || "") && output.effort);
   const admitted = output.decision === "admit";
   if ((!admitted && !routed && output.decision !== "defer") || (result.code === 0) !== (admitted || routed)) throw new Error("limen exit/payload mismatch");
   return output;
@@ -268,6 +272,24 @@ const completionArgs = options => {
 
 const parseJson = text => { try { return JSON.parse(text.trim()); } catch { return null; } };
 
+async function completeSession(options) {
+  const complete = await execute(options.limen, completionArgs(options), { stdout: "pipe", stderr: "pipe" });
+  const output = parseJson(complete.stdout);
+  if (complete.code === 0 && output?.status === "completed") {
+    await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
+    await recordEvent(options, "completed", { admission: output, reason: "session_gone_completed" });
+    return 0;
+  }
+  if (output?.status === "expired") {
+    await transitionSession(options.state, options.runId, { status: "expired", updatedAt: Date.now() });
+    await recordEvent(options, "lease_expired", { admission: output, reason: "session_gone_expired" });
+    return 2;
+  }
+  await transitionSession(options.state, options.runId, { status: "completion_pending", reason: `limen_complete_exit_${complete.code}`, updatedAt: Date.now() });
+  await recordEvent(options, "completion_pending", { reason: `limen_complete_exit_${complete.code}` });
+  return 1;
+}
+
 async function liveTarget(options) {
   const exists = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "has-session", "-t", options.target], { stdout: "ignore", stderr: "ignore" });
   if (exists.code !== 0) return false;
@@ -317,20 +339,8 @@ async function monitor(options, io) {
         await recordEvent(options, "renewal_pending", { reason: `limen_renew_exit_${renewal.code}` });
       }
     } else {
-      const complete = await execute(options.limen, completionArgs(options), { stdout: "pipe", stderr: "pipe" });
-      const output = parseJson(complete.stdout);
-      if (complete.code === 0 && output?.status === "completed") {
-        await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
-        await recordEvent(options, "completed", { admission: output, reason: "session_gone_completed" });
-        return 0;
-      }
-      if (output?.status === "expired") {
-        await transitionSession(options.state, options.runId, { status: "expired", updatedAt: Date.now() });
-        await recordEvent(options, "lease_expired", { admission: output, reason: "session_gone_expired" });
-        return 2;
-      }
-      await transitionSession(options.state, options.runId, { status: "completion_pending", reason: `limen_complete_exit_${complete.code}`, updatedAt: Date.now() });
-      await recordEvent(options, "completion_pending", { reason: `limen_complete_exit_${complete.code}` });
+      const outcome = await completeSession(options);
+      if (outcome === 0 || outcome === 2) return outcome;
     }
     await delay(options.renewMs);
   }
