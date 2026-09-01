@@ -81,7 +81,7 @@ async function deliver(options, io, admission) {
   const result = await execute(options.command[0], options.command.slice(1), {
     stdout: "inherit",
     stderr: "inherit",
-    env: admission.lease?.candidate ? { MESH_LIMEN_ROUTE: JSON.stringify({ provider: admission.provider, model: admission.model, effort: admission.effort, decisionId: admission.decisionId, candidate: admission.lease.candidate }) } : undefined,
+    env: admission.lease?.candidate ? { MESH_LIMEN_ROUTE: JSON.stringify({ provider: admission.provider, model: admission.model, nativeModel: admission.nativeModel, effort: admission.effort, decisionId: admission.decisionId, candidate: admission.lease.candidate }) } : undefined,
   });
   const dispatched = result.code === 0 || result.code === 4 || result.code === 124;
   await recordEventAfterDispatch(options, dispatched ? "dispatched" : "failed", { admission, reason: dispatched ? "command_dispatched" : `command_exit_${result.code}`, eligibleWork: options.eligibleWork }, io);
@@ -127,7 +127,7 @@ async function runLimen(executable, args) {
   if (result.code !== 0 && result.code !== EXIT_DEFER) throw new Error(`limen exit ${result.code}: ${result.stderr.slice(0, 160)}`);
   let output;
   try { output = JSON.parse(result.stdout.trim()); } catch { throw new Error("limen returned invalid JSON"); }
-  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && output.effort);
+  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && /^[A-Za-z0-9_.:-]{1,96}$/.test(output.nativeModel || "") && output.effort);
   const admitted = output.decision === "admit";
   if ((!admitted && !routed && output.decision !== "defer") || (result.code === 0) !== (admitted || routed)) throw new Error("limen exit/payload mismatch");
   return output;

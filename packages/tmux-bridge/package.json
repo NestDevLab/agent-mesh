@@ -14,6 +14,7 @@
     "postinstall": "chmod +x bin/*.sh bin/*.py bin/*.mjs scripts/*.sh 2>/dev/null || true"
   },
   "bin": {
+    "agent-spawn": "./bin/agent-spawn.sh",
     "agent-session": "./bin/agent-session.sh",
     "agent-native-call": "./bin/agent-native-call.mjs",
     "agent-send": "./bin/agent-send.sh",

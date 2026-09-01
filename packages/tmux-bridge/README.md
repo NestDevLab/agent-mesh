@@ -28,6 +28,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | Script | Purpose |
 |---|---|
 | `bin/agent-session.sh` | Create, resume, list, or kill agent sessions in tmux |
+| `bin/agent-spawn.sh` | Resolve one Limen role/profile and launch the routed session |
 | `bin/agent-send.sh` | Send a prompt and wait for the reply |
 | `bin/agent-wait.sh` | Wait for a turn with progress/stalled checkpoints |
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
@@ -70,10 +71,10 @@ TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
 
-# Governed session: a profile plus explicit Limen policy chooses the candidate.
-# It creates a session lease; model and effort are returned, not selected here.
-TARGET=$($BIN/agent-session.sh --agent codex \
-  --profile implementation.spec-defined \
+# Governed session: a role/profile plus explicit Limen policy chooses the candidate.
+# agent-spawn.sh delegates route, lease, renewal, and completion to the dispatcher.
+TARGET=$($BIN/agent-spawn.sh --agent codex \
+  --profile developer \
   --limen-config /path/to/limen-policy.json \
   new /path/to/project mesh-codex-implementation)
 
@@ -180,7 +181,7 @@ and never retried automatically. This leaves a visible reconciliation item inste
 of risking a duplicate prompt.
 
 For a session spawn, the governed route owns a session lease rather than a
-per-prompt reroute. `agent-session.sh --profile NAME --limen-config PATH` calls
+per-prompt reroute. `agent-spawn.sh --profile NAME --limen-config PATH` calls
 `limen route` (not `--dry-run`) before launch and retains the returned candidate
 identity. `agent-send.sh` uses that session's lease and never routes a live
 session again. The bridge renews the lease only while tmux reports the configured
@@ -189,6 +190,10 @@ disappearance and triggers `complete`. A failed completion remains a visible
 `completion_pending` queue event, and an expired lease is never counted as a
 valid observation. Limen absent, disabled, slow, or erroneous leaves the
 existing launch and close behaviour fail-open.
+
+The dispatcher rejects a route whose provider differs from the target agent.
+`nativeModel` is the registry rendering passed to the CLI; the governed effort
+remains separate where that CLI supports it.
 
 Governed Codex mesh sessions start with
 `agents.max_concurrent_threads_per_session=2`. This statically bounds the
