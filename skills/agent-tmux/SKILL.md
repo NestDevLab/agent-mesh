@@ -238,6 +238,26 @@ launch target. In particular, `architect` / `architecture.executable-specificati
 must use `--agent claude`, while `reviewer` / `review.adversarial` must use
 `--agent codex`.
 
+### Native same-runtime routing
+
+For a native child, resolve before creating the task. The command output is
+mandatory task context; preserve it verbatim so the chosen profile and route are
+auditable. If Limen is unavailable or slow, use the existing native behavior and
+report **"no route obtained"** — never pick a replacement model by hand.
+
+```bash
+# Codex -> Codex native task: retain this complete JSON output in the task.
+limen route --dry-run \
+  --config "${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json" \
+  --profile developer --harness codex
+
+# Claude -> Claude Agent: pass the returned nativeModel to Agent.model.
+# Claude accepts sonnet|opus|haiku|fable; effort is intentionally not passed.
+limen route --dry-run \
+  --config "${XDG_CONFIG_HOME:-$HOME/.config}/limen/claude-shadow-policy-v2.json" \
+  --profile architect --harness claude
+```
+
 `--model <name>` and `--effort <level>` work with `new` and `resume`. Their
 per-agent mapping lives in `agents/<type>.conf`: Claude maps both flags directly
 to its CLI, while Codex maps them to its config overrides. They are exceptional,
