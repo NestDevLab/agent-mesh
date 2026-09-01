@@ -109,9 +109,9 @@ if [[ "$GOVERNED_CHILD" == "true" ]]; then
         || { echo "ERROR: governed launch is missing its Limen route" >&2; exit 1; }
     ROUTE_LAUNCH_VALUES="$(node -e '
 const route = JSON.parse(process.argv[1]);
-if (!route || !/^[A-Za-z0-9_.:-]{1,96}$/.test(route.model || "") || !/^[A-Za-z0-9_.:-]{1,96}$/.test(route.effort || "")) process.exit(2);
-process.stdout.write(`${route.model}\t${route.effort}`);
-' "$MESH_LIMEN_ROUTE")" \
+if (!route || route.provider !== process.argv[2] || !/^[A-Za-z0-9_.:-]{1,96}$/.test(route.nativeModel || "") || !/^[A-Za-z0-9_.:-]{1,96}$/.test(route.effort || "")) process.exit(2);
+process.stdout.write(`${route.nativeModel}\t${route.effort}`);
+' "$MESH_LIMEN_ROUTE" "$AGENT_NAME")" \
         || { echo "ERROR: governed launch received an invalid Limen route" >&2; exit 1; }
     IFS=$'\t' read -r SESSION_MODEL SESSION_EFFORT <<<"$ROUTE_LAUNCH_VALUES"
 fi

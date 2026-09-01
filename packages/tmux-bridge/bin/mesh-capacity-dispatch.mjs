@@ -88,6 +88,10 @@ async function deliver(options, io, admission) {
   if (dispatched && options.lifecycle === "session") {
     await upsertSession(options.state, options, admission, "active");
     await recordEventAfterDispatch(options, "session_active", { admission, reason: "session_lease_open", eligibleWork: options.eligibleWork }, io);
+    // A target can disappear between launch returning and the detached monitor
+    // receiving its first time slice. Reconcile that edge before returning so
+    // its candidate lease is not left active merely because scheduling lagged.
+    if (!(await liveTarget(options))) return completeSession(options);
     startMonitor(options);
     return result.code;
   }
@@ -268,6 +272,24 @@ const completionArgs = options => {
 
 const parseJson = text => { try { return JSON.parse(text.trim()); } catch { return null; } };
 
+async function completeSession(options) {
+  const complete = await execute(options.limen, completionArgs(options), { stdout: "pipe", stderr: "pipe" });
+  const output = parseJson(complete.stdout);
+  if (complete.code === 0 && output?.status === "completed") {
+    await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
+    await recordEvent(options, "completed", { admission: output, reason: "session_gone_completed" });
+    return 0;
+  }
+  if (output?.status === "expired") {
+    await transitionSession(options.state, options.runId, { status: "expired", updatedAt: Date.now() });
+    await recordEvent(options, "lease_expired", { admission: output, reason: "session_gone_expired" });
+    return 2;
+  }
+  await transitionSession(options.state, options.runId, { status: "completion_pending", reason: `limen_complete_exit_${complete.code}`, updatedAt: Date.now() });
+  await recordEvent(options, "completion_pending", { reason: `limen_complete_exit_${complete.code}` });
+  return 1;
+}
+
 async function liveTarget(options) {
   const exists = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "has-session", "-t", options.target], { stdout: "ignore", stderr: "ignore" });
   if (exists.code !== 0) return false;
@@ -317,20 +339,8 @@ async function monitor(options, io) {
         await recordEvent(options, "renewal_pending", { reason: `limen_renew_exit_${renewal.code}` });
       }
     } else {
-      const complete = await execute(options.limen, completionArgs(options), { stdout: "pipe", stderr: "pipe" });
-      const output = parseJson(complete.stdout);
-      if (complete.code === 0 && output?.status === "completed") {
-        await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
-        await recordEvent(options, "completed", { admission: output, reason: "session_gone_completed" });
-        return 0;
-      }
-      if (output?.status === "expired") {
-        await transitionSession(options.state, options.runId, { status: "expired", updatedAt: Date.now() });
-        await recordEvent(options, "lease_expired", { admission: output, reason: "session_gone_expired" });
-        return 2;
-      }
-      await transitionSession(options.state, options.runId, { status: "completion_pending", reason: `limen_complete_exit_${complete.code}`, updatedAt: Date.now() });
-      await recordEvent(options, "completion_pending", { reason: `limen_complete_exit_${complete.code}` });
+      const outcome = await completeSession(options);
+      if (outcome === 0 || outcome === 2) return outcome;
     }
     await delay(options.renewMs);
   }
