@@ -1,21 +1,54 @@
 {
-  "version": 1,
+  "channels": [],
+  "coordination": {
+    "claims": "advisory",
+    "gc": {
+      "backup_keep": 2,
+      "backup_retention_days": 30,
+      "worktree_grace_days": 7
+    },
+    "id": "graph-7",
+    "mode": "active-active",
+    "remote": "origin",
+    "state_branch": "syncwheel/state/graph-7"
+  },
   "defaults": {
-    "canonical_remote": "origin",
-    "publication_remote": "fork",
     "base_branch": "main",
     "base_ref": "origin/main",
-    "integration_membership": "required"
+    "canonical_remote": "origin",
+    "integration_membership": "required",
+    "publication_remote": "origin"
   },
   "integration": {
-    "branch": "main-integration",
     "base": "origin/main",
-    "strategy": "cherry-pick",
-    "stacks": []
+    "branch": "main-integration",
+    "stacks": [
+      "graph-7"
+    ],
+    "strategy": "cherry-pick"
   },
-  "stacks": [],
-  "syncwheel_worktree_root": "var/syncwheel",
-  "syncwheel_tracking": "git-tracked",
   "repository_mode": "delivery",
-  "channels": []
+  "stacks": [
+    {
+      "base": "origin/main",
+      "branch": "pr/graph-session-registry",
+      "commits": [
+        "c1ea44ea6d44a1f6e51242d78c3267871d9ce8a9"
+      ],
+      "id": "graph-7",
+      "integration_branch": "main-integration",
+      "meta": {
+        "purpose": "Session graph, bridge isolation, and registry consumer delivery"
+      },
+      "publication": {
+        "enabled": true
+      },
+      "state": "published",
+      "target_branch": "main",
+      "target_remote": "origin"
+    }
+  ],
+  "syncwheel_tracking": "git-tracked",
+  "syncwheel_worktree_root": "var/syncwheel",
+  "version": 2
 }
