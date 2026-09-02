@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 const dispatcher = new URL("../bin/mesh-capacity-dispatch.mjs", import.meta.url).pathname;
 const meshSend = new URL("../bin/mesh-send.sh", import.meta.url).pathname;
 const sessionBin = new URL("../bin/agent-session.sh", import.meta.url).pathname;
+const spawnBin = new URL("../bin/agent-spawn.sh", import.meta.url).pathname;
 
 test("deferred tmux work persists, exits 75, and drains in class priority", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-"));
@@ -58,7 +59,7 @@ test("profile routing records a candidate lease and closes a disappeared session
   await writeFile(limen, `#!/bin/sh
 if [ "$1" = route ]; then
   printf '%s\\n' "$@" > '${seenRoute}'
-  echo '{"decision":"route","provider":"codex","model":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'
+  echo '{"decision":"route","provider":"codex","model":"gpt-5.6-terra","nativeModel":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'
   exit 0
 fi
 if [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi
@@ -66,7 +67,7 @@ if [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"012
 exit 2
 `);
   await writeFile(launcher, `#!/bin/sh
-node -e 'const r=JSON.parse(process.env.MESH_LIMEN_ROUTE); if (r.model !== "gpt-5.6-terra" || r.effort !== "high") process.exit(2)'
+node -e 'const r=JSON.parse(process.env.MESH_LIMEN_ROUTE); if (r.model !== "gpt-5.6-terra" || r.nativeModel !== "gpt-5.6-terra" || r.effort !== "high") process.exit(2)'
 `);
   await chmod(limen, 0o700); await chmod(launcher, 0o700);
   const result = await run(["submit", "--state", state, "--limen", limen, "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "session-run", "--class", "L2", "--profile", "implementation.spec-defined", "--lifecycle", "session", "--session", "mesh-gone", "--target", "mesh-gone", "--renew-ms", "10", "--", launcher]);
@@ -82,26 +83,26 @@ node -e 'const r=JSON.parse(process.env.MESH_LIMEN_ROUTE); if (r.model !== "gpt-
   assert.match(events, /capacityCostBase/);
 });
 
-test("agent-session uses a routed candidate and closes its lease after the agent process disappears", async () => {
+test("agent-spawn uses a routed native rendering and closes its lease after the agent process disappears", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-route-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), state = join(dir, "queue.json"), limen = join(bin, "limen"), codex = join(bin, "fake-codex"), launchArgs = join(dir, "codex-args.txt");
   const socket = `mesh-route-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-route-${process.pid}`;
   await mkdir(bin); await mkdir(agents);
-  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then echo '{"decision":"route","provider":"codex","model":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
+  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then echo '{"decision":"route","provider":"codex","model":"governed-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
   await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_ALIVE_PROCESS_PATTERN="^(fake-codex|sleep)$"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SESSION_CWD_EXTRACTOR='printf "?\\n"'\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
   await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "10", AGENT_MESH_AGENTS_DIR: agents };
   try {
-    const launched = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
+    const launched = await runCommand(spawnBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
     assert.equal(launched.code, 0, launched.stderr);
     assert.equal(launched.stdout.trim(), target);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
-    assert.match(await readFile(launchArgs, "utf8"), /--model gpt-5\.6-terra/);
+    assert.match(await readFile(launchArgs, "utf8"), /--model native-model/);
     assert.match(await readFile(launchArgs, "utf8"), /--effort high/);
     const opened = JSON.parse(await readFile(state, "utf8"));
-    assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "gpt-5.6-terra", effort: "high", capacityCostBase: null });
+    assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "governed-model", effort: "high", capacityCostBase: null });
     await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"));
     await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 3_000);
     assert.equal((await runCommand("tmux", ["-L", socket, "has-session", "-t", target], env)).code, 0, "the tmux shell remains after the agent process exits");
