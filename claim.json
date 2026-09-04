@@ -1,0 +1,12 @@
+{
+  "changed_refs": [
+    "refs/heads/main-integration",
+    "refs/heads/pr/graph-session-registry"
+  ],
+  "claimed_at": "2026-09-04T14:44:17+00:00",
+  "coordination_id": "graph-7",
+  "operation_token": "5f29a366-98a2-4eb3-96ee-a0f6c9d60682",
+  "publication_scope": "stack:graph-7",
+  "source_ref": "refs/heads/pr/graph-session-registry",
+  "syncwheel_version": "0.43.3"
+}
