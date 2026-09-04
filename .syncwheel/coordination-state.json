@@ -1,18 +1,18 @@
 {
   "changed_refs": {
-    "refs/heads/main-integration": "2579251877cb3b5b9a3e21f41d07cf110e9c5652",
-    "refs/heads/pr/graph-session-registry": "010becaf360fa0cab3bfa8167290a0e87d2467cd"
+    "refs/heads/main-integration": "40efae32f794d61dcadfdf327ca7478ca87253de",
+    "refs/heads/pr/graph-session-registry": "ade2f98403dff40a1914bc6259753c8e9c92cea4"
   },
   "claims": {
-    "refs/heads/main-integration": "065f16e333e6ab8b9985729ef013c9aa4d13b782",
-    "refs/heads/pr/graph-session-registry": "d770e42f58c1f3ec523a16a07faf01a1ec503b21"
+    "refs/heads/main-integration": "37e32b95a65d01b15e36823043dc33b7cd4f84ae",
+    "refs/heads/pr/graph-session-registry": "0d5b7b54eaa5823363e1b64ebcf54fda73567dd0"
   },
   "coordination_id": "graph-7",
-  "created_at": "2026-09-04T15:10:44+00:00",
+  "created_at": "2026-09-04T15:14:12+00:00",
   "installation_id": "e83434d1-e09b-4dd1-8bdf-a5f7970573c6",
   "managed_refs": {
-    "refs/heads/main-integration": "2579251877cb3b5b9a3e21f41d07cf110e9c5652",
-    "refs/heads/pr/graph-session-registry": "010becaf360fa0cab3bfa8167290a0e87d2467cd"
+    "refs/heads/main-integration": "40efae32f794d61dcadfdf327ca7478ca87253de",
+    "refs/heads/pr/graph-session-registry": "ade2f98403dff40a1914bc6259753c8e9c92cea4"
   },
   "manifest": {
     "coordination": {
@@ -56,7 +56,8 @@
         "commits": [
           "c1ea44ea6d44a1f6e51242d78c3267871d9ce8a9",
           "289d213a38a77c925997ae9b7a533f0cb735272c",
-          "010becaf360fa0cab3bfa8167290a0e87d2467cd"
+          "010becaf360fa0cab3bfa8167290a0e87d2467cd",
+          "ade2f98403dff40a1914bc6259753c8e9c92cea4"
         ],
         "id": "graph-7",
         "integration_branch": "main-integration",
@@ -65,11 +66,11 @@
     ],
     "version": 2
   },
-  "manifest_digest": "c5e0033f1298ffdd69753f2deafd8a6ea8812466c5fd645cb198339e0930b859",
-  "operation_token": "9c82e2c6-9485-497a-9106-3eecbaa4667e",
-  "parent_state": "644a8abff8b4f23f34a17019285f17c86b76171b",
+  "manifest_digest": "1687122fce356c34f8bb4ad849fa41bcf71b79ab9283360b146c1f6125860085",
+  "operation_token": "637501b8-6001-455d-b2a5-8af7d708b08e",
+  "parent_state": "f3bf5adaa99ff00a846afac5c6262c311253f0a7",
   "projection_status": "partial",
-  "publication_id": "0a754fd5-1d04-4286-9a7d-4f9518cb439c",
+  "publication_id": "728f5c5a-e216-4dff-8013-4ee4016cc09b",
   "publication_scope": "stack:graph-7",
   "schema_version": 2,
   "syncwheel_version": "0.43.3",
