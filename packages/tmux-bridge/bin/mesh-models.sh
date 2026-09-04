@@ -16,7 +16,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-AGENTS_DIR="$SCRIPT_DIR/../agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$SCRIPT_DIR/../agents}"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/models-seen"
 
 AS_JSON="false"

@@ -25,7 +25,7 @@ from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 BRIDGE_DIR = SCRIPT_DIR.parent
-AGENTS_DIR = BRIDGE_DIR / "agents"
+AGENTS_DIR = Path(os.environ.get("AGENT_MESH_AGENTS_DIR", BRIDGE_DIR / "agents"))
 READ_BIN = SCRIPT_DIR / "agent-read.sh"
 SESSION_BIN = SCRIPT_DIR / "agent-session.sh"
 STATE_VERSION = 1

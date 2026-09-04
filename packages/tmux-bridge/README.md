@@ -34,6 +34,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
 | `bin/agent-watch.py` | Follow persisted Codex/Claude transcripts by session id |
 | `bin/agent-link.mjs` | Connect two watched sessions with a bounded Mesh v1 relay |
+| `bin/mesh-graph.mjs` | Maintain the local append-only session graph and derived projection |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
 | `bin/mesh-capacity-dispatch.mjs` | Persist/retry Limen-deferred work without sleeping |
 | `bin/mesh-send.sh` | Send to an agent by name or capability using live tmux discovery |
@@ -121,6 +122,26 @@ $BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
 # Discover live mesh agents and send by logical name
 $BIN/mesh-list-agents.sh
 $BIN/mesh-send.sh --to codex "summarize the current branch" 120
+
+# Record or inspect the local session graph. State remains outside this repository.
+$BIN/mesh-graph.mjs add --agent codex --tmux-target mesh-codex-main --cwd "$PWD" \
+  --role-profile developer --summary "implementing graph"
+$BIN/mesh-graph.mjs show --tree
+
+`agent-session.sh ... new` registers the new target automatically. `mesh-send.sh --from`
+registers its source and destination by tmux target, then adds a `delegates-to` edge for a request
+or a `linked` edge for another message intent. Use `--from-target` outside a mesh tmux pane.
+When a runtime UUID becomes known after its first prompt, reconcile it without guessing:
+
+```bash
+$BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
+```
+
+The bridge atomically writes only `<state>/graph.json`; it makes no calls to context or
+work-item systems. Nodes may carry explicit opaque `--refs source:record,...` values, such as
+`management:MGT-0239` or `amf:record-id`. The graph validates their shape but never resolves or
+infers them. A work-orchestration or recall consumer may read `graph.json` and compose its own
+projection. Keep `summary` to one compact line; session context belongs behind a ref.
 
 # Governed background work: no prompt is pasted until Limen admits it.
 export LIMEN_POLICY=/path/to/limen-policy.json

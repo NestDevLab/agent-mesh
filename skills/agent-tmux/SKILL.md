@@ -104,6 +104,10 @@ $BIN/agent-session.sh --agent codex list --json --limit 25
 $BIN/agent-session.sh --agent claude inspect <SESSION_ID> --json
 $BIN/agent-session.sh --agent codex writer-status <SESSION_ID> --json
 $BIN/mesh-list-agents.sh            # all agents, live targets, capabilities
+
+# Read the local graph, or reconcile a known runtime UUID after its first prompt.
+$BIN/mesh-graph.mjs show --tree
+$BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
 ```
 
 Do not resume a persisted session that already has a writer. For a governed

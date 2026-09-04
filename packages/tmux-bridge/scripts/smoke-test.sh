@@ -10,7 +10,7 @@ export MESH_TMUX_SOCKET="mesh-smoke-test-$$"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_DIR="$BRIDGE_DIR/bin"
-AGENTS_DIR="$BRIDGE_DIR/agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$BRIDGE_DIR/agents}"
 # shellcheck source=../bin/_mesh-tmux.sh
 source "$BIN_DIR/_mesh-tmux.sh"
 

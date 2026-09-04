@@ -6,7 +6,7 @@
 #   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list [--json] [--limit <COUNT>]
-#   agent-session.sh --agent <NAME> inspect <SESSION_ID> [--json]
+#   agent-session.sh --agent <NAME> inspect <SESSION_ID> [--json] [--graph-target <TMUX_NAME>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
@@ -38,6 +38,8 @@ TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 # Dedicated tmux socket + exit-empty off (see _mesh-tmux.sh).
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/_mesh-tmux.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-graph.sh"
 
 # ── parse --agent flag ────────────────────────────────────────────────────────
 AGENT_NAME="codex"
@@ -430,6 +432,7 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_M
     [[ "$LEASE_RENEW_MS" =~ ^[1-9][0-9]*$ ]] \
         || { echo "ERROR: MESH_LEASE_RENEW_MS must be a positive integer" >&2; exit 1; }
     RUN_ID="mesh-${TARGET}-$(date +%s%N)"
+    export MESH_GRAPH_ROLE_PROFILE="$SESSION_PROFILE"
     CHILD=("$0" --governed-child --agent "$AGENT_NAME")
     [[ -n "$SESSION_TITLE" ]] && CHILD+=(--title "$SESSION_TITLE")
     [[ -n "$SESSION_APPROVAL_POLICY" ]] && CHILD+=(--approval-policy "$SESSION_APPROVAL_POLICY")
@@ -513,6 +516,8 @@ case "$cmd" in
             if [[ -n "$SESSION_TITLE" ]]; then
                 echo "WARN: session '$TARGET' already exists; --title was not updated" >&2
             fi
+            mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
+                >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
             echo "$TARGET"; exit 0
         fi
 
@@ -530,6 +535,8 @@ case "$cmd" in
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )
         fi
+        mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
+            >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
         _print_attach_hint
         echo "$TARGET"
         ;;
@@ -568,17 +575,30 @@ case "$cmd" in
         SESSION_ID="${1:-}"
         shift || true
         INSPECT_JSON="false"
+        GRAPH_TARGET=""
         [[ "$SESSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
             || { echo "ERROR: a complete session UUID is required" >&2; exit 1; }
-        if [[ "${1:-}" == "--json" ]]; then
-            INSPECT_JSON="true"
-            shift
-        fi
-        [[ $# -eq 0 ]] || { echo "ERROR: unknown inspect argument '$1'" >&2; exit 1; }
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --json) INSPECT_JSON="true"; shift ;;
+                --graph-target)
+                    [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ERROR: --graph-target requires a non-empty value" >&2; exit 1; }
+                    GRAPH_TARGET="$2"
+                    shift 2
+                    ;;
+                *) echo "ERROR: unknown inspect argument '$1'" >&2; exit 1 ;;
+            esac
+        done
         SESSION_FILE=$(_session_file "$SESSION_ID")
         [[ -n "$SESSION_FILE" ]] || { echo "ERROR: session not found: $SESSION_ID" >&2; exit 3; }
+        SESSION_JSON="$(_session_row "$SESSION_FILE" | _session_rows_json)"
+        if [[ -n "$GRAPH_TARGET" ]]; then
+            GRAPH_CWD="$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.sessions[0]?.cwd || "");' "$SESSION_JSON")"
+            mesh_graph_reconcile_runtime "$AGENT_NAME" "$GRAPH_TARGET" "$SESSION_ID" "$GRAPH_CWD" \
+                || { echo "ERROR: graph reconciliation failed for '$GRAPH_TARGET'" >&2; exit 1; }
+        fi
         if [[ "$INSPECT_JSON" == "true" ]]; then
-            _session_row "$SESSION_FILE" | _session_rows_json
+            printf '%s\n' "$SESSION_JSON"
         else
             _session_row "$SESSION_FILE"
         fi
