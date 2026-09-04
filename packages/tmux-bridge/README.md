@@ -68,7 +68,7 @@ BIN="packages/tmux-bridge/bin"   # relative to repo root
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 $BIN/agent-send.sh --agent codex "$TARGET" "describe the project state"
 
-# Start a Claude Code session (Remote Control is enabled by default)
+# Start a local Claude Code session (Remote Control is opt-in)
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
@@ -392,13 +392,17 @@ its own arguments, so no passthrough state is shared between spawns.
 
 ## Claude Remote Control visibility
 
-Bridge Claude sessions start and resume locally by default. Remote Control must
-be enabled explicitly when desktop or mobile visibility is needed. A named tmux
-target still gives the session a readable mesh identity:
+Bridge Claude sessions start and resume locally by default. Enable Remote Control
+from the first command when Desktop, browser, or mobile visibility is needed. A
+named tmux target still gives the session a readable mesh identity:
 
 ```bash
-TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
+TARGET=$($BIN/agent-session.sh --agent claude \
+  new /path/to/project mesh-claude-review -- --remote-control)
 ```
+
+Claude also accepts `--rc` as the shorter equivalent. The bridge forwards either
+flag verbatim after `--`, so Remote Control is active when the session starts.
 
 Anything after `--` is still forwarded to Claude Code, so per-session flags can
 be layered on top without bypassing the bridge.

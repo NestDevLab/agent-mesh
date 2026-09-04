@@ -8,6 +8,7 @@ BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 STATUS="$BRIDGE_DIR/bin/session-writer-status.mjs"
 SESSION_ID="writer-test-$$"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-writer-test.XXXXXX")"
+CLAUDE_INVENTORY="$WORKDIR/claude-inventory"
 DESKTOP_PID=""
 CLI_PID=""
 MONITOR_PID=""
@@ -22,6 +23,21 @@ cleanup() {
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT INT TERM
+
+# Keep this process-level fixture independent of whether the CI image installs
+# Claude Code. The ownership implementation still performs the real inventory
+# call, but this disposable provider returns a valid empty inventory so the test
+# exercises process classification without relying on host state.
+cat > "$CLAUDE_INVENTORY" <<'CLI'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "agents" && "${2:-}" == "--json" ]]; then
+    printf '[]\n'
+    exit 0
+fi
+exit 64
+CLI
+chmod +x "$CLAUDE_INVENTORY"
+export CLAUDE_BIN="$CLAUDE_INVENTORY"
 
 fail() {
     echo "FAIL: $*" >&2

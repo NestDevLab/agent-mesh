@@ -247,6 +247,17 @@ first_class_target="launch-options-first-class-$$"
 TARGETS+=("$first_class_target")
 assert_argv "--new --model model-one --effort high "
 
+# Claude Remote Control is an explicit passthrough option. Both supported spellings
+# must remain one argv element, after the bridge's configured launch options.
+for remote_flag in --remote-control --rc; do
+    : > "$LOG_FILE"
+    remote_target="launch-options-claude-remote-${remote_flag#--}-$$"
+    "$SESSION_BIN" --agent "launch-options-supported-$$" \
+        new "$WORKDIR" "$remote_target" -- "$remote_flag" >/dev/null
+    TARGETS+=("$remote_target")
+    assert_argv "--new --model default-model --effort medium $remote_flag "
+done
+
 # Codex's current cwd trust dialog must confirm only a visible default first
 # option. Marker-absent and option-two dialogs remain unanswered.
 trust_request="$WORKDIR/trust-request"

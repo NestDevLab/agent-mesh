@@ -398,12 +398,17 @@ local seen cache; `--refresh` replaces it, and plain `--json` remains read-only.
 ## Desktop / mobile visibility
 
 Claude bridge sessions start and resume locally by default. Enable Claude Code
-Remote Control explicitly only when Claude Desktop or mobile visibility is
-needed. A named tmux target is still useful for a readable mesh identity:
+Remote Control from the first command when Desktop, browser, or mobile
+visibility is needed. A named tmux target is still useful for a readable mesh
+identity:
 
 ```bash
-TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
+TARGET=$($BIN/agent-session.sh --agent claude \
+  new /path/to/project mesh-claude-review -- --remote-control)
 ```
+
+Claude also accepts `--rc` as the shorter equivalent. The bridge forwards either
+flag verbatim after `--`, so Remote Control is active when the session starts.
 
 For an existing Desktop-owned conversation, inspect `writer-status --json` and
 do not resume it locally. Owned and unknown sessions fail before tmux creation,
