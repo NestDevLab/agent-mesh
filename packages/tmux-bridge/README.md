@@ -28,7 +28,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | Script | Purpose |
 |---|---|
 | `bin/agent-session.sh` | Create, resume, list, or kill agent sessions in tmux |
-| `bin/agent-spawn.sh` | Resolve one Limen role/profile and launch the routed session |
+| `bin/agent-spawn.sh` | Resolve one Limen role/profile or exact model+effort and launch the routed session |
 | `bin/agent-send.sh` | Send a prompt and wait for the reply |
 | `bin/agent-wait.sh` | Wait for a turn with progress/stalled checkpoints |
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
@@ -77,6 +77,12 @@ TARGET=$($BIN/agent-spawn.sh --agent codex \
   --profile developer \
   --limen-config /path/to/limen-policy.json \
   new /path/to/project mesh-codex-implementation)
+
+# Governed session with an exact Limen candidate request (mutually exclusive with --profile).
+TARGET=$($BIN/agent-spawn.sh --agent codex \
+  --model gpt-5.6-terra --effort high \
+  --limen-config /path/to/limen-policy.json \
+  new /path/to/project mesh-codex-exact)
 
 # Governed tasks use an explicit task correlation and deterministic result token
 $BIN/agent-send.sh --agent codex --correlation-id mesh_task_123 \
@@ -181,15 +187,35 @@ and never retried automatically. This leaves a visible reconciliation item inste
 of risking a duplicate prompt.
 
 For a session spawn, the governed route owns a session lease rather than a
-per-prompt reroute. `agent-spawn.sh --profile NAME --limen-config PATH` calls
-`limen route` (not `--dry-run`) before launch and retains the returned candidate
-identity. `agent-send.sh` uses that session's lease and never routes a live
-session again. The bridge renews the lease only while tmux reports the configured
-agent process live; a surviving shell after the agent exits is treated as a
-disappearance and triggers `complete`. A failed completion remains a visible
-`completion_pending` queue event, and an expired lease is never counted as a
-valid observation. Limen absent, disabled, slow, or erroneous leaves the
-existing launch and close behaviour fail-open.
+per-prompt reroute. Exactly one routing form is required: `--profile NAME`,
+which calls `limen route`, or the complete `--model MODEL --effort LEVEL` pair,
+which calls `limen admit`; partial exact input and mixing the forms are rejected.
+Both forms retain Limen's returned candidate identity, native binding, lease,
+renewal, and completion lineage. `agent-send.sh` uses that session's lease and
+never routes a live session again. The bridge renews the lease only while tmux
+reports the configured agent process live; a surviving shell after the agent
+exits is treated as a disappearance and triggers `complete`. A failed
+completion remains a visible `completion_pending` queue event, and an expired
+lease is never counted as a valid observation.
+
+Codex receives the returned `nativeModel` and controllable effort natively.
+Claude receives `nativeModel`; when its configured binding cannot control
+effort, the requested effort remains in the Limen route metadata and a warning
+states that it was not applied. An explicit Limen capacity defer remains
+`waiting_capacity` (exit 75), distinct from unavailable or failed-open Limen.
+Limen policy/config/candidate rejection and invalid protocol payloads fail
+closed without launching; only Limen infrastructure unavailability or timeout
+uses the existing fail-open path when `--force` is absent. An exact
+`decision: "admit"` without a lease is treated as degraded observation and uses
+that same infrastructure fail-open path; a malformed candidate lease remains a
+closed protocol failure.
+`--force` is accepted only for an exact pair and only after a soft capacity
+defer: it launches without manufacturing a lease, records
+`capacity_overridden` with the requested candidate and original defer evidence,
+retains that provenance through terminal session events, and skips
+renewal/completion calls for that unleased session. Hard policy or
+validation failures cannot be forced; `wait` remains the default and
+`alternate` remains planner-owned.
 
 The dispatcher rejects a route whose provider differs from the target agent.
 `nativeModel` is the registry rendering passed to the CLI; the governed effort

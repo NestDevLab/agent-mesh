@@ -83,12 +83,17 @@ TARGET=$($BIN/agent-session.sh --agent codex \
   --title "agent-mesh: review tmux adapter" \
   new /path/to/project mesh-codex-review)
 
-# Governed launches name a role alias or profile, never a model. This one
-# command resolves through Limen, launches, and owns the lease lifecycle:
+# Governed launches use exactly one routing form. A profile resolves through
+# Limen, launches, and owns the lease lifecycle:
 POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json"
 TARGET=$($BIN/agent-spawn.sh --agent codex \
   --profile developer --limen-config "$POLICY" \
   new "$PWD" mesh-codex-developer)
+
+# An exact persistent candidate uses the complete model+effort pair instead:
+TARGET=$($BIN/agent-spawn.sh --agent codex \
+  --model gpt-5.6-terra --effort high --limen-config "$POLICY" \
+  new "$PWD" mesh-codex-exact)
 
 # Resume an on-disk session by ID:
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
@@ -214,7 +219,7 @@ or relaunch the worker with an explicit `--approval-policy` (below).
 state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --stall 180)
 ```
 
-### Profile routing and exceptional launch overrides
+### Profile and exact persistent routing
 
 Choose a named profile for planned work, then inspect it without reserving a
 run:
@@ -226,10 +231,20 @@ limen route --dry-run --config /path/to/limen-policy.json \
 
 `--config` is mandatory. Do not infer a policy from a shell default: different
 policies can choose different candidate sets. Use `agent-spawn.sh`, not
-`agent-session.sh`, for a new governed launch: it delegates route, lease,
-renewal, and completion to the existing dispatcher. If Limen is unavailable or
-slow, the launch remains fail-open with the legacy behavior; report **"no route
-obtained"** and do not invent a model override.
+`agent-session.sh`, for a new governed launch: it delegates route, admission,
+lease, renewal, and completion to the existing dispatcher. A persistent session
+must select exactly one form: `--profile NAME`, or both `--model MODEL
+--effort LEVEL`. Partial exact input and mixing `--profile` with either exact
+flag fail before launch.
+
+The profile form calls `limen route`; the exact form calls `limen admit` with
+the requested model and effort. The returned candidate identity and native
+binding are authoritative and remain attached to the session lifecycle. If
+Limen is unavailable, slow, or fails before dispatch, the launch keeps the
+existing fail-open behavior and reports **"no route obtained"**. An explicit
+exact admit without a lease is the same degraded/unavailable outcome; malformed
+candidate leases still fail closed. An explicit capacity defer is different: it
+is queued as `waiting_capacity` and exits 75; no prompt is launched.
 
 The routed answer is binding: in shadow, its first candidate wins. Never replace
 the returned native model or effort in the same call; correct the authored
@@ -252,17 +267,27 @@ limen route --dry-run \
   --profile developer --harness codex
 
 # Claude -> Claude Agent: pass the returned nativeModel to Agent.model.
-# Claude accepts sonnet|opus|haiku|fable; effort is intentionally not passed.
+# Claude receives nativeModel. Pass effort only when the configured binding
+# exposes a controllable effort; otherwise keep it as route metadata.
 limen route --dry-run \
   --config "${XDG_CONFIG_HOME:-$HOME/.config}/limen/claude-shadow-policy-v2.json" \
   --profile architect --harness claude
 ```
 
-`--model <name>` and `--effort <level>` work with `new` and `resume`. Their
-per-agent mapping lives in `agents/<type>.conf`: Claude maps both flags directly
-to its CLI, while Codex maps them to its config overrides. They are exceptional,
-recorded overrides after profile selection, not the normal way to choose an
-execution shape.
+For a governed persistent session, `--model <name>` and `--effort <level>` are
+one exact routing form, not independent overrides. Their per-agent mapping
+lives in `agents/<type>.conf`: Codex renders the returned `nativeModel` and
+effort natively; Claude renders `nativeModel` and only renders effort when its
+binding declares that control. If effort is not controllable, it remains in
+`MESH_LIMEN_ROUTE` and the child warns that it was not applied.
+
+Capacity handling is explicit. Without `--force`, a Limen defer waits and is
+planner-drained at `retryAt`. With `--force`, only an exact pair may override a
+soft capacity defer; the dispatcher launches unleased, emits
+`capacity_overridden` with the requested candidate and original defer evidence,
+retains that provenance through terminal session events, and makes no renew or
+complete calls for that session. Hard policy/validation failures cannot be
+forced. `alternate` is planner-owned.
 
 `--approval-policy <policy>` (Codex only) is an opt-in knob for `new` and
 `resume` that maps to `codex -a/--ask-for-approval`. Accepted values are
@@ -435,8 +460,9 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
   send lands mid-startup (prompt sits un-submitted, or `--status` shows
   `error`), `kill` the session, start a fresh one, and resend once `idle`.
 - **Codex trust dialog.** New directories prompt a workspace-trust dialog;
-  `agent-session.sh` auto-confirms with Enter. If stuck, check `--status` and
-  capture the pane with `--full`.
+  `agent-session.sh` confirms the current `Do you trust the contents of this
+  directory?` dialog only when its default first option is selected. If stuck,
+  check `--status` and capture the pane with `--full`.
 - **Codex app-server socket mismatch.** Without a live `CODEX_REMOTE_SOCK`,
   `codex resume` may try a dead control socket and fail with
   `WebSocket protocol error: Connection reset…`. The auto-detect above resolves
