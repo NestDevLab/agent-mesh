@@ -53,6 +53,7 @@ const { values, positionals } = parseArgs({
     summary: { type: "string" },
     status: { type: "string" },
     "runtime-uuid": { type: "string" },
+    ref: { type: "string" },
     refs: { type: "string" },
     from: { type: "string" },
     to: { type: "string" },
@@ -71,9 +72,13 @@ if (values.help || positionals.length === 0) {
   printHelp();
   process.exit(values.help ? 0 : 2);
 }
-if (positionals.length !== 1) fail("only one command may be supplied");
-
 const command = positionals[0];
+const subcommand = positionals[1];
+if (command === "ref") {
+  if (positionals.length !== 2) fail("ref requires exactly one operation: add or remove");
+} else if (positionals.length !== 1) {
+  fail("only one command may be supplied");
+}
 const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
@@ -92,6 +97,9 @@ try {
       break;
     case "link":
       printResult(addEdge(stateDir, values), values);
+      break;
+    case "ref":
+      printResult(updateRef(stateDir, subcommand, values), values);
       break;
     case "summary":
       printResult(updateSummary(stateDir, values), values);
@@ -330,6 +338,42 @@ function parseRefs(value) {
     if (!OPAQUE_REF.test(ref)) throw new Error(`--refs contains invalid opaque ref '${ref}'`);
   }
   return [...new Set(refs)];
+}
+
+function updateRef(statePath, operation, options) {
+  if (operation !== "add" && operation !== "remove") throw new Error("ref operation must be add or remove");
+  const opaqueRef = requiredOpaqueRef(options.ref);
+  return mutate(statePath, (graph) => {
+    const existing = selectNode(graph, options);
+    const refs = normalizeRefs(existing.refs);
+    const present = refs.includes(opaqueRef);
+    if ((operation === "add" && present) || (operation === "remove" && !present)) {
+      return { graph, result: { node: existing, changed: false } };
+    }
+    const node = {
+      ...existing,
+      refs: operation === "add" ? [...refs, opaqueRef] : refs.filter((item) => item !== opaqueRef),
+      updatedAt: now(),
+    };
+    return { graph, event: event("node.upserted", { node }), result: { node, changed: true } };
+  });
+}
+
+function selectNode(graph, options) {
+  const byId = options.id !== undefined;
+  const byRuntimeUuid = options["runtime-uuid"] !== undefined;
+  if (byId === byRuntimeUuid) throw new Error("select exactly one node with --id or --runtime-uuid");
+  if (byId) {
+    const id = requiredSingleLine(options.id, "--id");
+    const node = graph.nodes.find((item) => item.id === id);
+    if (!node) throw new Error(`node not found: ${id}`);
+    return node;
+  }
+  const runtimeUuid = requiredRuntimeUuid(options["runtime-uuid"]);
+  const matches = graph.nodes.filter((item) => String(item.runtimeUuid || "").toLowerCase() === runtimeUuid);
+  if (matches.length === 0) throw new Error(`node not found for runtime UUID: ${runtimeUuid}`);
+  if (matches.length > 1) throw new Error(`runtime UUID matches multiple nodes: ${runtimeUuid}; select one with --id`);
+  return matches[0];
 }
 
 function addEdge(statePath, options) {
@@ -677,6 +721,12 @@ function optionalRuntimeUuid(value) {
   return value === undefined ? undefined : requiredRuntimeUuid(value);
 }
 
+function requiredOpaqueRef(value) {
+  value = requiredSingleLine(value, "--ref");
+  if (!OPAQUE_REF.test(value)) throw new Error(`--ref contains invalid opaque ref '${value}'`);
+  return value;
+}
+
 function nodeClass(value) {
   if (value === undefined) return "unclassified";
   value = requiredSingleLine(value, "--class");
@@ -727,5 +777,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Quiet is observed silence, never closure. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque and never resolved.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Quiet is observed silence, never closure. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }

@@ -177,6 +177,71 @@ test("mesh-graph claims one primary orchestrator per domain and requires explici
   } finally { await rm(state, { recursive: true, force: true }); }
 });
 
+test("mesh-graph adds and removes opaque refs without arbitrating duplicate holders", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-refs-"));
+  const firstUuid = "11111111-1111-4111-8111-111111111111";
+  const secondUuid = "22222222-2222-4222-8222-222222222222";
+  const opaqueRef = "agentwheel-resource:0123456789abcdef";
+  try {
+    const first = JSON.parse((await run(state, [
+      "add", "--agent", "codex", "--tmux-target", "first", "--runtime-uuid", firstUuid, "--json",
+    ])).stdout).node;
+    const second = JSON.parse((await run(state, [
+      "add", "--agent", "claude", "--tmux-target", "second", "--runtime-uuid", secondUuid, "--json",
+    ])).stdout).node;
+
+    const addedById = await run(state, ["ref", "add", "--id", first.id, "--ref", opaqueRef, "--json"]);
+    assert.equal(addedById.code, 0, addedById.stderr);
+    assert.equal(JSON.parse(addedById.stdout).changed, true);
+    assert.deepEqual(JSON.parse(addedById.stdout).node.refs, [opaqueRef]);
+
+    const addedByRuntime = await run(state, ["ref", "add", "--runtime-uuid", secondUuid.toUpperCase(), "--ref", opaqueRef, "--json"]);
+    assert.equal(addedByRuntime.code, 0, addedByRuntime.stderr);
+    assert.equal(JSON.parse(addedByRuntime.stdout).node.id, second.id);
+    const duplicateGraph = JSON.parse((await run(state, ["show", "--json"])).stdout);
+    assert.equal(duplicateGraph.nodes.filter((node) => node.refs.includes(opaqueRef)).length, 2);
+
+    const repeatedAdd = await run(state, ["ref", "add", "--id", first.id, "--ref", opaqueRef, "--json"]);
+    assert.equal(repeatedAdd.code, 0, repeatedAdd.stderr);
+    assert.equal(JSON.parse(repeatedAdd.stdout).changed, false);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 4);
+
+    const removedByRuntime = await run(state, ["ref", "remove", "--runtime-uuid", secondUuid, "--ref", opaqueRef, "--json"]);
+    assert.equal(removedByRuntime.code, 0, removedByRuntime.stderr);
+    assert.equal(JSON.parse(removedByRuntime.stdout).changed, true);
+    assert.deepEqual(JSON.parse(removedByRuntime.stdout).node.refs, []);
+    const repeatedRemove = await run(state, ["ref", "remove", "--runtime-uuid", secondUuid, "--ref", opaqueRef, "--json"]);
+    assert.equal(repeatedRemove.code, 0, repeatedRemove.stderr);
+    assert.equal(JSON.parse(repeatedRemove.stdout).changed, false);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 5);
+
+    const missingSelector = await run(state, ["ref", "add", "--ref", opaqueRef]);
+    assert.equal(missingSelector.code, 2);
+    assert.match(missingSelector.stderr, /select exactly one node/);
+    const ambiguousSelector = await run(state, ["ref", "add", "--id", first.id, "--runtime-uuid", firstUuid, "--ref", opaqueRef]);
+    assert.equal(ambiguousSelector.code, 2);
+    assert.match(ambiguousSelector.stderr, /select exactly one node/);
+    const invalidRef = await run(state, ["ref", "add", "--id", first.id, "--ref", "private path"]);
+    assert.equal(invalidRef.code, 2);
+    assert.match(invalidRef.stderr, /invalid opaque ref/);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 5);
+
+    const graph = JSON.parse((await run(state, ["show", "--json"])).stdout);
+    assert.deepEqual(graph.nodes.find((node) => node.id === first.id).refs, [opaqueRef]);
+    assert.deepEqual(graph.nodes.find((node) => node.id === second.id).refs, []);
+
+    const duplicateRuntime = await run(state, [
+      "add", "--agent", "bash", "--tmux-target", "duplicate-runtime", "--runtime-uuid", firstUuid, "--json",
+    ]);
+    assert.equal(duplicateRuntime.code, 0, duplicateRuntime.stderr);
+    const ambiguousRuntime = await run(state, ["ref", "add", "--runtime-uuid", firstUuid, "--ref", "source:second"]);
+    assert.equal(ambiguousRuntime.code, 2);
+    assert.match(ambiguousRuntime.stderr, /runtime UUID matches multiple nodes/);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
 test("mesh-graph rejects invalid graph inputs without creating state", async () => {
   const state = join(tmpdir(), `mesh-graph-invalid-${process.pid}-${Date.now()}`);
   try {
@@ -191,6 +256,9 @@ test("mesh-graph rejects invalid graph inputs without creating state", async () 
     const invalidRef = await run(state, ["add", "--agent", "codex", "--tmux-target", "mesh-codex-main", "--refs", "prose with spaces"]);
     assert.equal(invalidRef.code, 2);
     assert.match(invalidRef.stderr, /invalid opaque ref/);
+    const invalidRefUpdate = await run(state, ["ref", "add", "--id", "node-fixture", "--ref", "private path"]);
+    assert.equal(invalidRefUpdate.code, 2);
+    assert.match(invalidRefUpdate.stderr, /invalid opaque ref/);
     await assert.rejects(access(join(state, "events.jsonl")));
 
     const shown = await run(state, ["show", "--json"]);

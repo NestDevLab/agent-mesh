@@ -180,7 +180,13 @@ adopted sessions remain active until explicitly closed.
 ```bash
 $BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
 $BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "one compact label"
+$BIN/mesh-graph.mjs ref add --id <NODE_ID> --ref source:opaque-id
+$BIN/mesh-graph.mjs ref remove --runtime-uuid <SESSION_UUID> --ref source:opaque-id
 ```
+
+Ref updates are idempotent and select exactly one node by graph ID or runtime
+UUID. Multiple nodes may carry the same opaque ref. The graph reports those
+explicit associations; it never resolves refs, selects an owner, or grants work.
 
 ### Connect two sessions
 

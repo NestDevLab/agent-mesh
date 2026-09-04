@@ -129,6 +129,8 @@ $BIN/mesh-graph.mjs add --agent codex --tmux-target mesh-codex-main --cwd "$PWD"
 # Desktop adoption reads only the transcript; set the compact summary separately.
 $BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
 $BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "reviewing graph delivery"
+$BIN/mesh-graph.mjs ref add --id <NODE_ID> --ref agentwheel-resource:<DIGEST>
+$BIN/mesh-graph.mjs ref remove --runtime-uuid <SESSION_UUID> --ref agentwheel-resource:<DIGEST>
 $BIN/mesh-graph.mjs show --tree
 
 `agent-session.sh ... new` registers the new target automatically. `mesh-send.sh --from`
@@ -145,6 +147,12 @@ work-item systems. Nodes may carry explicit opaque `--refs source:record,...` va
 `management:MGT-0239` or `amf:record-id`. The graph validates their shape but never resolves or
 infers them. A work-orchestration or recall consumer may read `graph.json` and compose its own
 projection. Keep `summary` to one compact line; session context belongs behind a ref.
+
+Use `ref add` and `ref remove` when ownership starts or ends after a node was
+created. Select exactly one node by graph ID or runtime UUID. Both operations
+are idempotent, and the same ref may appear on multiple nodes: the graph reports
+explicit associations but never resolves a ref, chooses an owner, or arbitrates
+who may proceed.
 
 # Governed background work: no prompt is pasted until Limen admits it.
 export LIMEN_POLICY=/path/to/limen-policy.json

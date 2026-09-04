@@ -29,6 +29,8 @@ $BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target m
 # Explicit, transcript-only Desktop adoption; set the compact summary separately.
 $BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
 $BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "one compact label"
+$BIN/mesh-graph.mjs ref add --id <NODE_ID> --ref source:opaque-id
+$BIN/mesh-graph.mjs ref remove --runtime-uuid <SESSION_UUID> --ref source:opaque-id
 
 # Status / wait
 $BIN/agent-read.sh --agent codex "$TARGET" --status        # idle | working | error
