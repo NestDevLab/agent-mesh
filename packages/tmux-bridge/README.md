@@ -205,11 +205,15 @@ states that it was not applied. An explicit Limen capacity defer remains
 `waiting_capacity` (exit 75), distinct from unavailable or failed-open Limen.
 Limen policy/config/candidate rejection and invalid protocol payloads fail
 closed without launching; only Limen infrastructure unavailability or timeout
-uses the existing fail-open path when `--force` is absent.
+uses the existing fail-open path when `--force` is absent. An exact
+`decision: "admit"` without a lease is treated as degraded observation and uses
+that same infrastructure fail-open path; a malformed candidate lease remains a
+closed protocol failure.
 `--force` is accepted only for an exact pair and only after a soft capacity
 defer: it launches without manufacturing a lease, records
 `capacity_overridden` with the requested candidate and original defer evidence,
-and skips renewal/completion calls for that unleased session. Hard policy or
+retains that provenance through terminal session events, and skips
+renewal/completion calls for that unleased session. Hard policy or
 validation failures cannot be forced; `wait` remains the default and
 `alternate` remains planner-owned.
 

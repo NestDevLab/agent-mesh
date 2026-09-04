@@ -161,6 +161,9 @@ function verifyRouteTarget(options, admission) {
   }
   if (admission.decision === "defer") return;
   if (options.lifecycle !== "session") return;
+  if (isExact(options) && admission.decision === "admit" && (admission.lease === null || admission.lease === undefined)) {
+    throw new LimenInfrastructureError("limen degraded admission: exact admit returned no candidate lease");
+  }
   const binding = nativeBinding(options, admission);
   if (options.profile && admission.decision !== "route") throw new Error("profile session admission did not return a route");
   if (isExact(options) && admission.decision !== "admit") throw new Error("exact session admission did not return an admission");
@@ -209,6 +212,16 @@ function requestedCandidate(options, admission) {
   };
 }
 
+function deferProvenance(admission) {
+  const evidence = { decision: "defer", reasons: [...admission.reasons] };
+  if (typeof admission.state === "string") evidence.state = admission.state;
+  if (Number.isSafeInteger(admission.retryAt)) evidence.retryAt = admission.retryAt;
+  for (const key of ["decisionId", "configHash"]) {
+    if (typeof admission[key] === "string" && admission[key].length > 0 && admission[key].length <= 240 && !/[\r\n]/.test(admission[key])) evidence[key] = admission[key];
+  }
+  return evidence;
+}
+
 function forceAdmission(options, admission) {
   if (!isExact(options)) throw new Error("capacity force requires exact --model and --effort without --profile");
   if (!softCapacityDefer(admission)) throw new Error("capacity force is allowed only after a soft capacity defer");
@@ -217,9 +230,10 @@ function forceAdmission(options, admission) {
   if (!candidate.nativeModel || !safeLabel.test(candidate.nativeModel) || !safeLabel.test(candidate.model) || !safeLabel.test(candidate.effort)) {
     throw new Error("capacity force requires the exact Limen native model binding");
   }
-  const { lease: _ignoredLease, ...deferEvidence } = admission;
+  const deferEvidence = deferProvenance(admission);
+  const { candidate: _ignoredCandidate, lease: _ignoredLease, ...forcedAdmission } = admission;
   return {
-    ...deferEvidence,
+    ...forcedAdmission,
     provider: options.provider,
     model: candidate.model,
     nativeModel: candidate.nativeModel,
@@ -453,15 +467,31 @@ async function completeSession(options) {
 }
 
 async function completeUnleasedSession(options, admission) {
+  const provenance = await loadUnleasedProvenance(options, admission);
   await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
-  const unleased = { ...(admission || {}), unleased: true, nativeModel: admission?.nativeModel || options.nativeModel };
+  const unleased = { ...provenance.originalDefer, unleased: true, nativeModel: provenance.requestedCandidate.nativeModel };
   await recordEvent(options, "completed", {
     admission: unleased,
-    requestedCandidate: admission?.requestedCandidate || (isExact(options) ? { provider: options.provider, model: options.model, nativeModel: options.nativeModel, effort: options.effort } : undefined),
-    originalDefer: admission?.originalDefer,
+    requestedCandidate: provenance.requestedCandidate,
+    originalDefer: provenance.originalDefer,
     reason: "unleased_session_gone",
   });
   return 0;
+}
+
+async function loadUnleasedProvenance(options, admission) {
+  let stored;
+  try {
+    const ledger = JSON.parse(await readFile(options.state, "utf8"));
+    stored = ledger.sessions?.find(item => item.runId === options.runId && item.unleased === true);
+  } catch {}
+  const requested = stored?.requestedCandidate || admission?.requestedCandidate;
+  const original = stored?.originalDefer || admission?.originalDefer;
+  if (!requested || requested.provider !== options.provider || requested.model !== options.model || requested.effort !== options.effort
+      || !safeLabel.test(String(requested.nativeModel || "")) || !softCapacityDefer(original)) {
+    throw new Error("unleased session provenance is missing or invalid");
+  }
+  return { requestedCandidate: requestedCandidate(options, requested), originalDefer: deferProvenance(original) };
 }
 
 async function liveTarget(options) {
@@ -499,9 +529,7 @@ async function liveTarget(options) {
 async function monitor(options, io) {
   while (true) {
     if (options.unleased) {
-      if (!(await liveTarget(options))) return completeUnleasedSession(options, {
-        requestedCandidate: { provider: options.provider, model: options.model, nativeModel: options.nativeModel, effort: options.effort },
-      });
+      if (!(await liveTarget(options))) return completeUnleasedSession(options);
       await delay(options.renewMs);
       continue;
     }

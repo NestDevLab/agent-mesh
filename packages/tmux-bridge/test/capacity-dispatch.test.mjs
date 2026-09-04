@@ -150,12 +150,37 @@ exit 0
     assert.equal(ledger.sessions[0].unleased, true);
     assert.equal("leased" in ledger.sessions[0], false);
     assert.equal("candidate" in ledger.sessions[0], false);
+    assert.deepEqual(ledger.sessions[0].requestedCandidate, { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" });
+    assert.deepEqual(ledger.sessions[0].originalDefer, { decision: "defer", reasons: ["over_pace"], state: "over_pace", retryAt: 123, decisionId: "defer-force", configHash: "cfg" });
+    assert.doesNotMatch(JSON.stringify(ledger.sessions[0]), /"candidate"|"lease"/);
     const events = (await readFile(`${state}.events.ndjson`, "utf8")).trim().split("\n").map(line => JSON.parse(line));
-    const overridden = events.find(event => event.status === "capacity_overridden");
-    assert.deepEqual(overridden.requestedCandidate, { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" });
-    assert.equal(overridden.originalDefer.decision, "defer");
-    assert.equal("lease" in overridden.originalDefer, false);
+    const lifecycle = events.filter(event => ["capacity_overridden", "dispatched", "session_active", "completed"].includes(event.status));
+    assert.deepEqual(lifecycle.map(event => event.status), ["capacity_overridden", "dispatched", "session_active", "completed"]);
+    for (const event of lifecycle) {
+      assert.deepEqual(event.requestedCandidate, { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" });
+      assert.deepEqual(event.originalDefer, { decision: "defer", reasons: ["over_pace"], state: "over_pace", retryAt: 123, decisionId: "defer-force", configHash: "cfg" });
+      assert.doesNotMatch(JSON.stringify(event), /"candidate"|"lease"/);
+    }
     assert.deepEqual((await readFile(commands, "utf8")).trim().split("\n"), ["admit"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("unleased monitor completion reloads validated provenance from session state", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-unleased-monitor-"));
+  const state = join(dir, "queue.json"), events = join(dir, "events.ndjson");
+  const requested = { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" };
+  const original = { decision: "defer", reasons: ["over_pace"], state: "over_pace", retryAt: 123, decisionId: "defer-monitor", configHash: "cfg" };
+  await writeFile(state, `${JSON.stringify({ schemaVersion: 1, jobs: [], sessions: [{ runId: "monitor-run", target: "missing-target", provider: "codex", harness: "codex", workClass: "L2", model: "requested-model", nativeModel: "native-model", effort: "high", policy: "policy", unleased: true, requestedCandidate: requested, originalDefer: original, status: "active" }] })}\n`);
+  try {
+    const result = await run(["monitor", "--state", state, "--events", events, "--limen", "missing-limen", "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "monitor-run", "--class", "L2", "--session", "monitor-session", "--target", `mesh-monitor-gone-${process.pid}`, "--model", "requested-model", "--native-model", "native-model", "--effort", "high", "--unleased"]);
+    assert.equal(result.code, 0, result.stderr);
+    const completed = JSON.parse((await readFile(events, "utf8")).trim());
+    assert.equal(completed.status, "completed");
+    assert.deepEqual(completed.requestedCandidate, requested);
+    assert.deepEqual(completed.originalDefer, original);
+    assert.doesNotMatch(JSON.stringify(completed), /"candidate"|"lease"/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -337,6 +362,58 @@ test("agent-session remains fail-open when Limen is unavailable before launch", 
     assert.match(launched.stderr, /Limen governed launch unavailable/);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
     assert.doesNotMatch(await readFile(launchArgs, "utf8"), /\{\"provider\"/);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-session treats an exact admit without a lease as degraded and launches once", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-degraded-admit-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launches = join(dir, "launches");
+  const socket = `mesh-degraded-admit-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-degraded-admit-${process.pid}`;
+  await mkdir(bin); await mkdir(agents);
+  await writeFile(limen, `#!/bin/sh
+if [ "$1" = admit ]; then
+  echo '{"decision":"admit","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"degraded-1","configHash":"cfg","lease":null}'
+  exit 0
+fi
+exit 2
+`);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="FAKE>"
+AGENT_WORKING_PATTERN="WORKING"
+AGENT_IDLE_PATTERN="FAKE>"
+AGENT_RESUME_CMD="fake-codex"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="fake-codex"
+AGENT_SESSION_DIR="${dir}"
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=()
+AGENT_SUPPORTS_EFFORT="true"
+AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=()
+`);
+  const codex = join(bin, "fake-codex");
+  await writeFile(codex, `#!/bin/sh
+printf 'launched\n' >> '${launches}'
+printf 'FAKE>\n'
+while :; do sleep 1; done
+`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: join(dir, "queue.json"), AGENT_MESH_AGENTS_DIR: agents };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "--model", "requested-model", "--effort", "high", "--limen-config", "policy", "new", dir, target], env);
+    assert.equal(launched.code, 0, launched.stderr);
+    assert.equal(launched.stdout.trim(), target);
+    assert.match(launched.stderr, /limen degraded admission: exact admit returned no candidate lease/);
+    assert.match(launched.stderr, /Limen governed launch unavailable \(exit=69\)/);
+    await waitFor(async () => (await readFile(launches, "utf8")).trim().length > 0);
+    assert.equal((await readFile(launches, "utf8")).trim().split("\n").length, 1);
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
     await rm(dir, { recursive: true, force: true });

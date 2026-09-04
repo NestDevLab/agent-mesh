@@ -242,8 +242,9 @@ the requested model and effort. The returned candidate identity and native
 binding are authoritative and remain attached to the session lifecycle. If
 Limen is unavailable, slow, or fails before dispatch, the launch keeps the
 existing fail-open behavior and reports **"no route obtained"**. An explicit
-capacity defer is different: it is queued as `waiting_capacity` and exits 75;
-no prompt is launched.
+exact admit without a lease is the same degraded/unavailable outcome; malformed
+candidate leases still fail closed. An explicit capacity defer is different: it
+is queued as `waiting_capacity` and exits 75; no prompt is launched.
 
 The routed answer is binding: in shadow, its first candidate wins. Never replace
 the returned native model or effort in the same call; correct the authored
@@ -284,8 +285,9 @@ Capacity handling is explicit. Without `--force`, a Limen defer waits and is
 planner-drained at `retryAt`. With `--force`, only an exact pair may override a
 soft capacity defer; the dispatcher launches unleased, emits
 `capacity_overridden` with the requested candidate and original defer evidence,
-and makes no renew or complete calls for that session. Hard policy/validation
-failures cannot be forced. `alternate` is planner-owned.
+retains that provenance through terminal session events, and makes no renew or
+complete calls for that session. Hard policy/validation failures cannot be
+forced. `alternate` is planner-owned.
 
 `--approval-policy <policy>` (Codex only) is an opt-in knob for `new` and
 `resume` that maps to `codex -a/--ask-for-approval`. Accepted values are
