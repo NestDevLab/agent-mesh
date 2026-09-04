@@ -277,8 +277,35 @@ _codex_trust_dialog_default() {
     [[ "$selected" =~ $first_option_pattern ]]
 }
 
+_claude_trust_dialog_visible() {
+    local output="$1"
+    [[ "$output" == *"Quick safety check: Is this a project you created or one you trust?"* \
+        || "$output" == *"Is this a project you trust?"* ]]
+}
+
+_claude_trust_dialog_selection() {
+    local output="$1" option_count selected
+    _claude_trust_dialog_visible "$output" || return 1
+    [[ "$output" == *"Enter to confirm"* && "$output" == *"Esc to cancel"* ]] || return 1
+    option_count="$(printf '%s\n' "$output" \
+        | grep -Ec '^[[:space:]]*[>❯›▸]?[[:space:]]*(No, exit|Yes, I trust this folder)[[:space:]]*$' || true)"
+    [[ "$option_count" == "2" ]] || return 1
+    selected="$(printf '%s\n' "$output" \
+        | grep -E '^[[:space:]]*[>❯›▸][[:space:]]*(No, exit|Yes, I trust this folder)[[:space:]]*$' \
+        | head -n 1 || true)"
+    [[ -n "$selected" ]] || return 1
+    if [[ "$selected" == *"Yes, I trust this folder"* ]]; then
+        printf 'trust\n'
+    elif [[ "$selected" == *"No, exit"* ]]; then
+        printf 'exit\n'
+    else
+        return 1
+    fi
+}
+
 _wait_for_ready() {
-    local target="$1" max_wait="${2:-30}" elapsed=0 out
+    local target="$1" max_wait="${2:-30}" elapsed=0 out selection verified
+    local claude_trust_confirmed="false"
     while [[ $elapsed -lt $max_wait ]]; do
         sleep 1; elapsed=$(( elapsed + 1 ))
         out=$(mtmux capture-pane -t "$target" -p 2>/dev/null)
@@ -287,9 +314,30 @@ _wait_for_ready() {
             mtmux send-keys -t "$target" "" Enter
             continue
         fi
-        # Trust dialog (Claude Code) — confirm with Enter. Codex's current
-        # dialog is auto-confirmed only while its default first option is selected.
-        if echo "$out" | grep -q "Is this a project you trust" || _codex_trust_dialog_default "$out"; then
+        if [[ "${AGENT_TRUST_DIALOG_KIND:-}" == "claude" ]] && _claude_trust_dialog_visible "$out"; then
+            if [[ "$claude_trust_confirmed" == "true" ]]; then
+                continue
+            fi
+            selection="$(_claude_trust_dialog_selection "$out" || true)"
+            if [[ "$selection" == "exit" ]]; then
+                mtmux send-keys -t "$target" Down
+                sleep 0.2
+                verified="$(mtmux capture-pane -t "$target" -p 2>/dev/null)"
+                [[ "$(_claude_trust_dialog_selection "$verified" || true)" == "trust" ]] || {
+                    echo "ERROR: Claude trust option could not be positively selected; refusing confirmation" >&2
+                    return 2
+                }
+            elif [[ "$selection" != "trust" ]]; then
+                echo "ERROR: unrecognized Claude trust dialog; refusing confirmation" >&2
+                return 2
+            fi
+            mtmux send-keys -t "$target" "" Enter
+            claude_trust_confirmed="true"
+            continue
+        fi
+        # Codex's current dialog is auto-confirmed only while its default first
+        # option is visibly selected.
+        if [[ "${AGENT_TRUST_DIALOG_KIND:-}" == "codex" ]] && _codex_trust_dialog_default "$out"; then
             mtmux send-keys -t "$target" "" Enter
             continue
         fi
@@ -299,6 +347,21 @@ _wait_for_ready() {
         fi
     done
     return 1
+}
+
+_wait_for_ready_or_warn() {
+    local target="$1" status
+    if _wait_for_ready "$target" 30; then
+        return 0
+    else
+        status=$?
+    fi
+    if [[ "$status" -eq 2 ]]; then
+        mtmux kill-session -t "$target" 2>/dev/null || true
+        return 2
+    fi
+    echo "WARN: session '$target' may not be fully ready yet" >&2
+    return 0
 }
 
 _print_attach_hint() {
@@ -499,8 +562,7 @@ case "$cmd" in
         mtmux new-session -d -s "$TARGET"
         mesh_tmux_harden
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
-        _wait_for_ready "$TARGET" 30 \
-            || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
+        _wait_for_ready_or_warn "$TARGET"
         _print_attach_hint
         echo "$TARGET"
         ;;
@@ -529,8 +591,7 @@ case "$cmd" in
         # would otherwise land in the server's own cwd. No-op for confs without {CWD}.
         NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}$LAUNCH_OPTION_CMD$EXTRA_CMD"
         mtmux send-keys -t "$TARGET" "$NEW_CMD" Enter
-        _wait_for_ready "$TARGET" 30 \
-            || echo "WARN: session '$TARGET' may not be fully ready yet" >&2
+        _wait_for_ready_or_warn "$TARGET"
         if [[ -n "$SESSION_TITLE" ]]; then
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )

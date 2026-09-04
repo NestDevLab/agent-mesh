@@ -34,6 +34,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
 | `bin/agent-watch.py` | Follow persisted Codex/Claude transcripts by session id |
 | `bin/agent-link.mjs` | Connect two watched sessions with a bounded Mesh v1 relay |
+| `bin/agent-native-call.mjs` | Use a supported active-session API or return a structured blocker |
 | `bin/mesh-graph.mjs` | Maintain the local append-only session graph and derived projection |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
 | `bin/mesh-capacity-dispatch.mjs` | Persist/retry Limen-deferred work without sleeping |
@@ -119,6 +120,11 @@ $BIN/agent-session.sh --agent codex writer-status <SESSION_ID> --json
 $BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
   --correlation-id mesh_task_123 --message "return the requested result"
 
+# Inspect an active Claude session. With no supported visible-user-turn API,
+# this exits 78 and returns a structured blocker without attempting delivery.
+$BIN/agent-native-call.mjs --agent claude --session <SESSION_ID> \
+  --correlation-id mesh_task_456 --message "return the requested result"
+
 # Discover live mesh agents and send by logical name
 $BIN/mesh-list-agents.sh
 $BIN/mesh-send.sh --to codex "summarize the current branch" 120
@@ -196,9 +202,22 @@ closes a quiet session.
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
 and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's
 native queue and waits for the uniquely marked turn in the transcript. Claude
-discovery and free-session resume use the same generic contract; an active
-Claude writer fails closed because the supported CLI currently exposes no
-equivalent safe queue command.
+ownership combines the documented `claude agents --json` inventory with process
+verification, including Desktop owners whose argv has no `--resume` flag. An
+incomplete inventory is `state: "unknown"`, never free, so resume fails before
+creating tmux state.
+
+The supported Claude CLI exposes no command that injects a normal user turn into
+an already-active Desktop/Remote Control conversation. `--resume` may copy an
+active session, while cross-session `SendMessage` is an agent message with its
+own visible preview and inbound controls, not a user turn. Therefore
+`agent-native-call.mjs --agent claude` exits 78 with a versioned JSON blocker,
+`delivery.attempted: false`, and the observed ownership. It never edits a
+transcript or calls an app-server protocol. See the official
+[CLI](https://code.claude.com/docs/en/cli-usage),
+[Remote Control](https://code.claude.com/docs/en/remote-control), and
+[cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
+contracts.
 
 For explicit L3 work on Codex and Claude, `mesh-send.sh` first discovers the
 dedicated `<provider>-broker-policy-v2.json`. L1/L2, or L3 before that policy is
@@ -383,6 +402,13 @@ TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-r
 
 Anything after `--` is still forwarded to Claude Code, so per-session flags can
 be layered on top without bypassing the bridge.
+
+For an existing Desktop-owned conversation, check ownership with
+`agent-session.sh --agent claude writer-status <SESSION_ID> --json`. Do not
+resume it locally: the bridge refuses an owned or unknown session, preventing a
+parallel conversation leaf. Until Claude exposes a supported visible-user-turn
+send API, the only supported user-message surfaces are the conversation's own
+terminal, Desktop, browser, or mobile composer.
 
 ### Codex Desktop titles
 

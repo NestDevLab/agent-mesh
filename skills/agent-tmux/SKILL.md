@@ -119,8 +119,25 @@ $BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
   --correlation-id <TASK_ID> --message "your prompt here"
 ```
 
-Active Claude sessions fail closed: discovery and free-session resume are
-supported, but the supported Claude CLI does not expose a safe queue equivalent.
+Claude ownership uses the documented `claude agents --json` inventory plus
+process verification, so Desktop owners are found even when their argv omits
+`--resume`. An incomplete inventory is unknown, not free, and resume fails
+before creating tmux state.
+
+The supported Claude CLI has no API that injects a normal user turn into an
+already-active Desktop/Remote Control conversation. `--resume` may create a
+copy, and cross-session `SendMessage` is an agent message rather than a user
+turn. Use the same adapter for a deterministic verdict:
+
+```bash
+$BIN/agent-native-call.mjs --agent claude --session <SESSION_ID> \
+  --correlation-id <TASK_ID> --message "your prompt here"
+```
+
+It exits 78 with a versioned JSON blocker and `delivery.attempted: false`. Never
+substitute transcript edits, direct socket writes, or undocumented app-server
+protocols. A user-visible prompt must come from that conversation's terminal,
+Desktop, browser, or mobile composer until Claude exposes a supported API.
 
 ### Send a prompt, read the reply
 
@@ -388,6 +405,10 @@ needed. A named tmux target is still useful for a readable mesh identity:
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project mesh-claude-review)
 ```
 
+For an existing Desktop-owned conversation, inspect `writer-status --json` and
+do not resume it locally. Owned and unknown sessions fail before tmux creation,
+preventing a parallel conversation leaf.
+
 Codex bridge sessions use the Codex Desktop app-server path described below.
 
 ## Codex Desktop visibility
@@ -485,6 +506,11 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
   `agent-session.sh` confirms the current `Do you trust the contents of this
   directory?` dialog only when its default first option is selected. If stuck,
   check `--status` and capture the pane with `--full`.
+- **Claude trust dialog.** Claude 2.1.252+ can start with `No, exit` selected.
+  The bridge recognizes only the exact safety prompt, labels, footer, and
+  selection marker; it sends `Down`, re-captures the pane, and presses Enter
+  only after `Yes, I trust this folder` is visibly selected. Unknown layouts
+  terminate the new tmux target and fail closed.
 - **Codex app-server socket mismatch.** Without a live `CODEX_REMOTE_SOCK`,
   `codex resume` may try a dead control socket and fail with
   `WebSocket protocol error: Connection reset…`. The auto-detect above resolves
