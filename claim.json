@@ -3,9 +3,9 @@
     "refs/heads/main-integration",
     "refs/heads/pr/graph-session-registry"
   ],
-  "claimed_at": "2026-09-04T15:02:01+00:00",
+  "claimed_at": "2026-09-04T15:10:44+00:00",
   "coordination_id": "graph-7",
-  "operation_token": "30bda7b3-1479-4f8a-a502-656697b46263",
+  "operation_token": "9c82e2c6-9485-497a-9106-3eecbaa4667e",
   "publication_scope": "stack:graph-7",
   "source_ref": "refs/heads/main-integration",
   "syncwheel_version": "0.43.3"
