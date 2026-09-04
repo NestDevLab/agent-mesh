@@ -458,8 +458,9 @@ See `references/agent-mesh-repo-sync.md` for the full sequence and pitfalls.
   send lands mid-startup (prompt sits un-submitted, or `--status` shows
   `error`), `kill` the session, start a fresh one, and resend once `idle`.
 - **Codex trust dialog.** New directories prompt a workspace-trust dialog;
-  `agent-session.sh` auto-confirms with Enter. If stuck, check `--status` and
-  capture the pane with `--full`.
+  `agent-session.sh` confirms the current `Do you trust the contents of this
+  directory?` dialog only when its default first option is selected. If stuck,
+  check `--status` and capture the pane with `--full`.
 - **Codex app-server socket mismatch.** Without a live `CODEX_REMOTE_SOCK`,
   `codex resume` may try a dead control socket and fail with
   `WebSocket protocol error: Connection reset…`. The auto-detect above resolves

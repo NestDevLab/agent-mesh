@@ -265,6 +265,16 @@ _tmux_target() {
     fi
 }
 
+_codex_trust_dialog_default() {
+    local output="$1" selected first_option_pattern='^[[:space:]]*[>❯›▸][[:space:]]*(1[.)]|[Yy]es|[Tt]rust|[Cc]ontinue)'
+    [[ "$output" == *"Do you trust the contents of this directory?"* ]] || return 1
+    # Codex opens this dialog with option 1 selected. Require capture-pane to
+    # expose that selection before confirming; never guess at a hidden choice.
+    selected="$(printf '%s\n' "$output" | grep -E '^[[:space:]]*[>❯›▸][[:space:]]*(1[.)]|2[.)]|[Yy]es|[Nn]o|[Tt]rust|[Ee]xit)' | head -n 1 || true)"
+    [[ -n "$selected" ]] || return 1
+    [[ "$selected" =~ $first_option_pattern ]]
+}
+
 _wait_for_ready() {
     local target="$1" max_wait="${2:-30}" elapsed=0 out
     while [[ $elapsed -lt $max_wait ]]; do
@@ -275,8 +285,9 @@ _wait_for_ready() {
             mtmux send-keys -t "$target" "" Enter
             continue
         fi
-        # Trust dialog (Claude Code) — confirm with Enter
-        if echo "$out" | grep -q "Is this a project you trust"; then
+        # Trust dialog (Claude Code) — confirm with Enter. Codex's current
+        # dialog is auto-confirmed only while its default first option is selected.
+        if echo "$out" | grep -q "Is this a project you trust" || _codex_trust_dialog_default "$out"; then
             mtmux send-keys -t "$target" "" Enter
             continue
         fi
@@ -441,6 +452,10 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_M
     if [[ "$GOVERNED_CODE" -eq 75 ]]; then exit 75; fi
     if [[ "$FORCE_CAPACITY" == "true" ]]; then
         echo "ERROR: --force requires an explicit soft Limen capacity defer; no override was launched" >&2
+        exit 2
+    fi
+    if [[ "$GOVERNED_CODE" -ne 69 && "$GOVERNED_CODE" -ne 124 ]]; then
+        echo "ERROR: Limen governed launch rejected (exit=$GOVERNED_CODE); no session was launched" >&2
         exit 2
     fi
     # A timeout/error may happen after the governed child has created the tmux

@@ -203,6 +203,9 @@ Claude receives `nativeModel`; when its configured binding cannot control
 effort, the requested effort remains in the Limen route metadata and a warning
 states that it was not applied. An explicit Limen capacity defer remains
 `waiting_capacity` (exit 75), distinct from unavailable or failed-open Limen.
+Limen policy/config/candidate rejection and invalid protocol payloads fail
+closed without launching; only Limen infrastructure unavailability or timeout
+uses the existing fail-open path when `--force` is absent.
 `--force` is accepted only for an exact pair and only after a soft capacity
 defer: it launches without manufacturing a lease, records
 `capacity_overridden` with the requested candidate and original defer evidence,

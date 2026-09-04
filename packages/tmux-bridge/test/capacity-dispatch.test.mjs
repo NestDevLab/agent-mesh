@@ -56,14 +56,14 @@ test("session admission requires exactly one complete routing form", async () =>
   }
 });
 
-test("exact model and effort admission preserves native binding and session lifecycle", async () => {
+test("exact model and effort admission preserves native binding and session lifecycle without top-level provider", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-exact-"));
   const state = join(dir, "queue.json"), limen = join(dir, "fake-limen.sh"), launcher = join(dir, "fake-launch.sh");
   const seenArgs = join(dir, "limen-args.txt"), seenRoute = join(dir, "route.json"), target = `mesh-exact-gone-${process.pid}`;
   await writeFile(limen, `#!/bin/sh
 printf '%s\\n' "$@" >> '${seenArgs}'
 if [ "$1" = admit ]; then
-  echo '{"decision":"admit","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"exact-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
+  echo '{"decision":"admit","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"exact-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
   exit 0
 fi
 if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi
@@ -86,6 +86,7 @@ exit 0
     assert.deepEqual(route.candidate, { key: "0123456789abcdef0123456789abcdef", model: "requested-model", nativeModel: "native-model", effort: "high", capacityCostBase: null });
     const ledger = JSON.parse(await readFile(state, "utf8"));
     assert.equal(ledger.sessions[0].status, "completed");
+    assert.equal(ledger.sessions[0].provider, "codex");
     assert.equal(ledger.sessions[0].nativeModel, "native-model");
     assert.equal(ledger.sessions[0].effort, "high");
   } finally {
@@ -336,6 +337,55 @@ test("agent-session remains fail-open when Limen is unavailable before launch", 
     assert.match(launched.stderr, /Limen governed launch unavailable/);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
     assert.doesNotMatch(await readFile(launchArgs, "utf8"), /\{\"provider\"/);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-session fails closed on Limen hard rejection with and without force", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-hard-reject-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launchArgs = join(dir, "launched");
+  const socket = `mesh-hard-reject-${process.pid}-${Date.now()}`;
+  await mkdir(bin); await mkdir(agents);
+  await writeFile(limen, `#!/bin/sh
+if [ "$1" = route ]; then echo invalid-payload; exit 0; fi
+if [ "$1" = admit ]; then echo policy-rejected >&2; exit 2; fi
+exit 2
+`);
+  const codex = join(bin, "fake-codex");
+  await writeFile(codex, `#!/bin/sh
+touch '${launchArgs}'
+`);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="FAKE>"
+AGENT_WORKING_PATTERN="WORKING"
+AGENT_IDLE_PATTERN="FAKE>"
+AGENT_RESUME_CMD="fake-codex"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="fake-codex"
+AGENT_SESSION_DIR="${dir}"
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=()
+AGENT_SUPPORTS_EFFORT="true"
+AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=()
+`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents };
+  try {
+    const rejectedPayload = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, `mesh-hard-payload-${process.pid}`], env);
+    assert.equal(rejectedPayload.code, 2, rejectedPayload.stderr);
+    assert.match(rejectedPayload.stderr, /no session was launched/);
+    await assert.rejects(stat(launchArgs));
+
+    const rejectedPolicy = await runCommand(sessionBin, ["--agent", "codex", "--model", "gpt-5.6-luna", "--effort", "xhigh", "--force", "--limen-config", "policy", "new", dir, `mesh-hard-policy-${process.pid}`], env);
+    assert.equal(rejectedPolicy.code, 2, rejectedPolicy.stderr);
+    assert.match(rejectedPolicy.stderr, /no override was launched/);
+    await assert.rejects(stat(launchArgs));
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
     await rm(dir, { recursive: true, force: true });

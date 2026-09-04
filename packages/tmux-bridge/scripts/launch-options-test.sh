@@ -14,6 +14,9 @@ export MESH_TMUX_SOCKET="mesh-launch-options-test-$$"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-launch-options.XXXXXX")"
 FAKE_CLI="$WORKDIR/fake-cli"
 LOG_FILE="$WORKDIR/argv"
+TRUST_SEND_LOG="$WORKDIR/trust-send.log"
+TMUX_REAL="$(command -v tmux)"
+TMUX_WRAPPER="$WORKDIR/tmux"
 SUPPORTED_CONF="$AGENTS_DIR/launch-options-supported-$$.conf"
 UNSUPPORTED_CONF="$AGENTS_DIR/launch-options-unsupported-$$.conf"
 TARGETS=()
@@ -31,6 +34,17 @@ cleanup() {
     exit "$status"
 }
 trap cleanup EXIT INT TERM
+
+cat > "$TMUX_WRAPPER" <<'TMUX'
+#!/bin/sh
+if [ "$#" -ge 7 ] && [ "$3" = send-keys ] && [ "$6" = "" ] && [ "$7" = Enter ]; then
+    printf '%s\n' "$5" >> "${FAKE_TMUX_TRUST_LOG:?}"
+fi
+exec "${FAKE_TMUX_REAL:?}" "$@"
+TMUX
+chmod +x "$TMUX_WRAPPER"
+export FAKE_TMUX_REAL="$TMUX_REAL" FAKE_TMUX_TRUST_LOG="$TRUST_SEND_LOG"
+export PATH="$WORKDIR:$PATH"
 
 (
     # Keep the regression tied to the real Claude adapter, not only the
@@ -96,6 +110,28 @@ trap cleanup EXIT INT TERM
 cat > "$FAKE_CLI" <<'CLI'
 #!/usr/bin/env bash
 printf '%s\0' "$@" > "$FAKE_CLI_LOG"
+trust_request="${FAKE_CLI_LOG%/*}/trust-request"
+if [[ -f "$trust_request" ]]; then
+    case "$(cat "$trust_request")" in
+        marker-absent)
+            printf 'Do you trust the contents of this directory?\n'
+            printf '  1. Yes, continue\n'
+            printf '  2. No, exit\n'
+            ;;
+        option-two)
+            printf 'Do you trust the contents of this directory?\n'
+            printf '> 2. No, exit\n'
+            printf '  1. Yes, continue\n'
+            ;;
+        *)
+            printf 'Do you trust the contents of this directory?\n'
+            printf '> 1. Yes, continue\n'
+            printf '  2. No, exit\n'
+            IFS= read -r _confirmation
+            printf '\033[2J\033[H'
+            ;;
+    esac
+fi
 printf '❯\n'
 while :; do sleep 1; done
 CLI
@@ -189,6 +225,29 @@ first_class_target="launch-options-first-class-$$"
     --model model-one --effort high new "$WORKDIR" "$first_class_target" >/dev/null
 TARGETS+=("$first_class_target")
 assert_argv "--new --model model-one --effort high "
+
+# Codex's current cwd trust dialog must confirm only a visible default first
+# option. Marker-absent and option-two dialogs remain unanswered.
+trust_request="$WORKDIR/trust-request"
+run_trust_case() {
+    local mode="$1" target
+    target="launch-options-codex-trust-$mode-$$"
+    printf '%s\n' "$mode" > "$trust_request"
+    : > "$TRUST_SEND_LOG"
+    "$SESSION_BIN" --agent "launch-options-supported-$$" \
+        new "$WORKDIR" "$target" >/dev/null
+    TARGETS+=("$target")
+    if [[ "$mode" == "default-first" ]]; then
+        grep -Fxq "$target" "$TRUST_SEND_LOG" \
+            || { echo "FAIL: Codex default first trust option was not confirmed" >&2; exit 1; }
+    else
+        ! grep -Fxq "$target" "$TRUST_SEND_LOG" \
+            || { echo "FAIL: Codex trust dialog '$mode' was auto-confirmed" >&2; exit 1; }
+    fi
+}
+run_trust_case marker-absent
+run_trust_case option-two
+run_trust_case default-first
 
 if "$SESSION_BIN" --agent "launch-options-unsupported-$$" --effort high \
     new "$WORKDIR" launch-options-unsupported-$$ >/dev/null 2>"$WORKDIR/error"; then

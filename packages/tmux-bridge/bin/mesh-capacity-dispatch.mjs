@@ -9,6 +9,15 @@ const classes = new Set(["L1", "L2", "L3"]);
 const priority = { L1: 0, L2: 1, L3: 2 };
 const safeLabel = /^[A-Za-z0-9_.:-]{1,96}$/;
 const softCapacityReasons = new Set(["over_pace", "reserve_projection", "reservation_cap", "parallelism_cap"]);
+const EXIT_LIMEN_INFRASTRUCTURE = 69;
+
+class LimenInfrastructureError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "LimenInfrastructureError";
+    this.kind = "limen_infrastructure";
+  }
+}
 
 export async function main(argv, io = process) {
   const [command, ...rest] = argv;
@@ -239,8 +248,16 @@ function routeEnvironment(options, admission) {
 }
 
 async function runLimen(executable, args) {
-  const result = await execute(executable, args, { stdout: "pipe", stderr: "pipe" });
-  if (result.code !== 0 && result.code !== EXIT_DEFER) throw new Error(`limen exit ${result.code}: ${result.stderr.slice(0, 160)}`);
+  let result;
+  try {
+    result = await execute(executable, args, { stdout: "pipe", stderr: "pipe" });
+  } catch (error) {
+    throw new LimenInfrastructureError(`limen unavailable: ${bounded(error)}`);
+  }
+  if (result.code !== 0 && result.code !== EXIT_DEFER) {
+    if (result.code === 2) throw new Error(`limen exit ${result.code}: ${result.stderr.slice(0, 160)}`);
+    throw new LimenInfrastructureError(`limen infrastructure exit ${result.code}: ${result.stderr.slice(0, 160)}`);
+  }
   let output;
   try { output = JSON.parse(result.stdout.trim()); } catch { throw new Error("limen returned invalid JSON"); }
   const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && safeLabel.test(output.nativeModel || "") && output.effort);
@@ -328,7 +345,7 @@ async function upsertSession(path, options, admission, status) {
     const record = {
       runId: options.runId,
       target: options.target || options.session,
-      provider: admission.provider,
+      provider: binding.provider,
       harness: options.harness,
       workClass: options.workClass,
       ...(options.profile ? { profile: options.profile } : {}),
@@ -511,4 +528,4 @@ async function monitor(options, io) {
 }
 
 function usage(io) { io.stderr.write("usage: mesh-capacity-dispatch.mjs submit --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 [--profile NAME] [--eligible-work N] -- COMMAND... | drain --state FILE [--events FILE] [--now MS] [--limit N] | monitor --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 --session ID --target TMUX_TARGET\n"); return 2; }
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => { console.error(bounded(error)); process.exitCode = 2; });
+if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => { console.error(bounded(error)); process.exitCode = error?.kind === "limen_infrastructure" ? EXIT_LIMEN_INFRASTRUCTURE : 2; });
