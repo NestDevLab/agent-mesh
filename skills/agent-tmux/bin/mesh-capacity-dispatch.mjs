@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 const EXIT_DEFER = 75;
 const classes = new Set(["L1", "L2", "L3"]);
 const priority = { L1: 0, L2: 1, L3: 2 };
+const safeLabel = /^[A-Za-z0-9_.:-]{1,96}$/;
+const softCapacityReasons = new Set(["over_pace", "reserve_projection", "reservation_cap", "parallelism_cap"]);
 
 export async function main(argv, io = process) {
   const [command, ...rest] = argv;
@@ -23,6 +25,9 @@ async function submit(options, io) {
   const admission = await runLimen(options.limen, request);
   verifyRouteTarget(options, admission);
   if (admission.decision === "defer") {
+    if (options.force) {
+      return deliver(options, io, forceAdmission(options, admission));
+    }
     const retryAt = admission.retryAt ?? Date.now() + options.retryMs;
     await updateLedger(options.state, ledger => {
       const existing = ledger.jobs.find(job => job.runId === options.runId && job.status === "waiting_capacity");
@@ -77,22 +82,43 @@ async function drain(options, io) {
 }
 
 async function deliver(options, io, admission) {
-  await recordEvent(options, "admitted", { admission, eligibleWork: options.eligibleWork });
+  if (admission.unleased) {
+    await recordEvent(options, "capacity_overridden", {
+      admission,
+      requestedCandidate: admission.requestedCandidate,
+      originalDefer: admission.originalDefer,
+      eligibleWork: options.eligibleWork,
+    }, io);
+  } else {
+    await recordEvent(options, "admitted", { admission, eligibleWork: options.eligibleWork });
+  }
   const result = await execute(options.command[0], options.command.slice(1), {
     stdout: "inherit",
     stderr: "inherit",
-    env: admission.lease?.candidate ? { MESH_LIMEN_ROUTE: JSON.stringify({ provider: admission.provider, model: admission.model, nativeModel: admission.nativeModel, effort: admission.effort, decisionId: admission.decisionId, candidate: admission.lease.candidate }) } : undefined,
+    env: routeEnvironment(options, admission),
   });
   const dispatched = result.code === 0 || result.code === 4 || result.code === 124;
-  await recordEventAfterDispatch(options, dispatched ? "dispatched" : "failed", { admission, reason: dispatched ? "command_dispatched" : `command_exit_${result.code}`, eligibleWork: options.eligibleWork }, io);
+  await recordEventAfterDispatch(options, dispatched ? "dispatched" : "failed", {
+    admission,
+    requestedCandidate: admission.unleased ? admission.requestedCandidate : undefined,
+    originalDefer: admission.unleased ? admission.originalDefer : undefined,
+    reason: dispatched ? "command_dispatched" : `command_exit_${result.code}`,
+    eligibleWork: options.eligibleWork,
+  }, io);
   if (dispatched && options.lifecycle === "session") {
     await upsertSession(options.state, options, admission, "active");
-    await recordEventAfterDispatch(options, "session_active", { admission, reason: "session_lease_open", eligibleWork: options.eligibleWork }, io);
+    await recordEventAfterDispatch(options, "session_active", {
+      admission,
+      requestedCandidate: admission.unleased ? admission.requestedCandidate : undefined,
+      originalDefer: admission.unleased ? admission.originalDefer : undefined,
+      reason: admission.unleased ? "session_unleased" : "session_lease_open",
+      eligibleWork: options.eligibleWork,
+    }, io);
     // A target can disappear between launch returning and the detached monitor
     // receiving its first time slice. Reconcile that edge before returning so
     // its candidate lease is not left active merely because scheduling lagged.
-    if (!(await liveTarget(options))) return completeSession(options);
-    startMonitor(options);
+    if (!(await liveTarget(options))) return admission.unleased ? completeUnleasedSession(options, admission) : completeSession(options);
+    startMonitor(options, admission);
     return result.code;
   }
   if (result.code === 0) {
@@ -121,9 +147,95 @@ function admissionArgs(options) {
 }
 
 function verifyRouteTarget(options, admission) {
-  if (options.profile && admission.decision === "route" && admission.provider !== options.provider) {
+  if (admission.provider && admission.provider !== options.provider) {
     throw new Error(`routed provider ${admission.provider} does not match target ${options.provider}`);
   }
+  if (admission.decision === "defer") return;
+  if (options.lifecycle !== "session") return;
+  const binding = nativeBinding(options, admission);
+  if (options.profile && admission.decision !== "route") throw new Error("profile session admission did not return a route");
+  if (isExact(options) && admission.decision !== "admit") throw new Error("exact session admission did not return an admission");
+  if (!admission.lease || !binding.candidate || !safeLabel.test(String(binding.candidate.key || ""))) throw new Error("session admission did not return a candidate lease identity");
+  if (binding.candidate.provider && binding.candidate.provider !== options.provider) throw new Error("session admission candidate provider does not match target");
+  if (binding.candidate.model && binding.candidate.model !== binding.model) throw new Error("session admission candidate model does not match binding");
+  if (binding.candidate.nativeModel && binding.candidate.nativeModel !== binding.nativeModel) throw new Error("session admission candidate native model does not match binding");
+  if (binding.candidate.effort && binding.candidate.effort !== binding.effort) throw new Error("session admission candidate effort does not match binding");
+  if (!safeLabel.test(String(binding.nativeModel || "")) || !safeLabel.test(String(binding.effort || ""))) throw new Error("session admission did not return a native model binding");
+  if (isExact(options) && (binding.model !== options.model || binding.effort !== options.effort)) throw new Error("exact session admission changed the requested candidate");
+}
+
+function isExact(options) {
+  return Boolean(options.model && options.effort && !options.profile);
+}
+
+function candidateFor(admission) {
+  return admission?.lease?.candidate || admission?.candidate;
+}
+
+function nativeBinding(options, admission) {
+  const candidate = candidateFor(admission);
+  return {
+    candidate,
+    provider: admission?.provider || options.provider,
+    model: admission?.model || candidate?.model || options.model,
+    nativeModel: admission?.nativeModel || candidate?.nativeModel,
+    effort: admission?.effort || candidate?.effort || options.effort,
+  };
+}
+
+function softCapacityDefer(admission) {
+  if (admission?.decision !== "defer") return false;
+  const reasons = Array.isArray(admission.reasons) ? admission.reasons : [];
+  if (reasons.some(reason => typeof reason !== "string" || !softCapacityReasons.has(reason))) return false;
+  return reasons.length > 0 && (admission.state === undefined || admission.state === "over_pace" || admission.state === "on_target");
+}
+
+function requestedCandidate(options, admission) {
+  const binding = nativeBinding(options, admission);
+  return {
+    provider: options.provider,
+    model: binding.model || options.model,
+    nativeModel: binding.nativeModel,
+    effort: binding.effort || options.effort,
+  };
+}
+
+function forceAdmission(options, admission) {
+  if (!isExact(options)) throw new Error("capacity force requires exact --model and --effort without --profile");
+  if (!softCapacityDefer(admission)) throw new Error("capacity force is allowed only after a soft capacity defer");
+  const candidate = requestedCandidate(options, admission);
+  if (candidate.model !== options.model || candidate.effort !== options.effort) throw new Error("capacity force changed the requested exact candidate");
+  if (!candidate.nativeModel || !safeLabel.test(candidate.nativeModel) || !safeLabel.test(candidate.model) || !safeLabel.test(candidate.effort)) {
+    throw new Error("capacity force requires the exact Limen native model binding");
+  }
+  const { lease: _ignoredLease, ...deferEvidence } = admission;
+  return {
+    ...deferEvidence,
+    provider: options.provider,
+    model: candidate.model,
+    nativeModel: candidate.nativeModel,
+    effort: candidate.effort,
+    unleased: true,
+    requestedCandidate: candidate,
+    originalDefer: deferEvidence,
+  };
+}
+
+function routeEnvironment(options, admission) {
+  if (!admission.unleased && !admission.lease) return undefined;
+  const binding = nativeBinding(options, admission);
+  const candidate = candidateFor(admission);
+  return {
+    MESH_LIMEN_ROUTE: JSON.stringify({
+      provider: binding.provider,
+      model: binding.model,
+      nativeModel: binding.nativeModel,
+      effort: binding.effort,
+      ...(admission.decisionId ? { decisionId: admission.decisionId } : {}),
+      ...(!admission.unleased && candidate ? { candidate } : {}),
+      ...(admission.unleased ? { unleased: true, requestedCandidate: admission.requestedCandidate, originalDefer: admission.originalDefer } : {}),
+    }),
+  };
 }
 
 async function runLimen(executable, args) {
@@ -131,31 +243,49 @@ async function runLimen(executable, args) {
   if (result.code !== 0 && result.code !== EXIT_DEFER) throw new Error(`limen exit ${result.code}: ${result.stderr.slice(0, 160)}`);
   let output;
   try { output = JSON.parse(result.stdout.trim()); } catch { throw new Error("limen returned invalid JSON"); }
-  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && /^[A-Za-z0-9_.:-]{1,96}$/.test(output.nativeModel || "") && output.effort);
+  const routed = Boolean(output.decision === "route" && output.lease && output.provider && output.model && safeLabel.test(output.nativeModel || "") && output.effort);
   const admitted = output.decision === "admit";
   if ((!admitted && !routed && output.decision !== "defer") || (result.code === 0) !== (admitted || routed)) throw new Error("limen exit/payload mismatch");
   return output;
 }
 
 function parse(args, command) {
-  const values = { limen: "limen", retryMs: 60_000, renewMs: 60_000, limit: 32, now: Date.now(), eligibleWork: 1 };
+  const values = { limen: "limen", retryMs: 60_000, renewMs: 60_000, limit: 32, now: Date.now(), eligibleWork: 1, force: false, unleased: false };
   const tail = args.indexOf("--");
   const flags = tail >= 0 ? args.slice(0, tail) : args;
   values.command = tail >= 0 ? args.slice(tail + 1) : [];
-  for (let index = 0; index < flags.length; index += 2) {
+  for (let index = 0; index < flags.length;) {
     const flag = flags[index], value = flags[index + 1];
+    if (flag === "--force" || flag === "--unleased") {
+      values[flag === "--force" ? "force" : "unleased"] = true;
+      index += 1;
+      continue;
+    }
     if (!flag?.startsWith("--") || value === undefined) return null;
-    const key = { "--state": "state", "--events": "events", "--limen": "limen", "--policy": "policy", "--provider": "provider", "--harness": "harness", "--run-id": "runId", "--class": "workClass", "--project": "project", "--session": "session", "--target": "target", "--alive-pattern": "alivePattern", "--profile": "profile", "--lifecycle": "lifecycle", "--model": "model", "--effort": "effort", "--eligible-work": "eligibleWork", "--retry-ms": "retryMs", "--renew-ms": "renewMs", "--limit": "limit", "--now": "now" }[flag];
+    const key = { "--state": "state", "--events": "events", "--limen": "limen", "--policy": "policy", "--provider": "provider", "--harness": "harness", "--run-id": "runId", "--class": "workClass", "--project": "project", "--session": "session", "--target": "target", "--alive-pattern": "alivePattern", "--profile": "profile", "--lifecycle": "lifecycle", "--model": "model", "--effort": "effort", "--native-model": "nativeModel", "--eligible-work": "eligibleWork", "--retry-ms": "retryMs", "--renew-ms": "renewMs", "--limit": "limit", "--now": "now" }[flag];
     if (!key) return null;
     values[key] = ["retryMs", "renewMs", "limit", "now", "eligibleWork"].includes(key) ? Number(value) : value;
+    index += 2;
   }
   if (!values.state || !Number.isSafeInteger(values.limit) || values.limit < 1 || !Number.isSafeInteger(values.now) || values.now < 0 || !Number.isSafeInteger(values.eligibleWork) || values.eligibleWork < 0 || !Number.isSafeInteger(values.renewMs) || values.renewMs < 1) return null;
   values.events ||= `${values.state}.events.ndjson`;
   if (command === "drain") return values;
   const validLimen = values.policy && values.runId && (values.provider === "codex" || values.provider === "claude") && (values.harness === "codex" || values.harness === "claude") && classes.has(values.workClass);
-  if (command === "monitor") return validLimen && values.session && values.target ? values : null;
+  if (command === "monitor") {
+    const profileForm = Boolean(values.profile);
+    const exactForm = Boolean(values.model && values.effort);
+    return validLimen && values.session && values.target && profileForm !== exactForm && (!values.unleased || exactForm) && !values.force ? values : null;
+  }
   if (!validLimen || !values.command.length || (values.lifecycle && values.lifecycle !== "session")) return null;
-  if (values.lifecycle === "session" && (!values.profile || !values.target || values.model || values.effort)) return null;
+  if (values.unleased) return null;
+  if (values.force && values.lifecycle !== "session") return null;
+  if (values.lifecycle === "session") {
+    const profileForm = Boolean(values.profile);
+    const exactForm = Boolean(values.model && values.effort);
+    if (!values.target || profileForm === exactForm || values.model !== undefined && !values.model || values.effort !== undefined && !values.effort) return null;
+    if (values.force && !exactForm) return null;
+  }
+  if ((values.model !== undefined && !safeLabel.test(String(values.model))) || (values.effort !== undefined && !safeLabel.test(String(values.effort)))) return null;
   return values;
 }
 
@@ -194,17 +324,23 @@ const bounded = error => (error instanceof Error ? error.message : String(error)
 
 async function upsertSession(path, options, admission, status) {
   await updateLedger(path, ledger => {
+    const binding = nativeBinding(options, admission);
     const record = {
       runId: options.runId,
       target: options.target || options.session,
       provider: admission.provider,
       harness: options.harness,
       workClass: options.workClass,
-      profile: options.profile,
+      ...(options.profile ? { profile: options.profile } : {}),
+      ...(binding.model ? { model: binding.model } : {}),
+      ...(binding.nativeModel ? { nativeModel: binding.nativeModel } : {}),
+      ...(binding.effort ? { effort: binding.effort } : {}),
       policy: options.policy,
-      candidate: admission.lease?.candidate,
-      decisionId: admission.decisionId,
-      configHash: admission.configHash,
+      ...(!admission.unleased && binding.candidate ? { candidate: binding.candidate } : {}),
+      ...(admission.unleased ? { unleased: true, requestedCandidate: admission.requestedCandidate, originalDefer: admission.originalDefer } : { leased: true }),
+      ...(admission.decisionId ? { decisionId: admission.decisionId } : {}),
+      ...(admission.configHash ? { configHash: admission.configHash } : {}),
+      ...(admission.lease?.expiresAt !== undefined ? { expiresAt: admission.lease.expiresAt } : {}),
       status,
       updatedAt: Date.now(),
     };
@@ -217,7 +353,7 @@ async function upsertSession(path, options, admission, status) {
 const runHash = options => createHash("sha256").update([options.provider, options.harness, options.session, options.runId].filter(Boolean).join("|")).digest("hex");
 async function recordEvent(options, status, details = {}) {
   const admission = details.admission;
-  const candidate = admission?.lease?.candidate || admission?.candidate;
+  const candidate = admission?.unleased ? undefined : admission?.lease?.candidate || admission?.candidate;
   const event = {
     schemaVersion: 1,
     event: "limen.queue",
@@ -234,6 +370,10 @@ async function recordEvent(options, status, details = {}) {
     ...(admission?.decisionId ? { decisionId: admission.decisionId } : {}),
     ...(admission?.configHash ? { configHash: admission.configHash } : {}),
     ...(candidate ? { candidate } : {}),
+    ...(details.requestedCandidate ? { requestedCandidate: details.requestedCandidate } : {}),
+    ...(admission?.nativeModel ? { nativeModel: admission.nativeModel } : {}),
+    ...(admission?.unleased ? { unleased: true } : {}),
+    ...(details.originalDefer ? { originalDefer: details.originalDefer } : {}),
     ...(details.reason ? { reason: bounded(details.reason) } : {}),
   };
   await mkdir(dirname(options.events), { recursive: true, mode: 0o700 });
@@ -255,9 +395,14 @@ function execute(executable, args, streams) {
   });
 }
 
-function startMonitor(options) {
+function startMonitor(options, admission) {
   const args = [process.argv[1], "monitor", "--state", options.state, "--events", options.events, "--limen", options.limen, "--policy", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--class", options.workClass, "--session", options.session, "--target", options.target || options.session, "--renew-ms", String(options.renewMs)];
   if (options.profile) args.push("--profile", options.profile);
+  if (isExact(options)) args.push("--model", options.model, "--effort", options.effort);
+  if (admission?.unleased) {
+    args.push("--unleased");
+    if (admission.nativeModel) args.push("--native-model", admission.nativeModel);
+  }
   if (options.alivePattern) args.push("--alive-pattern", options.alivePattern);
   const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", env: process.env });
   child.unref();
@@ -288,6 +433,18 @@ async function completeSession(options) {
   await transitionSession(options.state, options.runId, { status: "completion_pending", reason: `limen_complete_exit_${complete.code}`, updatedAt: Date.now() });
   await recordEvent(options, "completion_pending", { reason: `limen_complete_exit_${complete.code}` });
   return 1;
+}
+
+async function completeUnleasedSession(options, admission) {
+  await transitionSession(options.state, options.runId, { status: "completed", completedAt: Date.now(), updatedAt: Date.now() });
+  const unleased = { ...(admission || {}), unleased: true, nativeModel: admission?.nativeModel || options.nativeModel };
+  await recordEvent(options, "completed", {
+    admission: unleased,
+    requestedCandidate: admission?.requestedCandidate || (isExact(options) ? { provider: options.provider, model: options.model, nativeModel: options.nativeModel, effort: options.effort } : undefined),
+    originalDefer: admission?.originalDefer,
+    reason: "unleased_session_gone",
+  });
+  return 0;
 }
 
 async function liveTarget(options) {
@@ -324,6 +481,13 @@ async function liveTarget(options) {
 
 async function monitor(options, io) {
   while (true) {
+    if (options.unleased) {
+      if (!(await liveTarget(options))) return completeUnleasedSession(options, {
+        requestedCandidate: { provider: options.provider, model: options.model, nativeModel: options.nativeModel, effort: options.effort },
+      });
+      await delay(options.renewMs);
+      continue;
+    }
     if (await liveTarget(options)) {
       const renewal = await execute(options.limen, ["renew", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--session", options.session], { stdout: "pipe", stderr: "pipe" });
       const output = parseJson(renewal.stdout);

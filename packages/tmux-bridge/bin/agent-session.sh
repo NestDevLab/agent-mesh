@@ -2,8 +2,8 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> [--profile <name> --limen-config <policy>] [--model <name>] [--effort <level>] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent <NAME> [--profile <name> --limen-config <policy>] [--model <name>] [--effort <level>] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> inspect <SESSION_ID> [--json]
@@ -47,6 +47,7 @@ SESSION_EFFORT=""
 SESSION_APPROVAL_POLICY=""
 SESSION_PROFILE=""
 LIMEN_CONFIG=""
+FORCE_CAPACITY="false"
 GOVERNED_CHILD="false"
 ARGS=()
 PASSTHRU=()
@@ -83,6 +84,10 @@ while [[ $# -gt 0 ]]; do
             LIMEN_CONFIG="$2"
             shift 2
             ;;
+        --force)
+            FORCE_CAPACITY="true"
+            shift
+            ;;
         --governed-child)
             GOVERNED_CHILD="true"
             shift
@@ -113,7 +118,13 @@ if (!route || route.provider !== process.argv[2] || !/^[A-Za-z0-9_.:-]{1,96}$/.t
 process.stdout.write(`${route.nativeModel}\t${route.effort}`);
 ' "$MESH_LIMEN_ROUTE" "$AGENT_NAME")" \
         || { echo "ERROR: governed launch received an invalid Limen route" >&2; exit 1; }
-    IFS=$'\t' read -r SESSION_MODEL SESSION_EFFORT <<<"$ROUTE_LAUNCH_VALUES"
+    IFS=$'\t' read -r SESSION_MODEL ROUTE_EFFORT <<<"$ROUTE_LAUNCH_VALUES"
+    if [[ "${AGENT_SUPPORTS_EFFORT:-false}" == "true" ]]; then
+        SESSION_EFFORT="$ROUTE_EFFORT"
+    else
+        SESSION_EFFORT=""
+        AGENT_LAUNCH_WARNING="${AGENT_LAUNCH_WARNING:+$AGENT_LAUNCH_WARNING; }Limen effort '$ROUTE_EFFORT' retained as metadata; agent '$AGENT_NAME' has no controllable effort"
+    fi
 fi
 
 if [[ -n "$SESSION_TITLE" ]]; then
@@ -351,11 +362,33 @@ if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" || -n "$SESSION_APPROVAL_POL
     echo "ERROR: --model, --effort, and --approval-policy are only supported with 'new' or 'resume'" >&2
     exit 1
 fi
-if [[ "$GOVERNED_CHILD" != "true" && -n "$SESSION_PROFILE" ]]; then
+if [[ "$GOVERNED_CHILD" != "true" && -n "$SESSION_PROFILE" && ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" ) ]]; then
+    echo "ERROR: --profile cannot be combined with --model or --effort" >&2
+    exit 1
+fi
+if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_MODEL" && -z "$SESSION_EFFORT" || -z "$SESSION_MODEL" && -n "$SESSION_EFFORT" ) ]]; then
+    if [[ -z "$SESSION_MODEL" && "${AGENT_SUPPORTS_EFFORT:-false}" != "true" ]]; then
+        echo "ERROR: --effort is not supported by agent '$AGENT_NAME'; exact persistent routing also requires --model" >&2
+        exit 1
+    fi
+    echo "ERROR: exact persistent routing requires both --model and --effort" >&2
+    exit 1
+fi
+if [[ "$GOVERNED_CHILD" != "true" && -n "$LIMEN_CONFIG" && -z "$SESSION_PROFILE" && ( -z "$SESSION_MODEL" || -z "$SESSION_EFFORT" ) ]]; then
+    echo "ERROR: --limen-config requires --profile or the exact --model and --effort pair" >&2
+    exit 1
+fi
+if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" && ( -z "$SESSION_MODEL" || -z "$SESSION_EFFORT" ) ]]; then
+    echo "ERROR: --force requires the exact --model and --effort pair" >&2
+    exit 1
+fi
+if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" && -z "$LIMEN_CONFIG" ]]; then
+    echo "ERROR: --force requires --limen-config; a force override must be Limen-gated" >&2
+    exit 1
+fi
+if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_MODEL" && -n "$SESSION_EFFORT" && -n "$LIMEN_CONFIG" ) ) ]]; then
     [[ -n "$LIMEN_CONFIG" ]] \
-        || { echo "ERROR: --profile requires --limen-config; Limen policy selection must be explicit" >&2; exit 1; }
-    [[ -z "$SESSION_MODEL" && -z "$SESSION_EFFORT" ]] \
-        || { echo "ERROR: --profile cannot be combined with --model or --effort" >&2; exit 1; }
+        || { echo "ERROR: governed persistent routing requires --limen-config; Limen policy selection must be explicit" >&2; exit 1; }
     case "$cmd" in
         resume)
             SESSION_ID="${1:-}"
@@ -369,7 +402,7 @@ if [[ "$GOVERNED_CHILD" != "true" && -n "$SESSION_PROFILE" ]]; then
             CHILD_SESSION_ARGS=(new "$CWD" "$TARGET")
             ;;
         *)
-            echo "ERROR: --profile is only supported with 'new' or 'resume'" >&2
+            echo "ERROR: governed routing is only supported with 'new' or 'resume'" >&2
             exit 1
             ;;
     esac
@@ -392,13 +425,24 @@ if [[ "$GOVERNED_CHILD" != "true" && -n "$SESSION_PROFILE" ]]; then
     CHILD+=("${CHILD_SESSION_ARGS[@]}")
     [[ ${#PASSTHRU[@]} -gt 0 ]] && CHILD+=(-- "${PASSTHRU[@]}")
     AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PROCESS_PATTERN:-^$AGENT_NAME$}"
-    DISPATCH=(node "$SCRIPT_DIR/mesh-capacity-dispatch.mjs" submit --state "$CAPACITY_STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_CONFIG" --provider "$AGENT_NAME" --harness "$AGENT_NAME" --run-id "$RUN_ID" --class "${LIMEN_WORK_CLASS:-L2}" --profile "$SESSION_PROFILE" --lifecycle session --session "$TARGET" --target "$TARGET" --renew-ms "$LEASE_RENEW_MS" --alive-pattern "$AGENT_ALIVE_PATTERN" -- "${CHILD[@]}")
+    DISPATCH=(node "$SCRIPT_DIR/mesh-capacity-dispatch.mjs" submit --state "$CAPACITY_STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_CONFIG" --provider "$AGENT_NAME" --harness "$AGENT_NAME" --run-id "$RUN_ID" --class "${LIMEN_WORK_CLASS:-L2}" --lifecycle session --session "$TARGET" --target "$TARGET" --renew-ms "$LEASE_RENEW_MS" --alive-pattern "$AGENT_ALIVE_PATTERN")
+    if [[ -n "$SESSION_PROFILE" ]]; then
+        DISPATCH+=(--profile "$SESSION_PROFILE")
+    else
+        DISPATCH+=(--model "$SESSION_MODEL" --effort "$SESSION_EFFORT")
+    fi
+    [[ "$FORCE_CAPACITY" == "true" ]] && DISPATCH+=(--force)
+    DISPATCH+=(-- "${CHILD[@]}")
     set +e
     timeout "$LIMEN_TIMEOUT_SECONDS" "${DISPATCH[@]}"
     GOVERNED_CODE=$?
     set -e
     if [[ "$GOVERNED_CODE" -eq 0 ]]; then exit 0; fi
     if [[ "$GOVERNED_CODE" -eq 75 ]]; then exit 75; fi
+    if [[ "$FORCE_CAPACITY" == "true" ]]; then
+        echo "ERROR: --force requires an explicit soft Limen capacity defer; no override was launched" >&2
+        exit 2
+    fi
     # A timeout/error may happen after the governed child has created the tmux
     # target.  Retain that one session rather than starting a duplicate via the
     # fail-open path; its monitor remains responsible for the lease lifecycle.

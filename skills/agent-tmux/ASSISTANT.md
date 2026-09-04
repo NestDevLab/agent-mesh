@@ -5,6 +5,7 @@ either type, same-type included.
 
 ```bash
 BIN="$AGENT_MESH_ROOT/packages/tmux-bridge/bin"
+POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json"
 
 # New / resume (prints tmux target)
 TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
@@ -37,6 +38,15 @@ $BIN/agent-link.mjs --mode bidirectional --state /path/to/link-state.json \
 
 # Discover all agents + live sessions
 $BIN/mesh-list-agents.sh
+
+# Governed persistent session: choose exactly one routing form.
+$BIN/agent-spawn.sh --agent codex --profile developer --limen-config "$POLICY" new "$PWD"
+$BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
+  --limen-config "$POLICY" new "$PWD"
+
+# Optional bounded override: exact pair only, and only after a soft capacity defer.
+$BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
+  --limen-config "$POLICY" --force new "$PWD"
 ```
 
 ## Decision tree
@@ -79,3 +89,6 @@ $BIN/mesh-list-agents.sh
 - **Name children to show nesting**; pass `--from` for provenance.
 - **Approvals are transitive**: a spawned agent that commits/pushes/deploys/sends
   is still bound by the user's git/safety rules — pass them down explicitly.
+- A partial `--model`/`--effort` pair or mixing it with `--profile` is rejected.
+  A normal Limen defer waits; `--force` can only create an explicitly unleased
+  exact session after a soft capacity defer, with no lease renewal/completion.
