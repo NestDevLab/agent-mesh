@@ -92,7 +92,9 @@ test("mesh-graph derives an inspectable graph from append-only events", async ()
 test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a summary", async () => {
   const state = await mkdtemp(join(tmpdir(), "mesh-graph-adopt-"));
   const transcripts = await mkdtemp(join(tmpdir(), "mesh-graph-transcripts-"));
-  const sessionId = "11111111-1111-4111-8111-111111111111";
+  // Real locally observed runtime UUID shapes: Codex Desktop v7 and Claude v4.
+  const sessionId = "01a06ccf-134d-7cf0-9611-42819810e4ed";
+  const claudeId = "ef6791f1-24a5-43cf-8f26-6733ecfda183";
   try {
     const directory = join(transcripts, "2026", "09", "04");
     await mkdir(directory, { recursive: true });
@@ -111,7 +113,7 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
     assert.equal(node.runtimeUuid, sessionId);
     assert.equal(node.tmuxTarget, "");
     assert.equal(node.cwd, "/workspace/desktop");
-    assert.equal(node.title, "First objective\n\nSupporting context stays raw.");
+    assert.equal(node.title, "First objective");
     assert.equal(node.summary, "");
     assert.equal(node.status, "active");
     assert.equal(node.class, "worker");
@@ -129,6 +131,13 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
     const graph = JSON.parse((await run(state, ["show", "--json"], environment)).stdout);
     assert.equal(graph.nodes.length, 1);
     assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 2);
+
+    const claudeDirectory = join(transcripts, "claude", "project");
+    await mkdir(claudeDirectory, { recursive: true });
+    await writeFile(join(claudeDirectory, `${claudeId}.jsonl`), JSON.stringify({ type: "user", cwd: "/workspace/desktop", message: { content: "Claude objective" } }) + "\n");
+    const claude = await run(state, ["adopt", "--agent", "claude", "--runtime-uuid", claudeId, "--class", "observer", "--json"], { ...environment, CLAUDE_SESSION_ROOT: join(transcripts, "claude") });
+    assert.equal(claude.code, 0, claude.stderr);
+    assert.equal(JSON.parse(claude.stdout).node.runtimeUuid, claudeId);
   } finally {
     await rm(state, { recursive: true, force: true });
     await rm(transcripts, { recursive: true, force: true });

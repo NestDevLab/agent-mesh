@@ -66,7 +66,7 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
                 cwd = str(payload.get("cwd") or cwd)
             for item in codex_events(record, session_id):
                 if item["kind"] == "human_message" and not title:
-                    title = str(item["body"])
+                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
                 elif item["kind"] == "agent_message":
                     assistant_turns += 1
                     last_assistant = str(item["body"])
@@ -74,7 +74,7 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
             cwd = str(record.get("cwd") or cwd)
             for item in claude_events(record, session_id):
                 if item["kind"] == "human_message" and not title:
-                    title = str(item["body"])
+                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
                 elif item["kind"] == "agent_message":
                     assistant_turns += 1
                     last_assistant = str(item["body"])

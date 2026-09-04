@@ -146,7 +146,7 @@ function addNode(statePath, options) {
       primaryDomains: [],
       domainPredecessors: {},
       lastSeenAt: timestamp,
-      runtimeUuid: optionalSingleLine(options["runtime-uuid"], "--runtime-uuid") || null,
+      runtimeUuid: optionalRuntimeUuid(options["runtime-uuid"]) || null,
       refs: refsChanges([], options),
       createdAt: timestamp,
       updatedAt: timestamp,
@@ -295,7 +295,7 @@ function nodeChanges(node, options) {
   ];
   for (const [option, field] of fields) {
     if (options[option] === undefined) continue;
-    const value = field === "summary" ? requiredSummary(options[option]) : field === "class" ? nodeClass(options[option]) : requiredSingleLine(options[option], `--${option}`);
+    const value = field === "summary" ? requiredSummary(options[option]) : field === "class" ? nodeClass(options[option]) : field === "runtimeUuid" ? requiredRuntimeUuid(options[option]) : requiredSingleLine(options[option], `--${option}`);
     if (node[field] !== value) changes[field] = value;
   }
   if (options.domains !== undefined || (options.cwd !== undefined && !node.domainsExplicit)) {
@@ -662,10 +662,14 @@ function requiredAdoptAgent(value) {
 
 function requiredRuntimeUuid(value) {
   value = requiredSingleLine(value, "--runtime-uuid").toLowerCase();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) {
     throw new Error("--runtime-uuid must be a complete UUID");
   }
   return value;
+}
+
+function optionalRuntimeUuid(value) {
+  return value === undefined ? undefined : requiredRuntimeUuid(value);
 }
 
 function nodeClass(value) {
