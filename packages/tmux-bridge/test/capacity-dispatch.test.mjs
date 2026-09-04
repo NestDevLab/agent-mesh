@@ -124,10 +124,25 @@ test("force overrides only a soft exact defer and leaves the session unleased", 
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-force-"));
   const state = join(dir, "queue.json"), limen = join(dir, "fake-limen.sh"), launcher = join(dir, "launcher.sh");
   const commands = join(dir, "limen-commands.txt"), route = join(dir, "route.json");
+  const requested = { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" };
+  const original = {
+    schemaVersion: 1,
+    decision: "defer",
+    retryAt: 123,
+    decisionId: "a".repeat(64),
+    configHash: "b".repeat(64),
+    workClass: "L2",
+    reasons: ["over_pace"],
+    model: "requested-model",
+    nativeModel: "native-model",
+    effort: "high",
+    candidate: { key: "0123456789abcdef0123456789abcdef", model: "requested-model", effort: "high", capacityCostBase: null },
+  };
+  const response = { ...original, provider: "codex", state: "over_pace", candidate: { ...original.candidate, nativeModel: "native-model" }, lease: { ignored: true }, unsafeObservation: "omit-me" };
   await writeFile(limen, `#!/bin/sh
 printf '%s\\n' "$1" >> '${commands}'
 if [ "$1" = admit ]; then
-  echo '{"decision":"defer","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","state":"over_pace","retryAt":123,"decisionId":"defer-force","configHash":"cfg","reasons":["over_pace"],"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}'
+  echo '${JSON.stringify(response)}'
   exit 75
 fi
 exit 2
@@ -145,21 +160,29 @@ exit 0
     assert.equal(routed.nativeModel, "native-model");
     assert.equal(routed.effort, "high");
     assert.equal("candidate" in routed, false, "an override must not manufacture a lease");
+    assert.equal("lease" in routed, false, "an override must not manufacture a lease");
+    assert.deepEqual(routed.requestedCandidate, requested);
+    assert.deepEqual(routed.originalDefer, original);
     const ledger = JSON.parse(await readFile(state, "utf8"));
     assert.equal(ledger.sessions[0].status, "completed");
     assert.equal(ledger.sessions[0].unleased, true);
     assert.equal("leased" in ledger.sessions[0], false);
     assert.equal("candidate" in ledger.sessions[0], false);
-    assert.deepEqual(ledger.sessions[0].requestedCandidate, { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" });
-    assert.deepEqual(ledger.sessions[0].originalDefer, { decision: "defer", reasons: ["over_pace"], state: "over_pace", retryAt: 123, decisionId: "defer-force", configHash: "cfg" });
-    assert.doesNotMatch(JSON.stringify(ledger.sessions[0]), /"candidate"|"lease"/);
+    assert.equal("lease" in ledger.sessions[0], false);
+    assert.deepEqual(ledger.sessions[0].requestedCandidate, requested);
+    assert.deepEqual(ledger.sessions[0].originalDefer, original);
     const events = (await readFile(`${state}.events.ndjson`, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const lifecycle = events.filter(event => ["capacity_overridden", "dispatched", "session_active", "completed"].includes(event.status));
     assert.deepEqual(lifecycle.map(event => event.status), ["capacity_overridden", "dispatched", "session_active", "completed"]);
     for (const event of lifecycle) {
-      assert.deepEqual(event.requestedCandidate, { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" });
-      assert.deepEqual(event.originalDefer, { decision: "defer", reasons: ["over_pace"], state: "over_pace", retryAt: 123, decisionId: "defer-force", configHash: "cfg" });
-      assert.doesNotMatch(JSON.stringify(event), /"candidate"|"lease"/);
+      assert.equal("candidate" in event, false);
+      assert.equal("lease" in event, false);
+      assert.equal(event.decisionId, original.decisionId);
+      assert.equal(event.configHash, original.configHash);
+      assert.equal(event.workClass, original.workClass);
+      assert.deepEqual(event.requestedCandidate, requested);
+      assert.deepEqual(event.originalDefer, original);
+      assert.equal("lease" in event.originalDefer, false);
     }
     assert.deepEqual((await readFile(commands, "utf8")).trim().split("\n"), ["admit"]);
   } finally {
@@ -171,16 +194,32 @@ test("unleased monitor completion reloads validated provenance from session stat
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-unleased-monitor-"));
   const state = join(dir, "queue.json"), events = join(dir, "events.ndjson");
   const requested = { provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high" };
-  const original = { decision: "defer", reasons: ["over_pace"], state: "over_pace", retryAt: 123, decisionId: "defer-monitor", configHash: "cfg" };
+  const original = {
+    schemaVersion: 1,
+    decision: "defer",
+    retryAt: null,
+    decisionId: "c".repeat(64),
+    configHash: "d".repeat(64),
+    workClass: "L2",
+    reasons: ["reserve_projection"],
+    model: "requested-model",
+    nativeModel: "native-model",
+    effort: "high",
+    candidate: { key: "fedcba9876543210fedcba9876543210", model: "requested-model", effort: "high", capacityCostBase: 2 },
+  };
   await writeFile(state, `${JSON.stringify({ schemaVersion: 1, jobs: [], sessions: [{ runId: "monitor-run", target: "missing-target", provider: "codex", harness: "codex", workClass: "L2", model: "requested-model", nativeModel: "native-model", effort: "high", policy: "policy", unleased: true, requestedCandidate: requested, originalDefer: original, status: "active" }] })}\n`);
   try {
     const result = await run(["monitor", "--state", state, "--events", events, "--limen", "missing-limen", "--policy", "policy", "--provider", "codex", "--harness", "codex", "--run-id", "monitor-run", "--class", "L2", "--session", "monitor-session", "--target", `mesh-monitor-gone-${process.pid}`, "--model", "requested-model", "--native-model", "native-model", "--effort", "high", "--unleased"]);
     assert.equal(result.code, 0, result.stderr);
     const completed = JSON.parse((await readFile(events, "utf8")).trim());
     assert.equal(completed.status, "completed");
+    assert.equal("candidate" in completed, false);
+    assert.equal("lease" in completed, false);
+    assert.equal(completed.decisionId, original.decisionId);
+    assert.equal(completed.configHash, original.configHash);
     assert.deepEqual(completed.requestedCandidate, requested);
     assert.deepEqual(completed.originalDefer, original);
-    assert.doesNotMatch(JSON.stringify(completed), /"candidate"|"lease"/);
+    assert.equal("lease" in completed.originalDefer, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

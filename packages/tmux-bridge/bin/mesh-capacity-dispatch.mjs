@@ -8,6 +8,8 @@ const EXIT_DEFER = 75;
 const classes = new Set(["L1", "L2", "L3"]);
 const priority = { L1: 0, L2: 1, L3: 2 };
 const safeLabel = /^[A-Za-z0-9_.:-]{1,96}$/;
+const hex32 = /^[a-f0-9]{32}$/;
+const hex64 = /^[a-f0-9]{64}$/;
 const softCapacityReasons = new Set(["over_pace", "reserve_projection", "reservation_cap", "parallelism_cap"]);
 const EXIT_LIMEN_INFRASTRUCTURE = 69;
 
@@ -212,14 +214,29 @@ function requestedCandidate(options, admission) {
   };
 }
 
-function deferProvenance(admission) {
-  const evidence = { decision: "defer", reasons: [...admission.reasons] };
-  if (typeof admission.state === "string") evidence.state = admission.state;
-  if (Number.isSafeInteger(admission.retryAt)) evidence.retryAt = admission.retryAt;
-  for (const key of ["decisionId", "configHash"]) {
-    if (typeof admission[key] === "string" && admission[key].length > 0 && admission[key].length <= 240 && !/[\r\n]/.test(admission[key])) evidence[key] = admission[key];
+function deferProvenance(options, admission, requested) {
+  const candidate = admission?.candidate;
+  const validRetry = admission?.retryAt === null || Number.isSafeInteger(admission?.retryAt) && admission.retryAt >= 0;
+  const validCost = candidate?.capacityCostBase === null || typeof candidate?.capacityCostBase === "number" && Number.isFinite(candidate.capacityCostBase) && candidate.capacityCostBase > 0 && candidate.capacityCostBase <= 100;
+  if (admission?.schemaVersion !== 1 || !softCapacityDefer(admission) || !validRetry || !hex64.test(String(admission.decisionId || ""))
+      || !hex64.test(String(admission.configHash || "")) || admission.workClass !== options.workClass || admission.model !== requested.model
+      || admission.nativeModel !== requested.nativeModel || admission.effort !== requested.effort || !candidate || !hex32.test(String(candidate.key || ""))
+      || candidate.model !== requested.model || candidate.effort !== requested.effort || !validCost) {
+    throw new Error("capacity force requires complete exact defer provenance");
   }
-  return evidence;
+  return {
+    schemaVersion: 1,
+    decision: "defer",
+    retryAt: admission.retryAt,
+    decisionId: admission.decisionId,
+    configHash: admission.configHash,
+    workClass: admission.workClass,
+    reasons: [...admission.reasons],
+    model: admission.model,
+    nativeModel: admission.nativeModel,
+    effort: admission.effort,
+    candidate: { key: candidate.key, model: candidate.model, effort: candidate.effort, capacityCostBase: candidate.capacityCostBase },
+  };
 }
 
 function forceAdmission(options, admission) {
@@ -230,8 +247,8 @@ function forceAdmission(options, admission) {
   if (!candidate.nativeModel || !safeLabel.test(candidate.nativeModel) || !safeLabel.test(candidate.model) || !safeLabel.test(candidate.effort)) {
     throw new Error("capacity force requires the exact Limen native model binding");
   }
-  const deferEvidence = deferProvenance(admission);
-  const { candidate: _ignoredCandidate, lease: _ignoredLease, ...forcedAdmission } = admission;
+  const deferEvidence = deferProvenance(options, admission, candidate);
+  const { candidate: _originalCandidate, ...forcedAdmission } = deferEvidence;
   return {
     ...forcedAdmission,
     provider: options.provider,
@@ -491,7 +508,8 @@ async function loadUnleasedProvenance(options, admission) {
       || !safeLabel.test(String(requested.nativeModel || "")) || !softCapacityDefer(original)) {
     throw new Error("unleased session provenance is missing or invalid");
   }
-  return { requestedCandidate: requestedCandidate(options, requested), originalDefer: deferProvenance(original) };
+  const validatedRequested = requestedCandidate(options, requested);
+  return { requestedCandidate: validatedRequested, originalDefer: deferProvenance(options, original, validatedRequested) };
 }
 
 async function liveTarget(options) {
