@@ -450,6 +450,15 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_M
     set -e
     if [[ "$GOVERNED_CODE" -eq 0 ]]; then exit 0; fi
     if [[ "$GOVERNED_CODE" -eq 75 ]]; then exit 75; fi
+    # Any dispatcher failure may happen after the governed child created the
+    # target. Retain that one session before classifying the error so callers
+    # never retry a launch that already occurred.
+    if mtmux has-session -t "$TARGET" 2>/dev/null; then
+        echo "WARN: Limen governed launch ended after target creation; retaining existing session" >&2
+        _print_attach_hint
+        echo "$TARGET"
+        exit 0
+    fi
     if [[ "$FORCE_CAPACITY" == "true" ]]; then
         echo "ERROR: --force requires an explicit soft Limen capacity defer; no override was launched" >&2
         exit 2
@@ -457,15 +466,6 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_M
     if [[ "$GOVERNED_CODE" -ne 69 && "$GOVERNED_CODE" -ne 124 ]]; then
         echo "ERROR: Limen governed launch rejected (exit=$GOVERNED_CODE); no session was launched" >&2
         exit 2
-    fi
-    # A timeout/error may happen after the governed child has created the tmux
-    # target.  Retain that one session rather than starting a duplicate via the
-    # fail-open path; its monitor remains responsible for the lease lifecycle.
-    if mtmux has-session -t "$TARGET" 2>/dev/null; then
-        echo "WARN: Limen governed launch ended after target creation; retaining existing session" >&2
-        _print_attach_hint
-        echo "$TARGET"
-        exit 0
     fi
     echo "WARN: Limen governed launch unavailable (exit=$GOVERNED_CODE); starting with existing fail-open behavior" >&2
     SESSION_PROFILE=""

@@ -459,6 +459,123 @@ while :; do sleep 1; done
   }
 });
 
+test("agent-session retains one governed target after post-launch completion failure", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-post-launch-complete-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launches = join(dir, "launches"), commands = join(dir, "limen-commands");
+  const socket = `mesh-post-launch-complete-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-post-launch-complete-${process.pid}`;
+  await mkdir(bin); await mkdir(agents);
+  await writeFile(limen, `#!/bin/sh
+printf '%s\n' "$1" >> '${commands}'
+if [ "$1" = route ]; then
+  echo '{"decision":"route","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
+  exit 0
+fi
+if [ "$1" = complete ]; then exit 3; fi
+exit 2
+`);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"
+AGENT_ALIVE_PROCESS_PATTERN="^fake-codex$"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="NEVER"
+AGENT_WORKING_PATTERN="WORKING"
+AGENT_IDLE_PATTERN=".*"
+AGENT_RESUME_CMD="fake-codex"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="fake-codex"
+AGENT_SESSION_DIR="${dir}"
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=()
+AGENT_SUPPORTS_EFFORT="true"
+AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=()
+`);
+  const codex = join(bin, "fake-codex");
+  await writeFile(codex, `#!/bin/sh
+printf 'launched\n' >> '${launches}'
+exit 0
+`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: join(dir, "queue.json"), AGENT_MESH_AGENTS_DIR: agents };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
+    assert.equal(launched.code, 0, launched.stderr);
+    const outputTargets = launched.stdout.trim().split("\n");
+    assert.ok(outputTargets.length > 0 && outputTargets.every(line => line === target), launched.stdout);
+    assert.match(launched.stderr, /governed launch ended after target creation; retaining existing session/);
+    assert.doesNotMatch(launched.stderr, /no session was launched/);
+    assert.deepEqual((await readFile(commands, "utf8")).trim().split("\n"), ["route", "complete"]);
+    assert.equal((await readFile(launches, "utf8")).trim().split("\n").length, 1);
+    const sessions = await runCommand("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], env);
+    assert.deepEqual(sessions.stdout.trim().split("\n").filter(name => name === target), [target]);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-session force reconciliation precedes post-launch rejection", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-force-post-launch-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launches = join(dir, "launches"), commands = join(dir, "limen-commands");
+  const state = join(dir, "queue.json"), events = `${state}.events.ndjson`;
+  const socket = `mesh-force-post-launch-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-force-post-launch-${process.pid}`;
+  const defer = { schemaVersion: 1, decision: "defer", retryAt: null, decisionId: "a".repeat(64), configHash: "b".repeat(64), workClass: "L2", reasons: ["over_pace"], provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high", candidate: { key: "0123456789abcdef0123456789abcdef", model: "requested-model", effort: "high", capacityCostBase: null } };
+  await mkdir(bin); await mkdir(agents);
+  await writeFile(limen, `#!/bin/sh
+printf '%s\n' "$1" >> '${commands}'
+if [ "$1" = admit ]; then
+  echo '${JSON.stringify(defer)}'
+  exit 75
+fi
+exit 2
+`);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"
+AGENT_ALIVE_PROCESS_PATTERN="^fake-codex$"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="NEVER"
+AGENT_WORKING_PATTERN="WORKING"
+AGENT_IDLE_PATTERN=".*"
+AGENT_RESUME_CMD="fake-codex"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="fake-codex"
+AGENT_SESSION_DIR="${dir}"
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=()
+AGENT_SUPPORTS_EFFORT="true"
+AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=()
+`);
+  const codex = join(bin, "fake-codex");
+  await writeFile(codex, `#!/bin/sh
+printf 'launched\n' >> '${launches}'
+rm -f '${events}'
+mkdir '${events}'
+exit 0
+`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: state, AGENT_MESH_AGENTS_DIR: agents };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "--model", "requested-model", "--effort", "high", "--force", "--limen-config", "policy", "new", dir, target], env);
+    assert.equal(launched.code, 0, launched.stderr);
+    const outputTargets = launched.stdout.trim().split("\n");
+    assert.ok(outputTargets.length > 0 && outputTargets.every(line => line === target), launched.stdout);
+    assert.match(launched.stderr, /governed launch ended after target creation; retaining existing session/);
+    assert.doesNotMatch(launched.stderr, /no override was launched/);
+    assert.deepEqual((await readFile(commands, "utf8")).trim().split("\n"), ["admit"]);
+    assert.equal((await readFile(launches, "utf8")).trim().split("\n").length, 1);
+    const sessions = await runCommand("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], env);
+    assert.deepEqual(sessions.stdout.trim().split("\n").filter(name => name === target), [target]);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("agent-session fails closed on Limen hard rejection with and without force", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-hard-reject-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launchArgs = join(dir, "launched");
