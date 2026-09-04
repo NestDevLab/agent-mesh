@@ -101,8 +101,10 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
       JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "First objective\n\nSupporting context stays raw." }] } }),
       JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Investigating." }] } }),
     ].join("\n") + "\n");
-    const environment = { CODEX_SESSION_ROOT: transcripts };
-    const adopted = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId, "--json"], environment);
+    const domainRoots = join(transcripts, "domains.json");
+    await writeFile(domainRoots, JSON.stringify({ roots: [{ domain: "desktop", root: "/workspace/desktop" }] }));
+    const environment = { CODEX_SESSION_ROOT: transcripts, MESH_DOMAIN_ROOTS_FILE: domainRoots };
+    const adopted = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId, "--class", "worker", "--json"], environment);
     assert.equal(adopted.code, 0, adopted.stderr);
     const node = JSON.parse(adopted.stdout).node;
     assert.match(node.id, /^node-[0-9a-f-]{36}$/);
@@ -112,10 +114,12 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
     assert.equal(node.title, "First objective\n\nSupporting context stays raw.");
     assert.equal(node.summary, "");
     assert.equal(node.status, "active");
+    assert.equal(node.class, "worker");
+    assert.deepEqual(node.domains, ["desktop"]);
 
     const summarized = await run(state, ["summary", "--id", node.id, "--summary", "One compact label", "--status", "waiting", "--json"], environment);
     assert.equal(summarized.code, 0, summarized.stderr);
-    const repeated = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId.toUpperCase(), "--json"], environment);
+    const repeated = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId.toUpperCase(), "--class", "worker", "--json"], environment);
     assert.equal(repeated.code, 0, repeated.stderr);
     const repeatedNode = JSON.parse(repeated.stdout).node;
     assert.equal(repeatedNode.id, node.id);
@@ -129,6 +133,26 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
     await rm(state, { recursive: true, force: true });
     await rm(transcripts, { recursive: true, force: true });
   }
+});
+
+test("mesh-graph claims one primary orchestrator per domain and requires explicit takeover", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-claim-"));
+  try {
+    const first = JSON.parse((await run(state, ["add", "--agent", "codex", "--tmux-target", "first", "--json"])).stdout).node;
+    const second = JSON.parse((await run(state, ["add", "--agent", "codex", "--tmux-target", "second", "--json"])).stdout).node;
+    const claimed = await run(state, ["claim", "--id", first.id, "--role", "orchestrator", "--domain", "alpha", "--json"]);
+    assert.equal(claimed.code, 0, claimed.stderr);
+    const conflict = await run(state, ["claim", "--id", second.id, "--role", "orchestrator", "--domain", "alpha"]);
+    assert.equal(conflict.code, 2);
+    assert.match(conflict.stderr, new RegExp(first.id));
+    const takeover = await run(state, ["claim", "--id", second.id, "--role", "orchestrator", "--domain", "alpha", "--take-over", first.id, "--json"]);
+    assert.equal(takeover.code, 0, takeover.stderr);
+    const result = JSON.parse(takeover.stdout);
+    assert.equal(result.predecessor.id, first.id);
+    const graph = JSON.parse((await run(state, ["show", "--json"])).stdout);
+    assert.deepEqual(graph.nodes.find((node) => node.id === first.id).primaryDomains, []);
+    assert.deepEqual(graph.nodes.find((node) => node.id === second.id).primaryDomains, ["alpha"]);
+  } finally { await rm(state, { recursive: true, force: true }); }
 });
 
 test("mesh-graph rejects invalid graph inputs without creating state", async () => {

@@ -90,6 +90,22 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
     }
 
 
+def discover_transcripts(agent: str) -> list[dict[str, Any]]:
+    root = session_root(agent)
+    if not root.is_dir():
+        return []
+    sessions: dict[str, Path] = {}
+    for candidate in root.glob("**/*.jsonl"):
+        match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})", candidate.name, re.I)
+        if not match or not candidate.is_file():
+            continue
+        session_id = match.group(1).lower()
+        previous = sessions.get(session_id)
+        if previous is None or candidate.stat().st_mtime_ns > previous.stat().st_mtime_ns:
+            sessions[session_id] = candidate
+    return [transcript_facts(agent, session_id, path) for session_id, path in sorted(sessions.items())]
+
+
 def valid_session_id(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_-]+", value))
 
@@ -437,7 +453,7 @@ def initial_state(agent: str, session_id: str, transcript: Path) -> dict[str, An
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("session_id")
+    parser.add_argument("session_id", nargs="?")
     parser.add_argument("--agent", choices=sorted(DEFAULT_ROOTS), required=True)
     parser.add_argument("--state", type=Path)
     parser.add_argument("--inbox", type=Path)
@@ -447,19 +463,30 @@ def main() -> int:
     mode.add_argument("--init", action="store_true")
     mode.add_argument("--drain", action="store_true")
     mode.add_argument("--inspect", action="store_true", help="read transcript facts without a cursor")
+    mode.add_argument("--discover", action="store_true", help="read facts for every transcript without cursors")
     args = parser.parse_args()
 
     if not valid_session_id(args.session_id):
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
         parser.error("--interval must be greater than zero")
-    if not args.inspect and args.state is None:
-        parser.error("--state is required unless --inspect is used")
+    if not args.inspect and not args.discover and args.state is None:
+        parser.error("--state is required unless --inspect or --discover is used")
+    if not args.discover and not args.session_id:
+        parser.error("session_id is required unless --discover is used")
+    if args.discover and args.session_id:
+        parser.error("session_id cannot be combined with --discover")
     if args.inbox is not None and args.agent != "claude":
         parser.error("--inbox is supported only for Claude Monitor notifications")
     if args.inbox is not None and not args.inbox.is_file():
         parser.error(f"inbox does not exist: {args.inbox}")
 
+    if args.discover:
+        facts = discover_transcripts(args.agent)
+        print(json.dumps(facts, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    assert args.session_id is not None
     transcript = resolve_transcript(args.agent, args.session_id)
     if transcript is None:
         print(f"ERROR: no {args.agent} transcript for session {args.session_id}", file=sys.stderr)

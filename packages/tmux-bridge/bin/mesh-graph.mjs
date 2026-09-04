@@ -27,7 +27,8 @@ import { parseArgs } from "node:util";
 
 const GRAPH_SCHEMA = "agent-mesh.session-graph.v1";
 const EVENT_SCHEMA = "agent-mesh.session-graph-event.v1";
-const NODE_STATUSES = new Set(["active", "waiting", "blocked", "closed"]);
+const NODE_STATUSES = new Set(["active", "waiting", "blocked", "quiet", "closed"]);
+const NODE_CLASSES = new Set(["orchestrator", "worker", "observer", "ephemeral", "unclassified"]);
 const EDGE_TYPES = new Set(["spawned-by", "delegates-to", "linked", "watches"]);
 // References deliberately identify no provider-specific schema. Consumers may
 // join them with their own stores; the graph only preserves explicit links.
@@ -43,6 +44,12 @@ const { values, positionals } = parseArgs({
     cwd: { type: "string" },
     "role-profile": { type: "string" },
     title: { type: "string" },
+    class: { type: "string" },
+    domains: { type: "string" },
+    domain: { type: "string" },
+    role: { type: "string" },
+    "take-over": { type: "string" },
+    "quiet-after": { type: "string" },
     summary: { type: "string" },
     status: { type: "string" },
     "runtime-uuid": { type: "string" },
@@ -76,6 +83,12 @@ try {
       break;
     case "adopt":
       printResult(adoptNode(stateDir, values), values);
+      break;
+    case "discover":
+      printResult(discoverNodes(stateDir, values), values);
+      break;
+    case "claim":
+      printResult(claimDomain(stateDir, values), values);
       break;
     case "link":
       printResult(addEdge(stateDir, values), values);
@@ -127,6 +140,12 @@ function addNode(statePath, options) {
       title: optionalSingleLine(options.title, "--title") || "",
       summary: optionalSummary(options.summary) || "",
       status,
+      class: nodeClass(options.class),
+      domains: domainsFor(optionalSingleLine(options.cwd, "--cwd") || "", options),
+      domainsExplicit: options.domains !== undefined,
+      primaryDomains: [],
+      domainPredecessors: {},
+      lastSeenAt: timestamp,
       runtimeUuid: optionalSingleLine(options["runtime-uuid"], "--runtime-uuid") || null,
       refs: refsChanges([], options),
       createdAt: timestamp,
@@ -143,12 +162,13 @@ function addNode(statePath, options) {
 function adoptNode(statePath, options) {
   const agent = requiredAdoptAgent(options.agent);
   const runtimeUuid = requiredRuntimeUuid(options["runtime-uuid"]);
+  if (options.class === undefined) throw new Error("manual adopt requires --class; automatic discovery uses unclassified");
   const facts = inspectTranscript(agent, runtimeUuid);
   return mutate(statePath, (graph) => {
     const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === runtimeUuid);
     if (existing) {
       const changes = {};
-      for (const [field, value] of [["agent", agent], ["cwd", facts.cwd], ["title", facts.title], ["runtimeUuid", runtimeUuid]]) {
+      for (const [field, value] of [["agent", agent], ["cwd", facts.cwd], ["title", facts.title], ["runtimeUuid", runtimeUuid], ["class", nodeClass(options.class)], ["lastSeenAt", facts.updatedAt]]) {
         if (existing[field] !== value) changes[field] = value;
       }
       if (Object.keys(changes).length === 0) return { graph, result: { node: existing, changed: false } };
@@ -166,6 +186,12 @@ function adoptNode(statePath, options) {
       title: facts.title,
       summary: "",
       status: "active",
+      class: nodeClass(options.class),
+      domains: domainsFor(facts.cwd, options),
+      domainsExplicit: options.domains !== undefined,
+      primaryDomains: [],
+      domainPredecessors: {},
+      lastSeenAt: facts.updatedAt,
       runtimeUuid,
       refs: [],
       createdAt: timestamp,
@@ -198,7 +224,62 @@ function inspectTranscript(agent, runtimeUuid) {
     throw new Error("transcript inspection returned mismatched session facts");
   }
   for (const field of ["cwd", "title"]) if (typeof facts[field] !== "string") throw new Error(`transcript inspection returned invalid ${field}`);
-  return facts;
+  return { ...facts, updatedAt: new Date(Number(facts.updated_at) / 1_000_000).toISOString() };
+}
+
+function inspectTranscripts(agent) {
+  const localWatcher = join(dirname(new URL(import.meta.url).pathname), "agent-watch.py");
+  const watcher = existsSync(localWatcher) ? localWatcher : join(process.env.AGENT_MESH_ROOT || "", "packages", "tmux-bridge", "bin", "agent-watch.py");
+  const result = spawnSync(process.env.PYTHON || "python3", [watcher, "--agent", agent, "--discover", "--format", "jsonl"], { encoding: "utf8", env: process.env });
+  if (result.status !== 0) throw new Error(`transcript discovery failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
+  let facts;
+  try { facts = JSON.parse(result.stdout); } catch { throw new Error("transcript discovery returned invalid JSON"); }
+  if (!Array.isArray(facts)) throw new Error("transcript discovery returned invalid facts");
+  return facts.map((item) => ({ ...item, runtimeUuid: requiredRuntimeUuid(item.runtime_uuid), cwd: String(item.cwd || ""), title: String(item.title || ""), updatedAt: new Date(Number(item.updated_at) / 1_000_000).toISOString() }));
+}
+
+function discoverNodes(statePath, options) {
+  const agent = requiredAdoptAgent(options.agent);
+  const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
+  const facts = inspectTranscripts(agent);
+  return mutate(statePath, (graph) => {
+    const events = [], nodes = [];
+    for (const fact of facts) {
+      const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
+      const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
+      const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: now() };
+      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: existing?.class || "unclassified", updatedAt: now() });
+      if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
+      if (!existing || ["active", "quiet"].includes(existing.status)) node.status = observedStatus;
+      if (!existing || JSON.stringify(node) !== JSON.stringify(existing)) events.push(event("node.upserted", { node }));
+      nodes.push(node);
+    }
+    return { graph, events, result: { nodes, changed: events.length > 0 } };
+  });
+}
+
+function claimDomain(statePath, options) {
+  const id = requiredSingleLine(options.id, "--id"), domain = requiredDomain(options.domain, "--domain");
+  if (requiredSingleLine(options.role, "--role") !== "orchestrator") throw new Error("claim --role must be orchestrator");
+  const takeover = options["take-over"] === undefined ? "" : requiredSingleLine(options["take-over"], "--take-over");
+  return mutate(statePath, (graph) => {
+    const node = graph.nodes.find((item) => item.id === id);
+    if (!node) throw new Error(`node not found: ${id}`);
+    const incumbent = graph.nodes.find((item) => item.id !== id && item.status !== "closed" && (item.primaryDomains || []).includes(domain));
+    if (incumbent && takeover !== incumbent.id) throw new Error(`domain '${domain}' already has live primary ${incumbent.id}; rerun with --take-over ${incumbent.id} after human approval`);
+    if (takeover && !incumbent) throw new Error(`--take-over ${takeover} is not the live primary for '${domain}'`);
+    const events = [];
+    if (incumbent) events.push(event("node.upserted", { node: { ...incumbent, primaryDomains: incumbent.primaryDomains.filter((item) => item !== domain), updatedAt: now() } }));
+    const claimed = { ...node, class: "orchestrator", domains: [...new Set([...(node.domains || []), domain])], primaryDomains: [...new Set([...(node.primaryDomains || []), domain])], domainPredecessors: { ...(node.domainPredecessors || {}), ...(incumbent ? { [domain]: incumbent.id } : {}) }, updatedAt: now() };
+    if (!incumbent && JSON.stringify(claimed) === JSON.stringify(node)) return { graph, result: inheritanceResult(claimed, null) };
+    events.push(event("node.upserted", { node: claimed }));
+    return { graph, events, result: inheritanceResult(claimed, incumbent || null) };
+  });
+}
+
+function inheritanceResult(node, predecessor) {
+  const source = predecessor || node;
+  return { node, predecessor: predecessor ? { id: predecessor.id, agent: predecessor.agent, runtimeUuid: predecessor.runtimeUuid } : null, refs: source.refs || [], liveChildren: [] };
 }
 
 function nodeChanges(node, options) {
@@ -210,11 +291,17 @@ function nodeChanges(node, options) {
     ["title", "title"],
     ["summary", "summary"],
     ["runtime-uuid", "runtimeUuid"],
+    ["class", "class"],
   ];
   for (const [option, field] of fields) {
     if (options[option] === undefined) continue;
-    const value = field === "summary" ? requiredSummary(options[option]) : requiredSingleLine(options[option], `--${option}`);
+    const value = field === "summary" ? requiredSummary(options[option]) : field === "class" ? nodeClass(options[option]) : requiredSingleLine(options[option], `--${option}`);
     if (node[field] !== value) changes[field] = value;
+  }
+  if (options.domains !== undefined || (options.cwd !== undefined && !node.domainsExplicit)) {
+    const domains = domainsFor(options.cwd !== undefined ? requiredSingleLine(options.cwd, "--cwd") : node.cwd, options);
+    if (JSON.stringify(domains) !== JSON.stringify(node.domains || [])) changes.domains = domains;
+    if (options.domains !== undefined) changes.domainsExplicit = true;
   }
   if (options.status !== undefined) {
     assertStatus(options.status);
@@ -322,8 +409,9 @@ function mutate(statePath, operation) {
   return withLock(statePath, () => {
     const graph = loadGraph(statePath);
     const result = operation(graph);
-    if (!result.event) return result.result;
-    appendEvent(statePath, result.event);
+    const events = result.events || (result.event ? [result.event] : []);
+    if (events.length === 0) return result.result;
+    for (const item of events) appendEvent(statePath, item);
     const derived = deriveGraph(readEvents(statePath));
     writeProjection(statePath, derived);
     return result.result;
@@ -389,7 +477,16 @@ function emptyGraph() {
 
 function normalizeNode(node) {
   const { meta: _legacyMeta, ...normalized } = node;
-  return { ...normalized, refs: normalizeRefs(node.refs) };
+  return { ...normalized, refs: normalizeRefs(node.refs), class: NODE_CLASSES.has(node.class) ? node.class : "unclassified", domains: normalizeDomains(node.domains), domainsExplicit: node.domainsExplicit === true, primaryDomains: normalizeDomains(node.primaryDomains), domainPredecessors: normalizePredecessors(node.domainPredecessors), lastSeenAt: typeof node.lastSeenAt === "string" ? node.lastSeenAt : node.updatedAt };
+}
+
+function normalizeDomains(value) {
+  return Array.isArray(value) ? [...new Set(value.filter((item) => typeof item === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(item)))] : [];
+}
+
+function normalizePredecessors(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter(([domain, id]) => /^[a-z][a-z0-9-]{0,63}$/.test(domain) && typeof id === "string"));
 }
 
 function normalizeRefs(refs) {
@@ -516,6 +613,9 @@ function validateNode(node) {
     if (!Array.isArray(node.refs)) throw new Error(`node '${node.id}' has invalid refs`);
     for (const ref of node.refs) if (typeof ref !== "string" || !OPAQUE_REF.test(ref)) throw new Error(`node '${node.id}' has invalid opaque ref`);
   }
+  if (node.class !== undefined && !NODE_CLASSES.has(node.class)) throw new Error(`node '${node.id}' has invalid class`);
+  if (node.domains !== undefined && (!Array.isArray(node.domains) || node.domains.some((domain) => typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(domain)))) throw new Error(`node '${node.id}' has invalid domains`);
+  if (node.primaryDomains !== undefined && (!Array.isArray(node.primaryDomains) || node.primaryDomains.some((domain) => typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(domain)))) throw new Error(`node '${node.id}' has invalid primaryDomains`);
   assertStatus(node.status);
 }
 
@@ -568,6 +668,42 @@ function requiredRuntimeUuid(value) {
   return value;
 }
 
+function nodeClass(value) {
+  if (value === undefined) return "unclassified";
+  value = requiredSingleLine(value, "--class");
+  if (!NODE_CLASSES.has(value)) throw new Error(`--class must be one of: ${[...NODE_CLASSES].join(", ")}`);
+  return value;
+}
+
+function requiredDomain(value, flag) {
+  value = requiredSingleLine(value, flag);
+  if (!/^[a-z][a-z0-9-]{0,63}$/.test(value)) throw new Error(`${flag} must be a lowercase domain identifier`);
+  return value;
+}
+
+function domainsFor(cwd, options) {
+  if (options.domains !== undefined) return String(options.domains).split(/[\s,]+/).filter(Boolean).map((value) => requiredDomain(value, "--domains"));
+  const configured = domainRoots();
+  const normalizedCwd = resolve(cwd || ".");
+  return configured.filter((item) => normalizedCwd === item.root || normalizedCwd.startsWith(`${item.root}/`)).sort((left, right) => right.root.length - left.root.length).map((item) => item.domain).slice(0, 1);
+}
+
+function domainRoots() {
+  const path = process.env.MESH_DOMAIN_ROOTS_FILE;
+  if (!path) return [];
+  let parsed;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch (error) { throw new Error(`could not read MESH_DOMAIN_ROOTS_FILE: ${error instanceof Error ? error.message : String(error)}`); }
+  const roots = Array.isArray(parsed) ? parsed : parsed?.roots;
+  if (!Array.isArray(roots)) throw new Error("MESH_DOMAIN_ROOTS_FILE must be a JSON array or { roots: [...] }");
+  return roots.map((item) => ({ domain: requiredDomain(item?.domain, "domain root domain"), root: resolve(requiredSingleLine(item?.root, "domain root root")) }));
+}
+
+function optionalPositiveInteger(value, flag) {
+  if (value === undefined) return undefined;
+  if (!/^[1-9][0-9]*$/.test(value)) throw new Error(`${flag} must be a positive integer`);
+  return Number(value);
+}
+
 function assertStatus(status) {
   if (!NODE_STATUSES.has(status)) throw new Error(`--status must be one of: ${[...NODE_STATUSES].join(", ")}`);
 }
@@ -582,5 +718,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--cwd <cwd>] [--role-profile <role>] [--title <title>] [--summary <summary>] [--status active|waiting|blocked|closed] [--runtime-uuid <uuid>] [--refs source:id,...] [--state <dir>] [--json]\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> [--state <dir>] [--json]\n  mesh-graph link --from <node-id> --to <node-id> --type spawned-by|delegates-to|linked|watches [--state <dir>] [--json]\n  mesh-graph summary --id <node-id> --summary <summary> [--status active|waiting|blocked|closed] [--state <dir>] [--json]\n  mesh-graph close --id <node-id> [--state <dir>] [--json]\n  mesh-graph purge --id <node-id> [--state <dir>] [--json]\n  mesh-graph show [--tree|--json|--compact] [--state <dir>]\n\nNodes are generated once per tmux target. Adopted Desktop sessions are keyed by runtime UUID, read only their transcript, and keep an empty summary until a human sets one. Refs are explicit opaque source-qualified strings; the graph never resolves or infers them.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration. Quiet is observed silence, never closure. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque and never resolved.\n`);
 }
