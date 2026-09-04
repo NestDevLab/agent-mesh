@@ -1,18 +1,18 @@
 {
   "changed_refs": {
-    "refs/heads/main-integration": "40efae32f794d61dcadfdf327ca7478ca87253de",
-    "refs/heads/pr/graph-session-registry": "ade2f98403dff40a1914bc6259753c8e9c92cea4"
+    "refs/heads/main-integration": "98b8a51ee923f5a131c2cea6769be5876fc69ec9",
+    "refs/heads/pr/graph-session-registry": "2b17b9d6aa0295fad6a3d330f73e2a5866c9104a"
   },
   "claims": {
-    "refs/heads/main-integration": "37e32b95a65d01b15e36823043dc33b7cd4f84ae",
-    "refs/heads/pr/graph-session-registry": "0d5b7b54eaa5823363e1b64ebcf54fda73567dd0"
+    "refs/heads/main-integration": "370493064ccbcaebee06ae4c483d342e4fee9204",
+    "refs/heads/pr/graph-session-registry": "120994ef79cab58051bbc6a7e11f34a7421968cc"
   },
   "coordination_id": "graph-7",
-  "created_at": "2026-09-04T15:14:12+00:00",
+  "created_at": "2026-09-04T15:30:40+00:00",
   "installation_id": "e83434d1-e09b-4dd1-8bdf-a5f7970573c6",
   "managed_refs": {
-    "refs/heads/main-integration": "40efae32f794d61dcadfdf327ca7478ca87253de",
-    "refs/heads/pr/graph-session-registry": "ade2f98403dff40a1914bc6259753c8e9c92cea4"
+    "refs/heads/main-integration": "98b8a51ee923f5a131c2cea6769be5876fc69ec9",
+    "refs/heads/pr/graph-session-registry": "2b17b9d6aa0295fad6a3d330f73e2a5866c9104a"
   },
   "manifest": {
     "coordination": {
@@ -57,7 +57,8 @@
           "c1ea44ea6d44a1f6e51242d78c3267871d9ce8a9",
           "289d213a38a77c925997ae9b7a533f0cb735272c",
           "010becaf360fa0cab3bfa8167290a0e87d2467cd",
-          "ade2f98403dff40a1914bc6259753c8e9c92cea4"
+          "ade2f98403dff40a1914bc6259753c8e9c92cea4",
+          "2b17b9d6aa0295fad6a3d330f73e2a5866c9104a"
         ],
         "id": "graph-7",
         "integration_branch": "main-integration",
@@ -66,11 +67,11 @@
     ],
     "version": 2
   },
-  "manifest_digest": "1687122fce356c34f8bb4ad849fa41bcf71b79ab9283360b146c1f6125860085",
-  "operation_token": "637501b8-6001-455d-b2a5-8af7d708b08e",
-  "parent_state": "f3bf5adaa99ff00a846afac5c6262c311253f0a7",
+  "manifest_digest": "9684f90f59a36fabe8cb648e8e52964fbe61b6c36b3ee5a5f7a90aeed085bdf6",
+  "operation_token": "001ebc58-64a6-402e-8764-bf8a8e13d3ae",
+  "parent_state": "a50de96ad3b74771a31d966198f55f3d35cfc2c4",
   "projection_status": "partial",
-  "publication_id": "728f5c5a-e216-4dff-8013-4ee4016cc09b",
+  "publication_id": "b97baf06-f038-4d0e-92e5-4ebf5d09d0f7",
   "publication_scope": "stack:graph-7",
   "schema_version": 2,
   "syncwheel_version": "0.43.3",
