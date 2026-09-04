@@ -1,0 +1,75 @@
+{
+  "changed_refs": {
+    "refs/heads/main-integration": "d4f799d8d0ee0c8a5540d869b4a54462a7337c7c",
+    "refs/heads/pr/graph-session-registry": "c1ea44ea6d44a1f6e51242d78c3267871d9ce8a9"
+  },
+  "claims": {
+    "refs/heads/main-integration": "311f4b7bf7923caa2a5557dc8d03743221db6c1c",
+    "refs/heads/pr/graph-session-registry": "6eed5fa4dfe3b56e86f8c53b3bd88ad1379e0a20"
+  },
+  "coordination_id": "graph-7",
+  "created_at": "2026-09-04T14:44:17+00:00",
+  "installation_id": "e83434d1-e09b-4dd1-8bdf-a5f7970573c6",
+  "managed_refs": {
+    "refs/heads/main-integration": "d4f799d8d0ee0c8a5540d869b4a54462a7337c7c",
+    "refs/heads/pr/graph-session-registry": "c1ea44ea6d44a1f6e51242d78c3267871d9ce8a9"
+  },
+  "manifest": {
+    "coordination": {
+      "gc": {
+        "backup_keep": 2,
+        "backup_retention_days": 30,
+        "worktree_grace_days": 7
+      },
+      "id": "graph-7",
+      "mode": "active-active",
+      "state_branch": "syncwheel/state/graph-7"
+    },
+    "defaults": {
+      "base_branch": "main",
+      "base_ref": {
+        "kind": "remote-ref",
+        "ref": "refs/heads/main",
+        "role": "canonical"
+      }
+    },
+    "integration": {
+      "base": {
+        "kind": "remote-ref",
+        "ref": "refs/heads/main",
+        "role": "canonical"
+      },
+      "branch": "main-integration",
+      "stacks": [
+        "graph-7"
+      ],
+      "strategy": "cherry-pick"
+    },
+    "stacks": [
+      {
+        "base": {
+          "kind": "remote-ref",
+          "ref": "refs/heads/main",
+          "role": "canonical"
+        },
+        "branch": "pr/graph-session-registry",
+        "commits": [
+          "c1ea44ea6d44a1f6e51242d78c3267871d9ce8a9"
+        ],
+        "id": "graph-7",
+        "integration_branch": "main-integration",
+        "target_branch": "main"
+      }
+    ],
+    "version": 2
+  },
+  "manifest_digest": "4ae29957c2be511d7478183785fd404aa3a2272c63c56dd1c69539cedf056679",
+  "operation_token": "5f29a366-98a2-4eb3-96ee-a0f6c9d60682",
+  "parent_state": null,
+  "projection_status": "partial",
+  "publication_id": "335d72da-ea25-4483-9bb1-1e607081b1ad",
+  "publication_scope": "stack:graph-7",
+  "schema_version": 2,
+  "syncwheel_version": "0.43.3",
+  "tombstones": []
+}
