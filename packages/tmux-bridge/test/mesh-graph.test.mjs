@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -86,6 +86,48 @@ test("mesh-graph derives an inspectable graph from append-only events", async ()
     assert.match(compact.stdout, /awaiting review/);
   } finally {
     await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a summary", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-adopt-"));
+  const transcripts = await mkdtemp(join(tmpdir(), "mesh-graph-transcripts-"));
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  try {
+    const directory = join(transcripts, "2026", "09", "04");
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, `rollout-${sessionId}.jsonl`), [
+      JSON.stringify({ type: "session_meta", payload: { cwd: "/workspace/desktop" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "First objective\n\nSupporting context stays raw." }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Investigating." }] } }),
+    ].join("\n") + "\n");
+    const environment = { CODEX_SESSION_ROOT: transcripts };
+    const adopted = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId, "--json"], environment);
+    assert.equal(adopted.code, 0, adopted.stderr);
+    const node = JSON.parse(adopted.stdout).node;
+    assert.match(node.id, /^node-[0-9a-f-]{36}$/);
+    assert.equal(node.runtimeUuid, sessionId);
+    assert.equal(node.tmuxTarget, "");
+    assert.equal(node.cwd, "/workspace/desktop");
+    assert.equal(node.title, "First objective\n\nSupporting context stays raw.");
+    assert.equal(node.summary, "");
+    assert.equal(node.status, "active");
+
+    const summarized = await run(state, ["summary", "--id", node.id, "--summary", "One compact label", "--status", "waiting", "--json"], environment);
+    assert.equal(summarized.code, 0, summarized.stderr);
+    const repeated = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId.toUpperCase(), "--json"], environment);
+    assert.equal(repeated.code, 0, repeated.stderr);
+    const repeatedNode = JSON.parse(repeated.stdout).node;
+    assert.equal(repeatedNode.id, node.id);
+    assert.equal(repeatedNode.summary, "One compact label");
+    assert.equal(repeatedNode.status, "waiting");
+
+    const graph = JSON.parse((await run(state, ["show", "--json"], environment)).stdout);
+    assert.equal(graph.nodes.length, 1);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 2);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+    await rm(transcripts, { recursive: true, force: true });
   }
 });
 

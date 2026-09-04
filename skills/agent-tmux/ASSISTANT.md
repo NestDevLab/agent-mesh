@@ -26,6 +26,9 @@ $BIN/mesh-send.sh --to codex --from claude-reviewer --from-agent claude --from-t
 # Session graph
 $BIN/mesh-graph.mjs show --compact
 $BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
+# Explicit, transcript-only Desktop adoption; set the compact summary separately.
+$BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
+$BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "one compact label"
 
 # Status / wait
 $BIN/agent-read.sh --agent codex "$TARGET" --status        # idle | working | error

@@ -126,6 +126,9 @@ $BIN/mesh-send.sh --to codex "summarize the current branch" 120
 # Record or inspect the local session graph. State remains outside this repository.
 $BIN/mesh-graph.mjs add --agent codex --tmux-target mesh-codex-main --cwd "$PWD" \
   --role-profile developer --summary "implementing graph"
+# Desktop adoption reads only the transcript; set the compact summary separately.
+$BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
+$BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "reviewing graph delivery"
 $BIN/mesh-graph.mjs show --tree
 
 `agent-session.sh ... new` registers the new target automatically. `mesh-send.sh --from`
@@ -176,6 +179,11 @@ the newest matching transcript on each poll, writes only the caller-provided
 cursor file, and supports Codex and Claude without requiring a tmux target. Its
 structured output is intended for existing Mesh transports; the watcher does
 not dispatch, resume, or wake an agent by itself.
+
+`mesh-graph.mjs adopt` uses that same read-only transcript inspection for one
+explicit Codex or Claude runtime UUID. It creates a Desktop node with no tmux
+target, keys repeat adoption by runtime UUID, and never derives a summary or
+closes a quiet session.
 
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
 and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's

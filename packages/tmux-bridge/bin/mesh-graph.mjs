@@ -22,6 +22,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 
 const GRAPH_SCHEMA = "agent-mesh.session-graph.v1";
@@ -72,6 +73,9 @@ try {
   switch (command) {
     case "add":
       printResult(addNode(stateDir, values), values);
+      break;
+    case "adopt":
+      printResult(adoptNode(stateDir, values), values);
       break;
     case "link":
       printResult(addEdge(stateDir, values), values);
@@ -134,6 +138,67 @@ function addNode(statePath, options) {
       result: { node, changed: true },
     };
   });
+}
+
+function adoptNode(statePath, options) {
+  const agent = requiredAdoptAgent(options.agent);
+  const runtimeUuid = requiredRuntimeUuid(options["runtime-uuid"]);
+  const facts = inspectTranscript(agent, runtimeUuid);
+  return mutate(statePath, (graph) => {
+    const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === runtimeUuid);
+    if (existing) {
+      const changes = {};
+      for (const [field, value] of [["agent", agent], ["cwd", facts.cwd], ["title", facts.title], ["runtimeUuid", runtimeUuid]]) {
+        if (existing[field] !== value) changes[field] = value;
+      }
+      if (Object.keys(changes).length === 0) return { graph, result: { node: existing, changed: false } };
+      const node = { ...existing, ...changes, updatedAt: now() };
+      return { graph, event: event("node.upserted", { node }), result: { node, changed: true } };
+    }
+    const timestamp = now();
+    const node = {
+      id: `node-${randomUUID()}`,
+      agent,
+      tmuxTarget: "",
+      cwd: facts.cwd,
+      roleProfile: "",
+      // This is raw transcript evidence, never a graph-generated summary.
+      title: facts.title,
+      summary: "",
+      status: "active",
+      runtimeUuid,
+      refs: [],
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    return { graph, event: event("node.upserted", { node }), result: { node, changed: true } };
+  });
+}
+
+function inspectTranscript(agent, runtimeUuid) {
+  const localWatcher = join(dirname(new URL(import.meta.url).pathname), "agent-watch.py");
+  const watcher = existsSync(localWatcher)
+    ? localWatcher
+    : process.env.AGENT_MESH_ROOT
+      ? join(process.env.AGENT_MESH_ROOT, "packages", "tmux-bridge", "bin", "agent-watch.py")
+      : localWatcher;
+  if (!existsSync(watcher)) throw new Error("transcript inspection requires agent-watch.py beside mesh-graph or under AGENT_MESH_ROOT");
+  const result = spawnSync(process.env.PYTHON || "python3", [
+    watcher, runtimeUuid, "--agent", agent, "--inspect", "--format", "jsonl",
+  ], { encoding: "utf8", env: process.env });
+  if (result.error) throw new Error(`could not inspect transcript: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`transcript inspection failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
+  let facts;
+  try {
+    facts = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("transcript inspection returned invalid JSON");
+  }
+  if (!facts || facts.agent !== agent || String(facts.runtime_uuid || "").toLowerCase() !== runtimeUuid) {
+    throw new Error("transcript inspection returned mismatched session facts");
+  }
+  for (const field of ["cwd", "title"]) if (typeof facts[field] !== "string") throw new Error(`transcript inspection returned invalid ${field}`);
+  return facts;
 }
 
 function nodeChanges(node, options) {
@@ -400,8 +465,8 @@ function withLock(statePath, callback) {
 function renderCompact(graph) {
   if (graph.nodes.length === 0) return "(empty)";
   return graph.nodes.map((node) => {
-    const detail = node.summary || node.title || "-";
-    return `${node.id} [${node.status}] ${node.agent}@${node.tmuxTarget}: ${detail}`;
+    const detail = node.summary || "-";
+    return `${node.id} [${node.status}] ${node.agent}@${node.tmuxTarget || `runtime:${node.runtimeUuid || "unknown"}`}: ${detail}`;
   }).join("\n");
 }
 
@@ -420,7 +485,7 @@ function renderTree(graph) {
   const roots = graph.nodes.filter((node) => !childIds.has(node.id));
   const lines = [];
   const visit = (node, indent, ancestry, label = "") => {
-    lines.push(`${indent}${label}${node.id} [${node.status}] ${node.agent}@${node.tmuxTarget}${node.summary ? ` — ${node.summary}` : ""}`);
+    lines.push(`${indent}${label}${node.id} [${node.status}] ${node.agent}@${node.tmuxTarget || `runtime:${node.runtimeUuid || "unknown"}`}${node.summary ? ` — ${node.summary}` : ""}`);
     if (ancestry.has(node.id)) {
       lines.push(`${indent}  (cycle)`);
       return;
@@ -489,6 +554,20 @@ function optionalSummary(value) {
   return requiredSummary(value);
 }
 
+function requiredAdoptAgent(value) {
+  value = requiredSingleLine(value, "--agent");
+  if (value !== "codex" && value !== "claude") throw new Error("adopt --agent must be codex or claude");
+  return value;
+}
+
+function requiredRuntimeUuid(value) {
+  value = requiredSingleLine(value, "--runtime-uuid").toLowerCase();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)) {
+    throw new Error("--runtime-uuid must be a complete UUID");
+  }
+  return value;
+}
+
 function assertStatus(status) {
   if (!NODE_STATUSES.has(status)) throw new Error(`--status must be one of: ${[...NODE_STATUSES].join(", ")}`);
 }
@@ -503,5 +582,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--cwd <cwd>] [--role-profile <role>] [--title <title>] [--summary <summary>] [--status active|waiting|blocked|closed] [--runtime-uuid <uuid>] [--refs source:id,...] [--state <dir>] [--json]\n  mesh-graph link --from <node-id> --to <node-id> --type spawned-by|delegates-to|linked|watches [--state <dir>] [--json]\n  mesh-graph summary --id <node-id> --summary <summary> [--status active|waiting|blocked|closed] [--state <dir>] [--json]\n  mesh-graph close --id <node-id> [--state <dir>] [--json]\n  mesh-graph purge --id <node-id> [--state <dir>] [--json]\n  mesh-graph show [--tree|--json|--compact] [--state <dir>]\n\nNodes are generated once per tmux target. Repeating add for a known target updates only supplied attributes. Refs are explicit opaque source-qualified strings; the graph never resolves or infers them.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--cwd <cwd>] [--role-profile <role>] [--title <title>] [--summary <summary>] [--status active|waiting|blocked|closed] [--runtime-uuid <uuid>] [--refs source:id,...] [--state <dir>] [--json]\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> [--state <dir>] [--json]\n  mesh-graph link --from <node-id> --to <node-id> --type spawned-by|delegates-to|linked|watches [--state <dir>] [--json]\n  mesh-graph summary --id <node-id> --summary <summary> [--status active|waiting|blocked|closed] [--state <dir>] [--json]\n  mesh-graph close --id <node-id> [--state <dir>] [--json]\n  mesh-graph purge --id <node-id> [--state <dir>] [--json]\n  mesh-graph show [--tree|--json|--compact] [--state <dir>]\n\nNodes are generated once per tmux target. Adopted Desktop sessions are keyed by runtime UUID, read only their transcript, and keep an empty summary until a human sets one. Refs are explicit opaque source-qualified strings; the graph never resolves or infers them.\n`);
 }
