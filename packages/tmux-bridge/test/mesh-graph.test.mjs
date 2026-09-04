@@ -104,8 +104,9 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
       JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Investigating." }] } }),
     ].join("\n") + "\n");
     const domainRoots = join(transcripts, "domains.json");
-    await writeFile(domainRoots, JSON.stringify({ roots: [{ domain: "desktop", root: "/workspace/desktop" }] }));
-    const environment = { CODEX_SESSION_ROOT: transcripts, MESH_DOMAIN_ROOTS_FILE: domainRoots };
+    await writeFile(domainRoots, JSON.stringify({ domains: [{ domain: "desktop", root: "/workspace/desktop" }] }));
+    const environment = { CODEX_SESSION_ROOT: transcripts };
+    const domainEnvironment = { ...environment, MESH_DOMAIN_ROOTS_FILE: domainRoots };
     const adopted = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId, "--class", "worker", "--json"], environment);
     assert.equal(adopted.code, 0, adopted.stderr);
     const node = JSON.parse(adopted.stdout).node;
@@ -117,20 +118,32 @@ test("mesh-graph adopts a Desktop transcript by runtime UUID without inventing a
     assert.equal(node.summary, "");
     assert.equal(node.status, "active");
     assert.equal(node.class, "worker");
-    assert.deepEqual(node.domains, ["desktop"]);
+    assert.deepEqual(node.domains, []);
+    assert.equal(node.domainsExplicit, false);
 
     const summarized = await run(state, ["summary", "--id", node.id, "--summary", "One compact label", "--status", "waiting", "--json"], environment);
     assert.equal(summarized.code, 0, summarized.stderr);
-    const repeated = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId.toUpperCase(), "--class", "worker", "--json"], environment);
+    const repeated = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId.toUpperCase(), "--class", "worker", "--json"], domainEnvironment);
     assert.equal(repeated.code, 0, repeated.stderr);
     const repeatedNode = JSON.parse(repeated.stdout).node;
     assert.equal(repeatedNode.id, node.id);
     assert.equal(repeatedNode.summary, "One compact label");
     assert.equal(repeatedNode.status, "waiting");
+    assert.deepEqual(repeatedNode.domains, ["desktop"]);
+    assert.equal(repeatedNode.domainsExplicit, false);
+
+    const explicit = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId, "--class", "worker", "--domains", "manual", "--json"], domainEnvironment);
+    assert.equal(explicit.code, 0, explicit.stderr);
+    assert.deepEqual(JSON.parse(explicit.stdout).node.domains, ["manual"]);
+    assert.equal(JSON.parse(explicit.stdout).node.domainsExplicit, true);
+    const preserved = await run(state, ["adopt", "--agent", "codex", "--runtime-uuid", sessionId, "--class", "worker", "--json"], domainEnvironment);
+    assert.equal(preserved.code, 0, preserved.stderr);
+    assert.deepEqual(JSON.parse(preserved.stdout).node.domains, ["manual"]);
+    assert.equal(JSON.parse(preserved.stdout).node.domainsExplicit, true);
 
     const graph = JSON.parse((await run(state, ["show", "--json"], environment)).stdout);
     assert.equal(graph.nodes.length, 1);
-    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 2);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 4);
 
     const claudeDirectory = join(transcripts, "claude", "project");
     await mkdir(claudeDirectory, { recursive: true });

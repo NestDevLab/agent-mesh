@@ -171,6 +171,11 @@ function adoptNode(statePath, options) {
       for (const [field, value] of [["agent", agent], ["cwd", facts.cwd], ["title", facts.title], ["runtimeUuid", runtimeUuid], ["class", nodeClass(options.class)], ["lastSeenAt", facts.updatedAt]]) {
         if (existing[field] !== value) changes[field] = value;
       }
+      if (options.domains !== undefined || !existing.domainsExplicit) {
+        const domains = domainsFor(facts.cwd, options);
+        if (JSON.stringify(domains) !== JSON.stringify(existing.domains || [])) changes.domains = domains;
+        if (options.domains !== undefined && !existing.domainsExplicit) changes.domainsExplicit = true;
+      }
       if (Object.keys(changes).length === 0) return { graph, result: { node: existing, changed: false } };
       const node = { ...existing, ...changes, updatedAt: now() };
       return { graph, event: event("node.upserted", { node }), result: { node, changed: true } };
@@ -697,8 +702,8 @@ function domainRoots() {
   if (!path) return [];
   let parsed;
   try { parsed = JSON.parse(readFileSync(path, "utf8")); } catch (error) { throw new Error(`could not read MESH_DOMAIN_ROOTS_FILE: ${error instanceof Error ? error.message : String(error)}`); }
-  const roots = Array.isArray(parsed) ? parsed : parsed?.roots;
-  if (!Array.isArray(roots)) throw new Error("MESH_DOMAIN_ROOTS_FILE must be a JSON array or { roots: [...] }");
+  const roots = Array.isArray(parsed) ? parsed : parsed?.roots ?? parsed?.domains;
+  if (!Array.isArray(roots)) throw new Error("MESH_DOMAIN_ROOTS_FILE must be a JSON array or { roots: [...] } / { domains: [...] }");
   return roots.map((item) => ({ domain: requiredDomain(item?.domain, "domain root domain"), root: resolve(requiredSingleLine(item?.root, "domain root root")) }));
 }
 
@@ -722,5 +727,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration. Quiet is observed silence, never closure. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque and never resolved.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Quiet is observed silence, never closure. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque and never resolved.\n`);
 }
