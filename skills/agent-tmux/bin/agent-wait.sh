@@ -30,7 +30,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-AGENTS_DIR="$SCRIPT_DIR/../agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$SCRIPT_DIR/../agents}"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/_mesh-tmux.sh"
 

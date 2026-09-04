@@ -104,6 +104,10 @@ $BIN/agent-session.sh --agent codex list --json --limit 25
 $BIN/agent-session.sh --agent claude inspect <SESSION_ID> --json
 $BIN/agent-session.sh --agent codex writer-status <SESSION_ID> --json
 $BIN/mesh-list-agents.sh            # all agents, live targets, capabilities
+
+# Read the local graph, or reconcile a known runtime UUID after its first prompt.
+$BIN/mesh-graph.mjs show --tree
+$BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
 ```
 
 Do not resume a persisted session that already has a writer. For a governed
@@ -165,6 +169,18 @@ python3 "$BIN/agent-watch.py" <SESSION_ID> --agent codex \
 The watcher never resumes, writes to, or attaches to the session. It writes only
 the explicit cursor file. Watching is not authorization to relay: use the
 existing send path only when the user has approved the target and direction.
+
+### Adopt an existing Desktop session into the graph
+
+Adoption is an explicit, transcript-only graph action. It neither resumes nor
+attaches to the session. The runtime UUID is its idempotency key; the raw title
+is evidence only, so supply the one-line graph summary separately. Quiet
+adopted sessions remain active until explicitly closed.
+
+```bash
+$BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
+$BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "one compact label"
+```
 
 ### Connect two sessions
 

@@ -14,7 +14,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 BRIDGE_DIR = SCRIPT_DIR.parent
 BIN_DIR = BRIDGE_DIR / "bin"
-AGENTS_DIR = BRIDGE_DIR / "agents"
+AGENTS_DIR = Path(os.environ.get("AGENT_MESH_AGENTS_DIR", BRIDGE_DIR / "agents"))
 SESSION_BIN = BIN_DIR / "agent-session.sh"
 REAPER_BIN = BIN_DIR / "agent-idle-expiry.py"
 

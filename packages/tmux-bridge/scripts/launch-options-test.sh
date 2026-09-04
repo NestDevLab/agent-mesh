@@ -7,7 +7,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BIN_DIR="$BRIDGE_DIR/bin"
-AGENTS_DIR="$BRIDGE_DIR/agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$BRIDGE_DIR/agents}"
 SESSION_BIN="$BIN_DIR/agent-session.sh"
 export MESH_TMUX_SOCKET="mesh-launch-options-test-$$"
 

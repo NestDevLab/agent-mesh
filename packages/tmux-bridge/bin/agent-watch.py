@@ -45,6 +45,67 @@ def resolve_transcript(agent: str, session_id: str) -> Path | None:
     return max(existing, key=lambda path: path.stat().st_mtime_ns, default=None)
 
 
+def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
+    """Read objective transcript facts without creating a cursor or waking a session."""
+    cwd = ""
+    title = ""
+    last_assistant = ""
+    assistant_turns = 0
+    for raw_line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            record = json.loads(raw_line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if agent == "codex":
+            payload = record.get("payload") or {}
+            if record.get("type") == "session_meta":
+                cwd = str(payload.get("cwd") or cwd)
+            elif record.get("type") == "turn_context":
+                cwd = str(payload.get("cwd") or cwd)
+            for item in codex_events(record, session_id):
+                if item["kind"] == "human_message" and not title:
+                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
+                elif item["kind"] == "agent_message":
+                    assistant_turns += 1
+                    last_assistant = str(item["body"])
+        else:
+            cwd = str(record.get("cwd") or cwd)
+            for item in claude_events(record, session_id):
+                if item["kind"] == "human_message" and not title:
+                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
+                elif item["kind"] == "agent_message":
+                    assistant_turns += 1
+                    last_assistant = str(item["body"])
+    return {
+        "agent": agent,
+        "runtime_uuid": session_id,
+        "path": str(transcript),
+        "cwd": cwd,
+        "title": title,
+        "last_assistant": last_assistant,
+        "assistant_turns": assistant_turns,
+        "updated_at": transcript.stat().st_mtime_ns,
+    }
+
+
+def discover_transcripts(agent: str) -> list[dict[str, Any]]:
+    root = session_root(agent)
+    if not root.is_dir():
+        return []
+    sessions: dict[str, Path] = {}
+    for candidate in root.glob("**/*.jsonl"):
+        match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})", candidate.name, re.I)
+        if not match or not candidate.is_file():
+            continue
+        session_id = match.group(1).lower()
+        previous = sessions.get(session_id)
+        if previous is None or candidate.stat().st_mtime_ns > previous.stat().st_mtime_ns:
+            sessions[session_id] = candidate
+    return [transcript_facts(agent, session_id, path) for session_id, path in sorted(sessions.items())]
+
+
 def valid_session_id(value: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_-]+", value))
 
@@ -70,6 +131,20 @@ def clipped(value: Any, limit: int = MAX_BODY) -> str:
     if len(text) <= limit:
         return text
     return f"{text[:limit]}\n[…truncated, {len(text)} characters total]"
+
+
+def message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, dict):
+        return str(content.get("text") or "")
+    if isinstance(content, list):
+        return " ".join(
+            block if isinstance(block, str) else str(block.get("text") or "")
+            for block in content
+            if isinstance(block, (str, dict))
+        )
+    return ""
 
 
 def event(
@@ -123,6 +198,15 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
                 yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="reasoning", body=body)
         elif payload_type == "task_complete":
             yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="turn_complete")
+        return
+
+    if record_type == "response_item" and payload_type == "message":
+        body = clipped(message_text(payload.get("content")))
+        if body:
+            if payload.get("role") == "user":
+                yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="human_message", body=body)
+            elif payload.get("role") == "assistant":
+                yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="agent_message", body=body)
         return
 
     if record_type == "response_item" and payload_type in {"custom_tool_call", "function_call"}:
@@ -369,31 +453,54 @@ def initial_state(agent: str, session_id: str, transcript: Path) -> dict[str, An
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("session_id")
+    parser.add_argument("session_id", nargs="?")
     parser.add_argument("--agent", choices=sorted(DEFAULT_ROOTS), required=True)
-    parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--state", type=Path)
     parser.add_argument("--inbox", type=Path)
     parser.add_argument("--format", choices=("text", "jsonl"), default="text")
     parser.add_argument("--interval", type=float, default=2.0)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--init", action="store_true")
     mode.add_argument("--drain", action="store_true")
+    mode.add_argument("--inspect", action="store_true", help="read transcript facts without a cursor")
+    mode.add_argument("--discover", action="store_true", help="read facts for every transcript without cursors")
     args = parser.parse_args()
 
     if not valid_session_id(args.session_id):
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
         parser.error("--interval must be greater than zero")
+    if not args.inspect and not args.discover and args.state is None:
+        parser.error("--state is required unless --inspect or --discover is used")
+    if not args.discover and not args.session_id:
+        parser.error("session_id is required unless --discover is used")
+    if args.discover and args.session_id:
+        parser.error("session_id cannot be combined with --discover")
     if args.inbox is not None and args.agent != "claude":
         parser.error("--inbox is supported only for Claude Monitor notifications")
     if args.inbox is not None and not args.inbox.is_file():
         parser.error(f"inbox does not exist: {args.inbox}")
 
+    if args.discover:
+        facts = discover_transcripts(args.agent)
+        print(json.dumps(facts, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    assert args.session_id is not None
     transcript = resolve_transcript(args.agent, args.session_id)
     if transcript is None:
         print(f"ERROR: no {args.agent} transcript for session {args.session_id}", file=sys.stderr)
         return 1
 
+    if args.inspect:
+        facts = transcript_facts(args.agent, args.session_id, transcript)
+        if args.format == "jsonl":
+            print(json.dumps(facts, ensure_ascii=False, sort_keys=True))
+        else:
+            print(json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    assert args.state is not None
     state = load_state(args.state)
     if (
         state.get("agent") != args.agent

@@ -36,13 +36,15 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_MESH_ROOT="${AGENT_MESH_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 BIN_DIR="$SCRIPT_DIR"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-AGENTS_DIR="$BRIDGE_DIR/agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$BRIDGE_DIR/agents}"
 SEND_BIN="$BIN_DIR/agent-send.sh"
 TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 
 # Dedicated tmux socket (see _mesh-tmux.sh) — must match the bridge scripts.
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/_mesh-tmux.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-graph.sh"
 
 TO=""
 CAPABILITY=""
@@ -212,6 +214,28 @@ if ! mtmux has-session -t "$R_TARGET" 2>/dev/null; then
     exit 1
 fi
 
+# Register bridge endpoints before delivery. The source target is explicit when
+# supplied and otherwise comes from the caller's current mesh tmux session.
+# Target lookup is authoritative: mesh-graph creates a node only if that target
+# is not already represented. A request is a delegation; other message intents
+# are a non-hierarchical link.
+GRAPH_SOURCE_TARGET="$FROM_TARGET"
+if [[ -z "$GRAPH_SOURCE_TARGET" && "$FROM" != "mesh" ]]; then
+    GRAPH_SOURCE_TARGET="$(mesh_graph_current_target)"
+fi
+if [[ -n "$GRAPH_SOURCE_TARGET" ]]; then
+    mesh_graph_register_session "${FROM_AGENT:-unknown}" "$GRAPH_SOURCE_TARGET" "" "" "" "discovered via mesh-send" \
+        >/dev/null || echo "WARN: graph registration failed for source '$GRAPH_SOURCE_TARGET'" >&2
+fi
+mesh_graph_register_session "$R_TYPE" "$R_TARGET" "" "" "" "discovered via mesh-send" \
+    >/dev/null || echo "WARN: graph registration failed for target '$R_TARGET'" >&2
+if [[ -n "$GRAPH_SOURCE_TARGET" ]]; then
+    GRAPH_RELATION="linked"
+    [[ "$INTENT" == "request" ]] && GRAPH_RELATION="delegates-to"
+    mesh_graph_link_targets "$GRAPH_SOURCE_TARGET" "$R_TARGET" "$GRAPH_RELATION" \
+        || echo "WARN: graph link failed for '$GRAPH_SOURCE_TARGET' -> '$R_TARGET'" >&2
+fi
+
 # Provenance header prepended to the body. It is emitted as leading comment
 # lines ("# ...") so shell-like receivers treat it as inert metadata while agent
 # CLIs still see it at the top of the message.
@@ -257,13 +281,15 @@ try {
   process.exit(Array.isArray(state.sessions) && state.sessions.some(item => item.target === process.argv[2] && item.status === "active") ? 0 : 1);
 } catch { process.exit(1); }
 ' "$STATE" "$R_TARGET"; then
-        exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+    "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+    exit $?
     fi
     [[ -n "$PROFILE" ]] || { echo "ERROR: governed mesh delivery requires --profile; use a session lease or an authored profile" >&2; exit 1; }
     [[ -z "$MODEL" && -z "$EFFORT" ]] || { echo "ERROR: --profile cannot be combined with --model or --effort" >&2; exit 1; }
     [[ -n "$RUN_ID" ]] || RUN_ID="mesh-${R_TARGET}-$(date +%s%N)"
     CAPACITY_ARGS=(submit --state "$STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_POLICY" --provider "$R_TYPE" --harness "$R_TYPE" --run-id "$RUN_ID" --class "$WORK_CLASS" --profile "$PROFILE" --session "$R_TARGET")
     [[ -n "$PROJECT" ]] && CAPACITY_ARGS+=(--project "$PROJECT")
-    exec node "$DISPATCHER" "${CAPACITY_ARGS[@]}" -- "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+    node "$DISPATCHER" "${CAPACITY_ARGS[@]}" -- "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+    exit $?
 fi
-exec "$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"
+"$SEND_BIN" --agent "$R_TYPE" "$R_TARGET" "$PROMPT" "$TIMEOUT"

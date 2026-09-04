@@ -34,6 +34,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
 | `bin/agent-watch.py` | Follow persisted Codex/Claude transcripts by session id |
 | `bin/agent-link.mjs` | Connect two watched sessions with a bounded Mesh v1 relay |
+| `bin/mesh-graph.mjs` | Maintain the local append-only session graph and derived projection |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
 | `bin/mesh-capacity-dispatch.mjs` | Persist/retry Limen-deferred work without sleeping |
 | `bin/mesh-send.sh` | Send to an agent by name or capability using live tmux discovery |
@@ -122,6 +123,29 @@ $BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
 $BIN/mesh-list-agents.sh
 $BIN/mesh-send.sh --to codex "summarize the current branch" 120
 
+# Record or inspect the local session graph. State remains outside this repository.
+$BIN/mesh-graph.mjs add --agent codex --tmux-target mesh-codex-main --cwd "$PWD" \
+  --role-profile developer --summary "implementing graph"
+# Desktop adoption reads only the transcript; set the compact summary separately.
+$BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
+$BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "reviewing graph delivery"
+$BIN/mesh-graph.mjs show --tree
+
+`agent-session.sh ... new` registers the new target automatically. `mesh-send.sh --from`
+registers its source and destination by tmux target, then adds a `delegates-to` edge for a request
+or a `linked` edge for another message intent. Use `--from-target` outside a mesh tmux pane.
+When a runtime UUID becomes known after its first prompt, reconcile it without guessing:
+
+```bash
+$BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
+```
+
+The bridge atomically writes only `<state>/graph.json`; it makes no calls to context or
+work-item systems. Nodes may carry explicit opaque `--refs source:record,...` values, such as
+`management:MGT-0239` or `amf:record-id`. The graph validates their shape but never resolves or
+infers them. A work-orchestration or recall consumer may read `graph.json` and compose its own
+projection. Keep `summary` to one compact line; session context belongs behind a ref.
+
 # Governed background work: no prompt is pasted until Limen admits it.
 export LIMEN_POLICY=/path/to/limen-policy.json
 $BIN/mesh-send.sh --to codex --class L3 --run-id nightly-42 \
@@ -155,6 +179,11 @@ the newest matching transcript on each poll, writes only the caller-provided
 cursor file, and supports Codex and Claude without requiring a tmux target. Its
 structured output is intended for existing Mesh transports; the watcher does
 not dispatch, resume, or wake an agent by itself.
+
+`mesh-graph.mjs adopt` uses that same read-only transcript inspection for one
+explicit Codex or Claude runtime UUID. It creates a Desktop node with no tmux
+target, keys repeat adoption by runtime UUID, and never derives a summary or
+closes a quiet session.
 
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
 and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's

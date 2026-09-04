@@ -17,7 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 AGENT_MESH_ROOT="${AGENT_MESH_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
 BRIDGE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-AGENTS_DIR="$BRIDGE_DIR/agents"
+AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$BRIDGE_DIR/agents}"
 MODELS_BIN="$SCRIPT_DIR/mesh-models.sh"
 TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 
