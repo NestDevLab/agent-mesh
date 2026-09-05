@@ -41,5 +41,14 @@
   "syncwheel_worktree_root": "var/syncwheel",
   "syncwheel_tracking": "git-tracked",
   "repository_mode": "delivery",
-  "channels": []
+  "channels": [],
+  "authority": {
+    "mode": "ai-managed",
+    "allow": [
+      "source_change"
+    ],
+    "deny": [
+      "destructive_rewrite"
+    ]
+  }
 }
