@@ -205,6 +205,24 @@ Ref updates are idempotent and select exactly one node by graph ID or runtime
 UUID. Multiple nodes may carry the same opaque ref. The graph reports those
 explicit associations; it never resolves refs, selects an owner, or grants work.
 
+### Sweep every persisted session into the graph
+
+`discover` is the only automatic way to populate the graph; without it only
+bridge-started and hand-adopted sessions are visible. It reads persisted
+transcripts, registers what is missing, and never attaches, resumes, or writes
+to a session.
+
+```bash
+MESH_DOMAIN_ROOTS_FILE=/path/to/domain-roots.json \
+  $BIN/mesh-graph.mjs discover --agent codex --quiet-after 3600 --json
+```
+
+Discovered sessions are `unclassified`: the sweep never guesses a class, and
+never overwrites a class, summary, or `closed` status a human already set.
+Domains come only from `MESH_DOMAIN_ROOTS_FILE`; without it they stay empty.
+Silence past `--quiet-after` reads as `quiet`, which is observation, not
+closure. Rerunning is a no-op when nothing on disk moved.
+
 ### Connect two sessions
 
 Only after the user approves the endpoints and direction, attach each writable

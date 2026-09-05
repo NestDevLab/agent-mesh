@@ -214,7 +214,7 @@ function adoptNode(statePath, options) {
   });
 }
 
-function inspectTranscript(agent, runtimeUuid) {
+function watcherPath() {
   const localWatcher = join(dirname(new URL(import.meta.url).pathname), "agent-watch.py");
   const watcher = existsSync(localWatcher)
     ? localWatcher
@@ -222,9 +222,16 @@ function inspectTranscript(agent, runtimeUuid) {
       ? join(process.env.AGENT_MESH_ROOT, "packages", "tmux-bridge", "bin", "agent-watch.py")
       : localWatcher;
   if (!existsSync(watcher)) throw new Error("transcript inspection requires agent-watch.py beside mesh-graph or under AGENT_MESH_ROOT");
-  const result = spawnSync(process.env.PYTHON || "python3", [
-    watcher, runtimeUuid, "--agent", agent, "--inspect", "--format", "jsonl",
-  ], { encoding: "utf8", env: process.env });
+  return watcher;
+}
+
+function runWatcher(args) {
+  // A discover sweep returns every persisted transcript at once, way past the 1 MB spawnSync default.
+  return spawnSync(process.env.PYTHON || "python3", args, { encoding: "utf8", env: process.env, maxBuffer: 256 * 1024 * 1024 });
+}
+
+function inspectTranscript(agent, runtimeUuid) {
+  const result = runWatcher([watcherPath(), runtimeUuid, "--agent", agent, "--inspect", "--format", "jsonl"]);
   if (result.error) throw new Error(`could not inspect transcript: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`transcript inspection failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
   let facts;
@@ -241,9 +248,8 @@ function inspectTranscript(agent, runtimeUuid) {
 }
 
 function inspectTranscripts(agent) {
-  const localWatcher = join(dirname(new URL(import.meta.url).pathname), "agent-watch.py");
-  const watcher = existsSync(localWatcher) ? localWatcher : join(process.env.AGENT_MESH_ROOT || "", "packages", "tmux-bridge", "bin", "agent-watch.py");
-  const result = spawnSync(process.env.PYTHON || "python3", [watcher, "--agent", agent, "--discover", "--format", "jsonl"], { encoding: "utf8", env: process.env });
+  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--format", "jsonl"]);
+  if (result.error) throw new Error(`could not discover transcripts: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`transcript discovery failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
   let facts;
   try { facts = JSON.parse(result.stdout); } catch { throw new Error("transcript discovery returned invalid JSON"); }
@@ -261,10 +267,13 @@ function discoverNodes(statePath, options) {
       const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: now() };
-      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: existing?.class || "unclassified", updatedAt: now() });
+      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: existing?.class || "unclassified" });
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!existing || ["active", "quiet"].includes(existing.status)) node.status = observedStatus;
-      if (!existing || JSON.stringify(node) !== JSON.stringify(existing)) events.push(event("node.upserted", { node }));
+      if (!existing || JSON.stringify(node) !== JSON.stringify(existing)) {
+        node.updatedAt = now();
+        events.push(event("node.upserted", { node }));
+      }
       nodes.push(node);
     }
     return { graph, events, result: { nodes, changed: events.length > 0 } };

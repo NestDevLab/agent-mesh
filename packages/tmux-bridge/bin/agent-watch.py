@@ -31,6 +31,8 @@ ROOT_ENV = {
 }
 MAX_BODY = 1400
 MAX_REASONING = 300
+# Codex mints v7 UUIDs, Claude v4. Don't pin the version nibble.
+SESSION_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 
 
 def session_root(agent: str) -> Path:
@@ -96,10 +98,10 @@ def discover_transcripts(agent: str) -> list[dict[str, Any]]:
         return []
     sessions: dict[str, Path] = {}
     for candidate in root.glob("**/*.jsonl"):
-        match = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})", candidate.name, re.I)
+        match = re.search(SESSION_UUID, candidate.name, re.I)
         if not match or not candidate.is_file():
             continue
-        session_id = match.group(1).lower()
+        session_id = match.group(0).lower()
         previous = sessions.get(session_id)
         if previous is None or candidate.stat().st_mtime_ns > previous.stat().st_mtime_ns:
             sessions[session_id] = candidate
@@ -466,16 +468,16 @@ def main() -> int:
     mode.add_argument("--discover", action="store_true", help="read facts for every transcript without cursors")
     args = parser.parse_args()
 
-    if not valid_session_id(args.session_id):
+    if not args.discover and not args.session_id:
+        parser.error("session_id is required unless --discover is used")
+    if args.discover and args.session_id:
+        parser.error("session_id cannot be combined with --discover")
+    if args.session_id is not None and not valid_session_id(args.session_id):
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
         parser.error("--interval must be greater than zero")
     if not args.inspect and not args.discover and args.state is None:
         parser.error("--state is required unless --inspect or --discover is used")
-    if not args.discover and not args.session_id:
-        parser.error("session_id is required unless --discover is used")
-    if args.discover and args.session_id:
-        parser.error("session_id cannot be combined with --discover")
     if args.inbox is not None and args.agent != "claude":
         parser.error("--inbox is supported only for Claude Monitor notifications")
     if args.inbox is not None and not args.inbox.is_file():
