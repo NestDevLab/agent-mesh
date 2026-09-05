@@ -73,3 +73,50 @@ test("native Codex queue distinguishes empty, uncorrelated, and parsing failures
   const parsing = await invoke("parsing");
   assert.equal(parsing.code, 67, parsing.stderr);
 });
+
+test("native Claude Desktop call returns a structured non-delivery blocker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-native-claude-blocker-"));
+  const procRoot = join(root, "proc");
+  const pid = 8442;
+  await mkdir(join(procRoot, String(pid)), { recursive: true });
+  await writeFile(
+    join(procRoot, String(pid), "cmdline"),
+    `/tmp/.claude/remote/ccd-cli/2.1.255\0--output-format\0stream-json\0`,
+  );
+  const claude = join(root, "fake-claude.mjs");
+  await writeFile(claude, `#!/usr/bin/env node
+import { appendFile } from "node:fs/promises";
+await appendFile(process.env.CLAUDE_CALL_LOG, process.argv.slice(2).join(" ") + "\\n");
+console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${sessionId}" }]));
+`);
+  await chmod(claude, 0o755);
+  const log = join(root, "calls.log");
+  await writeFile(log, "");
+
+  let result;
+  try {
+    await exec(process.execPath, [nativeCall,
+      "--agent", "claude", "--session", sessionId,
+      "--correlation-id", "task-claude-test", "--message", "Visible request",
+    ], { env: {
+      ...process.env,
+      CLAUDE_BIN: claude,
+      CLAUDE_CALL_LOG: log,
+      AGENT_WRITER_PROC_ROOT: procRoot,
+    } });
+    assert.fail("Claude Desktop relay unexpectedly reported delivery");
+  } catch (error) {
+    result = { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
+  }
+  assert.equal(result.code, 78, result.stderr);
+  const blocker = JSON.parse(result.stdout);
+  assert.equal(blocker.schemaVersion, 1);
+  assert.equal(blocker.status, "blocked");
+  assert.equal(blocker.reason, "claude_active_user_turn_unsupported");
+  assert.equal(blocker.delivery.attempted, false);
+  assert.equal(blocker.delivery.visibleUserTurn, false);
+  assert.deepEqual(blocker.ownership.writers, [
+    { pid, kind: "claude-desktop", source: "claude-agents" },
+  ]);
+  assert.equal(await (await import("node:fs/promises")).readFile(log, "utf8"), "agents --json\n");
+});

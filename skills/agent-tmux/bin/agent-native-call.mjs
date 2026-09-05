@@ -7,6 +7,7 @@ import { open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
+import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -21,7 +22,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>]");
   process.exit(0);
 }
 
@@ -30,13 +31,17 @@ const sessionId = required(values.session, "--session");
 const correlationId = required(values["correlation-id"], "--correlation-id");
 const message = required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
-if (agent !== "codex") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
+if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
   fail("--session must be a complete UUID", 2);
 }
 if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) {
   fail("--timeout must be an integer from 1 to 600", 2);
+}
+
+if (agent === "claude") {
+  blockClaudeVisibleTurn(sessionId, correlationId);
 }
 
 const transcript = await resolveTranscript(sessionId);
@@ -198,4 +203,37 @@ function sleep(ms) {
 function fail(message, code) {
   process.stderr.write(`agent-native-call: ${message}\n`);
   process.exit(code);
+}
+
+function blockClaudeVisibleTurn(id, correlation) {
+  const ownership = inspectClaudeSessionOwnership(id);
+  const desktopOwned = ownership.writers.some((writer) => writer.kind === "claude-desktop");
+  const reason = ownership.state === "unknown"
+    ? "claude_ownership_unknown"
+    : desktopOwned
+      ? "claude_active_user_turn_unsupported"
+      : ownership.state === "owned"
+        ? "claude_active_user_turn_unsupported"
+        : "claude_session_not_active";
+  const blocker = {
+    schemaVersion: 1,
+    adapter: "claude-active-session",
+    status: "blocked",
+    reason,
+    agent: "claude",
+    sessionId: id,
+    correlationId: correlation,
+    ownership,
+    delivery: { attempted: false, visibleUserTurn: false, readBack: false },
+    supportedInterfaces: {
+      ownership: "claude agents --json",
+      visibleUserTurn: null,
+      excluded: [
+        "claude --resume may copy an already-running session",
+        "SendMessage is an agent message rather than a user turn",
+      ],
+    },
+  };
+  process.stdout.write(`${JSON.stringify(blocker)}\n`);
+  process.exit(78);
 }

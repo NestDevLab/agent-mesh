@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, symlink, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -90,6 +90,118 @@ test("Claude session discovery uses the same provider-neutral JSON contract", as
   assert.equal(payload.agent_type, "claude");
   assert.equal(payload.sessions[0].session_id, id);
   assert.match(payload.sessions[0].cwd, /workspace\/claude$/);
+});
+
+test("Claude writer status resolves a Desktop owner from the supported agents inventory", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mesh-claude-writer-inventory-"));
+  const procRoot = join(home, "proc");
+  const id = "77777777-7777-4777-8777-777777777777";
+  const pid = 7331;
+  await mkdir(join(procRoot, String(pid)), { recursive: true });
+  await writeFile(
+    join(procRoot, String(pid), "cmdline"),
+    `/tmp/.claude/remote/ccd-cli/2.1.255\0--output-format\0stream-json\0`,
+  );
+  const claude = join(home, "claude");
+  await writeFile(claude, `#!/bin/sh
+printf '[{"pid":${pid},"kind":"interactive","sessionId":"${id}","name":"Desktop session"}]\\n'
+`);
+  await chmod(claude, 0o755);
+
+  const status = await run(home, ["--agent", "claude", "writer-status", id, "--json"], {
+    AGENT_WRITER_PROC_ROOT: procRoot,
+    CLAUDE_BIN: claude,
+  });
+  assert.equal(status.code, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout), {
+    agent: "claude",
+    sessionId: id,
+    state: "owned",
+    writers: [{ pid, kind: "claude-desktop", source: "claude-agents" }],
+    discovery: { complete: true, source: "claude-agents" },
+  });
+});
+
+test("Claude resume refuses an inventory-owned Desktop session before creating tmux state", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mesh-claude-resume-owner-"));
+  const procRoot = join(home, "proc");
+  const agentsDir = join(home, "agents");
+  const binDir = join(home, "bin");
+  const id = "88888888-8888-4888-8888-888888888888";
+  const pid = 8441;
+  await mkdir(join(procRoot, String(pid)), { recursive: true });
+  await mkdir(agentsDir, { recursive: true });
+  await mkdir(binDir, { recursive: true });
+  await writeFile(
+    join(procRoot, String(pid), "cmdline"),
+    `/tmp/.claude/remote/ccd-cli/2.1.255\0--output-format\0stream-json\0`,
+  );
+  const claude = join(binDir, "claude");
+  await writeFile(claude, `#!/bin/sh
+printf '[{"pid":${pid},"kind":"interactive","sessionId":"${id}"}]\\n'
+`);
+  await chmod(claude, 0o755);
+  const tmuxLog = join(home, "tmux.log");
+  const tmux = join(binDir, "tmux");
+  await writeFile(tmux, `#!/bin/sh
+printf '%s\\n' "$*" >> "$TMUX_LOG"
+case "$*" in *has-session*) exit 1;; esac
+exit 0
+`);
+  await chmod(tmux, 0o755);
+  await writeFile(join(agentsDir, "claude.conf"), `
+AGENT_PROMPT_CHAR="❯"
+AGENT_WORKING_PATTERN="working"
+AGENT_IDLE_PATTERN="idle"
+AGENT_RESUME_CMD="claude --resume {SESSION_ID}"
+AGENT_NEW_CMD="claude"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_SESSION_DIR="${home}/sessions"
+AGENT_SESSION_CWD_EXTRACTOR='printf cwd'
+AGENT_REQUIRE_FREE_SESSION_WRITER="true"
+AGENT_SUPPORTS_MODEL="false"
+AGENT_MODEL_ARGS=()
+AGENT_SUPPORTS_EFFORT="false"
+AGENT_EFFORT_ARGS=()
+`);
+  await writeFile(tmuxLog, "");
+
+  const resumed = await run(home, ["--agent", "claude", "resume", id, "owned-desktop"], {
+    AGENT_MESH_AGENTS_DIR: agentsDir,
+    AGENT_WRITER_PROC_ROOT: procRoot,
+    CLAUDE_BIN: claude,
+    PATH: `${binDir}:${process.env.PATH}`,
+    TMUX_LOG: tmuxLog,
+    MESH_TMUX_SOCKET: "mesh-owned-test",
+  });
+  assert.equal(resumed.code, 4, resumed.stderr);
+  assert.match(resumed.stderr, /already has writer/);
+  assert.doesNotMatch(await readFile(tmuxLog, "utf8"), /new-session/);
+});
+
+test("Claude writer status reports unknown instead of free when inventory fails", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mesh-claude-writer-unknown-"));
+  const procRoot = join(home, "proc");
+  await mkdir(procRoot, { recursive: true });
+  const claude = join(home, "claude");
+  await writeFile(claude, "#!/bin/sh\nexit 1\n");
+  await chmod(claude, 0o755);
+
+  const status = await run(home, [
+    "--agent", "claude", "writer-status", "99999999-9999-4999-8999-999999999999", "--json",
+  ], { AGENT_WRITER_PROC_ROOT: procRoot, CLAUDE_BIN: claude });
+  assert.equal(status.code, 5, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout), {
+    agent: "claude",
+    sessionId: "99999999-9999-4999-8999-999999999999",
+    state: "unknown",
+    writers: [],
+    discovery: {
+      complete: false,
+      source: "claude-agents",
+      issues: ["claude_agents_unavailable"],
+    },
+  });
 });
 
 test("session discovery returns an empty page when the provider store does not exist", async () => {

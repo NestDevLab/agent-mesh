@@ -37,8 +37,8 @@ trap cleanup EXIT INT TERM
 
 cat > "$TMUX_WRAPPER" <<'TMUX'
 #!/bin/sh
-if [ "$#" -ge 7 ] && [ "$3" = send-keys ] && [ "$6" = "" ] && [ "$7" = Enter ]; then
-    printf '%s\n' "$5" >> "${FAKE_TMUX_TRUST_LOG:?}"
+if [ "$#" -ge 6 ] && [ "$3" = send-keys ]; then
+    printf '%s\t%s\t%s\n' "$5" "$6" "${7:-}" >> "${FAKE_TMUX_TRUST_LOG:?}"
 fi
 exec "${FAKE_TMUX_REAL:?}" "$@"
 TMUX
@@ -123,6 +123,26 @@ if [[ -f "$trust_request" ]]; then
             printf '> 2. No, exit\n'
             printf '  1. Yes, continue\n'
             ;;
+        claude-current)
+            printf 'Quick safety check: Is this a project you created or one you trust?\n'
+            printf '❯ No, exit\n'
+            printf '  Yes, I trust this folder\n'
+            printf 'Enter to confirm · Esc to cancel\n'
+            IFS= read -rsn3 _navigation
+            printf '\033[2J\033[H'
+            printf 'Quick safety check: Is this a project you created or one you trust?\n'
+            printf '  No, exit\n'
+            printf '❯ Yes, I trust this folder\n'
+            printf 'Enter to confirm · Esc to cancel\n'
+            IFS= read -r _confirmation
+            printf '\033[2J\033[H'
+            ;;
+        claude-unknown)
+            printf 'Is this a project you trust?\n'
+            printf '❯ No, leave\n'
+            printf '  Trust this workspace\n'
+            printf 'Enter to confirm · Esc to cancel\n'
+            ;;
         *)
             printf 'Do you trust the contents of this directory?\n'
             printf '> 1. Yes, continue\n'
@@ -146,6 +166,7 @@ AGENT_RESUME_CMD="$FAKE_CLI --resume {SESSION_ID}"
 AGENT_NEW_CMD="$FAKE_CLI --new"
 AGENT_HAS_CWD_PICKER="false"
 AGENT_PICKER_PATTERN=""
+AGENT_TRUST_DIALOG_KIND="codex"
 AGENT_SESSION_DIR="$WORKDIR"
 AGENT_SESSION_CWD_EXTRACTOR='printf "%s\\n" "\$PWD"'
 AGENT_SUPPORTS_MODEL="true"
@@ -226,6 +247,17 @@ first_class_target="launch-options-first-class-$$"
 TARGETS+=("$first_class_target")
 assert_argv "--new --model model-one --effort high "
 
+# Claude Remote Control is an explicit passthrough option. Both supported spellings
+# must remain one argv element, after the bridge's configured launch options.
+for remote_flag in --remote-control --rc; do
+    : > "$LOG_FILE"
+    remote_target="launch-options-claude-remote-${remote_flag#--}-$$"
+    "$SESSION_BIN" --agent "launch-options-supported-$$" \
+        new "$WORKDIR" "$remote_target" -- "$remote_flag" >/dev/null
+    TARGETS+=("$remote_target")
+    assert_argv "--new --model default-model --effort medium $remote_flag "
+done
+
 # Codex's current cwd trust dialog must confirm only a visible default first
 # option. Marker-absent and option-two dialogs remain unanswered.
 trust_request="$WORKDIR/trust-request"
@@ -238,16 +270,63 @@ run_trust_case() {
         new "$WORKDIR" "$target" >/dev/null
     TARGETS+=("$target")
     if [[ "$mode" == "default-first" ]]; then
-        grep -Fxq "$target" "$TRUST_SEND_LOG" \
+        grep -Fqx "$target"$'\t\t'"Enter" "$TRUST_SEND_LOG" \
             || { echo "FAIL: Codex default first trust option was not confirmed" >&2; exit 1; }
     else
-        ! grep -Fxq "$target" "$TRUST_SEND_LOG" \
+        ! grep -Fqx "$target"$'\t\t'"Enter" "$TRUST_SEND_LOG" \
             || { echo "FAIL: Codex trust dialog '$mode' was auto-confirmed" >&2; exit 1; }
     fi
 }
 run_trust_case marker-absent
 run_trust_case option-two
 run_trust_case default-first
+
+# Claude 2.1.252+ starts on "No, exit". The bridge must move to the exact
+# trust label, re-read the dialog, and only then confirm. Unknown layouts fail
+# without returning a usable target.
+sed 's/AGENT_TRUST_DIALOG_KIND="codex"/AGENT_TRUST_DIALOG_KIND="claude"/' \
+    "$SUPPORTED_CONF" > "$UNSUPPORTED_CONF"
+printf '%s\n' claude-current > "$trust_request"
+: > "$TRUST_SEND_LOG"
+claude_target="launch-options-claude-trust-current-$$"
+"$SESSION_BIN" --agent "launch-options-unsupported-$$" \
+    new "$WORKDIR" "$claude_target" >/dev/null
+TARGETS+=("$claude_target")
+grep -Fqx "$claude_target"$'\t'"Down"$'\t' "$TRUST_SEND_LOG" \
+    || { echo "FAIL: Claude trust handler did not select the trust option" >&2; exit 1; }
+grep -Fqx "$claude_target"$'\t\t'"Enter" "$TRUST_SEND_LOG" \
+    || { echo "FAIL: Claude trust handler did not confirm the selected trust option" >&2; exit 1; }
+
+printf '%s\n' claude-unknown > "$trust_request"
+: > "$TRUST_SEND_LOG"
+unknown_target="launch-options-claude-trust-unknown-$$"
+if "$SESSION_BIN" --agent "launch-options-unsupported-$$" \
+    new "$WORKDIR" "$unknown_target" >"$WORKDIR/unknown-out" 2>"$WORKDIR/unknown-error"; then
+    echo "FAIL: unknown Claude trust layout returned a usable target" >&2
+    exit 1
+fi
+! grep -Fq "$unknown_target"$'\t\t'"Enter" "$TRUST_SEND_LOG" \
+    || { echo "FAIL: unknown Claude trust layout was blindly confirmed" >&2; exit 1; }
+grep -q "unrecognized Claude trust dialog" "$WORKDIR/unknown-error" \
+    || { echo "FAIL: unknown Claude trust layout lacked a precise error" >&2; exit 1; }
+
+# Restore the unsupported-effort fixture used below.
+cat > "$UNSUPPORTED_CONF" <<CONF
+AGENT_BIN="$FAKE_CLI"
+AGENT_PROMPT_CHAR="❯"
+AGENT_WORKING_PATTERN="__never_working__"
+AGENT_IDLE_PATTERN="❯"
+AGENT_RESUME_CMD="$FAKE_CLI --resume {SESSION_ID}"
+AGENT_NEW_CMD="$FAKE_CLI --new"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_SESSION_DIR="$WORKDIR"
+AGENT_SESSION_CWD_EXTRACTOR='printf "%s\\n" "\$PWD"'
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_SUPPORTS_EFFORT="false"
+AGENT_EFFORT_ARGS=()
+CONF
 
 if "$SESSION_BIN" --agent "launch-options-unsupported-$$" --effort high \
     new "$WORKDIR" launch-options-unsupported-$$ >/dev/null 2>"$WORKDIR/error"; then

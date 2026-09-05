@@ -4,6 +4,7 @@
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 
 const procRoot = process.env.AGENT_WRITER_PROC_ROOT || "/proc";
 
@@ -36,20 +37,28 @@ const sessionId = required(values.session, "--session");
 if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) fail("--session contains unsafe characters", 2);
 if (agent !== "codex" && agent !== "claude") fail(`writer discovery is not implemented for agent ${agent}`, 2);
 
-const writers = agent === "codex" ? detectCodexWriters(sessionId) : detectClaudeWriters(sessionId);
-const result = { agent, sessionId, writers };
+const claudeOwnership = agent === "claude" ? inspectClaudeSessionOwnership(sessionId, { procRoot }) : undefined;
+const writers = agent === "codex" ? detectCodexWriters(sessionId) : claudeOwnership.writers;
+const result = agent === "claude"
+  ? { agent, sessionId, state: claudeOwnership.state, writers, discovery: claudeOwnership.discovery }
+  : { agent, sessionId, writers };
 
 if (values.json) console.log(JSON.stringify(result));
 else for (const writer of writers) console.log(`${writer.kind}\t${writer.pid}`);
 
-if (values["require-free"] && writers.length > 0) {
-  fail(`session ${sessionId} already has writer(s): ${summarize(writers)}`, 4);
+if (values["require-free"] && claudeOwnership?.state !== "free") {
+  fail(
+    claudeOwnership?.state === "unknown"
+      ? `session ${sessionId} ownership is unknown; refusing resume because Claude inventory is incomplete`
+      : `session ${sessionId} already has writer(s): ${summarize(writers)}`,
+    claudeOwnership?.state === "unknown" ? 5 : 4,
+  );
 }
 
 if (values["require-kind"]) {
   const kind = values["require-kind"];
   const matching = writers.filter((writer) => writer.kind === kind);
-  if (matching.length !== 1 || writers.length !== 1) {
+  if (!claudeOwnership?.discovery.complete || matching.length !== 1 || writers.length !== 1) {
     fail(
       `session ${sessionId} must have exactly one ${kind} writer; found ${summarize(writers)}`,
       4,
@@ -60,6 +69,13 @@ if (values["require-kind"]) {
 if (values["forbid-kind"] && writers.some((writer) => writer.kind === values["forbid-kind"])) {
   fail(`session ${sessionId} already has forbidden writer ${values["forbid-kind"]}`, 4);
 }
+if (values["forbid-kind"] && agent === "claude" && !claudeOwnership.discovery.complete) {
+  fail(`session ${sessionId} ownership is incomplete; cannot exclude ${values["forbid-kind"]}`, 5);
+}
+
+if (agent === "claude" && claudeOwnership.state === "unknown" && !values["require-free"] && !values["require-kind"]) {
+  fail(`session ${sessionId} ownership is unknown; Claude inventory is incomplete`, 5);
+}
 
 if (values["require-monitor-inbox"]) {
   const inbox = resolve(values["require-monitor-inbox"]);
@@ -67,29 +83,6 @@ if (values["require-monitor-inbox"]) {
   if (watchers.length !== 1) {
     fail(`inbox ${inbox} must have exactly one event-driven Monitor watcher; found ${watchers.length}`, 4);
   }
-}
-
-function detectClaudeWriters(id) {
-  if (!existsSync(procRoot)) return [];
-  const writers = [];
-  for (const entry of readdirSync(procRoot, { withFileTypes: true })) {
-    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    let argv;
-    try {
-      argv = readFileSync(`${procRoot}/${entry.name}/cmdline`, "utf8").split("\0").filter(Boolean);
-    } catch {
-      continue;
-    }
-    if (!argv.length || !resumesSession(argv, id)) continue;
-    const executable = argv[0];
-    const command = basename(executable);
-    if (executable.includes("/.claude/remote/ccd-cli/")) {
-      writers.push({ pid: Number(entry.name), kind: "claude-desktop" });
-    } else if (command === "claude") {
-      writers.push({ pid: Number(entry.name), kind: "claude-cli" });
-    }
-  }
-  return writers.sort((left, right) => left.pid - right.pid);
 }
 
 function detectCodexWriters(id) {
@@ -125,13 +118,6 @@ function detectCodexWriters(id) {
     if (ownsLock) writers.push({ pid: Number(entry.name), kind: "codex" });
   }
   return writers.sort((left, right) => left.pid - right.pid);
-}
-
-function resumesSession(argv, id) {
-  return argv.some((value, index) => (
-    value === `--resume=${id}`
-    || ((value === "--resume" || value === "-r") && argv[index + 1] === id)
-  ));
 }
 
 function detectMonitorInboxWatchers(inbox) {
