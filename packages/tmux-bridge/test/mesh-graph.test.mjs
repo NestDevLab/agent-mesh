@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -281,5 +281,161 @@ test("mesh-graph purge removes only named fixture nodes from its derived project
     assert.match(await readFile(join(state, "events.jsonl"), "utf8"), /node\.purged/);
   } finally {
     await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("mesh-graph discover registers persisted sessions as unclassified without resuming them", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-discover-"));
+  const transcripts = await mkdtemp(join(tmpdir(), "mesh-graph-discover-transcripts-"));
+  // Real Codex Desktop session ids. They're v7 UUIDs, and a v1-5 filter drops every one of them.
+  const liveId = "01a07126-3582-7a22-87e1-a88411e4d00f";
+  const staleId = "01a072b9-dc29-77f1-bc8b-7d525c8b7b52";
+  try {
+    const directory = join(transcripts, "2026", "09", "05");
+    await mkdir(directory, { recursive: true });
+    const rollout = (sessionId, cwd, objective) => [
+      JSON.stringify({ type: "session_meta", payload: { id: sessionId, cwd, originator: "Codex Desktop" } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: objective }] } }),
+      JSON.stringify({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "Working." }] } }),
+    ].join("\n") + "\n";
+    const liveFile = join(directory, `rollout-2026-09-05T10-38-44-${liveId}.jsonl`);
+    const staleFile = join(directory, `rollout-2026-09-05T17-59-38-${staleId}.jsonl`);
+    await writeFile(liveFile, rollout(liveId, "/workspace/fleet", "Blocking the fleet"));
+    await writeFile(staleFile, rollout(staleId, "/workspace/elsewhere", "Older objective"));
+    const old = new Date(Date.now() - 7_200_000);
+    await utimes(staleFile, old, old);
+
+    const domainRoots = join(transcripts, "domains.json");
+    await writeFile(domainRoots, JSON.stringify({ domains: [{ domain: "fleet", root: "/workspace/fleet" }] }));
+    const bare = { CODEX_SESSION_ROOT: transcripts, MESH_DOMAIN_ROOTS_FILE: "" };
+    const withDomains = { ...bare, MESH_DOMAIN_ROOTS_FILE: domainRoots };
+
+    const first = await run(state, ["discover", "--agent", "codex", "--quiet-after", "3600", "--json"], bare);
+    assert.equal(first.code, 0, first.stderr);
+    const discovered = JSON.parse(first.stdout);
+    assert.equal(discovered.changed, true);
+    assert.equal(discovered.nodes.length, 2);
+    const live = discovered.nodes.find((node) => node.runtimeUuid === liveId);
+    const stale = discovered.nodes.find((node) => node.runtimeUuid === staleId);
+    assert.ok(live, "version 7 session id was not discovered");
+    assert.equal(live.class, "unclassified");
+    assert.equal(live.summary, "");
+    assert.equal(live.tmuxTarget, "");
+    assert.equal(live.cwd, "/workspace/fleet");
+    assert.equal(live.title, "Blocking the fleet");
+    assert.equal(live.status, "active");
+    assert.deepEqual(live.domains, []);
+    assert.equal(stale.status, "quiet");
+
+    const repeated = await run(state, ["discover", "--agent", "codex", "--quiet-after", "3600", "--json"], bare);
+    assert.equal(repeated.code, 0, repeated.stderr);
+    assert.equal(JSON.parse(repeated.stdout).changed, false);
+    assert.equal(JSON.parse(repeated.stdout).nodes.length, 2);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, 2);
+
+    const labelled = await run(state, ["summary", "--id", live.id, "--summary", "human owned label", "--json"], bare);
+    assert.equal(labelled.code, 0, labelled.stderr);
+    const claimed = await run(state, ["claim", "--id", live.id, "--role", "orchestrator", "--domain", "fleet", "--json"], bare);
+    assert.equal(claimed.code, 0, claimed.stderr);
+    const closed = await run(state, ["close", "--id", stale.id, "--json"], bare);
+    assert.equal(closed.code, 0, closed.stderr);
+
+    const third = await run(state, ["discover", "--agent", "codex", "--quiet-after", "3600", "--json"], withDomains);
+    assert.equal(third.code, 0, third.stderr);
+    const kept = JSON.parse(third.stdout).nodes.find((node) => node.runtimeUuid === liveId);
+    assert.equal(kept.id, live.id);
+    assert.equal(kept.summary, "human owned label");
+    assert.equal(kept.class, "orchestrator");
+    assert.deepEqual(kept.primaryDomains, ["fleet"]);
+    assert.deepEqual(kept.domains, ["fleet"]);
+    const stayedClosed = JSON.parse(third.stdout).nodes.find((node) => node.runtimeUuid === staleId);
+    assert.equal(stayedClosed.status, "closed");
+
+    const graph = JSON.parse((await run(state, ["show", "--json"], bare)).stdout);
+    assert.equal(graph.nodes.length, 2);
+    assert.equal(new Set(graph.nodes.map((node) => node.runtimeUuid)).size, 2);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+    await rm(transcripts, { recursive: true, force: true });
+  }
+});
+
+test("mesh-graph discover reports an empty sweep instead of failing on an unknown session root", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-discover-empty-"));
+  try {
+    const swept = await run(state, ["discover", "--agent", "claude", "--json"], {
+      CLAUDE_SESSION_ROOT: join(tmpdir(), `mesh-graph-absent-${process.pid}-${Date.now()}`),
+      MESH_DOMAIN_ROOTS_FILE: "",
+    });
+    assert.equal(swept.code, 0, swept.stderr);
+    assert.deepEqual(JSON.parse(swept.stdout), { nodes: [], changed: false });
+    await assert.rejects(access(join(state, "events.jsonl")));
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("mesh-graph sweep registers live tmux targets and quiets missing targets with worktree evidence", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-sweep-"));
+  const fixtures = await mkdtemp(join(tmpdir(), "mesh-graph-sweep-fixtures-"));
+  const clean = join(fixtures, "clean");
+  const dirty = join(fixtures, "dirty");
+  const liveCwd = join(fixtures, "live");
+  const fakeTmux = join(fixtures, "tmux-fixture.mjs");
+  try {
+    await Promise.all([mkdir(clean), mkdir(dirty), mkdir(liveCwd)]);
+    await exec("git", ["init", "--quiet", clean]);
+    await exec("git", ["init", "--quiet", dirty]);
+    await writeFile(join(dirty, "uncommitted.txt"), "risk\n");
+    await writeFile(fakeTmux, `#!/usr/bin/env node\nif (process.env.FAKE_TMUX_FAIL) { process.stderr.write("fixture failure\\n"); process.exit(3); }\nprocess.stdout.write(process.env.FAKE_TMUX_OUTPUT || "");\n`);
+    await chmod(fakeTmux, 0o755);
+
+    for (const [target, cwd] of [["dead-dirty", dirty], ["dead-clean", clean], ["dead-unknown", join(fixtures, "absent")], ["closed-target", clean]]) {
+      const added = await run(state, ["add", "--agent", "codex", "--tmux-target", target, "--cwd", cwd, "--json"]);
+      assert.equal(added.code, 0, added.stderr);
+      if (target === "closed-target") {
+        const closed = await run(state, ["close", "--id", JSON.parse(added.stdout).node.id, "--json"]);
+        assert.equal(closed.code, 0, closed.stderr);
+      }
+    }
+
+    const environment = {
+      MESH_TMUX_BIN: fakeTmux,
+      FAKE_TMUX_OUTPUT: `live-target::MESH::0::MESH::codex::MESH::${liveCwd}\n`,
+      CODEX_SESSION_ROOT: join(fixtures, "absent-codex"),
+      CLAUDE_SESSION_ROOT: join(fixtures, "absent-claude"),
+      MESH_DOMAIN_ROOTS_FILE: "",
+    };
+    const swept = await run(state, ["sweep", "--json"], environment);
+    assert.equal(swept.code, 0, swept.stderr);
+    const result = JSON.parse(swept.stdout);
+    assert.deepEqual(result.liveTargets, ["live-target"]);
+    const byTarget = new Map(result.nodes.map((node) => [node.tmuxTarget, node]));
+    assert.equal(byTarget.get("live-target").status, "active");
+    assert.equal(byTarget.get("live-target").tmuxObservation.state, "live");
+    assert.equal(byTarget.get("dead-dirty").status, "quiet");
+    assert.equal(byTarget.get("dead-dirty").tmuxObservation.worktreeState, "dirty");
+    assert.equal(byTarget.get("dead-clean").tmuxObservation.worktreeState, "clean");
+    assert.equal(byTarget.get("dead-unknown").tmuxObservation.worktreeState, "unknown");
+    assert.equal(byTarget.get("closed-target").status, "closed");
+    assert.equal(result.nodes.some((node) => node.status === "closed" && node.tmuxTarget !== "closed-target"), false);
+
+    const returned = await run(state, ["sweep", "--json"], {
+      ...environment,
+      FAKE_TMUX_OUTPUT: `dead-dirty::MESH::0::MESH::codex::MESH::${dirty}\nlive-target::MESH::0::MESH::codex::MESH::${liveCwd}\n`,
+    });
+    assert.equal(returned.code, 0, returned.stderr);
+    const returnedDirty = JSON.parse(returned.stdout).nodes.find((node) => node.tmuxTarget === "dead-dirty");
+    assert.equal(returnedDirty.status, "active");
+    assert.equal(returnedDirty.tmuxObservation.state, "live");
+
+    const eventCount = (await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length;
+    const failed = await run(state, ["sweep", "--json"], { ...environment, FAKE_TMUX_FAIL: "1" });
+    assert.equal(failed.code, 2);
+    assert.match(failed.stderr, /tmux inspection failed/);
+    assert.equal((await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length, eventCount);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+    await rm(fixtures, { recursive: true, force: true });
   }
 });

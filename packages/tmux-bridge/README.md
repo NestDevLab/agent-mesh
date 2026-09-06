@@ -137,6 +137,7 @@ $BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
 $BIN/mesh-graph.mjs summary --id <NODE_ID> --summary "reviewing graph delivery"
 $BIN/mesh-graph.mjs ref add --id <NODE_ID> --ref agentwheel-resource:<DIGEST>
 $BIN/mesh-graph.mjs ref remove --runtime-uuid <SESSION_UUID> --ref agentwheel-resource:<DIGEST>
+$BIN/mesh-graph.mjs sweep --quiet-after 3600 --json
 $BIN/mesh-graph.mjs show --tree
 
 `agent-session.sh ... new` registers the new target automatically. `mesh-send.sh --from`
@@ -198,6 +199,12 @@ not dispatch, resume, or wake an agent by itself.
 explicit Codex or Claude runtime UUID. It creates a Desktop node with no tmux
 target, keys repeat adoption by runtime UUID, and never derives a summary or
 closes a quiet session.
+
+`mesh-graph.mjs sweep` combines transcript discovery with one successful live
+tmux inventory. It registers live Codex and Claude targets and changes missing
+targets to `quiet`, never `closed`. Each missing-target observation includes a
+`dirty`, `clean`, or `unknown` Git worktree result for the recorded cwd. A tmux
+inspection failure aborts the sweep before the event log changes.
 
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
 and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's
