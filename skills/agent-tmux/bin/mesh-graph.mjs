@@ -12,7 +12,9 @@ import {
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync,
   rmSync,
   statSync,
@@ -91,6 +93,9 @@ try {
       break;
     case "discover":
       printResult(discoverNodes(stateDir, values), values);
+      break;
+    case "sweep":
+      printResult(sweepNodes(stateDir, values), values);
       break;
     case "claim":
       printResult(claimDomain(stateDir, values), values);
@@ -278,6 +283,145 @@ function discoverNodes(statePath, options) {
     }
     return { graph, events, result: { nodes, changed: events.length > 0 } };
   });
+}
+
+function sweepNodes(statePath, options) {
+  const agents = options.agent === undefined ? ["codex", "claude"] : [requiredAdoptAgent(options.agent)];
+  const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
+  const transcriptFacts = agents.flatMap((agent) => inspectTranscripts(agent).map((fact) => ({ ...fact, agent })));
+  const tmuxSessions = inspectTmuxSessions();
+  const observedAt = now();
+
+  return mutate(statePath, (graph) => {
+    const desired = graph.nodes.map((node) => ({ ...node }));
+    const original = new Map(graph.nodes.map((node) => [node.id, node]));
+
+    for (const fact of transcriptFacts) {
+      let node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
+      const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
+      if (!node) {
+        node = {
+          id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [],
+          primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: observedAt,
+        };
+        desired.push(node);
+      }
+      Object.assign(node, {
+        agent: fact.agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid,
+        lastSeenAt: fact.updatedAt, class: node.class || "unclassified",
+      });
+      if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
+      if (!original.has(node.id) || (!node.tmuxTarget && ["active", "quiet"].includes(node.status))) node.status = observedStatus;
+    }
+
+    const liveTargets = new Set();
+    for (const session of tmuxSessions) {
+      liveTargets.add(session.tmuxTarget);
+      let node = desired.find((item) => item.tmuxTarget === session.tmuxTarget);
+      if (!node && session.runtimeUuid) node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
+      if (!node) {
+        node = {
+          id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "active",
+          class: "unclassified", domainsExplicit: false, primaryDomains: [], domainPredecessors: {},
+          refs: [], createdAt: observedAt, runtimeUuid: null,
+        };
+        desired.push(node);
+      }
+      Object.assign(node, {
+        agent: session.agent, tmuxTarget: session.tmuxTarget, cwd: session.cwd,
+        lastSeenAt: observedAt, tmuxObservation: { state: "live", observedAt },
+      });
+      if (session.runtimeUuid) node.runtimeUuid = session.runtimeUuid;
+      if (!node.domainsExplicit) node.domains = domainsFor(session.cwd, {});
+      if (!original.has(node.id) || node.status === "quiet" || node.status === "closed") node.status = "active";
+    }
+
+    const worktreeStates = new Map();
+    for (const node of desired) {
+      if (!node.tmuxTarget || liveTargets.has(node.tmuxTarget)) continue;
+      if (!worktreeStates.has(node.cwd)) worktreeStates.set(node.cwd, inspectWorktree(node.cwd));
+      node.tmuxObservation = { state: "missing", observedAt, worktreeState: worktreeStates.get(node.cwd) };
+      if (node.status !== "closed") node.status = "quiet";
+    }
+
+    const events = [];
+    for (const node of desired) {
+      const before = original.get(node.id);
+      if (!before || JSON.stringify(node) !== JSON.stringify(before)) {
+        node.updatedAt = observedAt;
+        events.push(event("node.upserted", { node }));
+      }
+    }
+    return {
+      graph,
+      events,
+      result: {
+        nodes: desired,
+        liveTargets: tmuxSessions.map((session) => session.tmuxTarget),
+        missingTargets: desired.filter((node) => node.tmuxTarget && !liveTargets.has(node.tmuxTarget)).map((node) => node.tmuxTarget),
+        changed: events.length > 0,
+      },
+    };
+  });
+}
+
+function inspectTmuxSessions() {
+  const tmux = process.env.MESH_TMUX_BIN || "tmux";
+  const socket = process.env.MESH_TMUX_SOCKET || "mesh";
+  const separator = "::MESH::";
+  const format = ["#{session_name}", "#{pane_pid}", "#{pane_current_command}", "#{pane_current_path}"].join(separator);
+  const result = spawnSync(tmux, ["-L", socket, "list-panes", "-a", "-F", format], {
+    encoding: "utf8", env: process.env, maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) throw new Error(`could not inspect tmux sessions: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`tmux inspection failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
+  const sessions = new Map();
+  for (const line of result.stdout.split("\n")) {
+    if (!line) continue;
+    const [tmuxTarget, pidText, command, cwd = ""] = line.split(separator);
+    if (!tmuxTarget || sessions.has(tmuxTarget)) continue;
+    const agent = agentFromCommand(command);
+    if (!agent) continue;
+    const pid = Number(pidText);
+    sessions.set(tmuxTarget, {
+      tmuxTarget, agent, cwd,
+      runtimeUuid: Number.isInteger(pid) && pid > 0 ? runtimeUuidFromProcess(pid, agent) : null,
+    });
+  }
+  return [...sessions.values()].sort((left, right) => left.tmuxTarget.localeCompare(right.tmuxTarget));
+}
+
+function agentFromCommand(command) {
+  const basename = String(command || "").split("/").pop().toLowerCase();
+  if (basename.includes("codex")) return "codex";
+  if (basename.includes("claude")) return "claude";
+  return null;
+}
+
+function runtimeUuidFromProcess(pid, agent) {
+  const evidence = [];
+  try { evidence.push(readFileSync(`/proc/${pid}/cmdline`, "utf8")); } catch {}
+  try {
+    for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+      try {
+        const target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+        if (target.endsWith(".jsonl") && target.includes(agent === "codex" ? "/.codex/sessions/" : "/.claude/")) evidence.push(target);
+      } catch {}
+    }
+  } catch {}
+  const matches = new Set(evidence.flatMap((value) => String(value).toLowerCase().match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/g) || []));
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+function inspectWorktree(cwd) {
+  if (!cwd || !existsSync(cwd)) return "unknown";
+  const inside = spawnSync("git", ["-C", cwd, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8", timeout: 10_000 });
+  if (inside.status !== 0 || inside.stdout.trim() !== "true") return "unknown";
+  const status = spawnSync("git", ["-C", cwd, "status", "--porcelain=v1", "--untracked-files=normal"], {
+    encoding: "utf8", timeout: 10_000, maxBuffer: 16 * 1024 * 1024,
+  });
+  if (status.status !== 0 || status.error) return "unknown";
+  return status.stdout.length > 0 ? "dirty" : "clean";
 }
 
 function claimDomain(statePath, options) {
@@ -674,6 +818,11 @@ function validateNode(node) {
   if (node.class !== undefined && !NODE_CLASSES.has(node.class)) throw new Error(`node '${node.id}' has invalid class`);
   if (node.domains !== undefined && (!Array.isArray(node.domains) || node.domains.some((domain) => typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(domain)))) throw new Error(`node '${node.id}' has invalid domains`);
   if (node.primaryDomains !== undefined && (!Array.isArray(node.primaryDomains) || node.primaryDomains.some((domain) => typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(domain)))) throw new Error(`node '${node.id}' has invalid primaryDomains`);
+  if (node.tmuxObservation !== undefined) {
+    const observation = node.tmuxObservation;
+    if (!observation || typeof observation !== "object" || !["live", "missing"].includes(observation.state) || typeof observation.observedAt !== "string") throw new Error(`node '${node.id}' has invalid tmuxObservation`);
+    if (observation.worktreeState !== undefined && !["dirty", "clean", "unknown"].includes(observation.worktreeState)) throw new Error(`node '${node.id}' has invalid worktreeState`);
+  }
   assertStatus(node.status);
 }
 
@@ -786,5 +935,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Quiet is observed silence, never closure. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph sweep [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }

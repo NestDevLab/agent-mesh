@@ -191,8 +191,8 @@ existing send path only when the user has approved the target and direction.
 
 Adoption is an explicit, transcript-only graph action. It neither resumes nor
 attaches to the session. The runtime UUID is its idempotency key; the raw title
-is evidence only, so supply the one-line graph summary separately. Quiet
-adopted sessions remain active until explicitly closed.
+is evidence only, so supply the one-line graph summary separately. Transcript
+silence can make a node `quiet`; only an explicit human action closes it.
 
 ```bash
 $BIN/mesh-graph.mjs adopt --agent codex --runtime-uuid <SESSION_UUID>
@@ -205,12 +205,10 @@ Ref updates are idempotent and select exactly one node by graph ID or runtime
 UUID. Multiple nodes may carry the same opaque ref. The graph reports those
 explicit associations; it never resolves refs, selects an owner, or grants work.
 
-### Sweep every persisted session into the graph
+### Discover persisted sessions
 
-`discover` is the only automatic way to populate the graph; without it only
-bridge-started and hand-adopted sessions are visible. It reads persisted
-transcripts, registers what is missing, and never attaches, resumes, or writes
-to a session.
+`discover` reads one harness's persisted transcripts, registers what is
+missing, and never attaches, resumes, or writes to a session.
 
 ```bash
 MESH_DOMAIN_ROOTS_FILE=/path/to/domain-roots.json \
@@ -222,6 +220,22 @@ never overwrites a class, summary, or `closed` status a human already set.
 Domains come only from `MESH_DOMAIN_ROOTS_FILE`; without it they stay empty.
 Silence past `--quiet-after` reads as `quiet`, which is observation, not
 closure. Rerunning is a no-op when nothing on disk moved.
+
+### Reconcile the graph with tmux
+
+Use `sweep` for the periodic graph projection. It discovers both supported
+harnesses, registers every live agent target on the configured tmux socket, and
+checks every recorded target against that live inventory.
+
+```bash
+MESH_TMUX_SOCKET=mesh MESH_DOMAIN_ROOTS_FILE=/path/to/domain-roots.json \
+  $BIN/mesh-graph.mjs sweep --quiet-after 3600 --json
+```
+
+A missing tmux target becomes `quiet`, never `closed`. Its `tmuxObservation`
+records the observation time and whether the recorded cwd is a `dirty`, `clean`,
+or `unknown` Git worktree. A failed tmux inventory aborts without changing the
+graph; absence is recorded only after a successful inventory.
 
 ### Connect two sessions
 
