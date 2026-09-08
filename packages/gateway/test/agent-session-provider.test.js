@@ -99,6 +99,8 @@ test("targeted send resumes the exact session then preserves task correlation", 
   const resume = calls.find((call) => call.command.endsWith("agent-session.sh") && call.args.includes("resume"));
   assert.deepEqual(resume.args, ["--agent", "codex", "resume", "session-new"]);
   assert.equal(resume.options.env.MESH_TMUX_SOCKET, "mesh-session-test");
+  assert.equal(resume.options.env.MESH_STRICT_READY, "1");
+  assert.equal(resume.options.env.MESH_PRESERVE_SESSION_POLICY, "1");
   assert.ok(calls.some((call) => call.args.includes("writer-status")));
   const send = calls.find((call) => call.command.endsWith("agent-send.sh"));
   assert.ok(send.args.includes("--correlation-id"));
@@ -137,6 +139,37 @@ test("active Codex sessions use the native queue collector without a second writ
   assert.ok(calls.some((call) => call.command === process.execPath && call.args.includes("task-native")));
   assert.equal(calls.some((call) => call.args.includes("resume")), false);
   assert.equal(calls.some((call) => call.command.endsWith("agent-send.sh")), false);
+});
+
+test("active Codex result collection failures remain delivered with typed result errors", async () => {
+  for (const [code, resultErrorCode] of [
+    [65, "result_no_output"],
+    [66, "result_uncorrelated"],
+    [67, "result_parsing_failure"],
+    [124, "result_timeout"]
+  ]) {
+    const { instance } = provider({
+      agentNativeCallPath: "/bridge/agent-native-call.mjs",
+      run: async (command, args) => {
+        if (command.endsWith("agent-session.sh") && args.includes("inspect")) {
+          return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+        }
+        if (command.endsWith("agent-session.sh") && args.includes("writer-status")) {
+          return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+        }
+        if (command === process.execPath) return { code, stdout: "", stderr: "collection detail" };
+        throw new Error("unexpected command");
+      }
+    });
+    const result = await instance.send({
+      sessionId: "session-new", workspaceId: "workspace.allowed", message: "result",
+      messageId: `message-${code}`, contextId: "context", correlationId: `task-${code}`,
+      idempotencyKey: `idem-${code}`
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.result_error_code, resultErrorCode);
+    assert.match(result.error, /collection detail/);
+  }
 });
 
 test("active Claude sessions fail closed instead of starting a second writer", async () => {

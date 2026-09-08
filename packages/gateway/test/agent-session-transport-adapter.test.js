@@ -59,6 +59,19 @@ test("session transport returns the correlated provider result", async () => {
   assert.equal(calls[0].input.workspaceId, "workspace.allowed");
 });
 
+test("session transport delivers typed result collection errors", async () => {
+  const registry = {
+    has: () => true,
+    async send() {
+      return { ok: true, result_error_code: "result_timeout", error: "collector timed out" };
+    }
+  };
+  const result = await new AgentSessionTransportAdapter(registry).dispatch(delivery, envelope());
+  assert.equal(result.status, "delivered");
+  assert.equal(result.details.result_error_code, "result_timeout");
+  assert.equal(result.details.result_error, "collector timed out");
+});
+
 test("session transport distinguishes missing session and provider", async () => {
   const missingSession = await new AgentSessionTransportAdapter({ has: () => true }).dispatch(
     delivery,

@@ -364,6 +364,27 @@ _wait_for_ready_or_warn() {
     return 0
 }
 
+# MCP callers must not treat a launch warning or a leftover shell as readiness.
+# Existing targets are never removed here; only a newly created, unsent target
+# can be retired when its initial readiness check fails.
+_require_resumed_ready() {
+    local target="$1" created="${2:-false}" pane command
+    [[ "${MESH_STRICT_READY:-0}" == "1" ]] || return 0
+    pane="$(mtmux capture-pane -t "$target" -p 2>/dev/null || true)"
+    command="$(mtmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)"
+    if [[ -n "$command" ]] &&
+       { [[ -z "${AGENT_ALIVE_PROCESS_PATTERN:-}" ]] || grep -qE "$AGENT_ALIVE_PROCESS_PATTERN" <<<"$command"; } &&
+       grep -qE "$AGENT_IDLE_PATTERN|${AGENT_PROMPT_CHAR}" <<<"$pane" &&
+       ! grep -qE 'Automatic reconnect could not restore this session|Reconnect failed — check the endpoint, then relaunch' <<<"$pane"; then
+        return 0
+    fi
+    echo "ERROR: resumed session '$target' is not ready; no prompt was sent" >&2
+    if [[ "$created" == "true" ]]; then
+        mtmux kill-session -t "$target" 2>/dev/null || true
+    fi
+    return 124
+}
+
 _print_attach_hint() {
     echo "ATTACH: tmux -L mesh attach -t $TARGET" >&2
 }
@@ -536,6 +557,9 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_M
     echo "WARN: Limen governed launch unavailable (exit=$GOVERNED_CODE); starting with existing fail-open behavior" >&2
     SESSION_PROFILE=""
 fi
+if [[ "$cmd" == "resume" && "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
+    CODEX_MESH_PIN=0
+fi
 if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then
     _build_launch_options
 fi
@@ -548,6 +572,7 @@ case "$cmd" in
         TARGET=$(_tmux_target "${TMUX_NAME:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
+            _require_resumed_ready "$TARGET" false
             _print_attach_hint
             echo "$TARGET"; exit 0
         fi
@@ -558,11 +583,16 @@ case "$cmd" in
         fi
 
         _print_launch_warning
-        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD"
+        PRESERVED_OPTIONS=""
+        if [[ "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
+            PRESERVED_OPTIONS="$(python3 "$SCRIPT_DIR/codex-resume-options.py" --session "$SESSION_ID" --root "$AGENT_SESSION_DIR")"
+        fi
+        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD${PRESERVED_OPTIONS:+ $PRESERVED_OPTIONS}"
         mtmux new-session -d -s "$TARGET"
         mesh_tmux_harden
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
         _wait_for_ready_or_warn "$TARGET"
+        _require_resumed_ready "$TARGET" true
         _print_attach_hint
         echo "$TARGET"
         ;;

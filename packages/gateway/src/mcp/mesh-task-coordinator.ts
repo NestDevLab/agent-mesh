@@ -30,7 +30,7 @@ export class MeshTaskCoordinator {
 
   async submit(input: Parameters<MeshTaskStoreLike["create"]>[0]): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
     const created = await this.store.create(input);
-    if (!TERMINAL.has(created.task.status)) this.schedule(created.task.task_id, created.task.target_agent_id);
+    if (!TERMINAL.has(created.task.status)) this.schedule(created.task);
     return created;
   }
 
@@ -70,19 +70,21 @@ export class MeshTaskCoordinator {
 
   async resume(): Promise<void> {
     for (const task of await this.store.list()) {
-      if (!TERMINAL.has(task.status)) this.schedule(task.task_id, task.target_agent_id);
+      if (!TERMINAL.has(task.status)) this.schedule(task);
     }
   }
 
-  private schedule(taskId: string, targetAgentId: string): void {
+  private schedule(task: MeshTaskRecord): void {
+    const taskId = task.task_id;
     if (this.active.has(taskId)) return;
-    const prior = this.targetTails.get(targetAgentId) ?? Promise.resolve();
+    const targetKey = JSON.stringify([task.target_agent_id, task.session_id ?? null]);
+    const prior = this.targetTails.get(targetKey) ?? Promise.resolve();
     const run = prior.catch(() => undefined).then(() => this.run(taskId));
     this.active.set(taskId, run);
-    this.targetTails.set(targetAgentId, run);
+    this.targetTails.set(targetKey, run);
     void run.finally(() => {
       this.active.delete(taskId);
-      if (this.targetTails.get(targetAgentId) === run) this.targetTails.delete(targetAgentId);
+      if (this.targetTails.get(targetKey) === run) this.targetTails.delete(targetKey);
     }).catch(() => undefined);
   }
 

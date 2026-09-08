@@ -44,9 +44,10 @@ if (agent === "claude") {
   blockClaudeVisibleTurn(sessionId, correlationId);
 }
 
-const transcript = await resolveTranscript(sessionId);
-if (transcript === undefined) fail(`no Codex transcript for session ${sessionId}`, 1);
-let offset = (await stat(transcript)).size;
+const initialTranscripts = await resolveTranscripts(sessionId);
+if (initialTranscripts.length === 0) fail(`no Codex transcript for session ${sessionId}`, 1);
+const offsets = new Map();
+for (const transcript of initialTranscripts) offsets.set(transcript, (await stat(transcript)).size);
 const resultToken = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
 const anchor = `[MESH:${resultToken}]`;
 const resultBegin = `[[R:${resultToken}]]`;
@@ -60,32 +61,49 @@ const queued = await run(process.env.CODEX_BIN || "codex", [
 if (queued.code !== 0) fail(safeError("Codex native queue failed", queued), 1);
 
 const deadline = Date.now() + timeoutSeconds * 1000;
+const transcriptStates = new Map();
 let anchorSeen = false;
-let agentBodies = [];
 let uncorrelatedOutputSeen = false;
 while (Date.now() < deadline) {
-  const consumed = await consumeTranscript(transcript, offset);
-  offset = consumed.offset;
-  for (const record of consumed.records) {
-    const payload = record?.payload;
-    if (typeof payload !== "object" || payload === null) continue;
-    const userText = messageText(record, "user");
-    if (userText?.includes(anchor)) {
-      anchorSeen = true;
-      agentBodies = [];
-      continue;
-    }
-    const assistantText = messageText(record, "assistant");
-    if (!anchorSeen) {
-      if (assistantText) uncorrelatedOutputSeen = true;
-      continue;
-    }
-    if (assistantText) {
-      agentBodies.push(assistantText);
-      continue;
-    }
-    if (record.type === "event_msg" && payload.type === "task_complete") {
-      finish(agentBodies, resultBegin, resultEnd);
+  for (const transcript of await resolveTranscripts(sessionId)) {
+    const state = transcriptStates.get(transcript) ?? {
+      anchorSeen: false,
+      finalBodies: [],
+      eventBodies: []
+    };
+    transcriptStates.set(transcript, state);
+    const consumed = await consumeTranscript(transcript, offsets.get(transcript) ?? 0);
+    offsets.set(transcript, consumed.offset);
+    for (const record of consumed.records) {
+      const payload = record?.payload;
+      if (typeof payload !== "object" || payload === null) continue;
+      const userText = messageText(record, "user");
+      if (userText?.includes(anchor)) {
+        state.anchorSeen = true;
+        anchorSeen = true;
+        state.finalBodies = [];
+        state.eventBodies = [];
+        continue;
+      }
+      const assistantText = messageText(record, "assistant");
+      if (!state.anchorSeen) {
+        if (assistantText) uncorrelatedOutputSeen = true;
+        continue;
+      }
+      if (assistantText) {
+        const bodies = record.type === "response_item" && payload.phase === "final_answer"
+          ? state.finalBodies
+          : record.type === "event_msg" ? state.eventBodies : undefined;
+        if (bodies !== undefined && !bodies.includes(assistantText)) bodies.push(assistantText);
+        continue;
+      }
+      if (record.type === "event_msg" && payload.type === "task_complete") {
+        finish(
+          state.finalBodies.length > 0 ? state.finalBodies : state.eventBodies,
+          resultBegin,
+          resultEnd
+        );
+      }
     }
   }
   await sleep(Number(process.env.AGENT_NATIVE_CALL_POLL_MS || 250));
@@ -137,24 +155,45 @@ function messageText(record, role) {
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
-async function resolveTranscript(id) {
+async function resolveTranscripts(id) {
   const root = process.env.CODEX_SESSION_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
   let entries;
   try { entries = await readdir(root, { recursive: true, withFileTypes: true }); }
-  catch { return undefined; }
+  catch { return []; }
   const candidates = [];
   for (const entry of entries) {
     if (!entry.isFile() || !entry.name.endsWith(".jsonl") || !entry.name.includes(id)) continue;
     const path = join(entry.parentPath, entry.name);
-    try { candidates.push({ path, mtime: (await stat(path)).mtimeMs }); }
+    try {
+      if (await transcriptSessionId(path) === id) candidates.push({ path, mtime: (await stat(path)).mtimeMs });
+    }
     catch { /* The transcript can rotate while discovery runs. */ }
   }
-  candidates.sort((left, right) => right.mtime - left.mtime);
-  return candidates[0]?.path;
+  candidates.sort((left, right) => left.mtime - right.mtime);
+  return candidates.map((candidate) => candidate.path);
+}
+
+async function transcriptSessionId(path) {
+  const handle = await open(path, "r");
+  try {
+    const buffer = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    for (const line of buffer.subarray(0, bytesRead).toString("utf8").split("\n")) {
+      if (!line) continue;
+      let record;
+      try { record = JSON.parse(line); }
+      catch { continue; }
+      if (record?.type === "session_meta") return record?.payload?.id;
+    }
+    return undefined;
+  } finally {
+    await handle.close();
+  }
 }
 
 async function consumeTranscript(path, start) {
   const size = (await stat(path)).size;
+  if (size < start) start = 0;
   if (size <= start) return { offset: start, records: [] };
   const handle = await open(path, "r");
   try {
