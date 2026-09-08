@@ -50,7 +50,7 @@ esac
     let result;
     try {
       result = { code: 0, ...await exec('bash', [join(root, 'bin', 'agent-session.sh'), '--agent', 'probe', 'resume', '11111111-1111-4111-8111-111111111111', 'test-target'], {
-        env: { ...process.env, PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_GRAPH_DISABLE: '1', MESH_TMUX_SOCKET: 'strict-fixture' },
+        env: { ...process.env, AGENT_MESH_AGENTS_DIR: join(root, 'agents'), PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_GRAPH_DISABLE: '1', MESH_TMUX_SOCKET: 'strict-fixture' },
         timeout: 5000
       }) };
     } catch (error) { result = { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
