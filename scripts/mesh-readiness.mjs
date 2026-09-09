@@ -14,6 +14,7 @@ const agentTmuxBundleFiles = [
   "bin/agent-spawn.sh",
   "bin/agent-session.sh",
   "bin/agent-native-call.mjs",
+  "bin/codex-resume-options.py",
   "bin/claude-session-ownership.mjs",
   "bin/agent-wait.sh",
   "bin/mesh-list-agents.sh",
