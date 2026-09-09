@@ -1,0 +1,11 @@
+{
+  "changed_refs": [
+    "refs/heads/fix/mcp-codex-free-resume"
+  ],
+  "claimed_at": "2026-09-09T03:50:02+00:00",
+  "coordination_id": "graph-7",
+  "operation_token": "08d7fb66-71e6-4aee-aa7d-b88b23ba6951",
+  "publication_scope": "stack:mcp-codex-free-resume",
+  "source_ref": "refs/heads/fix/mcp-codex-free-resume",
+  "syncwheel_version": "0.43.5"
+}
