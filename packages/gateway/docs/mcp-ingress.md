@@ -190,3 +190,19 @@ Static `tmuxIngress` remains unchanged for dedicated ingress sessions. A task
 without `session_id` continues to use that route. A task with `session_id` uses
 only `agent-session-transport` as its authoritative result transport, while
 the existing simulation and transcript audit adapters remain intact.
+
+### Codex delivery guarantees
+
+Native session calls preserve the original writer for active sessions. Cold
+Codex resume explicitly restores the last recorded model, reasoning effort,
+approval policy, sandbox settings, and working directory instead of inheriting
+bridge or app-server defaults. Missing or unsupported policy fails before launch.
+Gateway-driven resume requires a ready TUI and never submits to a leftover shell.
+
+Task ordering is per agent/session pair; a slow session does not block unrelated
+sessions. Cancellation remains cooperative and does not release that session's
+execution slot while its previous executor is still running. Native result
+collection follows matching transcript rollover and distinguishes accepted
+requests with result timeouts/parsing errors from transport rejection. Consumers
+must retain the task handle and must not resend an accepted request merely
+because its result could not be collected.

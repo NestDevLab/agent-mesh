@@ -132,6 +132,62 @@ test("two concurrent tasks retain distinct message, task, context, and result co
   assert.notEqual(first.task.message_id, second.task.message_id);
 });
 
+test("tasks for different sessions of one agent execute independently", async () => {
+  let releaseFirst;
+  let secondStarted = false;
+  const firstPending = new Promise((resolve) => { releaseFirst = resolve; });
+  const registry = {
+    has: () => true,
+    async get(_agentId, request) {
+      return { session_id: request.sessionId, workspace_id: request.workspaceId };
+    }
+  };
+  const { facade } = await setup(async (task) => {
+    if (task.session_id === "session-a") await firstPending;
+    if (task.session_id === "session-b") secondStarted = true;
+    return { text: task.session_id };
+  }, registry);
+  const first = await facade.submitTask(input({ sessionId: "session-a", idempotencyKey: "session-a" }));
+  const second = await facade.submitTask(input({ sessionId: "session-b", idempotencyKey: "session-b" }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(secondStarted, true);
+  releaseFirst();
+  const [firstDone, secondDone] = await Promise.all([
+    facade.callTask(input({ sessionId: "session-a", idempotencyKey: "session-a" }), 2_000),
+    facade.callTask(input({ sessionId: "session-b", idempotencyKey: "session-b" }), 2_000)
+  ]);
+  assert.equal(firstDone.task.task_id, first.task.task_id);
+  assert.equal(secondDone.task.task_id, second.task.task_id);
+});
+
+test("same-session execution stays serialized after the running task is cancelled", async () => {
+  let releaseFirst;
+  let secondStarted = false;
+  const firstPending = new Promise((resolve) => { releaseFirst = resolve; });
+  const registry = {
+    has: () => true,
+    async get(_agentId, request) {
+      return { session_id: request.sessionId, workspace_id: request.workspaceId };
+    }
+  };
+  const { facade } = await setup(async (task) => {
+    if (task.message === "first") await firstPending;
+    if (task.message === "second") secondStarted = true;
+    return { text: task.message };
+  }, registry);
+  const first = await facade.submitTask(input({ sessionId: "session-a", message: "first", idempotencyKey: "same-a" }));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await facade.cancelTask(first.task.task_id);
+  const second = await facade.submitTask(input({ sessionId: "session-a", message: "second", idempotencyKey: "same-b" }));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(secondStarted, false);
+  releaseFirst();
+  const completed = await facade.callTask(input({ sessionId: "session-a", message: "second", idempotencyKey: "same-b" }), 2_000);
+  assert.equal(completed.task.task_id, second.task.task_id);
+  assert.equal(completed.task.status, "completed");
+  assert.equal(secondStarted, true);
+});
+
 test("task and thread reads are isolated to the authenticated principal", async () => {
   const { facade, taskCoordinator, principal } = await setup();
   const task = (await facade.callTask(input(), 2_000)).task;

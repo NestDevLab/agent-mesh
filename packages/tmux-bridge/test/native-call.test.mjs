@@ -18,8 +18,10 @@ async function fixture(mode = "success") {
   await mkdir(dirname(transcript), { recursive: true });
   await writeFile(transcript, JSON.stringify({ type: "session_meta", payload: { id: sessionId } }) + "\n");
   const codex = join(root, "fake-codex.mjs");
+  const rotatedTranscript = join(root, "sessions", `rollout-rotated-${sessionId}.jsonl`);
+  const decoyTranscript = join(root, "sessions", `rollout-decoy-${sessionId}.jsonl`);
   await writeFile(codex, `#!/usr/bin/env node
-import { appendFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 const args = process.argv.slice(2);
 const message = args[args.indexOf("--message") + 1];
 const anchor = message.match(/\\[MESH:[^\\]]+\\]/)?.[0];
@@ -29,15 +31,30 @@ const lines = [];
 lines.push({ type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "stale" }] } });
 lines.push({ type: "event_msg", payload: { type: "task_complete" } });
 if (${JSON.stringify(mode)} !== "uncorrelated") lines.push({ type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: anchor }] } });
-if (${JSON.stringify(mode)} === "success") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: begin + " MULTI\\nLINE " + end }] } });
+if (${JSON.stringify(mode)} === "success" || ${JSON.stringify(mode)} === "rotation" || ${JSON.stringify(mode)} === "split-rotation") {
+  lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "intermediate" }] } });
+  lines.push({ type: "event_msg", payload: { type: "agent_message", message: begin + " MULTI\\nLINE " + end } });
+  lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: begin + " MULTI\\nLINE " + end }] } });
+}
 if (${JSON.stringify(mode)} === "fallback") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "MESH_CORRELATION_OK" }] } });
 if (${JSON.stringify(mode)} === "uncorrelated") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "plain output" }] } });
 if (${JSON.stringify(mode)} === "parsing") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: begin + " broken" }] } });
 lines.push({ type: "event_msg", payload: { type: "task_complete" } });
-await appendFile(process.env.TRANSCRIPT, lines.map((line) => JSON.stringify(line)).join("\\n") + "\\n");
+if (${JSON.stringify(mode)} === "rotation" || ${JSON.stringify(mode)} === "split-rotation") {
+  await writeFile(process.env.DECOY_TRANSCRIPT, JSON.stringify({ type: "session_meta", payload: { id: "77777777-7777-4777-8777-777777777777" } }) + "\\n");
+  if (${JSON.stringify(mode)} === "split-rotation") {
+    await appendFile(process.env.TRANSCRIPT, JSON.stringify(lines.find((line) => line.payload?.role === "user")) + "\\n");
+  }
+  await writeFile(process.env.ROTATED_TRANSCRIPT, [
+    JSON.stringify({ type: "session_meta", payload: { id: process.env.SESSION_ID } }),
+    ...lines.map((line) => JSON.stringify(line))
+  ].join("\\n") + "\\n");
+} else {
+  await appendFile(process.env.TRANSCRIPT, lines.map((line) => JSON.stringify(line)).join("\\n") + "\\n");
+}
 `);
   await chmod(codex, 0o755);
-  return { root, transcript, codex };
+  return { root, transcript, rotatedTranscript, decoyTranscript, codex };
 }
 
 async function invoke(mode) {
@@ -46,7 +63,16 @@ async function invoke(mode) {
     const result = await exec(process.execPath, [nativeCall,
       "--agent", "codex", "--session", sessionId,
       "--correlation-id", "task-native-test", "--timeout", "1", "--message", "Return result"
-    ], { env: { ...process.env, CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions"), TRANSCRIPT: value.transcript, AGENT_NATIVE_CALL_POLL_MS: "10" } });
+    ], { env: {
+      ...process.env,
+      CODEX_BIN: value.codex,
+      CODEX_SESSION_ROOT: join(value.root, "sessions"),
+      TRANSCRIPT: value.transcript,
+      ROTATED_TRANSCRIPT: value.rotatedTranscript,
+      DECOY_TRANSCRIPT: value.decoyTranscript,
+      SESSION_ID: sessionId,
+      AGENT_NATIVE_CALL_POLL_MS: "10"
+    } });
     return { code: 0, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
     return { code: error.code, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
@@ -63,6 +89,18 @@ test("native Codex queue accepts the final answer when the anchored turn omits o
   const result = await invoke("fallback");
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.stdout, "MESH_CORRELATION_OK\n");
+});
+
+test("native Codex queue follows transcript rotation and ignores mismatched session metadata", async () => {
+  const result = await invoke("rotation");
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "MULTI\nLINE\n");
+});
+
+test("native Codex queue requires the unique anchor in each replayed rollover transcript", async () => {
+  const result = await invoke("split-rotation");
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, "MULTI\nLINE\n");
 });
 
 test("native Codex queue distinguishes empty, uncorrelated, and parsing failures", async () => {

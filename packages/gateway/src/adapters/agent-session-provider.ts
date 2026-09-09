@@ -266,6 +266,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private async command(args: readonly string[], allowFailure = false) {
     const env = { ...processEnv };
     if (this.meshSocket !== undefined) env.MESH_TMUX_SOCKET = this.meshSocket;
+    if (args.includes("resume")) {
+      env.MESH_STRICT_READY = "1";
+      env.MESH_PRESERVE_SESSION_POLICY = "1";
+      env.MESH_REPLACE_UNREADY_SESSION = "1";
+    }
     const response = await this.run(this.agentSessionPath, args, {
       env,
       // A cold resume waits up to 30 seconds for the provider TUI to become
@@ -309,10 +314,10 @@ function nativeCallResult(result: { code: number; stdout: string; stderr: string
   if (result.code === 0) return { ok: true, reply: result.stdout.trim() };
   const detail = result.stderr.trim().split(/\r?\n/).at(-1);
   const suffix = detail ? `: ${detail}` : "";
-  if (result.code === 65) return { ok: false, error: `Agent produced no textual result${suffix}` };
-  if (result.code === 66) return { ok: false, error: `Agent output was not correlated${suffix}` };
-  if (result.code === 67) return { ok: false, error: `Agent result parsing failed${suffix}` };
-  if (result.code === 124) return { ok: false, error: `Agent result collection timed out${suffix}` };
+  if (result.code === 65) return { ok: true, result_error_code: "result_no_output", error: `Agent produced no textual result${suffix}` };
+  if (result.code === 66) return { ok: true, result_error_code: "result_uncorrelated", error: `Agent output was not correlated${suffix}` };
+  if (result.code === 67) return { ok: true, result_error_code: "result_parsing_failure", error: `Agent result parsing failed${suffix}` };
+  if (result.code === 124) return { ok: true, result_error_code: "result_timeout", error: `Agent result collection timed out${suffix}` };
   return { ok: false, error: `Agent native session call failed${suffix}` };
 }
 
