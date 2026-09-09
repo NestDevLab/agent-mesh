@@ -1,16 +1,18 @@
 {
   "changed_refs": {
-    "refs/heads/fix/mcp-codex-transport": "a3249a419beef72b9b095fdde811f17b7e82db21"
+    "refs/heads/fix/mcp-codex-free-resume": "e65d62446e61fbb333e6463b5de51adef3f90aa2"
   },
   "claims": {
+    "refs/heads/fix/mcp-codex-free-resume": "3d54a59052614666f8fbab5a8464613e3e93eed7",
     "refs/heads/fix/mcp-codex-transport": "37d987ce7eb62b89562e21cf9260d2d3928e8d5a",
     "refs/heads/main-integration": "370493064ccbcaebee06ae4c483d342e4fee9204",
     "refs/heads/pr/graph-session-registry": "120994ef79cab58051bbc6a7e11f34a7421968cc"
   },
   "coordination_id": "graph-7",
-  "created_at": "2026-09-09T03:38:35+00:00",
+  "created_at": "2026-09-09T03:50:02+00:00",
   "installation_id": "e83434d1-e09b-4dd1-8bdf-a5f7970573c6",
   "managed_refs": {
+    "refs/heads/fix/mcp-codex-free-resume": "e65d62446e61fbb333e6463b5de51adef3f90aa2",
     "refs/heads/fix/mcp-codex-transport": "a3249a419beef72b9b095fdde811f17b7e82db21",
     "refs/heads/main-integration": "98b8a51ee923f5a131c2cea6769be5876fc69ec9",
     "refs/heads/pr/graph-session-registry": "2b17b9d6aa0295fad6a3d330f73e2a5866c9104a"
@@ -43,7 +45,8 @@
       "branch": "main-integration",
       "stacks": [
         "graph-7",
-        "mcp-codex-transport"
+        "mcp-codex-transport",
+        "mcp-codex-free-resume"
       ],
       "strategy": "cherry-pick"
     },
@@ -82,16 +85,31 @@
         "id": "mcp-codex-transport",
         "integration_branch": "main-integration",
         "target_branch": "main"
+      },
+      {
+        "base": {
+          "kind": "remote-ref",
+          "ref": "refs/heads/main",
+          "role": "canonical"
+        },
+        "branch": "fix/mcp-codex-free-resume",
+        "commits": [
+          "bf46c25deb1791f33df60078eb1d52f0e931923c",
+          "e6099161f71d7fa9bf01f2cbab39bbb8b899948e"
+        ],
+        "id": "mcp-codex-free-resume",
+        "integration_branch": "main-integration",
+        "target_branch": "main"
       }
     ],
     "version": 2
   },
   "manifest_digest": "9684f90f59a36fabe8cb648e8e52964fbe61b6c36b3ee5a5f7a90aeed085bdf6",
-  "operation_token": "2fbd7240-7480-45f2-9e01-0610e3a77772",
-  "parent_state": "b58d0760a695e43595409b2c9b13b57c72ab1d7d",
+  "operation_token": "08d7fb66-71e6-4aee-aa7d-b88b23ba6951",
+  "parent_state": "116298d4db2b707f886f1882963aa3deb64e581d",
   "projection_status": "partial",
-  "publication_id": "da0b3715-a642-4162-9032-f27bb99776f9",
-  "publication_scope": "stack:mcp-codex-transport",
+  "publication_id": "9764af2b-7936-4bff-8b08-ba9a9fb94b40",
+  "publication_scope": "stack:mcp-codex-free-resume",
   "schema_version": 2,
   "syncwheel_version": "0.43.5",
   "tombstones": []
