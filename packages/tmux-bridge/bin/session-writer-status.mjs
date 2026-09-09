@@ -46,7 +46,9 @@ const result = agent === "claude"
 if (values.json) console.log(JSON.stringify(result));
 else for (const writer of writers) console.log(`${writer.kind}\t${writer.pid}`);
 
-if (values["require-free"] && claudeOwnership?.state !== "free") {
+if (values["require-free"] && (
+  agent === "codex" ? writers.length > 0 : claudeOwnership?.state !== "free"
+)) {
   fail(
     claudeOwnership?.state === "unknown"
       ? `session ${sessionId} ownership is unknown; refusing resume because Claude inventory is incomplete`

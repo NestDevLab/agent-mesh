@@ -76,6 +76,17 @@ test("Codex writer status identifies the process that owns the thread lock", asy
     sessionId: id,
     writers: [{ pid: 4242, kind: "codex" }]
   });
+
+  const occupied = await run(home, ["--agent", "codex", "writer-status", id, "--require-free"], {
+    AGENT_WRITER_PROC_ROOT: procRoot
+  });
+  assert.equal(occupied.code, 4);
+  assert.match(occupied.stderr, /already has writer/);
+
+  const free = await run(home, [
+    "--agent", "codex", "writer-status", "66666666-6666-4666-8666-666666666666", "--require-free"
+  ], { AGENT_WRITER_PROC_ROOT: procRoot });
+  assert.equal(free.code, 0, free.stderr);
 });
 
 test("Claude session discovery uses the same provider-neutral JSON contract", async () => {
