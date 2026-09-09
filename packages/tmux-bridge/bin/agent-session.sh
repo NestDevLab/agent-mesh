@@ -572,9 +572,18 @@ case "$cmd" in
         TARGET=$(_tmux_target "${TMUX_NAME:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
-            _require_resumed_ready "$TARGET" false
-            _print_attach_hint
-            echo "$TARGET"; exit 0
+            if _require_resumed_ready "$TARGET" false; then
+                _print_attach_hint
+                echo "$TARGET"; exit 0
+            fi
+            if [[ "${MESH_REPLACE_UNREADY_SESSION:-0}" != "1" ]]; then
+                exit 124
+            fi
+            if [[ "${AGENT_REQUIRE_FREE_SESSION_WRITER:-false}" == "true" ]]; then
+                node "$SCRIPT_DIR/session-writer-status.mjs" \
+                    --agent "$AGENT_NAME" --session "$SESSION_ID" --require-free
+            fi
+            mtmux kill-session -t "$TARGET"
         fi
 
         if [[ "${AGENT_REQUIRE_FREE_SESSION_WRITER:-false}" == "true" ]]; then

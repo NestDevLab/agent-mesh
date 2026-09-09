@@ -269,6 +269,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     if (args.includes("resume")) {
       env.MESH_STRICT_READY = "1";
       env.MESH_PRESERVE_SESSION_POLICY = "1";
+      env.MESH_REPLACE_UNREADY_SESSION = "1";
     }
     const response = await this.run(this.agentSessionPath, args, {
       env,

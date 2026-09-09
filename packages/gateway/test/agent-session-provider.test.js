@@ -99,6 +99,7 @@ test("targeted send resumes the exact session then preserves task correlation", 
   const resume = calls.find((call) => call.command.endsWith("agent-session.sh") && call.args.includes("resume"));
   assert.deepEqual(resume.args, ["--agent", "codex", "resume", "session-new"]);
   assert.equal(resume.options.env.MESH_TMUX_SOCKET, "mesh-session-test");
+  assert.equal(resume.options.env.MESH_REPLACE_UNREADY_SESSION, "1");
   assert.equal(resume.options.env.MESH_STRICT_READY, "1");
   assert.equal(resume.options.env.MESH_PRESERVE_SESSION_POLICY, "1");
   assert.ok(calls.some((call) => call.args.includes("writer-status")));

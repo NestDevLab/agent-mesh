@@ -41,7 +41,8 @@ case "$1" in
   new-session) touch "$TEST_STATE" ;;
   kill-session) printf killed > "$TEST_STATE.killed"; rm -f "$TEST_STATE" ;;
   capture-pane) if [[ "$TEST_MODE" == "slow-new" ]]; then echo Loading; else echo 'READY>'; fi ;;
-  display-message) if [[ "$TEST_MODE" == "dead-existing" ]]; then echo bash; else echo codex; fi ;;
+  display-message)
+    if [[ "$TEST_MODE" == "dead-existing" || "$TEST_MODE" == "replace-existing" && ! -f "$TEST_STATE.killed" ]]; then echo bash; else echo codex; fi ;;
   *) exit 0 ;;
 esac
 `);
@@ -50,7 +51,7 @@ esac
     let result;
     try {
       result = { code: 0, ...await exec('bash', [join(root, 'bin', 'agent-session.sh'), '--agent', 'probe', 'resume', '11111111-1111-4111-8111-111111111111', 'test-target'], {
-        env: { ...process.env, AGENT_MESH_AGENTS_DIR: join(root, 'agents'), PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_GRAPH_DISABLE: '1', MESH_TMUX_SOCKET: 'strict-fixture' },
+        env: { ...process.env, AGENT_MESH_AGENTS_DIR: join(root, 'agents'), PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_REPLACE_UNREADY_SESSION: mode === 'replace-existing' ? '1' : '0', MESH_GRAPH_DISABLE: '1', MESH_TMUX_SOCKET: 'strict-fixture' },
         timeout: 5000
       }) };
     } catch (error) { result = { code: error.code, stdout: error.stdout, stderr: error.stderr }; }
@@ -77,5 +78,12 @@ test('strict resume retains and returns a ready existing target', async () => {
   const result = await probe('ready-existing');
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.killed, false);
+  assert.equal(result.stdout.trim(), 'test-target');
+});
+
+test('provider mode replaces an unready target and resumes it cleanly', async () => {
+  const result = await probe('replace-existing');
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.killed, true);
   assert.equal(result.stdout.trim(), 'test-target');
 });
