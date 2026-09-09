@@ -10,6 +10,7 @@ import { promisify } from "node:util";
 const exec = promisify(execFile);
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const script = join(packageRoot, "bin", "agent-session.sh");
+const writerScript = join(packageRoot, "bin", "session-writer-status.mjs");
 
 async function run(home, args, extraEnv = {}) {
   try {
@@ -23,6 +24,17 @@ async function run(home, args, extraEnv = {}) {
       stdout: error.stdout ?? "",
       stderr: error.stderr ?? ""
     };
+  }
+}
+
+async function runWriter(home, args, extraEnv = {}) {
+  try {
+    const result = await exec(writerScript, args, {
+      env: { ...process.env, HOME: home, ...extraEnv }
+    });
+    return { code: 0, stdout: result.stdout, stderr: result.stderr };
+  } catch (error) {
+    return { code: typeof error.code === "number" ? error.code : 1, stdout: error.stdout ?? "", stderr: error.stderr ?? "" };
   }
 }
 
@@ -76,6 +88,17 @@ test("Codex writer status identifies the process that owns the thread lock", asy
     sessionId: id,
     writers: [{ pid: 4242, kind: "codex" }]
   });
+
+  const occupied = await runWriter(home, ["--agent", "codex", "--session", id, "--require-free"], {
+    AGENT_WRITER_PROC_ROOT: procRoot
+  });
+  assert.equal(occupied.code, 4);
+  assert.match(occupied.stderr, /already has writer/);
+
+  const free = await runWriter(home, [
+    "--agent", "codex", "--session", "66666666-6666-4666-8666-666666666666", "--require-free"
+  ], { AGENT_WRITER_PROC_ROOT: procRoot });
+  assert.equal(free.code, 0, free.stderr);
 });
 
 test("Claude session discovery uses the same provider-neutral JSON contract", async () => {
