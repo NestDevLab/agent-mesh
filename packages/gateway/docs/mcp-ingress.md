@@ -20,6 +20,8 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | `mesh_thread_get` | Reads the ordered owned tasks in one context. |
 | `mesh_agent_sessions_list` | Lists bounded, path-free native session metadata inside one allowed workspace. |
 | `mesh_agent_session_get` | Reads bounded metadata for one allowed native session. |
+| `mesh_agent_sessions_search` | Searches visible user and assistant text in native transcripts. |
+| `mesh_agent_session_transcript` | Reads a paginated visible transcript for one native session ID. |
 
 The host provides a verified request-scoped principal, its exact tool, agent,
 workspace, and domain scopes, a shared rate limiter, and a configured
@@ -57,7 +59,7 @@ separate least-privilege MCP profiles on one hostname:
 | --- | --- |
 | `/agent-mesh` | Existing governed A2A request and delivery tools. |
 | `/google-workspace` | Read-only Drive search/list/read, Sheets metadata/ranges, Gmail search, and Calendar event listing. |
-| `/memory` | Memory backend availability only until a dedicated AMF principal is provisioned. |
+| `/memory` | Governed AMF tools granted to a dedicated MCP principal. |
 | `/workspace` | Aggregated Agent Mesh and Google Workspace tools plus memory availability. |
 
 Each enabled path has its own Cloudflare Access audience. Set
@@ -95,8 +97,14 @@ reported without returning their bytes. OAuth failures use the stable
 credentials.
 
 Do not point the memory profile at an existing human or harness credential.
-Activate AMF search/read tools only after provisioning a dedicated MCP
-principal with explicit vault and scope grants. Until then, keep
+Activate it only after provisioning a dedicated MCP principal with explicit
+vault, scope, purpose, and operation grants. `memoryRecall.operatorComplete`
+selects the AMF interactive MCP handoff and exposes canonical search/read,
+proposal/status, document search/read/upsert/tombstone, and bounded Fabric
+status. Canonical memory remains proposal-only and document writes retain AMF
+revision and idempotency enforcement. The legacy `governedWrite` profile keeps
+its revisioned `memory_upsert` compatibility surface and must not be combined
+with `operatorComplete`. Until a dedicated handoff exists, keep
 `AGENT_MESH_MCP_MEMORY_STATE=setup_required`; the status tool makes that
 boundary visible without pretending the backend is connected.
 
@@ -153,6 +161,7 @@ route:
   "agentSessionPath": "/opt/mesh/tmux-bridge/bin/agent-session.sh",
   "agentSendPath": "/opt/mesh/tmux-bridge/bin/agent-send.sh",
   "agentNativeCallPath": "/opt/mesh/tmux-bridge/bin/agent-native-call.mjs",
+  "agentManagedInboxRoot": "/var/lib/agent-mesh/claude-managed-inboxes",
   "meshSocket": "mesh-ingress",
   "timeoutSeconds": 180,
   "scanLimit": 500,
@@ -175,16 +184,24 @@ route:
 }
 ```
 
-Grant `mesh_agent_sessions_list` and `mesh_agent_session_get` independently in
-the principal binding. Listing returns only session ID, logical agent/provider,
-workspace, discovery status, and update time; host paths and transcripts stay
-inside the provider adapter. A discovered session is not claimed to have a free
-writer. The bridge checks the live writer immediately before a prompt is sent.
-An active Codex session uses Codex's native queue and collects the result only
-after the uniquely marked user turn. A session without a writer uses the
-existing resume/tmux transport. An active Claude session fails closed because
-the currently supported Claude CLI exposes discovery/resume but no equivalent
-safe queue command; resumable Claude sessions remain supported.
+Grant all four session tools independently in the principal binding. Listing
+returns only session ID, logical agent/provider, workspace, discovery status,
+and update time. Transcript reads and search results expose only normalized
+`user` and `assistant` text with stable event IDs and timestamps; host paths,
+reasoning, context records, and tool payloads remain inside the provider bridge.
+A discovered session is not claimed to have a free writer. The bridge checks
+the live writer immediately before a prompt is sent. An active Codex session
+uses Codex's native queue and collects the result only after the uniquely marked
+user turn. A session without a writer uses the existing resume/tmux transport.
+
+An active Claude session is writable only when the deployment explicitly owns
+its event-driven Monitor transport. Managed inbox files are named
+`<session-id>.jsonl` under `agentManagedInboxRoot`; delivery additionally
+requires exactly one Claude Desktop writer and exactly one watcher bound to that
+inbox. The native call appends a correlated visible user request and waits for
+the matching final transcript turn. Any other active Claude session remains
+readable but fails with `active_external_writer`; the gateway never starts a
+second writer or injects terminal keystrokes.
 
 Static `tmuxIngress` remains unchanged for dedicated ingress sessions. A task
 without `session_id` continues to use that route. A task with `session_id` uses

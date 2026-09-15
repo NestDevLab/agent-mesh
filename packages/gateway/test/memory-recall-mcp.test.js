@@ -23,6 +23,24 @@ test("stdio memory runner sends one bounded MCP request without exposing process
   assert.equal(calls[0].message.params.name, "memory_search");
 });
 
+test("operator-complete runner uses the interactive MCP handoff and verifies all nine tools", async () => {
+  let observedEnv;
+  const tools = ["memory_search", "memory_read", "memory_propose", "memory_proposal_status",
+    "documents_search", "document_read", "document_upsert", "document_delete", "memory_status"];
+  const runner = new StdioMemoryRecallRunner(
+    { command: "/usr/bin/node", script: "/opt/amf/interactive-mcp.mjs", handoffDir: "/run/amf/codex", operatorComplete: true },
+    1234,
+    async (_command, _args, input, options) => {
+      observedEnv = options.env;
+      const request = JSON.parse(input);
+      return JSON.stringify({ jsonrpc: "2.0", id: request.id, result: { tools: tools.map((name) => ({ name })) } });
+    }
+  );
+  assert.equal(await runner.status(), "ready");
+  assert.equal(observedEnv.AMF_INTERACTIVE_MCP_HANDOFF_DIR, "/run/amf/codex");
+  assert.equal(observedEnv.AMF_INTERACTIVE_RECALL_HANDOFF_DIR, undefined);
+});
+
 test("stdio memory runner preserves sanitized governed-write diagnoses", async () => {
   for (const [error, expected] of [
     [{ code: -32602, message: "Invalid governed memory record", data: { code: "canonical_record_invalid", fields: ["confidence", "secret"] } },
@@ -71,6 +89,52 @@ test("memory profile advertises only status, search, and read", async () => {
   assert.deepEqual(payload.result.tools.map((tool) => tool.name).sort(), [
     "memory_backend_status", "memory_read", "memory_search"
   ]);
+  await handler.close();
+});
+
+test("operator-complete memory profile exposes the governed AMF tool contract", async () => {
+  const meshPrincipal = { id: "p", kind: "service", requesterId: "agent.codex", allowedTools: [],
+    allowedAgentIds: [], allowedWorkspaceIds: [], allowedDomainIds: [] };
+  const calls = [];
+  const memoryRunner = {
+    governedWrite: false,
+    operatorComplete: true,
+    async status() { return "ready"; },
+    async call(name, input) { calls.push({ name, input }); return { ok: true }; }
+  };
+  const handler = createMcpHubHandler({ profile: "memory",
+    gateway: { async submitEnvelope() {}, async getEnvelope() {}, async getDelivery() { return []; } },
+    agents: [], rateLimiter: { consume() { return true; } }, googleRunner: { async run() { return []; } },
+    memoryState: "ready", memoryRunner,
+    resolvePrincipal: () => ({ mesh: meshPrincipal, allowedGoogleAccounts: [] }) });
+  const authInfo = { token: "x", clientId: "test", scopes: [] };
+  const headers = { "content-type": "application/json", accept: "application/json, text/event-stream",
+    "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/list" };
+  const listedResponse = await handler.fetch(new Request("https://mcp.example.test/memory", { method: "POST", headers,
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: { _meta: {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+      "io.modelcontextprotocol/clientCapabilities": {}
+    } } }) }), { authInfo });
+  const listed = await listedResponse.json();
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name).sort(), [
+    "document_delete", "document_read", "document_upsert", "documents_search", "memory_backend_status",
+    "memory_proposal_status", "memory_propose", "memory_read", "memory_search", "memory_status"
+  ]);
+
+  const called = await handler.fetch(new Request("https://mcp.example.test/memory", { method: "POST",
+    headers: { ...headers, "mcp-method": "tools/call", "mcp-name": "document_upsert" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: {
+      name: "document_upsert", arguments: { document: { documentId: "doc-1" }, text: "body",
+        expectedRevision: null, idempotencyKey: "doc-upsert-1" }, _meta: {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
+        "io.modelcontextprotocol/clientCapabilities": {}
+      }
+    } }) }), { authInfo });
+  assert.equal(called.status, 200);
+  assert.deepEqual(calls[0], { name: "document_upsert", input: { document: { documentId: "doc-1" }, text: "body",
+    expectedRevision: null, idempotencyKey: "doc-upsert-1" } });
   await handler.close();
 });
 

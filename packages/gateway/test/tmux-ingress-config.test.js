@@ -119,6 +119,21 @@ test("session native call path must be absolute when configured", async () => {
   await assert.rejects(readRuntimeConfig(path), /Invalid agent sessions agentNativeCallPath/);
 });
 
+test("managed Claude inbox root must be absolute when configured", async () => {
+  const path = await writeConfig({
+    agentSessions: { ...AGENT_SESSIONS, agentManagedInboxRoot: "managed-inboxes" }
+  });
+  await assert.rejects(readRuntimeConfig(path), /Invalid agent sessions agentManagedInboxRoot/);
+});
+
+test("memory recall legacy and operator-complete profiles are mutually exclusive", async () => {
+  const path = await writeConfig({ memoryRecall: {
+    command: "/usr/bin/node", script: "/opt/amf/interactive-mcp.mjs", handoffDir: "/run/amf/codex",
+    governedWrite: true, operatorComplete: true
+  } });
+  await assert.rejects(readRuntimeConfig(path), /mutually exclusive/);
+});
+
 test("session providers must match the declared agent provider", async () => {
   const path = await writeConfig({
     agentSessions: {

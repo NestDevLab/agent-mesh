@@ -3,9 +3,10 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { open, readdir, stat } from "node:fs/promises";
+import { access, open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 
@@ -16,6 +17,7 @@ const { values } = parseArgs({
     "correlation-id": { type: "string" },
     timeout: { type: "string", default: "120" },
     message: { type: "string" },
+    "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
   },
   strict: true
@@ -40,12 +42,12 @@ if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 
   fail("--timeout must be an integer from 1 to 600", 2);
 }
 
-if (agent === "claude") {
-  blockClaudeVisibleTurn(sessionId, correlationId);
-}
+const claudeInbox = agent === "claude"
+  ? await requireManagedClaudeInbox(sessionId, correlationId, values["managed-inbox-root"])
+  : undefined;
 
-const initialTranscripts = await resolveTranscripts(sessionId);
-if (initialTranscripts.length === 0) fail(`no Codex transcript for session ${sessionId}`, 1);
+const initialTranscripts = await resolveTranscripts(agent, sessionId);
+if (initialTranscripts.length === 0) fail(`no ${agent} transcript for session ${sessionId}`, 1);
 const offsets = new Map();
 for (const transcript of initialTranscripts) offsets.set(transcript, (await stat(transcript)).size);
 const resultToken = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
@@ -55,17 +57,26 @@ const resultEnd = `[[/R:${resultToken}]]`;
 const protocolMessage = `${anchor} Use the result protocol shown on the next line.\n` +
   `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
 
-const queued = await run(process.env.CODEX_BIN || "codex", [
-  "queue", "--thread", sessionId, "--message", protocolMessage
-], (timeoutSeconds + 15) * 1000);
-if (queued.code !== 0) fail(safeError("Codex native queue failed", queued), 1);
+if (agent === "codex") {
+  const queued = await run(process.env.CODEX_BIN || "codex", [
+    "queue", "--thread", sessionId, "--message", protocolMessage
+  ], (timeoutSeconds + 15) * 1000);
+  if (queued.code !== 0) fail(safeError("Codex native queue failed", queued), 1);
+} else {
+  await appendManagedInbox(claudeInbox, {
+    schema: "agent-mesh.monitor-inbox.v1",
+    deliveryId: correlationId,
+    meshId: correlationId,
+    prompt: protocolMessage,
+  });
+}
 
 const deadline = Date.now() + timeoutSeconds * 1000;
 const transcriptStates = new Map();
 let anchorSeen = false;
 let uncorrelatedOutputSeen = false;
 while (Date.now() < deadline) {
-  for (const transcript of await resolveTranscripts(sessionId)) {
+  for (const transcript of await resolveTranscripts(agent, sessionId)) {
     const state = transcriptStates.get(transcript) ?? {
       anchorSeen: false,
       finalBodies: [],
@@ -76,8 +87,7 @@ while (Date.now() < deadline) {
     offsets.set(transcript, consumed.offset);
     for (const record of consumed.records) {
       const payload = record?.payload;
-      if (typeof payload !== "object" || payload === null) continue;
-      const userText = messageText(record, "user");
+      const userText = agent === "codex" ? messageText(record, "user") : claudeMessageText(record, "user");
       if (userText?.includes(anchor)) {
         state.anchorSeen = true;
         anchorSeen = true;
@@ -85,19 +95,24 @@ while (Date.now() < deadline) {
         state.eventBodies = [];
         continue;
       }
-      const assistantText = messageText(record, "assistant");
+      const assistantText = agent === "codex" ? messageText(record, "assistant") : claudeMessageText(record, "assistant");
       if (!state.anchorSeen) {
         if (assistantText) uncorrelatedOutputSeen = true;
         continue;
       }
       if (assistantText) {
-        const bodies = record.type === "response_item" && payload.phase === "final_answer"
+        const bodies = agent === "claude"
           ? state.finalBodies
-          : record.type === "event_msg" ? state.eventBodies : undefined;
+          : record.type === "response_item" && payload?.phase === "final_answer"
+            ? state.finalBodies
+            : record.type === "event_msg" ? state.eventBodies : undefined;
         if (bodies !== undefined && !bodies.includes(assistantText)) bodies.push(assistantText);
-        continue;
+        if (agent === "codex") continue;
       }
-      if (record.type === "event_msg" && payload.type === "task_complete") {
+      if (
+        (agent === "codex" && record.type === "event_msg" && payload?.type === "task_complete") ||
+        (agent === "claude" && record.type === "assistant" && record?.message?.stop_reason === "end_turn")
+      ) {
         finish(
           state.finalBodies.length > 0 ? state.finalBodies : state.eventBodies,
           resultBegin,
@@ -155,8 +170,10 @@ function messageText(record, role) {
   return parts.length > 0 ? parts.join("\n") : undefined;
 }
 
-async function resolveTranscripts(id) {
-  const root = process.env.CODEX_SESSION_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+async function resolveTranscripts(agentName, id) {
+  const root = agentName === "codex"
+    ? process.env.CODEX_SESSION_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions")
+    : process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
   let entries;
   try { entries = await readdir(root, { recursive: true, withFileTypes: true }); }
   catch { return []; }
@@ -165,7 +182,9 @@ async function resolveTranscripts(id) {
     if (!entry.isFile() || !entry.name.endsWith(".jsonl") || !entry.name.includes(id)) continue;
     const path = join(entry.parentPath, entry.name);
     try {
-      if (await transcriptSessionId(path) === id) candidates.push({ path, mtime: (await stat(path)).mtimeMs });
+      if (agentName === "claude" || await transcriptSessionId(path) === id) {
+        candidates.push({ path, mtime: (await stat(path)).mtimeMs });
+      }
     }
     catch { /* The transcript can rotate while discovery runs. */ }
   }
@@ -229,6 +248,48 @@ function safeError(prefix, result) {
   return detail ? `${prefix}: ${detail}` : `${prefix}: exit ${result.code}`;
 }
 
+function claudeMessageText(record, role) {
+  if (role === "user") {
+    const raw = JSON.stringify(record);
+    return raw.includes("AGENT_MESH_INBOX") || raw.includes("agent-mesh.monitor-inbox.v1") ? raw :
+      record?.type === "user" && typeof record?.message?.content === "string" ? record.message.content : undefined;
+  }
+  if (record?.type !== "assistant" || !Array.isArray(record?.message?.content)) return undefined;
+  const parts = record.message.content
+    .filter((part) => part?.type === "text" && typeof part.text === "string")
+    .map((part) => part.text);
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+async function requireManagedClaudeInbox(id, correlation, configuredRoot) {
+  const root = String(configuredRoot || "").trim();
+  if (!root) blockClaudeVisibleTurn(id, correlation, "claude_active_user_turn_unsupported");
+  const inbox = resolve(root, `${id}.jsonl`);
+  if (!inbox.startsWith(`${resolve(root)}/`)) blockClaudeVisibleTurn(id, correlation, "claude_managed_inbox_invalid");
+  try { await access(inbox); }
+  catch { blockClaudeVisibleTurn(id, correlation, "claude_managed_inbox_missing"); }
+  const writerStatusPath = fileURLToPath(new URL("./session-writer-status.mjs", import.meta.url));
+  const checked = await run(process.execPath, [
+    writerStatusPath,
+    "--agent", "claude",
+    "--session", id,
+    "--require-kind", "claude-desktop",
+    "--require-monitor-inbox", inbox,
+  ], 15_000);
+  if (checked.code !== 0) blockClaudeVisibleTurn(id, correlation, "claude_managed_transport_unavailable");
+  return inbox;
+}
+
+async function appendManagedInbox(path, record) {
+  const handle = await open(path, "a", 0o600);
+  try {
+    await handle.write(`${JSON.stringify(record)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
 function required(value, flag) {
   const text = String(value || "").trim();
   if (!text) fail(`${flag} is required`, 2);
@@ -244,16 +305,16 @@ function fail(message, code) {
   process.exit(code);
 }
 
-function blockClaudeVisibleTurn(id, correlation) {
+function blockClaudeVisibleTurn(id, correlation, reasonOverride) {
   const ownership = inspectClaudeSessionOwnership(id);
   const desktopOwned = ownership.writers.some((writer) => writer.kind === "claude-desktop");
-  const reason = ownership.state === "unknown"
+  const reason = reasonOverride || (ownership.state === "unknown"
     ? "claude_ownership_unknown"
     : desktopOwned
       ? "claude_active_user_turn_unsupported"
       : ownership.state === "owned"
         ? "claude_active_user_turn_unsupported"
-        : "claude_session_not_active";
+        : "claude_session_not_active");
   const blocker = {
     schemaVersion: 1,
     adapter: "claude-active-session",

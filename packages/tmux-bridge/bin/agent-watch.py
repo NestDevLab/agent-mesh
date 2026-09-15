@@ -10,6 +10,7 @@ existing Agent Mesh transport.
 from __future__ import annotations
 
 import argparse
+import datetime
 import glob
 import hashlib
 import json
@@ -29,7 +30,7 @@ ROOT_ENV = {
     "codex": "CODEX_SESSION_ROOT",
     "claude": "CLAUDE_SESSION_ROOT",
 }
-MAX_BODY = 1400
+MAX_BODY = 4096
 MAX_REASONING = 300
 # Codex mints v7 UUIDs, Claude v4. Don't pin the version nibble.
 SESSION_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
@@ -92,7 +93,7 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
     }
 
 
-def discover_transcripts(agent: str) -> list[dict[str, Any]]:
+def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
     root = session_root(agent)
     if not root.is_dir():
         return []
@@ -105,7 +106,87 @@ def discover_transcripts(agent: str) -> list[dict[str, Any]]:
         previous = sessions.get(session_id)
         if previous is None or candidate.stat().st_mtime_ns > previous.stat().st_mtime_ns:
             sessions[session_id] = candidate
-    return [transcript_facts(agent, session_id, path) for session_id, path in sorted(sessions.items())]
+    return sorted(
+        sessions.items(), key=lambda item: item[1].stat().st_mtime_ns, reverse=True
+    )
+
+
+def discover_transcripts(agent: str) -> list[dict[str, Any]]:
+    return [transcript_facts(agent, session_id, path) for session_id, path in transcript_candidates(agent)]
+
+
+def visible_transcript(agent: str, session_id: str, transcript: Path) -> list[dict[str, Any]]:
+    """Return only user-visible turns; never expose reasoning, tools, context, or paths."""
+    items: list[dict[str, Any]] = []
+    for raw_line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            record = json.loads(raw_line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        for item in events_for(agent, record, session_id):
+            if item.get("kind") not in {"human_message", "agent_message"}:
+                continue
+            role = "user" if item["kind"] == "human_message" else "assistant"
+            public = {
+                "event_id": item["source_event_id"],
+                "role": role,
+                "timestamp": item.get("timestamp"),
+                "text": item.get("body", ""),
+            }
+            # Codex can persist equivalent event_msg and response_item records.
+            # Suppress only adjacent exact duplicates so distinct repeated turns survive.
+            if items and all(items[-1].get(key) == public.get(key) for key in ("role", "timestamp", "text")):
+                continue
+            items.append(public)
+    return items
+
+
+def transcript_page(agent: str, session_id: str, transcript: Path, cursor: int, limit: int) -> dict[str, Any]:
+    items = visible_transcript(agent, session_id, transcript)
+    page = items[cursor : cursor + limit]
+    next_cursor = cursor + len(page)
+    return {
+        "agent_type": agent,
+        "session_id": session_id,
+        "events": page,
+        "next_cursor": next_cursor if next_cursor < len(items) else None,
+    }
+
+
+def search_transcripts(agent: str, query: str, cursor: int, limit: int, scan_limit: int) -> dict[str, Any]:
+    needle = query.casefold()
+    results: list[dict[str, Any]] = []
+    candidates = transcript_candidates(agent)
+    position = min(cursor, len(candidates))
+    stop = min(position + scan_limit, len(candidates))
+    while position < stop and len(results) < limit:
+        session_id, transcript = candidates[position]
+        position += 1
+        item = transcript_facts(agent, session_id, transcript)
+        matches = []
+        for event_item in visible_transcript(agent, str(item["runtime_uuid"]), transcript):
+            if needle in str(event_item["text"]).casefold():
+                matches.append(event_item)
+                if len(matches) >= 3:
+                    break
+        if not matches:
+            continue
+        results.append({
+            "agent_type": agent,
+            "session_id": item["runtime_uuid"],
+            "cwd": item["cwd"],
+            "updated_at": datetime.datetime.fromtimestamp(
+                transcript.stat().st_mtime, datetime.timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
+            "matches": matches,
+        })
+    return {
+        "agent_type": agent,
+        "results": results,
+        "next_cursor": position if position < len(candidates) else None,
+    }
 
 
 def valid_session_id(value: str) -> bool:
@@ -461,23 +542,34 @@ def main() -> int:
     parser.add_argument("--inbox", type=Path)
     parser.add_argument("--format", choices=("text", "jsonl"), default="text")
     parser.add_argument("--interval", type=float, default=2.0)
+    parser.add_argument("--cursor", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--scan-limit", type=int, default=500)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--init", action="store_true")
     mode.add_argument("--drain", action="store_true")
     mode.add_argument("--inspect", action="store_true", help="read transcript facts without a cursor")
     mode.add_argument("--discover", action="store_true", help="read facts for every transcript without cursors")
+    mode.add_argument("--transcript", action="store_true", help="read a bounded page of visible user and assistant turns")
+    mode.add_argument("--search", metavar="QUERY", help="search visible turns across persisted transcripts")
     args = parser.parse_args()
 
-    if not args.discover and not args.session_id:
-        parser.error("session_id is required unless --discover is used")
-    if args.discover and args.session_id:
-        parser.error("session_id cannot be combined with --discover")
+    if not args.discover and args.search is None and not args.session_id:
+        parser.error("session_id is required unless --discover or --search is used")
+    if (args.discover or args.search is not None) and args.session_id:
+        parser.error("session_id cannot be combined with --discover or --search")
     if args.session_id is not None and not valid_session_id(args.session_id):
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
         parser.error("--interval must be greater than zero")
-    if not args.inspect and not args.discover and args.state is None:
-        parser.error("--state is required unless --inspect or --discover is used")
+    if args.cursor < 0:
+        parser.error("--cursor must be zero or greater")
+    if args.limit < 1 or args.limit > 1000:
+        parser.error("--limit must be from 1 to 1000")
+    if args.scan_limit < 1 or args.scan_limit > 1000:
+        parser.error("--scan-limit must be from 1 to 1000")
+    if not args.inspect and not args.discover and not args.transcript and args.search is None and args.state is None:
+        parser.error("--state is required unless a read-only mode is used")
     if args.inbox is not None and args.agent != "claude":
         parser.error("--inbox is supported only for Claude Monitor notifications")
     if args.inbox is not None and not args.inbox.is_file():
@@ -486,6 +578,14 @@ def main() -> int:
     if args.discover:
         facts = discover_transcripts(args.agent)
         print(json.dumps(facts, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.search is not None:
+        query = args.search.strip()
+        if not query or len(query) > 512:
+            parser.error("--search must contain from 1 to 512 characters")
+        matches = search_transcripts(args.agent, query, args.cursor, args.limit, args.scan_limit)
+        print(json.dumps(matches, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(matches, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     assert args.session_id is not None
@@ -500,6 +600,11 @@ def main() -> int:
             print(json.dumps(facts, ensure_ascii=False, sort_keys=True))
         else:
             print(json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+
+    if args.transcript:
+        page = transcript_page(args.agent, args.session_id, transcript, args.cursor, args.limit)
+        print(json.dumps(page, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(page, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     assert args.state is not None

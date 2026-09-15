@@ -7,6 +7,8 @@
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> inspect <SESSION_ID> [--json] [--graph-target <TMUX_NAME>]
+#   agent-session.sh --agent <NAME> transcript <SESSION_ID> [--json] [--cursor <OFFSET>] [--limit <COUNT>]
+#   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
@@ -702,6 +704,67 @@ case "$cmd" in
         else
             _session_row "$SESSION_FILE"
         fi
+        ;;
+
+    transcript)
+        SESSION_ID="${1:-}"
+        shift || true
+        TRANSCRIPT_JSON="false"
+        TRANSCRIPT_CURSOR=0
+        TRANSCRIPT_LIMIT=100
+        [[ "$SESSION_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+            || { echo "ERROR: a complete session UUID is required" >&2; exit 1; }
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --json) TRANSCRIPT_JSON="true"; shift ;;
+                --cursor)
+                    [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] \
+                        || { echo "ERROR: --cursor must be zero or greater" >&2; exit 1; }
+                    TRANSCRIPT_CURSOR="$2"; shift 2 ;;
+                --limit)
+                    [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -ge 1 && "$2" -le 1000 ]] \
+                        || { echo "ERROR: --limit must be an integer from 1 to 1000" >&2; exit 1; }
+                    TRANSCRIPT_LIMIT="$2"; shift 2 ;;
+                *) echo "ERROR: unknown transcript argument '$1'" >&2; exit 1 ;;
+            esac
+        done
+        WATCH_ARGS=(--agent "$AGENT_NAME" "$SESSION_ID" --transcript --cursor "$TRANSCRIPT_CURSOR" --limit "$TRANSCRIPT_LIMIT")
+        [[ "$TRANSCRIPT_JSON" == "true" ]] && WATCH_ARGS+=(--format jsonl)
+        python3 "$SCRIPT_DIR/agent-watch.py" "${WATCH_ARGS[@]}" || {
+            code=$?; [[ "$code" -eq 1 ]] && exit 3; exit "$code"
+        }
+        ;;
+
+    search)
+        SEARCH_QUERY="${1:-}"
+        shift || true
+        SEARCH_JSON="false"
+        SEARCH_LIMIT=100
+        SEARCH_CURSOR=0
+        SEARCH_SCAN_LIMIT=500
+        [[ -n "$SEARCH_QUERY" && ${#SEARCH_QUERY} -le 512 ]] \
+            || { echo "ERROR: QUERY must contain from 1 to 512 characters" >&2; exit 1; }
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --json) SEARCH_JSON="true"; shift ;;
+                --limit)
+                    [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -ge 1 && "$2" -le 1000 ]] \
+                        || { echo "ERROR: --limit must be an integer from 1 to 1000" >&2; exit 1; }
+                    SEARCH_LIMIT="$2"; shift 2 ;;
+                --cursor)
+                    [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] \
+                        || { echo "ERROR: --cursor must be zero or greater" >&2; exit 1; }
+                    SEARCH_CURSOR="$2"; shift 2 ;;
+                --scan-limit)
+                    [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -ge 1 && "$2" -le 1000 ]] \
+                        || { echo "ERROR: --scan-limit must be an integer from 1 to 1000" >&2; exit 1; }
+                    SEARCH_SCAN_LIMIT="$2"; shift 2 ;;
+                *) echo "ERROR: unknown search argument '$1'" >&2; exit 1 ;;
+            esac
+        done
+        WATCH_ARGS=(--agent "$AGENT_NAME" --search "$SEARCH_QUERY" --cursor "$SEARCH_CURSOR" --limit "$SEARCH_LIMIT" --scan-limit "$SEARCH_SCAN_LIMIT")
+        [[ "$SEARCH_JSON" == "true" ]] && WATCH_ARGS+=(--format jsonl)
+        python3 "$SCRIPT_DIR/agent-watch.py" "${WATCH_ARGS[@]}"
         ;;
 
     writer-status)

@@ -21,6 +21,31 @@ export interface AgentSessionPage {
   next_cursor: string | null;
 }
 
+export interface AgentTranscriptEvent {
+  event_id: string;
+  role: "user" | "assistant";
+  timestamp: string | null;
+  text: string;
+}
+
+export interface AgentTranscriptPage {
+  session_id: string;
+  agent_id: string;
+  provider: "codex" | "claude";
+  workspace_id: string;
+  events: readonly AgentTranscriptEvent[];
+  next_cursor: string | null;
+}
+
+export interface AgentSessionSearchResult extends AgentSessionSummary {
+  matches: readonly AgentTranscriptEvent[];
+}
+
+export interface AgentSessionSearchPage {
+  results: readonly AgentSessionSearchResult[];
+  next_cursor: string | null;
+}
+
 export interface AgentSessionSendInput {
   sessionId: string;
   workspaceId: string;
@@ -37,6 +62,8 @@ export interface AgentSessionProvider {
   readonly provider: "codex" | "claude";
   list(input: { workspaceId: string; cursor?: string; limit: number }): Promise<AgentSessionPage>;
   get(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionSummary | undefined>;
+  transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined>;
+  search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
 }
 
@@ -64,6 +91,14 @@ export class AgentSessionRegistry {
     return this.require(agentId).get(input);
   }
 
+  transcript(agentId: string, input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined> {
+    return this.require(agentId).transcript(input);
+  }
+
+  search(agentId: string, input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage> {
+    return this.require(agentId).search(input);
+  }
+
   send(agentId: string, input: AgentSessionSendInput): Promise<TmuxSendResult> {
     return this.require(agentId).send(input);
   }
@@ -87,12 +122,34 @@ interface BridgeSessionResponse {
   sessions: BridgeSession[];
 }
 
+interface BridgeTranscriptResponse {
+  agent_type: string;
+  session_id: string;
+  events: AgentTranscriptEvent[];
+  next_cursor: number | null;
+}
+
+interface BridgeSearchResult {
+  agent_type: string;
+  session_id: string;
+  cwd: string;
+  updated_at: string;
+  matches: AgentTranscriptEvent[];
+}
+
+interface BridgeSearchResponse {
+  agent_type: string;
+  results: BridgeSearchResult[];
+  next_cursor: number | null;
+}
+
 export interface ShellAgentSessionProviderOptions {
   agentId: string;
   agentType: "codex" | "claude";
   agentSessionPath: string;
   agentSendPath: string;
   agentNativeCallPath?: string;
+  agentManagedInboxRoot?: string;
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
   meshSocket?: string;
   timeoutSeconds?: number;
@@ -110,6 +167,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly scanLimit: number;
   private readonly meshSocket?: string;
   private readonly agentNativeCallPath?: string;
+  private readonly agentManagedInboxRoot?: string;
   private readonly timeoutSeconds: number;
   private readonly run: ShellRun;
   private readonly sender: ShellTmuxSender;
@@ -125,6 +183,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     this.scanLimit = options.scanLimit ?? 500;
     this.meshSocket = options.meshSocket;
     this.agentNativeCallPath = options.agentNativeCallPath;
+    this.agentManagedInboxRoot = options.agentManagedInboxRoot;
     this.timeoutSeconds = options.timeoutSeconds ?? 120;
     this.run = options.run ?? defaultRun;
     this.sender = new ShellTmuxSender({
@@ -164,6 +223,60 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     return this.summary(session, input.workspaceId);
   }
 
+  async transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined> {
+    const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
+    if (session === undefined) return undefined;
+    const offset = decodeCursor(input.cursor);
+    const response = await this.command([
+      "--agent", this.provider, "transcript", input.sessionId, "--json",
+      "--cursor", String(offset), "--limit", String(input.limit)
+    ], true);
+    if (response.code === 3) return undefined;
+    if (response.code !== 0) throw new Error(safeProcessError("Agent transcript read failed", response));
+    const parsed = parseBridgeTranscript(response.stdout, this.provider, input.sessionId);
+    return {
+      session_id: input.sessionId,
+      agent_id: this.agentId,
+      provider: this.provider,
+      workspace_id: input.workspaceId,
+      events: parsed.events,
+      next_cursor: parsed.next_cursor === null ? null : encodeCursor(parsed.next_cursor)
+    };
+  }
+
+  async search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage> {
+    const roots = this.roots(input.workspaceId);
+    let candidateCursor = decodeCursor(input.cursor);
+    const results: AgentSessionSearchResult[] = [];
+    let nextCursor: number | null = candidateCursor;
+    while (results.length < input.limit && nextCursor !== null) {
+      const response = await this.command([
+        "--agent", this.provider, "search", input.query, "--json",
+        "--cursor", String(candidateCursor), "--limit", String(input.limit - results.length),
+        "--scan-limit", String(this.scanLimit)
+      ]);
+      const parsed = parseBridgeSearch(response.stdout, this.provider);
+      for (const item of parsed.results) {
+        if (!roots.some((root) => isWithin(item.cwd, root))) continue;
+        results.push({
+          session_id: item.session_id,
+          agent_id: this.agentId,
+          provider: this.provider,
+          workspace_id: input.workspaceId,
+          status: "discovered",
+          updated_at: item.updated_at,
+          matches: item.matches
+        });
+      }
+      nextCursor = parsed.next_cursor;
+      if (nextCursor !== null && nextCursor <= candidateCursor) {
+        throw new Error("Agent transcript search bridge returned a non-advancing cursor.");
+      }
+      if (nextCursor !== null) candidateCursor = nextCursor;
+    }
+    return { results, next_cursor: nextCursor === null ? null : encodeCursor(nextCursor) };
+  }
+
   async send(input: AgentSessionSendInput): Promise<TmuxSendResult> {
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const prior = this.sendQueues.get(queueKey) ?? Promise.resolve();
@@ -193,18 +306,22 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
     const writers = parseWriterStatus(writerStatus.stdout, this.provider, input.sessionId);
     if (writers.length > 0) {
-      if (this.provider === "codex" && this.agentNativeCallPath !== undefined) {
+      if (this.agentNativeCallPath !== undefined) {
         if (input.correlationId === undefined) {
           return { ok: false, error: "A correlation ID is required for an active Codex session call." };
         }
-        const result = await this.run(process.execPath, [
+        const nativeArgs = [
           this.agentNativeCallPath,
-          "--agent", "codex",
+          "--agent", this.provider,
           "--session", input.sessionId,
           "--correlation-id", input.correlationId,
           "--timeout", String(this.timeoutSeconds),
           "--message", input.message
-        ], {
+        ];
+        if (this.provider === "claude" && this.agentManagedInboxRoot !== undefined) {
+          nativeArgs.push("--managed-inbox-root", this.agentManagedInboxRoot);
+        }
+        const result = await this.run(process.execPath, nativeArgs, {
           env: { ...processEnv },
           timeoutMs: (this.timeoutSeconds + 20) * 1000
         });
@@ -212,6 +329,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       }
       return {
         ok: false,
+        ...(this.provider === "claude" ? { error_code: "active_external_writer" as const } : {}),
         error: this.provider === "claude"
           ? "Claude session already has an active writer; no safe native queue transport is configured."
           : "Session already has an active writer."
@@ -310,6 +428,51 @@ function parseWriterStatus(value: string, expectedAgent: string, expectedSession
   return candidate.writers;
 }
 
+function validTranscriptEvent(value: unknown): value is AgentTranscriptEvent {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const event = value as Partial<AgentTranscriptEvent>;
+  return typeof event.event_id === "string" &&
+    (event.role === "user" || event.role === "assistant") &&
+    (event.timestamp === null || typeof event.timestamp === "string") &&
+    typeof event.text === "string";
+}
+
+function parseBridgeTranscript(value: string, expectedAgent: string, expectedSessionId: string): BridgeTranscriptResponse {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); }
+  catch { throw new Error("Agent transcript bridge returned invalid JSON."); }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Agent transcript bridge returned an invalid payload.");
+  }
+  const candidate = parsed as Partial<BridgeTranscriptResponse>;
+  if (
+    candidate.agent_type !== expectedAgent || candidate.session_id !== expectedSessionId ||
+    !Array.isArray(candidate.events) || candidate.events.some((event) => !validTranscriptEvent(event)) ||
+    (candidate.next_cursor !== null && (!Number.isSafeInteger(candidate.next_cursor) || Number(candidate.next_cursor) < 0))
+  ) throw new Error("Agent transcript bridge returned malformed metadata.");
+  return candidate as BridgeTranscriptResponse;
+}
+
+function parseBridgeSearch(value: string, expectedAgent: string): BridgeSearchResponse {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); }
+  catch { throw new Error("Agent transcript search bridge returned invalid JSON."); }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Agent transcript search bridge returned malformed metadata.");
+  }
+  const response = parsed as Partial<BridgeSearchResponse>;
+  if (response.agent_type !== expectedAgent || !Array.isArray(response.results) || response.results.some((item) => {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) return true;
+    const candidate = item as Partial<BridgeSearchResult>;
+    return candidate.agent_type !== expectedAgent || typeof candidate.session_id !== "string" ||
+      typeof candidate.cwd !== "string" || typeof candidate.updated_at !== "string" ||
+      !Array.isArray(candidate.matches) || candidate.matches.some((event) => !validTranscriptEvent(event));
+  }) || (response.next_cursor !== null && (!Number.isSafeInteger(response.next_cursor) || Number(response.next_cursor) < 0))) {
+    throw new Error("Agent transcript search bridge returned malformed metadata.");
+  }
+  return response as BridgeSearchResponse;
+}
+
 function nativeCallResult(result: { code: number; stdout: string; stderr: string }): TmuxSendResult {
   if (result.code === 0) return { ok: true, reply: result.stdout.trim() };
   const detail = result.stderr.trim().split(/\r?\n/).at(-1);
@@ -318,6 +481,7 @@ function nativeCallResult(result: { code: number; stdout: string; stderr: string
   if (result.code === 66) return { ok: true, result_error_code: "result_uncorrelated", error: `Agent output was not correlated${suffix}` };
   if (result.code === 67) return { ok: true, result_error_code: "result_parsing_failure", error: `Agent result parsing failed${suffix}` };
   if (result.code === 124) return { ok: true, result_error_code: "result_timeout", error: `Agent result collection timed out${suffix}` };
+  if (result.code === 78) return { ok: false, error_code: "active_external_writer", error: "Claude session is active but is not owned by the configured managed transport." };
   return { ok: false, error: `Agent native session call failed${suffix}` };
 }
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmod, mkdir, mkdtemp, readFile, writeFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -157,4 +158,58 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
     { pid, kind: "claude-desktop", source: "claude-agents" },
   ]);
   assert.equal(await (await import("node:fs/promises")).readFile(log, "utf8"), "agents --json\n");
+});
+
+test("managed Claude Monitor inbox returns a correlated visible result", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-native-claude-managed-"));
+  const procRoot = join(root, "proc");
+  const ownerPid = 8552;
+  const watcherPid = 9552;
+  const inboxRoot = join(root, "inboxes");
+  const inbox = join(inboxRoot, `${sessionId}.jsonl`);
+  const transcriptRoot = join(root, "projects", "-workspace-demo");
+  const transcript = join(transcriptRoot, `${sessionId}.jsonl`);
+  await mkdir(join(procRoot, String(ownerPid)), { recursive: true });
+  await mkdir(join(procRoot, String(watcherPid)), { recursive: true });
+  await mkdir(inboxRoot, { recursive: true });
+  await mkdir(transcriptRoot, { recursive: true });
+  await writeFile(join(procRoot, String(ownerPid), "cmdline"), "/tmp/.claude/remote/ccd-cli/2.1.255\0--output-format\0stream-json\0");
+  await writeFile(join(procRoot, String(watcherPid), "cmdline"), `node\0/opt/agent-inbox-watch.mjs\0--inbox\0${inbox}\0--follow\0`);
+  await writeFile(inbox, "");
+  await writeFile(transcript, JSON.stringify({ type: "summary", sessionId }) + "\n");
+  const claude = join(root, "fake-claude.mjs");
+  await writeFile(claude, `#!/usr/bin/env node
+console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: "${sessionId}" }]));
+`);
+  await chmod(claude, 0o755);
+
+  const correlationId = "task-claude-managed";
+  const token = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
+  const child = spawn(process.execPath, [nativeCall,
+    "--agent", "claude", "--session", sessionId,
+    "--correlation-id", correlationId, "--timeout", "2", "--message", "Visible request",
+    "--managed-inbox-root", inboxRoot,
+  ], { env: {
+    ...process.env,
+    CLAUDE_BIN: claude,
+    CLAUDE_SESSION_ROOT: join(root, "projects"),
+    AGENT_WRITER_PROC_ROOT: procRoot,
+    AGENT_NATIVE_CALL_POLL_MS: "10",
+  } });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
+  assert.match(await readFile(inbox, "utf8"), /agent-mesh\.monitor-inbox\.v1/);
+  await appendFile(transcript, [
+    { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
+    { type: "assistant", message: { stop_reason: "end_turn", content: [
+      { type: "text", text: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` }
+    ] } }
+  ].map(JSON.stringify).join("\n") + "\n");
+  const code = await new Promise((resolveExit) => child.on("exit", resolveExit));
+  assert.equal(code, 0, stderr);
+  assert.equal(stdout, "CLAUDE_MANAGED_OK\n");
 });
