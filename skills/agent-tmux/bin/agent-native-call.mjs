@@ -61,7 +61,12 @@ if (agent === "codex") {
   const queued = await run(process.env.CODEX_BIN || "codex", [
     "queue", "--thread", sessionId, "--message", protocolMessage
   ], (timeoutSeconds + 15) * 1000);
-  if (queued.code !== 0) fail(safeError("Codex native queue failed", queued), 1);
+  if (queued.code !== 0) {
+    if (codexSessionIsNotDirectlyWritable(queued)) {
+      fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+    }
+    fail(safeError("Codex native queue failed", queued), 1);
+  }
 } else {
   await appendManagedInbox(claudeInbox, {
     schema: "agent-mesh.monitor-inbox.v1",
@@ -74,7 +79,6 @@ if (agent === "codex") {
 const deadline = Date.now() + timeoutSeconds * 1000;
 const transcriptStates = new Map();
 let anchorSeen = false;
-let uncorrelatedOutputSeen = false;
 while (Date.now() < deadline) {
   for (const transcript of await resolveTranscripts(agent, sessionId)) {
     const state = transcriptStates.get(transcript) ?? {
@@ -97,7 +101,6 @@ while (Date.now() < deadline) {
       }
       const assistantText = agent === "codex" ? messageText(record, "assistant") : claudeMessageText(record, "assistant");
       if (!state.anchorSeen) {
-        if (assistantText) uncorrelatedOutputSeen = true;
         continue;
       }
       if (assistantText) {
@@ -124,10 +127,10 @@ while (Date.now() < deadline) {
   await sleep(Number(process.env.AGENT_NATIVE_CALL_POLL_MS || 250));
 }
 fail(
-  !anchorSeen && uncorrelatedOutputSeen
-    ? "Agent output was produced but not correlated to the queued turn."
-    : "native session result collection timed out",
-  !anchorSeen && uncorrelatedOutputSeen ? 66 : 124
+  anchorSeen
+    ? "correlated native session result collection timed out"
+    : "queued turn did not start before native session result collection timed out",
+  124
 );
 
 function finish(bodies, begin, end) {
@@ -246,6 +249,12 @@ function run(command, args, timeoutMs) {
 function safeError(prefix, result) {
   const detail = result.stderr.trim().split(/\r?\n/).at(-1);
   return detail ? `${prefix}: ${detail}` : `${prefix}: exit ${result.code}`;
+}
+
+function codexSessionIsNotDirectlyWritable(result) {
+  const detail = `${result.stderr}\n${result.stdout}`.toLowerCase();
+  return detail.includes("direct app-server input is not allowed for unloaded spawned sub-agents")
+    || detail.includes("direct app-server input is not allowed for multi-agent v2 sub-agents");
 }
 
 function claudeMessageText(record, role) {
