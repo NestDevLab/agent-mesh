@@ -29,6 +29,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 |---|---|
 | `bin/agent-session.sh` | Create, resume, list, or kill agent sessions in tmux |
 | `bin/agent-spawn.sh` | Resolve one Limen role/profile or exact model+effort and launch the routed session |
+| `bin/bridge-launch-record.py` | Append and reconcile attributable bridge launch events |
 | `bin/agent-send.sh` | Send a prompt and wait for the reply |
 | `bin/agent-wait.sh` | Wait for a turn with progress/stalled checkpoints |
 | `bin/agent-read.sh` | Read pane output (`--full`, `--last-reply`, `--status`) |
@@ -72,6 +73,13 @@ $BIN/agent-send.sh --agent codex "$TARGET" "describe the project state"
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
+
+# With no explicit route, Codex uses the authored `developer` profile and the
+# first readable user policy below. Limen alone chooses model and effort:
+#   $XDG_CONFIG_HOME/limen/codex-shadow-policy-v2.json
+#   $XDG_CONFIG_HOME/limen/codex-shadow-policy.json
+# If Limen or an automatically discovered policy is unavailable, launch remains
+# fail-open and its record has route.status="unavailable" with null model/effort.
 
 # Governed session: a role/profile plus explicit Limen policy chooses the candidate.
 # agent-spawn.sh delegates route, lease, renewal, and completion to the dispatcher.
@@ -149,8 +157,30 @@ When a runtime UUID becomes known after its first prompt, reconcile it without g
 $BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
 ```
 
-The bridge atomically writes only `<state>/graph.json`; it makes no calls to context or
-work-item systems. Nodes may carry explicit opaque `--refs source:record,...` values, such as
+Every successfully launched bridge session appends a private JSONL event to
+`${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/launches/events.jsonl` (override
+with `MESH_LAUNCH_RECORD_FILE`). The stable schema name is
+`agent-mesh.bridge-launch-event.v1`. A `launch.started` event records the bridge
+origin, launch id, caller id when available, tmux target, cwd, profile, Limen
+model/effort, route status, launch time, and a known thread id for resumes. After
+the first successful Codex prompt, `agent-send.sh` queries `state_5.sqlite` in
+read-only mode for a non-child thread with the same cwd created after launch. It
+appends `launch.thread_resolved` only for exactly one candidate and updates the
+graph runtime UUID; zero or multiple candidates append
+`launch.thread_ambiguous` and remain unattributed rather than guessing.
+
+Inspect the stream and graph after rollout without changing state:
+
+```bash
+python3 $BIN/bridge-launch-record.py \
+  --state "${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/launches/events.jsonl" \
+  show --target mesh-codex-main
+node $BIN/mesh-graph.mjs show --json
+```
+
+The graph command atomically writes only `<state>/graph.json`; launch provenance is
+the separate append-only stream described above. Neither path calls context or work-item
+systems. Nodes may carry explicit opaque `--refs source:record,...` values, such as
 `management:MGT-0239` or `amf:record-id`. The graph validates their shape but never resolves or
 infers them. A work-orchestration or recall consumer may read `graph.json` and compose its own
 projection. Keep `summary` to one compact line; session context belongs behind a ref.

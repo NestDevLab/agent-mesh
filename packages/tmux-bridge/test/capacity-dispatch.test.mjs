@@ -385,22 +385,92 @@ sleep 0.5
 
 test("agent-session remains fail-open when Limen is unavailable before launch", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-fail-open-"));
-  const bin = join(dir, "bin"), agents = join(dir, "agents"), launchArgs = join(dir, "codex-args.txt");
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), config = join(dir, "config");
+  const launchArgs = join(dir, "codex-args.txt"), launchEvents = join(dir, "launch-events.jsonl");
   const socket = `mesh-fail-open-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-fail-open-${process.pid}`;
-  await mkdir(bin); await mkdir(agents);
-  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
+  await mkdir(bin); await mkdir(agents); await mkdir(join(config, "limen"), { recursive: true });
+  await writeFile(join(config, "limen", "codex-shadow-policy-v2.json"), "{}\n");
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_DEFAULT_PROFILE="developer"\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
   const codex = join(bin, "fake-codex");
   await writeFile(codex, `#!/bin/sh\nprintf '%s|%s\\n' "$*" "\${MESH_LIMEN_ROUTE:-}" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
   await chmod(codex, 0o700);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: join(bin, "missing-limen"), MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents };
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: join(bin, "missing-limen"), MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
   try {
-    const launched = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
     assert.equal(launched.code, 0, launched.stderr);
     assert.equal(launched.stdout.trim(), target);
     assert.match(launched.stderr, /Limen governed launch unavailable/);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
     assert.doesNotMatch(await readFile(launchArgs, "utf8"), /\{\"provider\"/);
+    const record = JSON.parse((await readFile(launchEvents, "utf8")).trim());
+    assert.equal(record.origin, "tmux-bridge");
+    assert.equal(record.profile, "developer");
+    assert.equal(record.route.status, "unavailable");
+    assert.equal(record.model, null);
+    assert.equal(record.effort, null);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-session routes an unqualified Codex launch through the developer profile", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-default-route-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), config = join(dir, "config");
+  const limen = join(bin, "limen"), codex = join(bin, "fake-codex");
+  const limenArgs = join(dir, "limen-args.txt"), launchArgs = join(dir, "codex-args.txt");
+  const launchEvents = join(dir, "launch-events.jsonl"), state = join(dir, "queue.json");
+  const socket = `mesh-default-route-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-default-route-${process.pid}`;
+  await mkdir(bin); await mkdir(agents); await mkdir(join(config, "limen"), { recursive: true });
+  await writeFile(join(config, "limen", "codex-shadow-policy-v2.json"), "{}\n");
+  await writeFile(limen, `#!/bin/sh
+printf '%s\n' "$@" >> '${limenArgs}'
+if [ "$1" = route ]; then
+  echo '{"decision":"route","provider":"codex","model":"policy-model","nativeModel":"native-model","effort":"medium","decisionId":"route-default","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"policy-model","nativeModel":"native-model","effort":"medium","capacityCostBase":null}}}'
+  exit 0
+fi
+if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi
+exit 2
+`);
+  await writeFile(codex, `#!/bin/sh
+printf '%s\n' "$*" > '${launchArgs}'
+printf 'FAKE>\n'
+while :; do sleep 1; done
+`);
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"
+AGENT_ALIVE_PROCESS_PATTERN="^fake-codex$"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="FAKE>"
+AGENT_WORKING_PATTERN="WORKING"
+AGENT_IDLE_PATTERN="FAKE>"
+AGENT_RESUME_CMD="fake-codex"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="fake-codex"
+AGENT_SESSION_DIR="${dir}"
+AGENT_DEFAULT_PROFILE="developer"
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=()
+AGENT_SUPPORTS_EFFORT="true"
+AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=()
+`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: state, MESH_LEASE_RENEW_MS: "20", AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
+    assert.equal(launched.code, 0, launched.stderr);
+    assert.equal(launched.stdout.trim(), target);
+    assert.match(await readFile(limenArgs, "utf8"), /--profile\ndeveloper/);
+    assert.match(await readFile(launchArgs, "utf8"), /--model native-model --effort medium/);
+    const record = JSON.parse((await readFile(launchEvents, "utf8")).trim());
+    assert.equal(record.profile, "developer");
+    assert.equal(record.route.status, "routed");
+    assert.equal(record.model, "native-model");
+    assert.equal(record.effort, "medium");
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
     await rm(dir, { recursive: true, force: true });

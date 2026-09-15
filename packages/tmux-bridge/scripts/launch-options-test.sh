@@ -12,6 +12,7 @@ SESSION_BIN="$BIN_DIR/agent-session.sh"
 export MESH_TMUX_SOCKET="mesh-launch-options-test-$$"
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-launch-options.XXXXXX")"
+export MESH_LAUNCH_RECORD_FILE="$WORKDIR/launch-events.jsonl"
 FAKE_CLI="$WORKDIR/fake-cli"
 LOG_FILE="$WORKDIR/argv"
 export FAKE_CLI_CWD_LOG="$WORKDIR/resume-cwd"
@@ -265,7 +266,7 @@ run_and_check() {
             -- --model raw-model --effort low >/dev/null
     else
         "$SESSION_BIN" --agent "launch-options-supported-$$" \
-            --model model-one --effort high --approval-policy never resume session-123 "$target" \
+            --model model-one --effort high --approval-policy never resume 11111111-1111-4111-8111-111111111111 "$target" \
             -- --model raw-model --effort low >/dev/null
     fi
     TARGETS+=("$target")
@@ -275,7 +276,7 @@ run_and_check() {
 run_and_check new launch-options-new-$$ \
     "--new -a never --model raw-model --effort low "
 run_and_check resume launch-options-resume-$$ \
-    "--resume session-123 -a never --model raw-model --effort low "
+    "--resume 11111111-1111-4111-8111-111111111111 -a never --model raw-model --effort low "
 
 # Claude's persisted project directory must be the tmux cwd before the CLI
 # starts. A missing session file must not create a target or send any key.

@@ -8,6 +8,7 @@ BIN="$AGENT_MESH_ROOT/packages/tmux-bridge/bin"
 POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json"
 
 # New / resume (prints tmux target)
+# Unqualified Codex launches use the Limen `developer` profile by default.
 TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
 TARGET=$($BIN/agent-session.sh --agent claude resume <SESSION_ID>)
 
@@ -26,6 +27,10 @@ $BIN/mesh-send.sh --to codex --from claude-reviewer --from-agent claude --from-t
 # Session graph
 $BIN/mesh-graph.mjs show --compact
 $BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
+# Launch provenance (append-only; thread resolution is exact or ambiguous).
+python3 "$BIN/bridge-launch-record.py" \
+  --state "${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/launches/events.jsonl" \
+  show --target <TMUX_TARGET>
 # Read-only sweep of persisted transcripts; discovered sessions stay unclassified.
 $BIN/mesh-graph.mjs discover --agent codex --quiet-after 3600 --json
 # Reconcile persisted sessions and live tmux targets; missing targets become quiet, never closed.
