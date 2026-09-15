@@ -16,7 +16,7 @@ async function probe(mode) {
     await mkdir(join(root, 'bin'));
     await mkdir(join(root, 'agents'));
     await mkdir(join(root, 'fake-bin'));
-    for (const name of ['agent-session.sh', '_mesh-tmux.sh', '_mesh-graph.sh']) {
+    for (const name of ['agent-session.sh', '_mesh-tmux.sh', '_mesh-graph.sh', '_mesh-launch-record.sh', 'bridge-launch-record.py']) {
       try { await copyFile(join(bridge, 'bin', name), join(root, 'bin', name)); }
       catch (error) { if (name !== '_mesh-graph.sh' || error.code !== 'ENOENT') throw error; }
     }
@@ -51,7 +51,7 @@ esac
     let result;
     try {
       result = { code: 0, ...await exec('bash', [join(root, 'bin', 'agent-session.sh'), '--agent', 'probe', 'resume', '11111111-1111-4111-8111-111111111111', 'test-target'], {
-        env: { ...process.env, AGENT_MESH_AGENTS_DIR: join(root, 'agents'), PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_REPLACE_UNREADY_SESSION: mode === 'replace-existing' ? '1' : '0', MESH_GRAPH_DISABLE: '1', MESH_TMUX_SOCKET: 'strict-fixture' },
+        env: { ...process.env, AGENT_MESH_AGENTS_DIR: join(root, 'agents'), PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_REPLACE_UNREADY_SESSION: mode === 'replace-existing' ? '1' : '0', MESH_GRAPH_DISABLE: '1', MESH_LAUNCH_RECORD_FILE: join(root, 'launch-events.jsonl'), MESH_TMUX_SOCKET: 'strict-fixture' },
         timeout: 5000
       }) };
     } catch (error) { result = { code: error.code, stdout: error.stdout, stderr: error.stderr }; }

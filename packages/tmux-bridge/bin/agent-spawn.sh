@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-spawn.sh — one governed Limen route-and-launch entry point.
 #
-# This command delegates to agent-session.sh, which delegates route, lease,
+# This command delegates defaults to agent-session.sh, which delegates route, lease,
 # renewal, and completion lifecycle work to mesh-capacity-dispatch.mjs. Do not
 # replace that dispatcher with direct Limen calls here.
 
@@ -58,14 +58,12 @@ if [[ ( -n "$MODEL" && -z "$EFFORT" ) || ( -z "$MODEL" && -n "$EFFORT" ) ]]; the
     echo "ERROR: exact persistent routing requires both --model and --effort" >&2
     exit 2
 fi
-[[ -n "$PROFILE" || ( -n "$MODEL" && -n "$EFFORT" ) ]] || {
-    echo "usage: agent-spawn.sh --agent codex|claude (--profile ROLE_OR_PROFILE | --model MODEL --effort EFFORT) --limen-config POLICY [--force] new|resume ..." >&2
-    exit 2
-}
-[[ -n "$LIMEN_CONFIG" ]] || {
-    echo "ERROR: governed persistent routing requires --limen-config; Limen policy selection must be explicit" >&2
-    exit 2
-}
+if [[ -n "$PROFILE" || -n "$MODEL" || -n "$EFFORT" ]]; then
+    [[ -n "$LIMEN_CONFIG" ]] || {
+        echo "ERROR: an explicit route requires --limen-config" >&2
+        exit 2
+    }
+fi
 if [[ "$FORCE" == "true" && ( -z "$MODEL" || -z "$EFFORT" || -n "$PROFILE" ) ]]; then
     echo "ERROR: --force requires the exact --model and --effort pair" >&2
     exit 2
