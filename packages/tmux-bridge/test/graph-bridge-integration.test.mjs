@@ -27,6 +27,8 @@ test("bridge lifecycle registers generated nodes, reconciliation, and delegated 
   const agents = join(root, "agents");
   const sessions = join(root, "sessions");
   const state = join(root, "state");
+  const launchEvents = join(root, "launch-events.jsonl");
+  const codexDb = join(root, "state_5.sqlite");
   const socket = `mesh-graph-bridge-${process.pid}-${Date.now()}`;
   // Session admission accepts runtime providers only. The temporary config
   // therefore models a Codex runtime while exposing a graph-worker alias.
@@ -40,6 +42,8 @@ test("bridge lifecycle registers generated nodes, reconciliation, and delegated 
     MESH_GRAPH_STATE: state,
     MESH_GRAPH_DISABLE: "0",
     MESH_GRAPH_PARENT_TARGET: parentTarget,
+    MESH_LAUNCH_RECORD_FILE: launchEvents,
+    CODEX_STATE_DB: codexDb,
     MESH_TMUX_SOCKET: socket,
     XDG_CONFIG_HOME: join(root, "config"),
     MESH_WORK_CLASS: "L1",
@@ -78,9 +82,18 @@ test("bridge lifecycle registers generated nodes, reconciliation, and delegated 
     assert.equal(launched.code, 0, launched.stderr);
     assert.equal(launched.stdout.trim(), target);
 
-    await writeFile(join(sessions, `rollout-${runtimeUuid}.jsonl`), `${JSON.stringify({ type: "session_meta", payload: { cwd: "/graph/workspace" } })}\n`);
-    const inspected = await run(sessionBin, ["--agent", agent, "inspect", runtimeUuid, "--json", "--graph-target", target], environment);
-    assert.equal(inspected.code, 0, inspected.stderr);
+    const launch = JSON.parse((await readFile(launchEvents, "utf8")).trim());
+    const createDb = await run("python3", ["-c", `
+import sqlite3, sys
+connection = sqlite3.connect(sys.argv[1])
+connection.executescript("""
+CREATE TABLE threads (id TEXT PRIMARY KEY, cwd TEXT NOT NULL, created_at INTEGER NOT NULL, created_at_ms INTEGER);
+CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL);
+""")
+connection.execute("INSERT INTO threads(id, cwd, created_at, created_at_ms) VALUES(?, ?, ?, ?)", (sys.argv[2], sys.argv[4], 1, int(sys.argv[3]) + 1))
+connection.commit()
+`, codexDb, runtimeUuid, String(launch.launchedAtMs), launch.cwd], environment);
+    assert.equal(createDb.code, 0, createDb.stderr);
 
     const delivered = await run(sendBin, [
       "--to", "graph-worker", "--target", target,
@@ -100,6 +113,8 @@ test("bridge lifecycle registers generated nodes, reconciliation, and delegated 
     assert.ok(payload.edges.some((edge) => edge.from === parentNode.id && edge.to === worker.id && edge.type === "spawned-by"));
     assert.ok(payload.edges.some((edge) => edge.from === parentNode.id && edge.to === worker.id && edge.type === "delegates-to"));
     assert.match(await readFile(join(state, "events.jsonl"), "utf8"), /node\.upserted/);
+    const launchRecords = (await readFile(launchEvents, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    assert.ok(launchRecords.some(event => event.event === "launch.thread_resolved" && event.threadId === runtimeUuid));
   } finally {
     await run("tmux", ["-L", socket, "kill-server"], environment);
     await rm(root, { recursive: true, force: true });

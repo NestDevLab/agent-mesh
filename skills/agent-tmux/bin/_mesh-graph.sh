@@ -36,6 +36,7 @@ mesh_graph_current_target() {
 
 mesh_graph_register_session() {
     local agent="$1" target="$2" cwd="$3" role_profile="$4" title="$5" initial_summary="${6:-discovered via bridge}"
+    local runtime_uuid="${7:-}"
     local existing args result node_id parent_target parent_id
     mesh_graph_enabled || return 0
 
@@ -44,6 +45,7 @@ mesh_graph_register_session() {
     [[ -n "$cwd" ]] && args+=(--cwd "$cwd")
     [[ -n "$role_profile" ]] && args+=(--role-profile "$role_profile")
     [[ -n "$title" ]] && args+=(--title "$title")
+    [[ -n "$runtime_uuid" ]] && args+=(--runtime-uuid "$runtime_uuid")
     [[ -z "$existing" ]] && args+=(--summary "$initial_summary")
     result="$(mesh_graph_cmd "${args[@]}" --json)" || return 1
     node_id="$(node -e 'const result = JSON.parse(process.argv[1]); process.stdout.write(result.node.id);' "$result")" || return 1

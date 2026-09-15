@@ -25,6 +25,10 @@ AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$SCRIPT_DIR/../agents}"
 # Dedicated tmux socket (see _mesh-tmux.sh).
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/_mesh-tmux.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-graph.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-launch-record.sh"
 
 AGENT_NAME="codex"
 QUIET="false"
@@ -252,6 +256,20 @@ done
 if [[ "$submitted" -ne 1 ]]; then
     echo "NOT_SUBMITTED: prompt was pasted into '$TARGET', but the turn did not start" >&2
     exit 6
+fi
+
+# A new Codex thread is durable once its first turn starts. Reconcile the launch
+# record and graph only from an exact read-only DB match; ambiguity is recorded
+# and never guessed.
+if [[ "$AGENT_NAME" == "codex" ]]; then
+    if RESOLVED_THREAD_ID="$(mesh_launch_record_reconcile "$AGENT_NAME" "$TARGET")"; then
+        if [[ -n "$RESOLVED_THREAD_ID" ]]; then
+            mesh_graph_reconcile_runtime "$AGENT_NAME" "$TARGET" "$RESOLVED_THREAD_ID" "" \
+                || echo "WARN: graph runtime reconciliation failed for '$TARGET'" >&2
+        fi
+    else
+        echo "WARN: launch record reconciliation failed for '$TARGET'" >&2
+    fi
 fi
 
 deadline=$(( $(date +%s) + TIMEOUT ))
