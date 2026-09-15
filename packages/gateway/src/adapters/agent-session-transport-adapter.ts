@@ -37,7 +37,10 @@ export class AgentSessionTransportAdapter implements MeshTransportAdapter {
         ...(typeof envelope.correlation_id === "string" ? { correlationId: envelope.correlation_id } : {}),
         idempotencyKey: envelope.idempotency_key
       });
-      if (!result.ok) return { status: "failed", details: { reason: result.error ?? "session_send_failed", ...correlation } };
+      if (!result.ok) return {
+        status: "failed",
+        details: { reason: result.error_code ?? result.error ?? "session_send_failed", ...correlation }
+      };
       return {
         status: "delivered",
         details: {

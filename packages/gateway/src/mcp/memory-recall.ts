@@ -15,9 +15,12 @@ export interface MemoryRecallConfig {
   script: string;
   handoffDir: string;
   governedWrite?: boolean;
+  operatorComplete?: boolean;
 }
 
-export type MemoryRecallTool = "memory_search" | "memory_read" | "memory_upsert" | "memory_proposal_status";
+export type MemoryRecallTool = "memory_search" | "memory_read" | "memory_upsert" | "memory_propose" |
+  "memory_proposal_status" | "documents_search" | "document_read" | "document_upsert" |
+  "document_delete" | "memory_status";
 
 export class MemoryRecallError extends Error {
   readonly code: string;
@@ -33,6 +36,7 @@ export class MemoryRecallError extends Error {
 
 export interface MemoryRecallRunner {
   readonly governedWrite: boolean;
+  readonly operatorComplete?: boolean;
   call(name: MemoryRecallTool, args: Record<string, unknown>): Promise<unknown>;
   status(): Promise<"ready" | "degraded">;
 }
@@ -49,6 +53,7 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
   private readonly timeoutMs: number;
   private readonly execute: MemoryProcessExecutor;
   readonly governedWrite: boolean;
+  readonly operatorComplete: boolean;
 
   constructor(
     config: MemoryRecallConfig,
@@ -57,6 +62,7 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
   ) {
     this.config = config;
     this.governedWrite = config.governedWrite === true;
+    this.operatorComplete = config.operatorComplete === true;
     this.timeoutMs = timeoutMs;
     this.execute = execute;
   }
@@ -80,8 +86,10 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
     try {
       const response = await this.rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" });
       const names = response.result?.tools?.map((tool: { name?: unknown }) => tool.name);
-      const required = ["memory_search", "memory_read",
-        ...(this.governedWrite ? ["memory_upsert", "memory_proposal_status"] : [])];
+      const required = this.operatorComplete
+        ? ["memory_search", "memory_read", "memory_propose", "memory_proposal_status",
+          "documents_search", "document_read", "document_upsert", "document_delete", "memory_status"]
+        : ["memory_search", "memory_read", ...(this.governedWrite ? ["memory_upsert", "memory_proposal_status"] : [])];
       return Array.isArray(names) && required.every((name) => names.includes(name))
         ? "ready"
         : "degraded";
@@ -96,7 +104,12 @@ export class StdioMemoryRecallRunner implements MemoryRecallRunner {
         [this.config.script],
         `${JSON.stringify(message)}\n`,
         {
-          env: { ...process.env, AMF_INTERACTIVE_RECALL_HANDOFF_DIR: this.config.handoffDir },
+          env: {
+            ...process.env,
+            ...(this.operatorComplete
+              ? { AMF_INTERACTIVE_MCP_HANDOFF_DIR: this.config.handoffDir }
+              : { AMF_INTERACTIVE_RECALL_HANDOFF_DIR: this.config.handoffDir })
+          },
           windowsHide: true,
           timeoutMs: this.timeoutMs,
           maxOutputBytes: MAX_OUTPUT_BYTES
@@ -146,12 +159,72 @@ export function registerMemoryRecallTools(server: McpServer, runner: MemoryRecal
       idempotencyKey: input.idempotency_key
     })));
 
-    server.registerTool("memory_proposal_status", {
-      title: "Read memory proposal status",
-      description: "Reads the lifecycle status of a governed AMF proposal.",
+  }
+
+  if (runner.governedWrite || runner.operatorComplete) server.registerTool("memory_proposal_status", {
+    title: "Read memory proposal status",
+    description: "Reads the lifecycle status of a governed AMF proposal.",
+    annotations: readOnlyAnnotations,
+    inputSchema: z.object({ id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$/) })
+  }, async (input) => toolResult(runner.call("memory_proposal_status", input)));
+
+  if (runner.operatorComplete) {
+    server.registerTool("memory_propose", {
+      title: "Propose a memory candidate",
+      description: "Queues an authorized proposal candidate for AMF curation; it never writes canonical memory directly.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: z.object({
+        scope: z.string().min(1).max(192),
+        text: z.string().min(1).max(4096),
+        metadata: z.record(z.string(), z.unknown()).optional(),
+        infer: z.boolean().optional(),
+        idempotencyKey: z.string().min(1).max(192)
+      })
+    }, async (input) => toolResult(runner.call("memory_propose", input)));
+
+    server.registerTool("documents_search", {
+      title: "Search AMF documents",
+      description: "Searches documents in the vaults granted to the request-bound AMF principal.",
       annotations: readOnlyAnnotations,
-      inputSchema: z.object({ id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9:._-]{0,191}$/) })
-    }, async (input) => toolResult(runner.call("memory_proposal_status", input)));
+      inputSchema: z.object({ query: z.string().min(1).max(4096), limit: z.number().int().min(1).max(100).optional() })
+    }, async (input) => toolResult(runner.call("documents_search", input)));
+
+    server.registerTool("document_read", {
+      title: "Read an AMF document",
+      description: "Reads one authorized document revision.",
+      annotations: readOnlyAnnotations,
+      inputSchema: z.object({ documentId: z.string().min(1).max(192), revision: z.number().int().min(1).nullable().optional() })
+    }, async (input) => toolResult(runner.call("document_read", input)));
+
+    server.registerTool("document_upsert", {
+      title: "Write an AMF document revision",
+      description: "Writes an authorized revisioned document using optimistic concurrency and idempotency.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: z.object({
+        document: z.record(z.string(), z.unknown()),
+        text: z.string().nullable(),
+        expectedRevision: z.number().int().min(0).nullable(),
+        idempotencyKey: z.string().min(1).max(192)
+      })
+    }, async (input) => toolResult(runner.call("document_upsert", input)));
+
+    server.registerTool("document_delete", {
+      title: "Tombstone an AMF document",
+      description: "Appends an authorized document tombstone; it does not erase revision history.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+      inputSchema: z.object({
+        document: z.record(z.string(), z.unknown()),
+        expectedRevision: z.number().int().min(1),
+        idempotencyKey: z.string().min(1).max(192)
+      })
+    }, async (input) => toolResult(runner.call("document_delete", input)));
+
+    server.registerTool("memory_status", {
+      title: "Read AMF readiness",
+      description: "Returns bounded readiness from the authorized AMF operator surface.",
+      annotations: readOnlyAnnotations,
+      inputSchema: z.object({})
+    }, async (input) => toolResult(runner.call("memory_status", input)));
   }
 }
 

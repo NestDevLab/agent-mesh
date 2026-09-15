@@ -12,6 +12,10 @@ const sessions = [
   { session_id: "session-old", agent_type: "codex", cwd: "/workspace/project-b", updated_at: "2026-08-29T12:00:00Z" },
   { session_id: "session-secret", agent_type: "codex", cwd: "/private/other", updated_at: "2026-08-28T12:00:00Z" }
 ];
+const transcriptEvents = [
+  { event_id: "event-1", role: "user", timestamp: "2026-08-30T12:00:00Z", text: "search-token question" },
+  { event_id: "event-2", role: "assistant", timestamp: "2026-08-30T12:00:01Z", text: "answer" }
+];
 
 function provider(overrides = {}) {
   const calls = [];
@@ -25,6 +29,17 @@ function provider(overrides = {}) {
       return session === undefined
         ? { code: 3, stdout: "", stderr: "not found" }
         : { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [session] }), stderr: "" };
+    }
+    if (command === "/bridge/agent-session.sh" && args.includes("transcript")) {
+      return { code: 0, stdout: JSON.stringify({
+        agent_type: "codex", session_id: "session-new", events: transcriptEvents, next_cursor: null
+      }), stderr: "" };
+    }
+    if (command === "/bridge/agent-session.sh" && args.includes("search")) {
+      return { code: 0, stdout: JSON.stringify({ agent_type: "codex", results: [
+        { agent_type: "codex", session_id: "session-new", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:00Z", matches: [transcriptEvents[0]] },
+        { agent_type: "codex", session_id: "session-secret", cwd: "/private/other", updated_at: "2026-08-28T12:00:00Z", matches: [transcriptEvents[0]] }
+      ], next_cursor: null }), stderr: "" };
     }
     if (command === "/bridge/agent-session.sh" && args.includes("writer-status")) {
       return {
@@ -81,6 +96,21 @@ test("session lookup fails closed outside the authorized workspace", async () =>
     instance.list({ workspaceId: "workspace.allowed", cursor: "bm90LWEtbnVtYmVy", limit: 25 }),
     /Invalid agent session cursor/
   );
+});
+
+test("transcript reads and searches remain workspace-scoped and path-free", async () => {
+  const { instance } = provider();
+  const transcript = await instance.transcript({
+    workspaceId: "workspace.allowed", sessionId: "session-new", limit: 50
+  });
+  assert.deepEqual(transcript.events, transcriptEvents);
+  assert.equal("cwd" in transcript, false);
+
+  const searched = await instance.search({
+    workspaceId: "workspace.allowed", query: "search-token", limit: 25
+  });
+  assert.deepEqual(searched.results.map((item) => item.session_id), ["session-new"]);
+  assert.equal("cwd" in searched.results[0], false);
 });
 
 test("targeted send resumes the exact session then preserves task correlation", async () => {
@@ -194,7 +224,39 @@ test("active Claude sessions fail closed instead of starting a second writer", a
     messageId: "message", contextId: "context", correlationId: "task", idempotencyKey: "idem"
   });
   assert.equal(result.ok, false);
+  assert.equal(result.error_code, "active_external_writer");
   assert.match(result.error, /no safe native queue transport/);
+  assert.equal(calls.some((call) => call.args.includes("resume")), false);
+});
+
+test("active managed Claude sessions use the configured native inbox call", async () => {
+  const claudeSession = { ...sessions[0], agent_type: "claude" };
+  const calls = [];
+  const instance = new ShellAgentSessionProvider({
+    agentId: "agent.ingress.claude",
+    agentType: "claude",
+    agentSessionPath: "/bridge/agent-session.sh",
+    agentSendPath: "/bridge/agent-send.sh",
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    agentManagedInboxRoot: "/state/claude-inboxes",
+    workspaceRoots: { "workspace.allowed": ["/workspace"] },
+    run: async (command, args) => {
+      calls.push({ command, args: [...args] });
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [claudeSession] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", writers: [{ pid: 43, kind: "claude-desktop" }] }), stderr: "" };
+      if (command === process.execPath) return { code: 0, stdout: "managed Claude result\n", stderr: "" };
+      throw new Error("unexpected command");
+    }
+  });
+  const result = await instance.send({
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "hello",
+    messageId: "message", contextId: "context", correlationId: "task", idempotencyKey: "idem"
+  });
+  assert.deepEqual(result, { ok: true, reply: "managed Claude result" });
+  const native = calls.find((call) => call.command === process.execPath);
+  assert.ok(native.args.includes("claude"));
+  assert.ok(native.args.includes("--managed-inbox-root"));
+  assert.ok(native.args.includes("/state/claude-inboxes"));
   assert.equal(calls.some((call) => call.args.includes("resume")), false);
 });
 

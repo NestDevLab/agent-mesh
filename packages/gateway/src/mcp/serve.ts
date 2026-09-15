@@ -77,6 +77,7 @@ interface AgentSessionsConfig {
   agentSessionPath: string;
   agentSendPath: string;
   agentNativeCallPath?: string;
+  agentManagedInboxRoot?: string;
   meshSocket?: string;
   timeoutSeconds?: number;
   scanLimit?: number;
@@ -433,6 +434,12 @@ function validateAgentSessions(
   ) {
     throw new Error("Invalid agent sessions agentNativeCallPath configuration.");
   }
+  if (
+    value.agentManagedInboxRoot !== undefined &&
+    (typeof value.agentManagedInboxRoot !== "string" || !value.agentManagedInboxRoot.startsWith("/"))
+  ) {
+    throw new Error("Invalid agent sessions agentManagedInboxRoot configuration.");
+  }
   if (!Array.isArray(value.providers) || value.providers.length === 0) {
     throw new Error("Invalid agent sessions providers configuration.");
   }
@@ -480,6 +487,7 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     agentSessionPath: config.agentSessionPath,
     agentSendPath: config.agentSendPath,
     ...(config.agentNativeCallPath === undefined ? {} : { agentNativeCallPath: config.agentNativeCallPath }),
+    ...(config.agentManagedInboxRoot === undefined ? {} : { agentManagedInboxRoot: config.agentManagedInboxRoot }),
     workspaceRoots: provider.workspace_roots,
     ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
     ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds }),
@@ -494,8 +502,14 @@ function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
       throw new Error(`Invalid memory recall ${field} configuration.`);
     }
   }
-  if (value.governedWrite !== undefined && typeof value.governedWrite !== "boolean") {
-    throw new Error("Invalid memory recall governedWrite configuration.");
+  if (
+    (value.governedWrite !== undefined && typeof value.governedWrite !== "boolean") ||
+    (value.operatorComplete !== undefined && typeof value.operatorComplete !== "boolean")
+  ) {
+    throw new Error("Invalid memory recall capability configuration.");
+  }
+  if (value.governedWrite === true && value.operatorComplete === true) {
+    throw new Error("Memory recall governedWrite and operatorComplete profiles are mutually exclusive.");
   }
 }
 

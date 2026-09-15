@@ -14,7 +14,9 @@ import type { SubmitEnvelopeResult } from "../core/gateway-service.js";
 import type {
   AgentSessionPage,
   AgentSessionRegistry,
-  AgentSessionSummary
+  AgentSessionSummary,
+  AgentSessionSearchPage,
+  AgentTranscriptPage
 } from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
@@ -34,7 +36,9 @@ export const MESH_MCP_TOOLS = [
   "mesh_task_cancel",
   "mesh_thread_get",
   "mesh_agent_sessions_list",
-  "mesh_agent_session_get"
+  "mesh_agent_session_get",
+  "mesh_agent_sessions_search",
+  "mesh_agent_session_transcript"
 ] as const;
 
 export type MeshMcpTool = (typeof MESH_MCP_TOOLS)[number];
@@ -108,7 +112,9 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_task_cancel: 20,
       mesh_thread_get: 60,
       mesh_agent_sessions_list: 30,
-      mesh_agent_session_get: 60
+      mesh_agent_session_get: 60,
+      mesh_agent_sessions_search: 20,
+      mesh_agent_session_transcript: 60
     },
     windowMs = 60_000,
     nowMs: () => number = Date.now
@@ -307,6 +313,46 @@ export class MeshMcpFacade {
     return session;
   }
 
+  async searchAgentSessions(input: {
+    targetAgentId: string;
+    workspaceId?: string;
+    query: string;
+    cursor?: string;
+    limit: number;
+  }): Promise<AgentSessionSearchPage> {
+    this.assertAllowed("mesh_agent_sessions_search");
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    return this.sessions(target.id).search(target.id, {
+      workspaceId,
+      query: input.query,
+      cursor: input.cursor,
+      limit: input.limit
+    });
+  }
+
+  async getAgentSessionTranscript(input: {
+    targetAgentId: string;
+    workspaceId?: string;
+    sessionId: string;
+    cursor?: string;
+    limit: number;
+  }): Promise<AgentTranscriptPage> {
+    this.assertAllowed("mesh_agent_session_transcript");
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    const transcript = await this.sessions(target.id).transcript(target.id, {
+      workspaceId,
+      sessionId: input.sessionId,
+      cursor: input.cursor,
+      limit: input.limit
+    });
+    if (transcript === undefined) {
+      throw new Error("Agent session is not available in the authenticated workspace.");
+    }
+    return transcript;
+  }
+
   private async taskInput(input: MeshTaskDispatchInput) {
     const target = this.allowedTarget(input.targetAgentId);
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
@@ -406,6 +452,20 @@ const agentSessionGetSchema = z.object({
   target_agent_id: identifierSchema,
   workspace_id: identifierSchema.optional(),
   session_id: identifierSchema
+});
+const agentSessionsSearchSchema = z.object({
+  target_agent_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  query: z.string().min(1).max(512),
+  cursor: z.string().min(1).max(512).optional(),
+  limit: z.number().int().min(1).max(100).optional()
+});
+const agentSessionTranscriptSchema = z.object({
+  target_agent_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  session_id: identifierSchema,
+  cursor: z.string().min(1).max(512).optional(),
+  limit: z.number().int().min(1).max(100).optional()
 });
 
 /** Creates a fresh MCP server instance for one HTTP serving unit. */
@@ -599,6 +659,48 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
           workspaceId: input.workspace_id,
           sessionId: input.session_id
         }) });
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_agent_sessions_search")) server.registerTool(
+    "mesh_agent_sessions_search",
+    {
+      title: "Search Agent Mesh session transcripts",
+      description: "Searches visible user and assistant text in provider-native transcripts inside one authenticated workspace.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: agentSessionsSearchSchema
+    },
+    async (input) => {
+      try {
+        return result(await facade.searchAgentSessions({
+          targetAgentId: input.target_agent_id,
+          workspaceId: input.workspace_id,
+          query: input.query,
+          cursor: input.cursor,
+          limit: input.limit ?? 25
+        }));
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_agent_session_transcript")) server.registerTool(
+    "mesh_agent_session_transcript",
+    {
+      title: "Read an Agent Mesh session transcript",
+      description: "Reads a bounded page of visible user and assistant turns for one provider-native session.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: agentSessionTranscriptSchema
+    },
+    async (input) => {
+      try {
+        return result(await facade.getAgentSessionTranscript({
+          targetAgentId: input.target_agent_id,
+          workspaceId: input.workspace_id,
+          sessionId: input.session_id,
+          cursor: input.cursor,
+          limit: input.limit ?? 50
+        }));
       } catch (error) { return errorResult(error); }
     }
   );

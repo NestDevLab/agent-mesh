@@ -115,6 +115,51 @@ test("Claude session discovery uses the same provider-neutral JSON contract", as
   assert.match(payload.sessions[0].cwd, /workspace\/claude$/);
 });
 
+test("native transcript read and search expose only visible Codex and Claude turns", async () => {
+  const home = await mkdtemp(join(tmpdir(), "mesh-native-transcript-"));
+  const codexId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const codexDir = join(home, ".codex", "sessions", "2026", "09", "15");
+  await mkdir(codexDir, { recursive: true });
+  await writeFile(join(codexDir, `rollout-${codexId}.jsonl`), [
+    { type: "session_meta", payload: { cwd: "/workspace/codex" } },
+    { type: "event_msg", timestamp: "2026-09-15T10:00:00Z", payload: { type: "user_message", message: "find codex-token" } },
+    { type: "event_msg", timestamp: "2026-09-15T10:00:01Z", payload: { type: "agent_reasoning", text: "private thought" } },
+    { type: "event_msg", timestamp: "2026-09-15T10:00:02Z", payload: { type: "agent_message", message: "codex answer", phase: "final" } }
+  ].map(JSON.stringify).join("\n") + "\n");
+
+  const claudeId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const claudeDir = join(home, ".claude", "projects", "-workspace-claude");
+  await mkdir(claudeDir, { recursive: true });
+  await writeFile(join(claudeDir, `${claudeId}.jsonl`), [
+    { type: "user", cwd: "/workspace/claude", timestamp: "2026-09-15T11:00:00Z", message: { content: "find claude-token" } },
+    { type: "assistant", cwd: "/workspace/claude", timestamp: "2026-09-15T11:00:01Z", message: { stop_reason: "end_turn", content: [
+      { type: "thinking", thinking: "private thought" },
+      { type: "text", text: "claude answer" }
+    ] } }
+  ].map(JSON.stringify).join("\n") + "\n");
+
+  for (const [agent, id, token] of [["codex", codexId, "codex-token"], ["claude", claudeId, "claude-token"]]) {
+    const transcript = await run(home, ["--agent", agent, "transcript", id, "--json", "--limit", "1"]);
+    assert.equal(transcript.code, 0, transcript.stderr);
+    const first = JSON.parse(transcript.stdout);
+    assert.equal(first.events.length, 1);
+    assert.equal(first.events[0].role, "user");
+    assert.ok(Number.isInteger(first.next_cursor));
+    assert.doesNotMatch(transcript.stdout, /private thought/);
+
+    const second = await run(home, ["--agent", agent, "transcript", id, "--json", "--cursor", String(first.next_cursor), "--limit", "10"]);
+    assert.equal(JSON.parse(second.stdout).events[0].role, "assistant");
+
+    const searched = await run(home, ["--agent", agent, "search", token, "--json"]);
+    const results = JSON.parse(searched.stdout);
+    assert.equal(results.agent_type, agent);
+    assert.equal(results.results[0].session_id, id);
+    assert.equal(results.results[0].matches[0].role, "user");
+    assert.equal("path" in results.results[0], false);
+    assert.doesNotMatch(searched.stdout, /private thought/);
+  }
+});
+
 test("Claude writer status resolves a Desktop owner from the supported agents inventory", async () => {
   const home = await mkdtemp(join(tmpdir(), "mesh-claude-writer-inventory-"));
   const procRoot = join(home, "proc");

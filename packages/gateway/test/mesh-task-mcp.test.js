@@ -25,7 +25,8 @@ async function setup(
     requesterId: "agent.web_chat",
     allowedTools: [
       "mesh_call", "mesh_submit", "mesh_task_get", "mesh_task_cancel", "mesh_thread_get",
-      "mesh_agent_sessions_list", "mesh_agent_session_get"
+      "mesh_agent_sessions_list", "mesh_agent_session_get", "mesh_agent_sessions_search",
+      "mesh_agent_session_transcript"
     ],
     allowedAgentIds: ["agent.codex"],
     allowedWorkspaceIds: ["workspace.demo"],
@@ -81,6 +82,15 @@ test("session discovery and targeted tasks remain scoped to the principal worksp
       return input.workspaceId === "workspace.demo" && input.sessionId === session.session_id
         ? session
         : undefined;
+    },
+    async transcript(_agentId, input) {
+      return input.workspaceId === "workspace.demo" && input.sessionId === session.session_id
+        ? { ...session, events: [{ event_id: "e1", role: "user", timestamp: null, text: "unique-token" }], next_cursor: null }
+        : undefined;
+    },
+    async search(_agentId, input) {
+      assert.equal(input.workspaceId, "workspace.demo");
+      return { results: [{ ...session, matches: [{ event_id: "e1", role: "user", timestamp: null, text: "unique-token" }] }], next_cursor: null };
     }
   };
   const { facade, store } = await setup(undefined, registry);
@@ -92,6 +102,12 @@ test("session discovery and targeted tasks remain scoped to the principal worksp
     await facade.getAgentSession({ targetAgentId: "agent.codex", sessionId: "session-1" }),
     session
   );
+  assert.equal((await facade.getAgentSessionTranscript({
+    targetAgentId: "agent.codex", sessionId: "session-1", limit: 50
+  })).events[0].text, "unique-token");
+  assert.equal((await facade.searchAgentSessions({
+    targetAgentId: "agent.codex", query: "unique-token", limit: 25
+  })).results[0].session_id, "session-1");
   const output = await facade.callTask(input({ sessionId: "session-1" }), 2_000);
   assert.equal(output.task.session_id, "session-1");
   assert.equal((await store.get(output.task.task_id)).session_id, "session-1");
