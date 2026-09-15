@@ -104,13 +104,39 @@ test("native Codex queue requires the unique anchor in each replayed rollover tr
   assert.equal(result.stdout, "MULTI\nLINE\n");
 });
 
-test("native Codex queue distinguishes empty, uncorrelated, and parsing failures", async () => {
+test("native Codex queue distinguishes empty, queued-turn timeout, and parsing failures", async () => {
   const empty = await invoke("empty");
   assert.equal(empty.code, 65, empty.stderr);
   const uncorrelated = await invoke("uncorrelated");
-  assert.equal(uncorrelated.code, 66, uncorrelated.stderr);
+  assert.equal(uncorrelated.code, 124, uncorrelated.stderr);
+  assert.match(uncorrelated.stderr, /queued turn did not start/);
   const parsing = await invoke("parsing");
   assert.equal(parsing.code, 67, parsing.stderr);
+});
+
+test("native Codex queue reports spawned sub-agents as readable but not directly writable", async () => {
+  const value = await fixture("success");
+  await writeFile(value.codex, `#!/usr/bin/env node
+console.error("thread/queue/add failed: direct app-server input is not allowed for multi-agent v2 sub-agents");
+process.exit(1);
+`);
+  await chmod(value.codex, 0o755);
+  let result;
+  try {
+    await exec(process.execPath, [nativeCall,
+      "--agent", "codex", "--session", sessionId,
+      "--correlation-id", "task-native-subagent", "--timeout", "1", "--message", "Return result"
+    ], { env: {
+      ...process.env,
+      CODEX_BIN: value.codex,
+      CODEX_SESSION_ROOT: join(value.root, "sessions"),
+    } });
+    assert.fail("spawned sub-agent unexpectedly accepted a direct queued turn");
+  } catch (error) {
+    result = { code: error.code, stderr: error.stderr ?? "" };
+  }
+  assert.equal(result.code, 79, result.stderr);
+  assert.match(result.stderr, /readable but do not accept direct queued turns/);
 });
 
 test("native Claude Desktop call returns a structured non-delivery blocker", async () => {

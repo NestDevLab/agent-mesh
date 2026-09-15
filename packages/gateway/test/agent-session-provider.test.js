@@ -203,6 +203,32 @@ test("active Codex result collection failures remain delivered with typed result
   }
 });
 
+test("active Codex spawned sub-agents return a typed unsupported-interaction error", async () => {
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command.endsWith("agent-session.sh") && args.includes("inspect")) {
+        return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      }
+      if (command.endsWith("agent-session.sh") && args.includes("writer-status")) {
+        return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+      }
+      if (command === process.execPath) return { code: 79, stdout: "", stderr: "sub-agent is not directly writable" };
+      throw new Error("unexpected command");
+    }
+  });
+  const result = await instance.send({
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "result",
+    messageId: "message-subagent", contextId: "context", correlationId: "task-subagent",
+    idempotencyKey: "idem-subagent"
+  });
+  assert.deepEqual(result, {
+    ok: false,
+    error_code: "session_interaction_unsupported",
+    error: "Codex spawned sub-agent sessions are readable but do not accept direct queued turns."
+  });
+});
+
 test("active Claude sessions fail closed instead of starting a second writer", async () => {
   const claudeSession = { ...sessions[0], agent_type: "claude" };
   const { instance, calls } = provider({

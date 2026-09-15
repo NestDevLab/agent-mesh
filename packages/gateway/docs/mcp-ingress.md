@@ -193,6 +193,12 @@ A discovered session is not claimed to have a free writer. The bridge checks
 the live writer immediately before a prompt is sent. An active Codex session
 uses Codex's native queue and collects the result only after the uniquely marked
 user turn. A session without a writer uses the existing resume/tmux transport.
+Codex spawned sub-agent transcripts remain readable and searchable by exact ID,
+but current app-server builds reject direct queued turns to those child IDs; the
+gateway reports `session_interaction_unsupported` instead of implying a retryable
+transport failure. Output from a turn that was already active before the queued
+anchor is ignored; if the queued turn does not start before the result deadline,
+the accepted request reports `result_timeout`, not `result_uncorrelated`.
 
 An active Claude session is writable only when the deployment explicitly owns
 its event-driven Monitor transport. Managed inbox files are named

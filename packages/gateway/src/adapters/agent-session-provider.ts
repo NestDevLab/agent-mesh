@@ -482,6 +482,7 @@ function nativeCallResult(result: { code: number; stdout: string; stderr: string
   if (result.code === 67) return { ok: true, result_error_code: "result_parsing_failure", error: `Agent result parsing failed${suffix}` };
   if (result.code === 124) return { ok: true, result_error_code: "result_timeout", error: `Agent result collection timed out${suffix}` };
   if (result.code === 78) return { ok: false, error_code: "active_external_writer", error: "Claude session is active but is not owned by the configured managed transport." };
+  if (result.code === 79) return { ok: false, error_code: "session_interaction_unsupported", error: "Codex spawned sub-agent sessions are readable but do not accept direct queued turns." };
   return { ok: false, error: `Agent native session call failed${suffix}` };
 }
 
