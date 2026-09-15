@@ -231,6 +231,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
   assert.match(await readFile(inbox, "utf8"), /agent-mesh\.monitor-inbox\.v1/);
   await appendFile(transcript, [
     { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
+    { type: "assistant", message: { stop_reason: "end_turn", content: [] } },
     { type: "assistant", message: { stop_reason: "end_turn", content: [
       { type: "text", text: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` }
     ] } }

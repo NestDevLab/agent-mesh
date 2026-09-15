@@ -114,7 +114,7 @@ while (Date.now() < deadline) {
       }
       if (
         (agent === "codex" && record.type === "event_msg" && payload?.type === "task_complete") ||
-        (agent === "claude" && record.type === "assistant" && record?.message?.stop_reason === "end_turn")
+        (agent === "claude" && assistantText && record.type === "assistant" && record?.message?.stop_reason === "end_turn")
       ) {
         finish(
           state.finalBodies.length > 0 ? state.finalBodies : state.eventBodies,
