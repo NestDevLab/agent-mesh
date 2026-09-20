@@ -64,6 +64,14 @@ export PATH="$WORKDIR:$PATH"
     [[ "${AGENT_EFFORT_PASSTHRU_PATTERNS[*]:-}" == "--effort --effort=*" ]] \
         || { echo "FAIL: Claude raw effort override patterns are incorrect" >&2; exit 1; }
 
+    claude_session_dir="$WORKDIR/-srv-workspace-acme-app"
+    claude_session_file="$claude_session_dir/11111111-1111-4111-8111-111111111111.jsonl"
+    mkdir -p "$claude_session_dir"
+    : > "$claude_session_file"
+    claude_session_cwd="$(eval "$AGENT_SESSION_CWD_EXTRACTOR \"$claude_session_file\"")"
+    [[ "$claude_session_cwd" == "/srv/workspace/acme/app" ]] \
+        || { echo "FAIL: Claude cwd extraction returned '$claude_session_cwd'" >&2; exit 1; }
+
     # Keep the accepted Codex policy values and native mapping tied to the
     # real adapter. This must not invoke the Codex CLI.
     # shellcheck source=/dev/null
