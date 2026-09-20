@@ -290,15 +290,16 @@ _claude_trust_dialog_selection() {
     _claude_trust_dialog_visible "$output" || return 1
     [[ "$output" == *"Enter to confirm"* && "$output" == *"Esc to cancel"* ]] || return 1
     option_count="$(printf '%s\n' "$output" \
-        | grep -Ec '^[[:space:]]*[>❯›▸]?[[:space:]]*(No, exit|Yes, I trust this folder)[[:space:]]*$' || true)"
+        | grep -Ec '^[[:space:]]*[>❯›▸]?[[:space:]]*(No, exit|No, continue without these permissions|Yes, I trust this folder)[[:space:]]*$' || true)"
     [[ "$option_count" == "2" ]] || return 1
     selected="$(printf '%s\n' "$output" \
-        | grep -E '^[[:space:]]*[>❯›▸][[:space:]]*(No, exit|Yes, I trust this folder)[[:space:]]*$' \
+        | grep -E '^[[:space:]]*[>❯›▸][[:space:]]*(No, exit|No, continue without these permissions|Yes, I trust this folder)[[:space:]]*$' \
         | head -n 1 || true)"
     [[ -n "$selected" ]] || return 1
     if [[ "$selected" == *"Yes, I trust this folder"* ]]; then
         printf 'trust\n'
-    elif [[ "$selected" == *"No, exit"* ]]; then
+    elif [[ "$selected" == *"No, exit"* \
+        || "$selected" == *"No, continue without these permissions"* ]]; then
         printf 'exit\n'
     else
         return 1

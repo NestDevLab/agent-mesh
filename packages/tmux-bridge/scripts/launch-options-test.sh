@@ -163,6 +163,20 @@ if [[ -f "$trust_request" ]]; then
             IFS= read -r _confirmation
             printf '\033[2J\033[H'
             ;;
+        claude-backstop)
+            printf 'Quick safety check: Is this a project you created or one you trust?\n'
+            printf '❯ No, continue without these permissions\n'
+            printf '  Yes, I trust this folder\n'
+            printf 'Enter to confirm · Esc to cancel\n'
+            IFS= read -rsn3 _navigation
+            printf '\033[2J\033[H'
+            printf 'Quick safety check: Is this a project you created or one you trust?\n'
+            printf '  No, continue without these permissions\n'
+            printf '❯ Yes, I trust this folder\n'
+            printf 'Enter to confirm · Esc to cancel\n'
+            IFS= read -r _confirmation
+            printf '\033[2J\033[H'
+            ;;
         claude-unknown)
             printf 'Is this a project you trust?\n'
             printf '❯ No, leave\n'
@@ -333,6 +347,17 @@ grep -Fqx "$transient_target"$'\t'"Down"$'\t' "$TRUST_SEND_LOG" \
     || { echo "FAIL: transient Claude trust dialog was not selected after completing" >&2; exit 1; }
 grep -Fqx "$transient_target"$'\t\t'"Enter" "$TRUST_SEND_LOG" \
     || { echo "FAIL: transient Claude trust dialog was not confirmed after completing" >&2; exit 1; }
+
+printf '%s\n' claude-backstop > "$trust_request"
+: > "$TRUST_SEND_LOG"
+backstop_target="launch-options-claude-trust-backstop-$$"
+"$SESSION_BIN" --agent "launch-options-unsupported-$$" \
+    new "$WORKDIR" "$backstop_target" >/dev/null
+TARGETS+=("$backstop_target")
+grep -Fqx "$backstop_target"$'\t'"Down"$'\t' "$TRUST_SEND_LOG" \
+    || { echo "FAIL: Claude backstop trust handler did not select the trust option" >&2; exit 1; }
+grep -Fqx "$backstop_target"$'\t\t'"Enter" "$TRUST_SEND_LOG" \
+    || { echo "FAIL: Claude backstop trust handler did not confirm the selected trust option" >&2; exit 1; }
 
 printf '%s\n' claude-unknown > "$trust_request"
 : > "$TRUST_SEND_LOG"
