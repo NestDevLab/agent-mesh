@@ -308,6 +308,7 @@ _claude_trust_dialog_selection() {
 _wait_for_ready() {
     local target="$1" max_wait="${2:-30}" elapsed=0 out selection verified
     local claude_trust_confirmed="false"
+    local claude_trust_unrecognized="false"
     while [[ $elapsed -lt $max_wait ]]; do
         sleep 1; elapsed=$(( elapsed + 1 ))
         out=$(mtmux capture-pane -t "$target" -p 2>/dev/null)
@@ -321,6 +322,14 @@ _wait_for_ready() {
                 continue
             fi
             selection="$(_claude_trust_dialog_selection "$out" || true)"
+            if [[ -z "$selection" ]]; then
+                # capture-pane can observe Claude while it is still rendering
+                # the dialog. Wait for the complete, exact layout; never infer
+                # a selection or confirm a partial/unknown screen.
+                claude_trust_unrecognized="true"
+                continue
+            fi
+            claude_trust_unrecognized="false"
             if [[ "$selection" == "exit" ]]; then
                 mtmux send-keys -t "$target" Down
                 sleep 0.2
@@ -329,9 +338,6 @@ _wait_for_ready() {
                     echo "ERROR: Claude trust option could not be positively selected; refusing confirmation" >&2
                     return 2
                 }
-            elif [[ "$selection" != "trust" ]]; then
-                echo "ERROR: unrecognized Claude trust dialog; refusing confirmation" >&2
-                return 2
             fi
             mtmux send-keys -t "$target" "" Enter
             claude_trust_confirmed="true"
@@ -348,6 +354,10 @@ _wait_for_ready() {
             return 0
         fi
     done
+    if [[ "$claude_trust_unrecognized" == "true" ]]; then
+        echo "ERROR: unrecognized Claude trust dialog; refusing confirmation" >&2
+        return 2
+    fi
     return 1
 }
 
