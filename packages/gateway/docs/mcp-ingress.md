@@ -206,7 +206,13 @@ reuse rechecks the unique Claude writer PID, its pane ancestry, and the pane
 PID; the sender still refuses a busy TUI or occupied composer. This ownership
 proof is process-local and disappears on gateway restart. Otherwise Claude is
 writable only when the deployment explicitly owns its event-driven Monitor
-transport. Managed inbox files are named
+transport. If Claude's TUI omits result text and the terminal collector reports
+`result_uncorrelated`, the gateway checks the same authorized session's native
+assistant transcript for one exact correlated marker pair. It returns that
+reply only when the unique, nonempty match exists; otherwise the typed failure
+is preserved. This fallback never sends another prompt.
+
+Managed inbox files are named
 `<session-id>.jsonl` under `agentManagedInboxRoot`; delivery additionally
 requires exactly one Claude Desktop writer and exactly one watcher bound to that
 inbox. The native call appends a correlated visible user request and waits for
