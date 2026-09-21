@@ -14,11 +14,13 @@ export MESH_TMUX_SOCKET="mesh-launch-options-test-$$"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-launch-options.XXXXXX")"
 FAKE_CLI="$WORKDIR/fake-cli"
 LOG_FILE="$WORKDIR/argv"
+export FAKE_CLI_CWD_LOG="$WORKDIR/resume-cwd"
 TRUST_SEND_LOG="$WORKDIR/trust-send.log"
 TMUX_REAL="$(command -v tmux)"
 TMUX_WRAPPER="$WORKDIR/tmux"
 SUPPORTED_CONF="$AGENTS_DIR/launch-options-supported-$$.conf"
 UNSUPPORTED_CONF="$AGENTS_DIR/launch-options-unsupported-$$.conf"
+RESUME_CONF="$AGENTS_DIR/launch-options-resume-cwd-$$.conf"
 TARGETS=()
 
 cleanup() {
@@ -29,7 +31,7 @@ cleanup() {
     done
     tmux -L "$MESH_TMUX_SOCKET" kill-server 2>/dev/null || true
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$MESH_TMUX_SOCKET" 2>/dev/null || true
-    rm -f "$SUPPORTED_CONF" "$UNSUPPORTED_CONF"
+    rm -f "$SUPPORTED_CONF" "$UNSUPPORTED_CONF" "$RESUME_CONF"
     rm -rf "$WORKDIR"
     exit "$status"
 }
@@ -118,6 +120,7 @@ export PATH="$WORKDIR:$PATH"
 cat > "$FAKE_CLI" <<'CLI'
 #!/usr/bin/env bash
 printf '%s\0' "$@" > "$FAKE_CLI_LOG"
+[[ -z "${FAKE_CLI_CWD_LOG:-}" ]] || pwd -P > "$FAKE_CLI_CWD_LOG"
 trust_request="${FAKE_CLI_LOG%/*}/trust-request"
 if [[ -f "$trust_request" ]]; then
     case "$(cat "$trust_request")" in
@@ -270,6 +273,40 @@ run_and_check new launch-options-new-$$ \
     "--new -a never --model raw-model --effort low "
 run_and_check resume launch-options-resume-$$ \
     "--resume session-123 -a never --model raw-model --effort low "
+
+# Claude's persisted project directory must be the tmux cwd before the CLI
+# starts. A missing session file must not create a target or send any key.
+resume_id="22222222-2222-4222-8222-222222222222"
+resume_project="$WORKDIR/sessions/project-dir"
+mkdir -p "$resume_project"
+: > "$resume_project/$resume_id.jsonl"
+cat > "$RESUME_CONF" <<CONF
+AGENT_BIN="$FAKE_CLI"
+AGENT_PROMPT_CHAR="❯"
+AGENT_WORKING_PATTERN="__never_working__"
+AGENT_IDLE_PATTERN="❯"
+AGENT_RESUME_CMD="$FAKE_CLI --resume {SESSION_ID}"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_SESSION_DIR="$WORKDIR/sessions"
+AGENT_SESSION_CWD_EXTRACTOR='dirname'
+AGENT_RESUME_IN_SESSION_CWD="true"
+CONF
+resume_target="launch-options-resume-cwd-$$"
+"$SESSION_BIN" --agent "launch-options-resume-cwd-$$" \
+    resume "$resume_id" "$resume_target" >/dev/null
+TARGETS+=("$resume_target")
+[[ "$(< "$FAKE_CLI_CWD_LOG")" == "$resume_project" ]] \
+    || { echo "FAIL: resumed Claude did not start in its persisted project directory" >&2; exit 1; }
+missing_target="launch-options-resume-missing-$$"
+if "$SESSION_BIN" --agent "launch-options-resume-cwd-$$" \
+    resume 33333333-3333-4333-8333-333333333333 "$missing_target" \
+    >"$WORKDIR/missing-out" 2>"$WORKDIR/missing-error"; then
+    echo "FAIL: missing Claude session file returned a usable target" >&2
+    exit 1
+fi
+! tmux -L "$MESH_TMUX_SOCKET" has-session -t "$missing_target" 2>/dev/null \
+    || { echo "FAIL: missing Claude session file created a target" >&2; exit 1; }
 
 # A later invocation must rebuild its launch options from scratch. This proves
 # the preceding raw flags cannot leak into a new spawn.

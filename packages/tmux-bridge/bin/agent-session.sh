@@ -604,13 +604,27 @@ case "$cmd" in
                 --agent "$AGENT_NAME" --session "$SESSION_ID" --require-free
         fi
 
+        RESUME_CWD=""
+        if [[ "${AGENT_RESUME_IN_SESSION_CWD:-false}" == "true" ]]; then
+            SESSION_FILE="$(_session_file "$SESSION_ID")"
+            [[ -n "$SESSION_FILE" ]] || { echo "ERROR: session file not found for '$SESSION_ID'; no target created" >&2; exit 3; }
+            RESUME_CWD="$(eval "$AGENT_SESSION_CWD_EXTRACTOR \"$SESSION_FILE\"" 2>/dev/null || true)"
+            [[ "$RESUME_CWD" == /* && -d "$RESUME_CWD" ]] \
+                || { echo "ERROR: session cwd unavailable for '$SESSION_ID'; no target created" >&2; exit 3; }
+            RESUME_CWD="$(cd -P -- "$RESUME_CWD" && pwd)"
+        fi
+
         _print_launch_warning
         PRESERVED_OPTIONS=""
         if [[ "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
             PRESERVED_OPTIONS="$(python3 "$SCRIPT_DIR/codex-resume-options.py" --session "$SESSION_ID" --root "$AGENT_SESSION_DIR")"
         fi
         RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD${PRESERVED_OPTIONS:+ $PRESERVED_OPTIONS}"
-        mtmux new-session -d -s "$TARGET"
+        if [[ "${AGENT_RESUME_IN_SESSION_CWD:-false}" == "true" ]]; then
+            mtmux new-session -d -s "$TARGET" -c "$RESUME_CWD"
+        else
+            mtmux new-session -d -s "$TARGET"
+        fi
         mesh_tmux_harden
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
         _wait_for_ready_or_warn "$TARGET"
