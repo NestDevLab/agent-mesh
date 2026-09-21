@@ -240,7 +240,7 @@ test("active Claude sessions fail closed instead of starting a second writer", a
         return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [claudeSession] }), stderr: "" };
       }
       if (args.includes("writer-status")) {
-        return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", writers: [{ pid: 43, kind: "claude-cli" }] }), stderr: "" };
+        return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", writers: [{ pid: 43, kind: "claude-cli" }], discovery: { complete: true } }), stderr: "" };
       }
       throw new Error("unexpected command");
     }
@@ -269,7 +269,7 @@ test("active managed Claude sessions use the configured native inbox call", asyn
     run: async (command, args) => {
       calls.push({ command, args: [...args] });
       if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [claudeSession] }), stderr: "" };
-      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", writers: [{ pid: 43, kind: "claude-desktop" }] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", writers: [{ pid: 43, kind: "claude-desktop" }], discovery: { complete: true } }), stderr: "" };
       if (command === process.execPath) return { code: 0, stdout: "managed Claude result\n", stderr: "" };
       throw new Error("unexpected command");
     }
@@ -284,6 +284,79 @@ test("active managed Claude sessions use the configured native inbox call", asyn
   assert.ok(native.args.includes("--managed-inbox-root"));
   assert.ok(native.args.includes("/state/claude-inboxes"));
   assert.equal(calls.some((call) => call.args.includes("resume")), false);
+});
+
+test("two Claude calls reuse only the writer resumed by this provider", async () => {
+  const calls = [];
+  let resumed = false;
+  const instance = new ShellAgentSessionProvider({
+    agentId: "agent.ingress.claude", agentType: "claude",
+    agentSessionPath: "/bridge/agent-session.sh", agentSendPath: "/bridge/agent-send.sh",
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    workspaceRoots: { "workspace.allowed": ["/workspace"] },
+    run: async (command, args) => {
+      calls.push({ command, args: [...args] });
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [{ ...sessions[0], agent_type: "claude" }] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({
+        agent: "claude", sessionId: "session-new", discovery: { complete: true },
+        writers: resumed ? [{ pid: 43, kind: "claude-cli" }] : []
+      }), stderr: "" };
+      if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
+      if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({
+        target: "mesh-claude-session-new", pane_pid: 42, writer_pid: 43
+      }), stderr: "" };
+      if (command === "/bridge/agent-send.sh") return { code: 0, stdout: "correlated reply\n", stderr: "" };
+      throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+    }
+  });
+  const input = {
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "canary",
+    messageId: "message-1", contextId: "context-1", correlationId: "task-1", idempotencyKey: "idem-1"
+  };
+  assert.deepEqual(await instance.send(input), { ok: true, reply: "correlated reply" });
+  assert.deepEqual(await instance.send({ ...input, messageId: "message-2", correlationId: "task-2" }), { ok: true, reply: "correlated reply" });
+  assert.equal(calls.filter((call) => call.args.includes("resume")).length, 1);
+  assert.equal(calls.filter((call) => call.command === "/bridge/agent-send.sh").length, 2);
+  assert.equal(calls.some((call) => call.command === process.execPath), false);
+});
+
+test("Claude writer or target replacement fails closed after a bridge-owned turn", async () => {
+  for (const replacement of ["writer", "pane"]) {
+    const calls = [];
+    let resumed = false;
+    let replaced = false;
+    const instance = new ShellAgentSessionProvider({
+      agentId: "agent.ingress.claude", agentType: "claude",
+      agentSessionPath: "/bridge/agent-session.sh", agentSendPath: "/bridge/agent-send.sh",
+      agentNativeCallPath: "/bridge/agent-native-call.mjs",
+      workspaceRoots: { "workspace.allowed": ["/workspace"] },
+      run: async (command, args) => {
+        calls.push({ command, args: [...args] });
+        if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [{ ...sessions[0], agent_type: "claude" }] }), stderr: "" };
+        if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({
+          agent: "claude", sessionId: "session-new", discovery: { complete: true },
+          writers: resumed ? [{ pid: replaced && replacement === "writer" ? 99 : 43, kind: "claude-cli" }] : []
+        }), stderr: "" };
+        if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
+        if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({
+          target: "mesh-claude-session-new", pane_pid: replaced && replacement === "pane" ? 98 : 42,
+          writer_pid: 43
+        }), stderr: "" };
+        if (command === "/bridge/agent-send.sh") { replaced = true; return { code: 0, stdout: "first reply\n", stderr: "" }; }
+        if (command === process.execPath) return { code: 78, stdout: "", stderr: "external writer" };
+        throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+      }
+    });
+    const input = {
+      sessionId: "session-new", workspaceId: "workspace.allowed", message: "canary",
+      messageId: "message-1", contextId: "context-1", correlationId: "task-1", idempotencyKey: "idem-1"
+    };
+    assert.equal((await instance.send(input)).ok, true);
+    const second = await instance.send({ ...input, messageId: "message-2", correlationId: "task-2" });
+    assert.equal(second.ok, false, replacement);
+    assert.equal(second.error_code, "active_external_writer", replacement);
+    assert.equal(calls.filter((call) => call.command === "/bridge/agent-send.sh").length, 1, replacement);
+  }
 });
 
 test("registry supports independent Codex and Claude providers", () => {
