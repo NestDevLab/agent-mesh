@@ -186,6 +186,9 @@ if [[ -f "$trust_request" ]]; then
             printf '  Trust this workspace\n'
             printf 'Enter to confirm · Esc to cancel\n'
             ;;
+        terminal-reconnect)
+            printf 'Reconnect failed — check the endpoint, then relaunch\n'
+            ;;
         *)
             printf 'Do you trust the contents of this directory?\n'
             printf '> 1. Yes, continue\n'
@@ -408,6 +411,23 @@ fi
     || { echo "FAIL: unknown Claude trust layout was blindly confirmed" >&2; exit 1; }
 grep -q "unrecognized Claude trust dialog" "$WORKDIR/unknown-error" \
     || { echo "FAIL: unknown Claude trust layout lacked a precise error" >&2; exit 1; }
+
+# A strict MCP resume reports a category, not a copied pane, before retiring
+# only its own newly created and still-unsent target.
+printf '%s\n' terminal-reconnect > "$trust_request"
+reconnect_target="launch-options-terminal-reconnect-$$"
+if MESH_STRICT_READY=1 "$SESSION_BIN" --agent "launch-options-unsupported-$$" \
+    resume 11111111-1111-4111-8111-111111111111 "$reconnect_target" \
+    >"$WORKDIR/reconnect-out" 2>"$WORKDIR/reconnect-error"; then
+    echo "FAIL: terminal reconnect returned a usable target" >&2
+    exit 1
+fi
+grep -q 'reason=terminal_reconnect_failure' "$WORKDIR/reconnect-error" \
+    || { echo "FAIL: strict resume omitted redacted failure category" >&2; exit 1; }
+! grep -q 'Reconnect failed — check the endpoint' "$WORKDIR/reconnect-error" \
+    || { echo "FAIL: strict resume copied raw pane text to stderr" >&2; exit 1; }
+! tmux -L "$MESH_TMUX_SOCKET" has-session -t "$reconnect_target" 2>/dev/null \
+    || { echo "FAIL: unready unsent target was retained" >&2; exit 1; }
 
 # Restore the unsupported-effort fixture used below.
 cat > "$UNSUPPORTED_CONF" <<CONF

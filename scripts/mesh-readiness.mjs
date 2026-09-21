@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checks = [];
 const agentTmuxBundleFiles = [
   "bin/_mesh-graph.sh",
+  "bin/_mesh-result.sh",
   "bin/_mesh-tmux.sh",
   "bin/agent-read.sh",
   "bin/agent-send.sh",
