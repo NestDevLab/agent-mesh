@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import "./ts-extension-resolver.mjs";
@@ -318,6 +319,70 @@ test("two Claude calls reuse only the writer resumed by this provider", async ()
   assert.equal(calls.filter((call) => call.args.includes("resume")).length, 1);
   assert.equal(calls.filter((call) => call.command === "/bridge/agent-send.sh").length, 2);
   assert.equal(calls.some((call) => call.command === process.execPath), false);
+});
+
+test("Claude recovers an exact correlated reply from its native transcript when TUI capture loses it", async () => {
+  const correlationId = "task-transcript-fallback";
+  const token = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
+  const begin = `[[R:${token}]]`;
+  const end = `[[/R:${token}]]`;
+  const calls = [];
+  let resumed = false;
+  const instance = new ShellAgentSessionProvider({
+    agentId: "agent.ingress.claude", agentType: "claude",
+    agentSessionPath: "/bridge/agent-session.sh", agentSendPath: "/bridge/agent-send.sh",
+    workspaceRoots: { "workspace.allowed": ["/workspace"] },
+    run: async (command, args) => {
+      calls.push({ command, args: [...args] });
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [{ ...sessions[0], agent_type: "claude" }] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", discovery: { complete: true }, writers: resumed ? [{ pid: 43, kind: "claude-cli" }] : [] }), stderr: "" };
+      if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
+      if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({ target: "mesh-claude-session-new", pane_pid: 42, writer_pid: 43 }), stderr: "" };
+      if (command === "/bridge/agent-send.sh") return { code: 66, stdout: "", stderr: "UNCORRELATED-OUTPUT" };
+      if (args.includes("search")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", results: [
+        { agent_type: "claude", session_id: "other-session", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:00Z", matches: [{ event_id: "wrong", role: "assistant", timestamp: null, text: `${begin}wrong${end}` }] },
+        { agent_type: "claude", session_id: "session-new", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:01Z", matches: [{ event_id: "right", role: "assistant", timestamp: null, text: `${begin}\nexpected reply\n${end}` }] }
+      ], next_cursor: null }), stderr: "" };
+      throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+    }
+  });
+  const result = await instance.send({
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "canary",
+    messageId: "message", contextId: "context", correlationId, idempotencyKey: "idem"
+  });
+  assert.deepEqual(result, { ok: true, reply: "expected reply" });
+  assert.equal(calls.filter((call) => call.command === "/bridge/agent-send.sh").length, 1);
+  assert.equal(calls.filter((call) => call.args.includes("search")).length, 1);
+});
+
+test("Claude transcript recovery keeps an uncorrelated failure when no exact assistant reply exists", async () => {
+  const correlationId = "task-transcript-missing";
+  const calls = [];
+  let resumed = false;
+  const instance = new ShellAgentSessionProvider({
+    agentId: "agent.ingress.claude", agentType: "claude",
+    agentSessionPath: "/bridge/agent-session.sh", agentSendPath: "/bridge/agent-send.sh",
+    workspaceRoots: { "workspace.allowed": ["/workspace"] },
+    run: async (command, args) => {
+      calls.push({ command, args: [...args] });
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [{ ...sessions[0], agent_type: "claude" }] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", discovery: { complete: true }, writers: resumed ? [{ pid: 43, kind: "claude-cli" }] : [] }), stderr: "" };
+      if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
+      if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({ target: "mesh-claude-session-new", pane_pid: 42, writer_pid: 43 }), stderr: "" };
+      if (command === "/bridge/agent-send.sh") return { code: 66, stdout: "", stderr: "UNCORRELATED-OUTPUT" };
+      if (args.includes("search")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", results: [
+        { agent_type: "claude", session_id: "session-new", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:01Z", matches: [{ event_id: "user", role: "user", timestamp: null, text: args[3] }] }
+      ], next_cursor: null }), stderr: "" };
+      throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+    }
+  });
+  const result = await instance.send({
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "canary",
+    messageId: "message", contextId: "context", correlationId, idempotencyKey: "idem"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.result_error_code, "result_uncorrelated");
+  assert.equal(calls.filter((call) => call.command === "/bridge/agent-send.sh").length, 1);
 });
 
 test("Claude writer or target replacement fails closed after a bridge-owned turn", async () => {

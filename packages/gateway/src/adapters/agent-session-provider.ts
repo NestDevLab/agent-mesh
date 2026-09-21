@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { env as processEnv } from "node:process";
 
@@ -320,7 +321,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
             if (targetStatus.code === 0) {
               const target = parseOwnedClaudeTarget(targetStatus.stdout, owned.target, writer.pid);
               if (target.panePid === owned.panePid) {
-                return this.sender.send(this.tmuxSendInput(input, owned.target));
+                return this.sendToOwnedClaudeTarget(input, owned.target);
               }
             }
           }
@@ -389,7 +390,35 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       const target = parseOwnedClaudeTarget(targetStatus.stdout, tmuxTarget, writer.pid);
       this.ownedClaudeTargets.set(queueKey, { target: tmuxTarget, writerPid: writer.pid, panePid: target.panePid });
     }
-    return this.sender.send(this.tmuxSendInput(input, tmuxTarget));
+    return this.provider === "claude"
+      ? this.sendToOwnedClaudeTarget(input, tmuxTarget)
+      : this.sender.send(this.tmuxSendInput(input, tmuxTarget));
+  }
+
+  private async sendToOwnedClaudeTarget(input: AgentSessionSendInput, target: string): Promise<TmuxSendResult> {
+    const result = await this.sender.send(this.tmuxSendInput(input, target));
+    if (result.result_error_code !== "result_uncorrelated" || input.correlationId === undefined) return result;
+    const token = createHash("sha256").update(input.correlationId).digest("hex").slice(0, 16);
+    const begin = `[[R:${token}]]`;
+    const end = `[[/R:${token}]]`;
+    try {
+      const page = await this.search({ workspaceId: input.workspaceId, query: begin, limit: 20 });
+      const matches = page.results
+        .filter((session) => session.session_id === input.sessionId)
+        .flatMap((session) => session.matches)
+        .filter((event) => event.role === "assistant");
+      const replies = matches.map((event) => {
+        const start = event.text.indexOf(begin);
+        if (start < 0 || event.text.indexOf(begin, start + begin.length) >= 0) return undefined;
+        const finish = event.text.indexOf(end, start + begin.length);
+        if (finish < 0 || event.text.indexOf(end, finish + end.length) >= 0) return undefined;
+        return event.text.slice(start + begin.length, finish).trim();
+      }).filter((reply): reply is string => typeof reply === "string" && reply.length > 0);
+      if (replies.length === 1) return { ok: true, reply: replies[0] };
+    } catch {
+      // Native transcript recovery is best-effort; preserve the collector's typed failure.
+    }
+    return result;
   }
 
   private tmuxSendInput(input: AgentSessionSendInput, tmuxTarget: string) {
