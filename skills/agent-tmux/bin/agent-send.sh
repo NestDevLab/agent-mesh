@@ -25,6 +25,8 @@ AGENTS_DIR="${AGENT_MESH_AGENTS_DIR:-$SCRIPT_DIR/../agents}"
 # Dedicated tmux socket (see _mesh-tmux.sh).
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/_mesh-tmux.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-result.sh"
 
 AGENT_NAME="codex"
 QUIET="false"
@@ -298,18 +300,17 @@ done
 # Extract reply from tmux scrollback, not only the visible pane. Task-mode sends
 # use a compact correlation anchor and explicit result markers. Legacy callers
 # retain the original prompt-head extraction contract.
+collector_stage="scrollback"
+trap 'collector_rc=$?; trap - ERR; echo "COLLECTOR-ERROR: stage=$collector_stage exit=$collector_rc" >&2; exit 67' ERR
 PROMPT_HEAD="$PROMPT_MATCH_HEAD"
 FULL_OUTPUT="$(mtmux capture-pane -t "$TARGET" -p -S - 2>/dev/null || true)"
-SEGMENT="$(echo "$FULL_OUTPUT" \
-    | awk -v prompt="$PROMPT_HEAD" -v pc="$AGENT_PROMPT_CHAR" -v correlated="$RESULT_TOKEN" '
-        ((correlated != "" && index($0, prompt)) || (correlated == "" && $0 ~ pc && index($0, prompt))) { found=1; next }
-        found && $0 ~ pc { exit }
-        found { print }
-    ')"
+collector_stage="segment"
+SEGMENT="$(mesh_result_segment "$PROMPT_HEAD" "$AGENT_PROMPT_CHAR" "$RESULT_TOKEN" <<<"$FULL_OUTPUT")"
 
 if [[ -n "$RESULT_TOKEN" ]]; then
-    BEGIN_COUNT="$(grep -Fo "$RESULT_BEGIN" <<<"$SEGMENT" | wc -l)"
-    END_COUNT="$(grep -Fo "$RESULT_END" <<<"$SEGMENT" | wc -l)"
+    collector_stage="marker_count"
+    BEGIN_COUNT="$(mesh_result_marker_count "$RESULT_BEGIN" <<<"$SEGMENT")"
+    END_COUNT="$(mesh_result_marker_count "$RESULT_END" <<<"$SEGMENT")"
     if [[ "$BEGIN_COUNT" -ne "$END_COUNT" ]]; then
         echo "PARSING-FAILURE: correlated result markers are unbalanced for '$CORRELATION_ID'" >&2
         exit 67
@@ -317,6 +318,7 @@ if [[ -n "$RESULT_TOKEN" ]]; then
     # One pair is the protocol template echoed in the prompt. A correlated
     # response contributes a second pair; always keep the last complete pair.
     if [[ "$BEGIN_COUNT" -ge 2 ]]; then
+        collector_stage="result_parse"
         RESULT="$(awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
             index($0, begin) {
                 tail=substr($0, index($0, begin) + length(begin))

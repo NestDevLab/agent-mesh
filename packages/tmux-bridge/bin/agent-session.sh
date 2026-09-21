@@ -381,17 +381,23 @@ _wait_for_ready_or_warn() {
 # Existing targets are never removed here; only a newly created, unsent target
 # can be retired when its initial readiness check fails.
 _require_resumed_ready() {
-    local target="$1" created="${2:-false}" pane command
+    local target="$1" created="${2:-false}" pane command reason
     [[ "${MESH_STRICT_READY:-0}" == "1" ]] || return 0
     pane="$(mtmux capture-pane -t "$target" -p 2>/dev/null || true)"
     command="$(mtmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)"
-    if [[ -n "$command" ]] &&
-       { [[ -z "${AGENT_ALIVE_PROCESS_PATTERN:-}" ]] || grep -qE "$AGENT_ALIVE_PROCESS_PATTERN" <<<"$command"; } &&
-       grep -qE "$AGENT_IDLE_PATTERN|${AGENT_PROMPT_CHAR}" <<<"$pane" &&
-       ! grep -qE 'Automatic reconnect could not restore this session|Reconnect failed — check the endpoint, then relaunch' <<<"$pane"; then
+    if [[ -z "$command" ]]; then
+        reason="pane_unavailable"
+    elif grep -qE 'Automatic reconnect could not restore this session|Reconnect failed — check the endpoint, then relaunch' <<<"$pane"; then
+        reason="terminal_reconnect_failure"
+    elif [[ -n "${AGENT_ALIVE_PROCESS_PATTERN:-}" ]] &&
+         ! grep -qE "$AGENT_ALIVE_PROCESS_PATTERN" <<<"$command"; then
+        reason="agent_process_not_live"
+    elif ! grep -qE "$AGENT_IDLE_PATTERN|${AGENT_PROMPT_CHAR}" <<<"$pane"; then
+        reason="idle_prompt_missing"
+    else
         return 0
     fi
-    echo "ERROR: resumed session '$target' is not ready; no prompt was sent" >&2
+    echo "ERROR: resumed session '$target' is not ready (reason=$reason); no prompt was sent" >&2
     if [[ "$created" == "true" ]]; then
         mtmux kill-session -t "$target" 2>/dev/null || true
     fi

@@ -55,6 +55,7 @@ export AGENT_MESH_AGENTS_DIR="$TEST_AGENTS"
 
 cd "$BRIDGE_DIR"
 node --test test/*.test.mjs
+scripts/agent-result-test.sh
 scripts/socket-isolation-test.sh
 scripts/smoke-test.sh
 scripts/agent-send-readiness-test.sh
