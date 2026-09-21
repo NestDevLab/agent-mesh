@@ -172,6 +172,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly run: ShellRun;
   private readonly sender: ShellTmuxSender;
   private readonly sendQueues = new Map<string, Promise<void>>();
+  private readonly ownedClaudeTargets = new Map<string, { target: string; writerPid: number; panePid: number }>();
 
   constructor(options: ShellAgentSessionProviderOptions) {
     this.agentId = options.agentId;
@@ -294,6 +295,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   private async sendUnlocked(input: AgentSessionSendInput): Promise<TmuxSendResult> {
+    const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined) {
       return { ok: false, error: "Session is not available in the authorized workspace." };
@@ -306,6 +308,25 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
     const writers = parseWriterStatus(writerStatus.stdout, this.provider, input.sessionId);
     if (writers.length > 0) {
+      if (this.provider === "claude") {
+        const owned = this.ownedClaudeTargets.get(queueKey);
+        if (owned !== undefined) {
+          const writer = writers.length === 1 && writers[0]?.kind === "claude-cli" ? writers[0] : undefined;
+          if (writer?.pid === owned.writerPid) {
+            const targetStatus = await this.command([
+              "--agent", "claude", "target-status", owned.target,
+              "--writer-pid", String(writer.pid), "--json"
+            ], true);
+            if (targetStatus.code === 0) {
+              const target = parseOwnedClaudeTarget(targetStatus.stdout, owned.target, writer.pid);
+              if (target.panePid === owned.panePid) {
+                return this.sender.send(this.tmuxSendInput(input, owned.target));
+              }
+            }
+          }
+          this.ownedClaudeTargets.delete(queueKey);
+        }
+      }
       if (this.agentNativeCallPath !== undefined) {
         if (input.correlationId === undefined) {
           return { ok: false, error: "A correlation ID is required for an active Codex session call." };
@@ -347,7 +368,32 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
     const tmuxTarget = resumed.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
     if (tmuxTarget === undefined) return { ok: false, error: "Agent session resume returned no tmux target." };
-    return this.sender.send({
+    if (this.provider === "claude") {
+      const resumedWriterStatus = await this.command([
+        "--agent", "claude", "writer-status", input.sessionId, "--json"
+      ], true);
+      if (resumedWriterStatus.code !== 0) {
+        return { ok: false, error: safeProcessError("Resumed Claude writer inspection failed", resumedWriterStatus) };
+      }
+      const resumedWriters = parseWriterStatus(resumedWriterStatus.stdout, "claude", input.sessionId);
+      const writer = resumedWriters.length === 1 && resumedWriters[0]?.kind === "claude-cli"
+        ? resumedWriters[0] : undefined;
+      if (writer === undefined) return { ok: false, error: "Resumed Claude session has no unique CLI writer." };
+      const targetStatus = await this.command([
+        "--agent", "claude", "target-status", tmuxTarget,
+        "--writer-pid", String(writer.pid), "--json"
+      ], true);
+      if (targetStatus.code !== 0) {
+        return { ok: false, error: safeProcessError("Resumed Claude target ownership failed", targetStatus) };
+      }
+      const target = parseOwnedClaudeTarget(targetStatus.stdout, tmuxTarget, writer.pid);
+      this.ownedClaudeTargets.set(queueKey, { target: tmuxTarget, writerPid: writer.pid, panePid: target.panePid });
+    }
+    return this.sender.send(this.tmuxSendInput(input, tmuxTarget));
+  }
+
+  private tmuxSendInput(input: AgentSessionSendInput, tmuxTarget: string) {
+    return {
       target_agent_id: this.agentId,
       tmux_target: tmuxTarget,
       prompt: input.message,
@@ -356,7 +402,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       task_id: input.taskId,
       correlation_id: input.correlationId,
       idempotency_key: input.idempotencyKey
-    });
+    };
   }
 
   private roots(workspaceId: string): readonly string[] {
@@ -406,6 +452,7 @@ interface WriterStatusResponse {
   agent: string;
   sessionId: string;
   writers: Array<{ pid: number; kind: string }>;
+  discovery?: { complete: boolean };
 }
 
 function parseWriterStatus(value: string, expectedAgent: string, expectedSessionId: string) {
@@ -420,12 +467,28 @@ function parseWriterStatus(value: string, expectedAgent: string, expectedSession
     candidate.agent !== expectedAgent ||
     candidate.sessionId !== expectedSessionId ||
     !Array.isArray(candidate.writers) ||
+    (expectedAgent === "claude" && candidate.discovery?.complete !== true) ||
     candidate.writers.some((writer) => (
       typeof writer !== "object" || writer === null ||
       !Number.isInteger(writer.pid) || typeof writer.kind !== "string"
     ))
   ) throw new Error("Agent session writer bridge returned malformed metadata.");
   return candidate.writers;
+}
+
+function parseOwnedClaudeTarget(value: string, expectedTarget: string, expectedWriterPid: number): { panePid: number } {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); }
+  catch { throw new Error("Claude target ownership bridge returned invalid JSON."); }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("Claude target ownership bridge returned an invalid payload.");
+  }
+  const target = parsed as { target?: unknown; pane_pid?: unknown; writer_pid?: unknown };
+  if (target.target !== expectedTarget || !Number.isSafeInteger(target.pane_pid) ||
+      Number(target.pane_pid) <= 0 || target.writer_pid !== expectedWriterPid) {
+    throw new Error("Claude target ownership bridge returned mismatched metadata.");
+  }
+  return { panePid: Number(target.pane_pid) };
 }
 
 function validTranscriptEvent(value: unknown): value is AgentTranscriptEvent {

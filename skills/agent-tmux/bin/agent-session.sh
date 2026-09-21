@@ -10,6 +10,7 @@
 #   agent-session.sh --agent <NAME> transcript <SESSION_ID> [--json] [--cursor <OFFSET>] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
+#   agent-session.sh --agent claude target-status <TMUX_NAME> --writer-pid <PID> --json
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
 # --agent defaults to "codex". Config files: ../agents/<name>.conf
@@ -808,6 +809,36 @@ case "$cmd" in
         fi
         [[ $# -eq 0 ]] || { echo "ERROR: unknown writer-status argument '$1'" >&2; exit 1; }
         node "$SCRIPT_DIR/session-writer-status.mjs" "${WRITER_ARGS[@]}"
+        ;;
+
+    target-status)
+        TARGET="${1:-}"
+        shift || true
+        [[ "$AGENT_NAME" == "claude" && "$TARGET" =~ ^[a-z0-9-]+$ ]] \
+            || { echo "ERROR: target-status requires a safe Claude target" >&2; exit 2; }
+        [[ "${1:-}" == "--writer-pid" && "${2:-}" =~ ^[1-9][0-9]*$ && "${3:-}" == "--json" && $# -eq 3 ]] \
+            || { echo "ERROR: target-status requires --writer-pid <PID> --json" >&2; exit 2; }
+        WRITER_PID="$2"
+        PANES="$(mtmux list-panes -s -t "$TARGET" -F '#{session_name}|#{pane_pid}|#{pane_current_command}|#{pane_dead}|#{session_attached}' 2>/dev/null)" \
+            || { echo "ERROR: target not found" >&2; exit 3; }
+        [[ "$PANES" != *$'\n'* ]] \
+            || { echo "ERROR: target has multiple panes" >&2; exit 4; }
+        IFS='|' read -r ACTUAL_TARGET PANE_PID PANE_COMMAND PANE_DEAD ATTACHED <<< "$PANES"
+        [[ "$ACTUAL_TARGET" == "$TARGET" && "$PANE_PID" =~ ^[1-9][0-9]*$ \
+            && "$PANE_COMMAND" == "claude" && "$PANE_DEAD" == "0" && "$ATTACHED" == "0" ]] \
+            || { echo "ERROR: target is not an unattended live Claude pane" >&2; exit 4; }
+        PROC_ROOT="${AGENT_WRITER_PROC_ROOT:-/proc}"
+        CURRENT_PID="$WRITER_PID"
+        OWNER_FOUND=false
+        for ((DEPTH=0; DEPTH<32; DEPTH++)); do
+            if [[ "$CURRENT_PID" == "$PANE_PID" ]]; then OWNER_FOUND=true; break; fi
+            [[ -r "$PROC_ROOT/$CURRENT_PID/status" ]] || break
+            CURRENT_PID="$(awk '/^PPid:/ { print $2; exit }' "$PROC_ROOT/$CURRENT_PID/status")"
+            [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] || break
+        done
+        [[ "$OWNER_FOUND" == true ]] \
+            || { echo "ERROR: Claude writer is not owned by target pane" >&2; exit 4; }
+        printf '{"target":"%s","pane_pid":%s,"writer_pid":%s}\n' "$TARGET" "$PANE_PID" "$WRITER_PID"
         ;;
 
     kill)

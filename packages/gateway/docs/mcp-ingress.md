@@ -200,14 +200,19 @@ transport failure. Output from a turn that was already active before the queued
 anchor is ignored; if the queued turn does not start before the result deadline,
 the accepted request reports `result_timeout`, not `result_uncorrelated`.
 
-An active Claude session is writable only when the deployment explicitly owns
-its event-driven Monitor transport. Managed inbox files are named
+An active Claude session is writable when the current gateway process can prove
+it resumed the same CLI writer in the same single, unattached tmux pane. Each
+reuse rechecks the unique Claude writer PID, its pane ancestry, and the pane
+PID; the sender still refuses a busy TUI or occupied composer. This ownership
+proof is process-local and disappears on gateway restart. Otherwise Claude is
+writable only when the deployment explicitly owns its event-driven Monitor
+transport. Managed inbox files are named
 `<session-id>.jsonl` under `agentManagedInboxRoot`; delivery additionally
 requires exactly one Claude Desktop writer and exactly one watcher bound to that
 inbox. The native call appends a correlated visible user request and waits for
 the matching final transcript turn. Any other active Claude session remains
 readable but fails with `active_external_writer`; the gateway never starts a
-second writer or injects terminal keystrokes.
+second writer or injects terminal keystrokes into an unproven target.
 
 Static `tmuxIngress` remains unchanged for dedicated ingress sessions. A task
 without `session_id` continues to use that route. A task with `session_id` uses
