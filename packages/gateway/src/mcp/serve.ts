@@ -85,6 +85,8 @@ interface AgentSessionsConfig {
     target_agent_id: string;
     agent_type: "codex" | "claude";
     workspace_roots: Record<string, string[]>;
+    /** Opt-in. Fresh sessions only ever start in these dirs. */
+    fresh_session?: { workspace_cwd: Record<string, string> };
   }>;
 }
 
@@ -475,7 +477,27 @@ function validateAgentSessions(
         throw new Error(`Unknown agent sessions workspace at index ${index}: ${workspaceId}`);
       }
     }
+    if (provider.fresh_session !== undefined) validateFreshSession(provider, index);
     seen.add(provider.target_agent_id);
+  }
+}
+
+function validateFreshSession(provider: AgentSessionsConfig["providers"][number], index: number): void {
+  const cwds = provider.fresh_session?.workspace_cwd;
+  if (
+    provider.agent_type !== "claude" ||
+    typeof cwds !== "object" || cwds === null || Array.isArray(cwds) ||
+    Object.keys(cwds).length === 0
+  ) {
+    throw new Error(`Invalid agent sessions fresh_session at index ${index}.`);
+  }
+  for (const [workspaceId, cwd] of Object.entries(cwds)) {
+    if (
+      typeof cwd !== "string" || !cwd.startsWith("/") ||
+      !Object.hasOwn(provider.workspace_roots, workspaceId)
+    ) {
+      throw new Error(`Invalid agent sessions fresh_session workspace at index ${index}: ${workspaceId}`);
+    }
   }
 }
 
@@ -489,6 +511,7 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     ...(config.agentNativeCallPath === undefined ? {} : { agentNativeCallPath: config.agentNativeCallPath }),
     ...(config.agentManagedInboxRoot === undefined ? {} : { agentManagedInboxRoot: config.agentManagedInboxRoot }),
     workspaceRoots: provider.workspace_roots,
+    ...(provider.fresh_session === undefined ? {} : { freshSessionCwds: provider.fresh_session.workspace_cwd }),
     ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
     ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds }),
     ...(config.scanLimit === undefined ? {} : { scanLimit: config.scanLimit })

@@ -65,7 +65,7 @@ function detectArgvWriters(sessionId, procRoot) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     const pid = Number(entry.name);
     const argv = readProcessArgv(procRoot, pid);
-    if (!resumesSession(argv, sessionId)) continue;
+    if (!claimsSession(argv, sessionId)) continue;
     const kind = classifyClaudeProcess(argv);
     if (kind) writers.push({ pid, kind, source: "process-argv" });
   }
@@ -88,9 +88,11 @@ function classifyClaudeProcess(argv) {
   return undefined;
 }
 
-function resumesSession(argv, sessionId) {
+// --session-id owns the session the same way --resume does
+function claimsSession(argv, sessionId) {
   return argv.some((value, index) => (
     value === `--resume=${sessionId}`
-    || ((value === "--resume" || value === "-r") && argv[index + 1] === sessionId)
+    || value === `--session-id=${sessionId}`
+    || ((value === "--resume" || value === "-r" || value === "--session-id") && argv[index + 1] === sessionId)
   ));
 }

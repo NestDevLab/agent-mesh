@@ -56,7 +56,11 @@ export interface AgentSessionSendInput {
   taskId?: string;
   correlationId?: string;
   idempotencyKey: string;
+  /** "fresh": launch the session named by sessionId instead of resuming it. */
+  sessionMode?: "fresh";
 }
+
+export type FreshSessionSupport = "supported" | "unsupported" | "workspace_unauthorized";
 
 export interface AgentSessionProvider {
   readonly agentId: string;
@@ -66,6 +70,8 @@ export interface AgentSessionProvider {
   transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined>;
   search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
+  /** Workspaces allowed to start a fresh session. Absent means unsupported. */
+  readonly freshSessionWorkspaceIds?: readonly string[];
 }
 
 export class AgentSessionRegistry {
@@ -102,6 +108,17 @@ export class AgentSessionRegistry {
 
   send(agentId: string, input: AgentSessionSendInput): Promise<TmuxSendResult> {
     return this.require(agentId).send(input);
+  }
+
+  supportsFreshSession(agentId: string): boolean {
+    return (this.providers.get(agentId)?.freshSessionWorkspaceIds?.length ?? 0) > 0;
+  }
+
+  freshSessionSupport(agentId: string, workspaceId: string): FreshSessionSupport {
+    if (!this.supportsFreshSession(agentId)) return "unsupported";
+    return this.providers.get(agentId)?.freshSessionWorkspaceIds?.includes(workspaceId) === true
+      ? "supported"
+      : "workspace_unauthorized";
   }
 
   private require(agentId: string): AgentSessionProvider {
@@ -152,19 +169,25 @@ export interface ShellAgentSessionProviderOptions {
   agentNativeCallPath?: string;
   agentManagedInboxRoot?: string;
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
+  /** Trusted cwd per workspace for fresh sessions, must be inside that workspace's roots. */
+  freshSessionCwds?: Readonly<Record<string, string>>;
   meshSocket?: string;
   timeoutSeconds?: number;
   scanLimit?: number;
   run?: ShellRun;
 }
 
+const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** Host-owned bridge over the existing agent-session.sh and agent-send.sh contract. */
 export class ShellAgentSessionProvider implements AgentSessionProvider {
   readonly agentId: string;
   readonly provider: "codex" | "claude";
+  readonly freshSessionWorkspaceIds?: readonly string[];
 
   private readonly agentSessionPath: string;
   private readonly workspaceRoots: Readonly<Record<string, readonly string[]>>;
+  private readonly freshSessionCwds?: Readonly<Record<string, string>>;
   private readonly scanLimit: number;
   private readonly meshSocket?: string;
   private readonly agentNativeCallPath?: string;
@@ -182,6 +205,22 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     this.workspaceRoots = Object.fromEntries(
       Object.entries(options.workspaceRoots).map(([workspaceId, roots]) => [workspaceId, roots.map((root) => resolve(root))])
     );
+    if (options.freshSessionCwds !== undefined) {
+      // codex only picks its session id after launch, so we can't bind the task to it up front
+      if (options.agentType !== "claude") {
+        throw new Error(`Fresh sessions are not supported for agent type: ${options.agentType}`);
+      }
+      const cwds: Record<string, string> = {};
+      for (const [workspaceId, cwd] of Object.entries(options.freshSessionCwds)) {
+        const roots = this.workspaceRoots[workspaceId];
+        if (!isAbsolute(cwd) || roots === undefined || !roots.some((root) => isWithin(cwd, root))) {
+          throw new Error(`Fresh session directory is outside the workspace roots: ${workspaceId}`);
+        }
+        cwds[workspaceId] = resolve(cwd);
+      }
+      this.freshSessionCwds = cwds;
+      this.freshSessionWorkspaceIds = Object.keys(cwds);
+    }
     this.scanLimit = options.scanLimit ?? 500;
     this.meshSocket = options.meshSocket;
     this.agentNativeCallPath = options.agentNativeCallPath;
@@ -296,6 +335,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   private async sendUnlocked(input: AgentSessionSendInput): Promise<TmuxSendResult> {
+    if (input.sessionMode === "fresh") return this.sendFresh(input);
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined) {
@@ -395,6 +435,51 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       : this.sender.send(this.tmuxSendInput(input, tmuxTarget));
   }
 
+  /** Launches via the bridge's `new`, checks we own the writer, then sends the first turn. Never falls back to another session. */
+  private async sendFresh(input: AgentSessionSendInput): Promise<TmuxSendResult> {
+    if (this.freshSessionCwds === undefined || this.provider !== "claude") {
+      return { ok: false, error_code: "fresh_session_unsupported", error: "Fresh session creation is not configured for this agent." };
+    }
+    const cwd = Object.hasOwn(this.freshSessionCwds, input.workspaceId)
+      ? this.freshSessionCwds[input.workspaceId]
+      : undefined;
+    if (cwd === undefined) {
+      return {
+        ok: false,
+        error_code: "fresh_session_workspace_unauthorized",
+        error: "Fresh session creation is not configured for this workspace."
+      };
+    }
+    const failed = (error: string): TmuxSendResult => ({ ok: false, error_code: "fresh_session_create_failed", error });
+    if (!SESSION_UUID.test(input.sessionId)) return failed("Fresh session id must be a lowercase UUID.");
+    const target = `mesh-claude-${input.sessionId}`;
+    const created = await this.command([
+      "--agent", "claude", "new", cwd, target, "--", "--session-id", input.sessionId
+    ], true);
+    if (created.code !== 0) return failed(safeProcessError("Fresh session creation failed", created));
+    if (created.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) !== target) {
+      return failed("Fresh session creation returned an unexpected target.");
+    }
+    try {
+      const writerStatus = await this.command(["--agent", "claude", "writer-status", input.sessionId, "--json"], true);
+      if (writerStatus.code !== 0) return failed(safeProcessError("Fresh session writer inspection failed", writerStatus));
+      const writers = parseWriterStatus(writerStatus.stdout, "claude", input.sessionId);
+      const writer = writers.length === 1 && writers[0]?.kind === "claude-cli" ? writers[0] : undefined;
+      if (writer === undefined) return failed("Fresh session has no unique CLI writer.");
+      const targetStatus = await this.command([
+        "--agent", "claude", "target-status", target, "--writer-pid", String(writer.pid), "--json"
+      ], true);
+      if (targetStatus.code !== 0) return failed(safeProcessError("Fresh session target ownership failed", targetStatus));
+      const owned = parseOwnedClaudeTarget(targetStatus.stdout, target, writer.pid);
+      this.ownedClaudeTargets.set(`${input.workspaceId}:${input.sessionId}`, {
+        target, writerPid: writer.pid, panePid: owned.panePid
+      });
+    } catch (error) {
+      return failed(error instanceof Error ? error.message : String(error));
+    }
+    return this.sendToOwnedClaudeTarget(input, target);
+  }
+
   private async sendToOwnedClaudeTarget(input: AgentSessionSendInput, target: string): Promise<TmuxSendResult> {
     const result = await this.sender.send(this.tmuxSendInput(input, target));
     if (result.result_error_code !== "result_uncorrelated" || input.correlationId === undefined) return result;
@@ -459,6 +544,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private async command(args: readonly string[], allowFailure = false) {
     const env = { ...processEnv };
     if (this.meshSocket !== undefined) env.MESH_TMUX_SOCKET = this.meshSocket;
+    if (args[2] === "new") env.MESH_STRICT_READY = "1";
     if (args.includes("resume")) {
       env.MESH_STRICT_READY = "1";
       env.MESH_PRESERVE_SESSION_POLICY = "1";

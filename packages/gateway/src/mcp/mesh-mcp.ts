@@ -159,12 +159,31 @@ export interface MeshDispatchResult {
 export interface MeshTaskDispatchInput {
   targetAgentId: string;
   sessionId?: string;
+  /** "fresh": start a new session. Can't be combined with sessionId. */
+  sessionMode?: "fresh";
   workspaceId?: string;
   domainId?: string;
   contextId?: string;
   message: string;
   idempotencyKey: string;
   labels?: string[];
+}
+
+export const CREATE_SESSION_CAPABILITY = "create_session";
+
+export type MeshMcpErrorCode =
+  | "session_mode_conflict"
+  | "fresh_session_unsupported"
+  | "fresh_session_workspace_unauthorized";
+
+export class MeshMcpError extends Error {
+  readonly code: MeshMcpErrorCode;
+
+  constructor(code: MeshMcpErrorCode, message: string) {
+    super(`${code}: ${message}`);
+    this.name = "MeshMcpError";
+    this.code = code;
+  }
 }
 
 /**
@@ -182,10 +201,17 @@ export class MeshMcpFacade {
     this.assertAllowed("mesh_list_agents");
     return this.options.agents
       .filter((agent) => this.options.principal.allowedAgentIds.includes(agent.id))
-      .map((agent) => ({
-      ...agent,
-      ...(agent.capabilities === undefined ? {} : { capabilities: [...agent.capabilities] })
-      }));
+      .map((agent) => {
+        const capabilities = [...(agent.capabilities ?? [])];
+        if (
+          this.options.sessionRegistry?.supportsFreshSession(agent.id) === true &&
+          !capabilities.includes(CREATE_SESSION_CAPABILITY)
+        ) capabilities.push(CREATE_SESSION_CAPABILITY);
+        return {
+          ...agent,
+          ...(agent.capabilities === undefined && capabilities.length === 0 ? {} : { capabilities })
+        };
+      });
   }
 
   allowedScopes(): { workspaceIds: readonly string[]; domainIds: readonly string[] } {
@@ -356,6 +382,21 @@ export class MeshMcpFacade {
   private async taskInput(input: MeshTaskDispatchInput) {
     const target = this.allowedTarget(input.targetAgentId);
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    if (input.sessionMode === "fresh") {
+      if (input.sessionId !== undefined) {
+        throw new MeshMcpError("session_mode_conflict", "session_id cannot be combined with session_mode \"fresh\".");
+      }
+      const support = this.options.sessionRegistry?.freshSessionSupport(target.id, workspaceId) ?? "unsupported";
+      if (support === "unsupported") {
+        throw new MeshMcpError("fresh_session_unsupported", `Target agent cannot create fresh sessions: ${target.id}`);
+      }
+      if (support === "workspace_unauthorized") {
+        throw new MeshMcpError(
+          "fresh_session_workspace_unauthorized",
+          `Fresh sessions are not configured for workspace: ${workspaceId}`
+        );
+      }
+    }
     if (input.sessionId !== undefined) {
       const session = await this.sessions(target.id).get(target.id, {
         workspaceId,
@@ -366,12 +407,13 @@ export class MeshMcpFacade {
       }
     }
     return {
-      contextId: input.contextId ?? `mesh_context_${randomUUID()}`,
+      ...(input.contextId === undefined ? {} : { contextId: input.contextId }),
       principalId: this.options.principal.id,
       principalKind: this.options.principal.kind,
       requesterId: this.options.principal.requesterId,
       targetAgentId: target.id,
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
+      ...(input.sessionMode === "fresh" ? { sessionMode: "fresh" as const, sessionProvider: target.provider } : {}),
       workspaceId,
       domainId: resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds),
       message: input.message,
@@ -428,6 +470,7 @@ const deliveryStatusSchema = z.object({
 const taskDispatchInputSchema = z.object({
   target_agent_id: identifierSchema,
   session_id: identifierSchema.optional(),
+  session_mode: z.enum(["fresh"]).optional(),
   workspace_id: identifierSchema.optional(),
   domain_id: identifierSchema.optional(),
   context_id: identifierSchema.optional(),
@@ -554,7 +597,7 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     "mesh_call",
     {
       title: "Call an Agent Mesh agent",
-      description: "Starts a governed agent task and waits for a bounded interval for its correlated result. Returns a durable task handle when still running.",
+      description: "Starts a governed agent task and waits for a bounded interval for its correlated result. Returns a durable task handle when still running. Pass session_id to continue a session, or session_mode \"fresh\" to start a new one on an agent with the create_session capability.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       inputSchema: taskCallInputSchema
     },
@@ -570,7 +613,7 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     "mesh_submit",
     {
       title: "Submit an Agent Mesh task",
-      description: "Durably submits a governed agent task and returns immediately with a task handle.",
+      description: "Durably submits a governed agent task and returns immediately with a task handle. Accepts the same session_id or session_mode \"fresh\" selection as mesh_call.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       inputSchema: taskDispatchInputSchema
     },
@@ -711,6 +754,7 @@ function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDisp
   return {
     targetAgentId: input.target_agent_id,
     sessionId: input.session_id,
+    sessionMode: input.session_mode,
     workspaceId: input.workspace_id,
     domainId: input.domain_id,
     contextId: input.context_id,
@@ -727,6 +771,8 @@ export function publicTask(task: MeshTaskRecord) {
     message_id: task.message_id,
     agent_id: task.target_agent_id,
     ...(task.session_id === undefined ? {} : { session_id: task.session_id }),
+    ...(task.session_mode === undefined ? {} : { session_mode: task.session_mode }),
+    ...(task.session_provenance === undefined ? {} : { session_provenance: { ...task.session_provenance } }),
     status: task.status,
     created_at: task.created_at,
     updated_at: task.updated_at,
@@ -771,7 +817,8 @@ export async function executeMeshTask(
       principal_id: task.principal_id,
       principal_kind: task.principal_kind,
       task_id: task.task_id,
-      ...(task.session_id === undefined ? {} : { session_id: task.session_id })
+      ...(task.session_id === undefined ? {} : { session_id: task.session_id }),
+      ...(task.session_mode === undefined ? {} : { session_mode: task.session_mode })
     },
     ...(task.labels.length === 0 ? {} : { labels: [...task.labels] })
   });
@@ -779,6 +826,10 @@ export async function executeMeshTask(
   const transport = [...submitted.deliveries].reverse()
     .find((delivery) => delivery.adapter_id === transportAdapterId);
   if (transport === undefined || transport.status !== "delivered") {
+    const freshFailure = task.session_mode === "fresh"
+      ? await freshSessionFailure(gateway, task.message_id, transportAdapterId)
+      : undefined;
+    if (freshFailure !== undefined) throw new MeshTaskExecutionError(freshFailure, freshSessionFailureMessage(freshFailure));
     throw new MeshTaskExecutionError("transport_failure", `Agent transport did not deliver the request: ${transport?.status ?? "missing"}.`);
   }
   const deadline = Date.now() + (options.resultWaitMs ?? 2_000);
@@ -820,11 +871,48 @@ export async function executeMeshTask(
 }
 
 type ResultErrorCode = "result_no_output" | "result_uncorrelated" | "result_parsing_failure" | "result_timeout";
+type FreshSessionFailureCode =
+  | "fresh_session_unsupported"
+  | "fresh_session_workspace_unauthorized"
+  | "fresh_session_create_failed";
+type ExecutionErrorCode = ResultErrorCode | FreshSessionFailureCode | "transport_failure" | "result_too_large";
+
+const FRESH_SESSION_FAILURES: readonly string[] = [
+  "fresh_session_unsupported",
+  "fresh_session_workspace_unauthorized",
+  "fresh_session_create_failed"
+];
+
+async function freshSessionFailure(
+  gateway: MeshMcpGateway,
+  messageId: string,
+  adapterId: string
+): Promise<FreshSessionFailureCode | undefined> {
+  const audits = await gateway.listAudit({ type: "delivery.updated", message_id: messageId });
+  for (const event of [...audits].reverse()) {
+    if (event.details.adapter_id !== adapterId) continue;
+    const details = event.details.adapter_details;
+    if (typeof details !== "object" || details === null) continue;
+    const reason = (details as Record<string, unknown>).reason;
+    if (typeof reason === "string" && FRESH_SESSION_FAILURES.includes(reason)) return reason as FreshSessionFailureCode;
+    return undefined;
+  }
+  return undefined;
+}
+
+function freshSessionFailureMessage(code: FreshSessionFailureCode): string {
+  const messages: Record<FreshSessionFailureCode, string> = {
+    fresh_session_unsupported: "The agent provider does not support fresh session creation.",
+    fresh_session_workspace_unauthorized: "Fresh session creation is not configured for the task workspace.",
+    fresh_session_create_failed: "The provider session could not be created; no other session was used."
+  };
+  return messages[code];
+}
 
 class MeshTaskExecutionError extends Error {
-  readonly code: ResultErrorCode | "transport_failure" | "result_too_large";
+  readonly code: ExecutionErrorCode;
 
-  constructor(code: ResultErrorCode | "transport_failure" | "result_too_large", message: string) {
+  constructor(code: ExecutionErrorCode, message: string) {
     super(message);
     this.name = "MeshTaskExecutionError";
     this.code = code;

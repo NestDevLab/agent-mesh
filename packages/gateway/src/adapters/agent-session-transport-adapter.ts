@@ -13,11 +13,13 @@ export class AgentSessionTransportAdapter implements MeshTransportAdapter {
 
   async dispatch(delivery: DeliveryRecord, envelope: AgentMessageEnvelopeV1): Promise<AdapterDispatchResult> {
     const sessionId = envelope.metadata?.session_id;
+    const fresh = envelope.metadata?.session_mode === "fresh";
     const correlation = {
       trace_id: envelope.trace_id ?? null,
       correlation_id: envelope.correlation_id ?? null,
       causation_id: envelope.causation_id ?? null,
       session_id: typeof sessionId === "string" ? sessionId : null,
+      ...(fresh ? { session_mode: "fresh" } : {}),
       target_agent_id: delivery.target_agent_id
     };
     if (typeof sessionId !== "string" || sessionId.length === 0) {
@@ -35,7 +37,8 @@ export class AgentSessionTransportAdapter implements MeshTransportAdapter {
         contextId: envelope.conversation_id,
         ...(typeof envelope.task_id === "string" ? { taskId: envelope.task_id } : {}),
         ...(typeof envelope.correlation_id === "string" ? { correlationId: envelope.correlation_id } : {}),
-        idempotencyKey: envelope.idempotency_key
+        idempotencyKey: envelope.idempotency_key,
+        ...(fresh ? { sessionMode: "fresh" as const } : {})
       });
       if (!result.ok) return {
         status: "failed",

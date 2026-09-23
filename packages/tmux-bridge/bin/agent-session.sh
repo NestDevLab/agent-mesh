@@ -651,6 +651,7 @@ case "$cmd" in
             if [[ -n "$SESSION_TITLE" ]]; then
                 echo "WARN: session '$TARGET' already exists; --title was not updated" >&2
             fi
+            _require_resumed_ready "$TARGET" false || exit 124
             mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
                 >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
             echo "$TARGET"; exit 0
@@ -665,6 +666,7 @@ case "$cmd" in
         NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}$LAUNCH_OPTION_CMD$EXTRA_CMD"
         mtmux send-keys -t "$TARGET" "$NEW_CMD" Enter
         _wait_for_ready_or_warn "$TARGET"
+        _require_resumed_ready "$TARGET" true
         if [[ -n "$SESSION_TITLE" ]]; then
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )

@@ -7,7 +7,10 @@ const EXECUTION_ERROR_CODES = new Set([
   "result_uncorrelated",
   "result_parsing_failure",
   "result_timeout",
-  "result_too_large"
+  "result_too_large",
+  "fresh_session_unsupported",
+  "fresh_session_workspace_unauthorized",
+  "fresh_session_create_failed"
 ]);
 
 export interface MeshTaskExecutionResult {
@@ -91,6 +94,18 @@ export class MeshTaskCoordinator {
   private async run(taskId: string): Promise<void> {
     let task = await this.store.get(taskId);
     if (task === undefined || TERMINAL.has(task.status)) return;
+    if (task.status === "working" && task.session_mode === "fresh") {
+      // still working after a restart: the session and prompt may already exist, don't risk doing either twice
+      await this.store.update({
+        ...task,
+        status: "failed",
+        error: {
+          code: "delivery_uncertain",
+          message: "Fresh session task was interrupted; session creation or delivery may have happened and is not retried."
+        }
+      });
+      return;
+    }
     task = await this.store.update({ ...task, status: "working" });
     try {
       const execution = await this.execute(task);

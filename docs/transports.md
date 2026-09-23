@@ -55,6 +55,7 @@ correlation/trace/causation IDs as a delivery for any other.
 | --- | --- | --- | --- | --- |
 | Discord | (controlled Discord adapter) | Human-facing command, transcript, and approval surface | Off (dry-run; real only after explicit enablement + approval) | Controlled boundary; stub-first in Phase 1 |
 | Tmux | `tmux-transport` | Agent-to-agent (CLI-to-CLI) direct collaboration | Off (`enable_real_send` per route) | New peer adapter; dry-run-first |
+| Agent session | `agent-session-transport` | MCP task to one provider-native session, existing or fresh | On for configured providers | Selected by `session_id` or `session_mode: "fresh"` |
 
 Boundary documents:
 
@@ -70,6 +71,11 @@ Boundary documents:
 - **Tmux**: direct CLI-to-CLI agent comms — one agent dispatching a prompt to
   another agent's tmux session for collaboration, without a human-facing channel
   in the loop. Backed by the `@openclaw-agent-mesh/tmux-bridge` scripts.
+- **Agent session**: an MCP task that names a provider session (`session_id`)
+  or asks for a new one (`session_mode: "fresh"`). It resumes or launches that
+  session through `agent-session.sh` and collects the correlated reply. Fresh
+  launches take their working directory only from server configuration; see
+  `packages/gateway/docs/mcp-ingress.md#fresh-sessions`.
 
 The choice of transport changes the destination, not the protocol or the
 guarantees.
