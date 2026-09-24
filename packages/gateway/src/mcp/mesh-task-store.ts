@@ -35,6 +35,16 @@ export interface MeshTaskError {
   message: string;
 }
 
+/** model/effort stay "unknown" unless the provider reports them, never guess them from the agent id */
+export interface MeshTaskSessionProvenance {
+  origin: "fresh";
+  provider: string;
+  agent_id: string;
+  session_id: string;
+  model: string;
+  effort: string;
+}
+
 export interface MeshTaskRecord {
   schema: "agent-mesh.mcp-task.v1";
   task_id: string;
@@ -45,6 +55,8 @@ export interface MeshTaskRecord {
   requester_id: string;
   target_agent_id: string;
   session_id?: string;
+  session_mode?: "fresh";
+  session_provenance?: MeshTaskSessionProvenance;
   workspace_id: string;
   domain_id: string;
   message: string;
@@ -59,12 +71,16 @@ export interface MeshTaskRecord {
 }
 
 export interface CreateMeshTaskInput {
-  contextId: string;
+  /** When omitted the store mints one and keeps it out of the idempotency hash. */
+  contextId?: string;
   principalId: string;
   principalKind: "user" | "service";
   requesterId: string;
   targetAgentId: string;
   sessionId?: string;
+  /** Needs sessionProvider, the store mints the session id. */
+  sessionMode?: "fresh";
+  sessionProvider?: string;
   workspaceId: string;
   domainId: string;
   message: string;
@@ -90,14 +106,18 @@ export class MeshTaskStore implements MeshTaskStoreLike {
   }
 
   async create(input: CreateMeshTaskInput): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
+    if (input.sessionMode === "fresh" && (input.sessionId !== undefined || input.sessionProvider === undefined)) {
+      throw new Error("A fresh session task requires a provider and must not name an existing session.");
+    }
     return this.exclusive(async () => {
     const normalized = {
-      context_id: input.contextId,
+      ...(input.contextId === undefined ? {} : { context_id: input.contextId }),
       principal_id: input.principalId,
       principal_kind: input.principalKind,
       requester_id: input.requesterId,
       target_agent_id: input.targetAgentId,
       ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
+      ...(input.sessionMode === undefined ? {} : { session_mode: input.sessionMode }),
       workspace_id: input.workspaceId,
       domain_id: input.domainId,
       message: input.message,
@@ -114,16 +134,29 @@ export class MeshTaskStore implements MeshTaskStoreLike {
     }
 
     const now = (this.clock?.now() ?? new Date()).toISOString();
+    const freshSessionId = input.sessionMode === "fresh" ? randomUUID() : undefined;
     const task: MeshTaskRecord = {
       schema: "agent-mesh.mcp-task.v1",
       task_id: `mesh_task_${randomUUID()}`,
-      context_id: input.contextId,
+      context_id: input.contextId ?? `mesh_context_${randomUUID()}`,
       message_id: `mcp_${randomUUID()}`,
       principal_id: input.principalId,
       principal_kind: input.principalKind,
       requester_id: input.requesterId,
       target_agent_id: input.targetAgentId,
       ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
+      ...(freshSessionId === undefined ? {} : {
+        session_id: freshSessionId,
+        session_mode: "fresh" as const,
+        session_provenance: {
+          origin: "fresh" as const,
+          provider: input.sessionProvider as string,
+          agent_id: input.targetAgentId,
+          session_id: freshSessionId,
+          model: "unknown",
+          effort: "unknown"
+        }
+      }),
       workspace_id: input.workspaceId,
       domain_id: input.domainId,
       message: input.message,

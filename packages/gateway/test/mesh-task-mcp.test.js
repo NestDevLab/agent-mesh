@@ -131,6 +131,15 @@ test("mesh_submit is idempotent per principal and rejects changed input", async 
   );
 });
 
+test("a replay without context_id returns the original task instead of an idempotency conflict", async () => {
+  const { facade } = await setup();
+  const first = await facade.submitTask(input({ contextId: undefined, idempotencyKey: "no-context" }));
+  const replay = await facade.submitTask(input({ contextId: undefined, idempotencyKey: "no-context" }));
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.task.task_id, first.task.task_id);
+  assert.match(first.task.context_id, /^mesh_context_/);
+});
+
 test("two concurrent tasks retain distinct message, task, context, and result correlation", async () => {
   const { facade } = await setup(async (task) => {
     await new Promise((resolve) => setTimeout(resolve, task.message === "first" ? 10 : 1));

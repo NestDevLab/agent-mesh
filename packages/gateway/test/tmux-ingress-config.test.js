@@ -156,3 +156,62 @@ test("session provider workspace roots must be absolute", async () => {
   });
   await assert.rejects(readRuntimeConfig(path), /Invalid agent sessions workspace roots/);
 });
+
+const CLAUDE_AGENT = { ...AGENT, id: "agent.ingress.claude", name: "Dedicated Claude ingress", provider: "claude" };
+const CLAUDE_BINDING = { ...BINDING, allowedAgentIds: ["agent.ingress.claude"] };
+const CLAUDE_SESSIONS = {
+  ...AGENT_SESSIONS,
+  providers: [{
+    target_agent_id: "agent.ingress.claude",
+    agent_type: "claude",
+    workspace_roots: { "workspace.example": ["/srv/workspaces/example"] },
+    fresh_session: { workspace_cwd: { "workspace.example": "/srv/workspaces/example/fresh" } }
+  }]
+};
+
+test("runtime config accepts an opt-in Claude fresh-session directory", async () => {
+  const config = await readRuntimeConfig(await writeConfig({ agents: [CLAUDE_AGENT], bindings: [CLAUDE_BINDING], agentSessions: CLAUDE_SESSIONS }));
+  assert.deepEqual(config.agentSessions.providers[0].fresh_session.workspace_cwd, {
+    "workspace.example": "/srv/workspaces/example/fresh"
+  });
+});
+
+test("fresh sessions are rejected for Codex providers and unconfigured workspaces", async () => {
+  const codex = await writeConfig({
+    agentSessions: {
+      ...AGENT_SESSIONS,
+      providers: [{ ...AGENT_SESSIONS.providers[0], fresh_session: CLAUDE_SESSIONS.providers[0].fresh_session }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(codex), /Invalid agent sessions fresh_session at index 0/);
+
+  const unknownWorkspace = await writeConfig({
+    agents: [CLAUDE_AGENT],
+    bindings: [CLAUDE_BINDING],
+    agentSessions: {
+      ...CLAUDE_SESSIONS,
+      providers: [{ ...CLAUDE_SESSIONS.providers[0], fresh_session: { workspace_cwd: { "workspace.other": "/srv/other" } } }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(unknownWorkspace), /fresh_session workspace at index 0: workspace.other/);
+
+  const relative = await writeConfig({
+    agents: [CLAUDE_AGENT],
+    bindings: [CLAUDE_BINDING],
+    agentSessions: {
+      ...CLAUDE_SESSIONS,
+      providers: [{ ...CLAUDE_SESSIONS.providers[0], fresh_session: { workspace_cwd: { "workspace.example": "fresh" } } }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(relative), /fresh_session workspace at index 0/);
+
+  const outsideRoots = await writeConfig({
+    agents: [CLAUDE_AGENT],
+    bindings: [CLAUDE_BINDING],
+    agentSessions: {
+      ...CLAUDE_SESSIONS,
+      providers: [{ ...CLAUDE_SESSIONS.providers[0], fresh_session: { workspace_cwd: { "workspace.example": "/srv/workspaces/elsewhere" } } }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(outsideRoots), /fresh_session directory is outside the workspace roots at index 0/);
+});

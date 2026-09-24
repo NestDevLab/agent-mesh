@@ -10,7 +10,7 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 
 | Tool | Effect |
 | --- | --- |
-| `mesh_list_agents` | Lists the explicit endpoints exposed by the deployment. |
+| `mesh_list_agents` | Lists the explicit endpoints exposed by the deployment and their capabilities. |
 | `mesh_send` | Sends an A2A request to one exposed endpoint. |
 | `mesh_delivery_status` | Reads recorded delivery lifecycle events. |
 | `mesh_call` | Submits a durable task and waits up to 120 seconds for its correlated result. |
@@ -38,6 +38,19 @@ the gateway verifies the session against the target agent and authenticated
 workspace before creating the task. The task then preserves `session_id`,
 `task_id`, `message_id`, and `context_id` through delivery, audit, and result
 capture. A session ID is a routing coordinate, not an authorization grant.
+
+They also accept `session_mode: "fresh"`, which starts a new provider session
+instead of continuing one; see [Fresh sessions](#fresh-sessions). Omitting both
+fields keeps the static route. When `context_id` is omitted the gateway mints
+one, and it is excluded from the idempotency comparison, so an exact replay
+returns the original task.
+
+### Capability discovery
+
+`mesh_list_agents` returns each exposed agent's configured `capabilities`.
+The gateway adds `create_session` to an agent when its session provider has
+fresh sessions configured for at least one of the caller's workspaces. Callers should check for it before sending
+`session_mode: "fresh"`; the tool call still enforces it.
 
 ## Serving safely
 
@@ -224,6 +237,77 @@ Static `tmuxIngress` remains unchanged for dedicated ingress sessions. A task
 without `session_id` continues to use that route. A task with `session_id` uses
 only `agent-session-transport` as its authoritative result transport, while
 the existing simulation and transcript audit adapters remain intact.
+
+## Fresh sessions
+
+`session_mode: "fresh"` asks the target agent's session provider to start a new
+session, deliver the message as its first turn, and collect the correlated
+result. It is opt-in per provider and per workspace, and currently supported
+for Claude only: Claude accepts a caller-chosen `--session-id`, so the task is
+bound to its session before anything launches. Codex assigns the id after
+launch and reports `fresh_session_unsupported`.
+
+```json
+{
+  "target_agent_id": "agent.ingress.claude",
+  "workspace_id": "workspace.example",
+  "session_mode": "fresh",
+  "message": "Reply with nonce XYZ",
+  "idempotency_key": "fresh-nonce-xyz"
+}
+```
+
+The result is the normal task handle. `session_id` is the new session, and
+`session_provenance` records its origin, provider, agent, and session identity.
+`model` and `effort` are `"unknown"`: the launch does not pin them and they are
+never inferred from the endpoint name. Later turns address the same session
+with `session_id`.
+
+Enable it on the provider with a trusted working directory per workspace. Each
+directory must lie inside that workspace's `workspace_roots`; the runtime
+config is rejected when it is read otherwise, and for any `agent_type` other
+than `claude`:
+
+```json
+{
+  "target_agent_id": "agent.ingress.claude",
+  "agent_type": "claude",
+  "workspace_roots": { "workspace.example": ["/srv/workspaces/example"] },
+  "fresh_session": {
+    "workspace_cwd": { "workspace.example": "/srv/workspaces/example/agent-inbox" }
+  }
+}
+```
+
+The caller never supplies a command, binary, path, or working directory; the
+MCP schema has no such fields and unknown arguments are dropped. The gateway
+mints the session UUID and runs the bridge's own launcher:
+`agent-session.sh --agent claude new <workspace_cwd> mesh-claude-<uuid> -- --session-id <uuid>`
+with `MESH_STRICT_READY=1`, so a TUI that never becomes ready fails and its new
+target is retired. Before sending, it requires exactly one Claude CLI writer for
+that session inside the new, unattached pane, then delivers through the same
+correlated result-marker path as other session turns.
+
+| Condition | Outcome |
+| --- | --- |
+| `session_mode: "fresh"` together with `session_id` | Rejected: `session_mode_conflict` |
+| Agent without fresh sessions configured | Rejected: `fresh_session_unsupported` |
+| Workspace allowed to the principal but not configured for fresh sessions | Rejected: `fresh_session_workspace_unauthorized` |
+| Launch, readiness, or writer ownership fails | Task `failed`: `fresh_session_create_failed`; no other session is used |
+| Prompt not delivered | Task `failed`: `transport_failure` |
+| Result missing, uncorrelated, or late | Task `failed` with the usual `result_*` code |
+| Gateway restarts while the task is `working` | Task `failed`: `delivery_uncertain`; it is not re-run |
+
+The session UUID is minted once, when the task is created. A replay with the
+same `idempotency_key` and input returns that task and session and starts
+nothing new; the launch itself is also idempotent because an existing target
+with that name is reused rather than relaunched. A session created before a
+delivery failure or cancellation stays running and is not reused by another
+task.
+
+Session profiles (for example a read-only reviewer and a write-enabled
+implementer) are not implemented yet. When added, they must be server-side
+allowlisted launch profiles that the caller can only select by name.
 
 ### Codex delivery guarantees
 

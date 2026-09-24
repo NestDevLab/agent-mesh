@@ -25,7 +25,12 @@ export interface TmuxSendResult {
   ok: boolean;
   reply?: string;
   error?: string;
-  error_code?: "active_external_writer" | "session_interaction_unsupported";
+  error_code?:
+    | "active_external_writer"
+    | "session_interaction_unsupported"
+    | "fresh_session_unsupported"
+    | "fresh_session_workspace_unauthorized"
+    | "fresh_session_create_failed";
   result_error_code?: "result_no_output" | "result_uncorrelated" | "result_parsing_failure" | "result_timeout";
 }
 

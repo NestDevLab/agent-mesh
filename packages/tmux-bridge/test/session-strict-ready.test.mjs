@@ -10,7 +10,7 @@ import test from 'node:test';
 const exec = promisify(execFile);
 const bridge = dirname(dirname(fileURLToPath(import.meta.url)));
 
-async function probe(mode) {
+async function probe(mode, command = ['resume', '11111111-1111-4111-8111-111111111111', 'test-target']) {
   const root = await mkdtemp(join(tmpdir(), 'mesh-strict-ready-'));
   try {
     await mkdir(join(root, 'bin'));
@@ -25,6 +25,7 @@ AGENT_BIN="bash"
 AGENT_NAME="probe"
 TMUX_SESSION_PREFIX="mesh"
 AGENT_RESUME_CMD="bash"
+AGENT_NEW_CMD="bash"
 AGENT_PROMPT_CHAR="READY>"
 AGENT_IDLE_PATTERN="READY>"
 AGENT_ALIVE_PROCESS_PATTERN="^codex$"
@@ -50,7 +51,7 @@ esac
     await writeFile(join(root, 'fake-bin', 'sleep'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
     let result;
     try {
-      result = { code: 0, ...await exec('bash', [join(root, 'bin', 'agent-session.sh'), '--agent', 'probe', 'resume', '11111111-1111-4111-8111-111111111111', 'test-target'], {
+      result = { code: 0, ...await exec('bash', [join(root, 'bin', 'agent-session.sh'), '--agent', 'probe', ...command], {
         env: { ...process.env, AGENT_MESH_AGENTS_DIR: join(root, 'agents'), PATH: `${join(root, 'fake-bin')}:${process.env.PATH}`, TEST_STATE: state, TEST_MODE: mode, MESH_STRICT_READY: '1', MESH_REPLACE_UNREADY_SESSION: mode === 'replace-existing' ? '1' : '0', MESH_GRAPH_DISABLE: '1', MESH_TMUX_SOCKET: 'strict-fixture' },
         timeout: 5000
       }) };
@@ -86,4 +87,25 @@ test('provider mode replaces an unready target and resumes it cleanly', async ()
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.killed, true);
   assert.equal(result.stdout.trim(), 'test-target');
+});
+
+test('strict new retires only its new target when startup never becomes ready', async () => {
+  const result = await probe('slow-new', ['new', tmpdir(), 'test-target']);
+  assert.equal(result.code, 124, result.stderr);
+  assert.equal(result.killed, true);
+  assert.equal(result.stdout, '');
+});
+
+test('strict new returns a ready existing target without launching again', async () => {
+  const result = await probe('ready-existing', ['new', tmpdir(), 'test-target']);
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.killed, false);
+  assert.equal(result.stdout.trim(), 'test-target');
+});
+
+test('strict new rejects a dead existing pane without removing it', async () => {
+  const result = await probe('dead-existing', ['new', tmpdir(), 'test-target']);
+  assert.equal(result.code, 124, result.stderr);
+  assert.equal(result.killed, false);
+  assert.equal(result.stdout, '');
 });
