@@ -203,10 +203,10 @@ export class MeshMcpFacade {
       .filter((agent) => this.options.principal.allowedAgentIds.includes(agent.id))
       .map((agent) => {
         const capabilities = [...(agent.capabilities ?? [])];
-        if (
-          this.options.sessionRegistry?.supportsFreshSession(agent.id) === true &&
-          !capabilities.includes(CREATE_SESSION_CAPABILITY)
-        ) capabilities.push(CREATE_SESSION_CAPABILITY);
+        const canCreate = this.options.principal.allowedWorkspaceIds.some((workspaceId) => (
+          this.options.sessionRegistry?.freshSessionSupport(agent.id, workspaceId) === "supported"
+        ));
+        if (canCreate && !capabilities.includes(CREATE_SESSION_CAPABILITY)) capabilities.push(CREATE_SESSION_CAPABILITY);
         return {
           ...agent,
           ...(agent.capabilities === undefined && capabilities.length === 0 ? {} : { capabilities })

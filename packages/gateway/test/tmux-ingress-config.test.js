@@ -204,4 +204,14 @@ test("fresh sessions are rejected for Codex providers and unconfigured workspace
     }
   });
   await assert.rejects(readRuntimeConfig(relative), /fresh_session workspace at index 0/);
+
+  const outsideRoots = await writeConfig({
+    agents: [CLAUDE_AGENT],
+    bindings: [CLAUDE_BINDING],
+    agentSessions: {
+      ...CLAUDE_SESSIONS,
+      providers: [{ ...CLAUDE_SESSIONS.providers[0], fresh_session: { workspace_cwd: { "workspace.example": "/srv/workspaces/elsewhere" } } }]
+    }
+  });
+  await assert.rejects(readRuntimeConfig(outsideRoots), /fresh_session directory is outside the workspace roots at index 0/);
 });

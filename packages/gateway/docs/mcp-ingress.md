@@ -48,8 +48,8 @@ returns the original task.
 ### Capability discovery
 
 `mesh_list_agents` returns each exposed agent's configured `capabilities`.
-The gateway adds `create_session` to an agent whose session provider has fresh
-sessions configured. Callers should check for it before sending
+The gateway adds `create_session` to an agent when its session provider has
+fresh sessions configured for at least one of the caller's workspaces. Callers should check for it before sending
 `session_mode: "fresh"`; the tool call still enforces it.
 
 ## Serving safely
@@ -264,8 +264,9 @@ never inferred from the endpoint name. Later turns address the same session
 with `session_id`.
 
 Enable it on the provider with a trusted working directory per workspace. Each
-directory must lie inside that workspace's `workspace_roots`; the config is
-rejected otherwise, and for any `agent_type` other than `claude`:
+directory must lie inside that workspace's `workspace_roots`; the runtime
+config is rejected when it is read otherwise, and for any `agent_type` other
+than `claude`:
 
 ```json
 {

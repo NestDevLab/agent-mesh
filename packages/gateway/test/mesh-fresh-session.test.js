@@ -562,6 +562,21 @@ test("MCP tools advertise create_session and ignore caller-supplied shell, cwd, 
   } finally { await h.cleanup(); }
 });
 
+test("create_session is advertised only for workspaces the principal can use for fresh sessions", async () => {
+  const h = await harness();
+  try {
+    const listed = (principal) => new MeshMcpFacade({
+      gateway: h.gateway,
+      principal,
+      agents: AGENTS,
+      sessionRegistry: h.sessionRegistry,
+      rateLimiter: new FixedWindowMeshMcpRateLimiter()
+    }).listAgents().find((agent) => agent.id === CLAUDE).capabilities;
+    assert.deepEqual(listed(PRINCIPAL), ["submit_request", "create_session"]);
+    assert.deepEqual(listed({ ...PRINCIPAL, allowedWorkspaceIds: [OTHER_WORKSPACE] }), ["submit_request"]);
+  } finally { await h.cleanup(); }
+});
+
 test("fresh-session configuration is limited to Claude and to directories inside the workspace roots", () => {
   const base = {
     agentId: CLAUDE,

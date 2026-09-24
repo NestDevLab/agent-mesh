@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { AgentRegistry } from "../core/agent-registry.js";
@@ -498,7 +498,15 @@ function validateFreshSession(provider: AgentSessionsConfig["providers"][number]
     ) {
       throw new Error(`Invalid agent sessions fresh_session workspace at index ${index}: ${workspaceId}`);
     }
+    if (!provider.workspace_roots[workspaceId].some((root) => isWithinRoot(cwd, root))) {
+      throw new Error(`Agent sessions fresh_session directory is outside the workspace roots at index ${index}: ${workspaceId}`);
+    }
   }
+}
+
+function isWithinRoot(path: string, root: string): boolean {
+  const rel = relative(resolve(root), resolve(path));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): AgentSessionRegistry | undefined {
