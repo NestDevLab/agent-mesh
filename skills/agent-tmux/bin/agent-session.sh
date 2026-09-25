@@ -43,6 +43,8 @@ TMUX_SESSION_PREFIX="${TMUX_SESSION_PREFIX:-mesh}"
 source "$SCRIPT_DIR/_mesh-tmux.sh"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/_mesh-graph.sh"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/_mesh-launch-record.sh"
 
 # ── parse --agent flag ────────────────────────────────────────────────────────
 AGENT_NAME="codex"
@@ -114,6 +116,37 @@ CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 # shellcheck source=/dev/null
 source "$CONF"
 
+REQUESTED_CMD="${ARGS[0]:-}"
+AUTO_LIMEN_UNAVAILABLE="false"
+ROUTE_STATUS="not_requested"
+ROUTE_REASON=""
+if [[ "$GOVERNED_CHILD" != "true" && ( "$REQUESTED_CMD" == "new" || "$REQUESTED_CMD" == "resume" ) ]]; then
+    if [[ -z "$SESSION_PROFILE" && -z "$SESSION_MODEL" && -z "$SESSION_EFFORT" && -n "${AGENT_DEFAULT_PROFILE:-}" ]]; then
+        SESSION_PROFILE="$AGENT_DEFAULT_PROFILE"
+    fi
+    if [[ -n "$SESSION_PROFILE" && -z "$LIMEN_CONFIG" ]]; then
+        LIMEN_POLICY_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/limen"
+        for candidate in \
+            "$LIMEN_POLICY_ROOT/${AGENT_NAME}-shadow-policy-v2.json" \
+            "$LIMEN_POLICY_ROOT/${AGENT_NAME}-shadow-policy.json"; do
+            if [[ -r "$candidate" ]]; then
+                LIMEN_CONFIG="$candidate"
+                break
+            fi
+        done
+        if [[ -z "$LIMEN_CONFIG" ]]; then
+            AUTO_LIMEN_UNAVAILABLE="true"
+            ROUTE_STATUS="unavailable"
+            ROUTE_REASON="policy_not_found"
+            AGENT_LAUNCH_WARNING="${AGENT_LAUNCH_WARNING:+$AGENT_LAUNCH_WARNING; }no Limen policy found; no route was obtained"
+        fi
+    fi
+    if [[ -n "$SESSION_MODEL" && -n "$SESSION_EFFORT" && -z "$LIMEN_CONFIG" ]]; then
+        ROUTE_STATUS="explicit"
+        ROUTE_REASON="caller_model_effort"
+    fi
+fi
+
 if [[ "$GOVERNED_CHILD" == "true" ]]; then
     [[ -n "${MESH_LIMEN_ROUTE:-}" ]] \
         || { echo "ERROR: governed launch is missing its Limen route" >&2; exit 1; }
@@ -124,6 +157,8 @@ process.stdout.write(`${route.nativeModel}\t${route.effort}`);
 ' "$MESH_LIMEN_ROUTE" "$AGENT_NAME")" \
         || { echo "ERROR: governed launch received an invalid Limen route" >&2; exit 1; }
     IFS=$'\t' read -r SESSION_MODEL ROUTE_EFFORT <<<"$ROUTE_LAUNCH_VALUES"
+    ROUTE_STATUS="routed"
+    ROUTE_REASON="limen"
     if [[ "${AGENT_SUPPORTS_EFFORT:-false}" == "true" ]]; then
         SESSION_EFFORT="$ROUTE_EFFORT"
     else
@@ -415,7 +450,7 @@ _print_launch_warning() {
 
 _session_file() {
     local session_id="$1"
-    [[ -d "$AGENT_SESSION_DIR" ]] || return 0
+    [[ -n "${AGENT_SESSION_DIR:-}" && -d "$AGENT_SESSION_DIR" ]] || return 0
     find "$AGENT_SESSION_DIR" -type f -name "*${session_id}*.jsonl" -print -quit 2>/dev/null || true
 }
 
@@ -432,7 +467,7 @@ _session_row() {
 
 _session_rows() {
     local limit="$1"
-    [[ -d "$AGENT_SESSION_DIR" ]] || return 0
+    [[ -n "${AGENT_SESSION_DIR:-}" && -d "$AGENT_SESSION_DIR" ]] || return 0
     find "$AGENT_SESSION_DIR" -type f -name '*.jsonl' -printf '%T@\t%p\n' 2>/dev/null \
         | sort -t $'\t' -k1,1nr \
         | sed -n "1,${limit}p" \
@@ -503,7 +538,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" && -z "$LIMEN_C
     echo "ERROR: --force requires --limen-config; a force override must be Limen-gated" >&2
     exit 1
 fi
-if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_MODEL" && -n "$SESSION_EFFORT" && -n "$LIMEN_CONFIG" ) ) ]]; then
+if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_MODEL" && -n "$SESSION_EFFORT" && -n "$LIMEN_CONFIG" ) ) ]]; then
     [[ -n "$LIMEN_CONFIG" ]] \
         || { echo "ERROR: governed persistent routing requires --limen-config; Limen policy selection must be explicit" >&2; exit 1; }
     case "$cmd" in
@@ -575,7 +610,8 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_M
         exit 2
     fi
     echo "WARN: Limen governed launch unavailable (exit=$GOVERNED_CODE); starting with existing fail-open behavior" >&2
-    SESSION_PROFILE=""
+    ROUTE_STATUS="unavailable"
+    ROUTE_REASON="limen_exit_$GOVERNED_CODE"
 fi
 if [[ "$cmd" == "resume" && "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
     CODEX_MESH_PIN=0
@@ -622,6 +658,7 @@ case "$cmd" in
         fi
 
         _print_launch_warning
+        LAUNCHED_AT_MS="$(date +%s%3N)"
         PRESERVED_OPTIONS=""
         if [[ "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
             PRESERVED_OPTIONS="$(python3 "$SCRIPT_DIR/codex-resume-options.py" --session "$SESSION_ID" --root "$AGENT_SESSION_DIR")"
@@ -636,6 +673,15 @@ case "$cmd" in
         mtmux send-keys -t "$TARGET" "$RESUME_CMD" Enter
         _wait_for_ready_or_warn "$TARGET"
         _require_resumed_ready "$TARGET" true
+        SESSION_FILE="$(_session_file "$SESSION_ID")"
+        RESUME_CWD=""
+        if [[ -n "$SESSION_FILE" ]]; then
+            RESUME_CWD="$(eval "$AGENT_SESSION_CWD_EXTRACTOR \"$SESSION_FILE\"" 2>/dev/null || true)"
+        fi
+        mesh_launch_record_start "$AGENT_NAME" "$TARGET" "$RESUME_CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_ID" "$ROUTE_STATUS" "$ROUTE_REASON" "$LAUNCHED_AT_MS" \
+            || { mtmux kill-session -t "$TARGET" 2>/dev/null || true; echo "ERROR: launch record failed for '$TARGET'; new target removed" >&2; exit 1; }
+        mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$RESUME_CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "resumed session" "$SESSION_ID" \
+            >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
         _print_attach_hint
         echo "$TARGET"
         ;;
@@ -658,6 +704,7 @@ case "$cmd" in
         fi
 
         _print_launch_warning
+        LAUNCHED_AT_MS="$(date +%s%3N)"
         mtmux new-session -d -s "$TARGET" -c "$CWD"
         mesh_tmux_harden
         # {CWD} placeholder lets an agent conf pin the working root (e.g. codex --cd).
@@ -671,6 +718,8 @@ case "$cmd" in
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )
         fi
+        mesh_launch_record_start "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "" "$ROUTE_STATUS" "$ROUTE_REASON" "$LAUNCHED_AT_MS" \
+            || { mtmux kill-session -t "$TARGET" 2>/dev/null || true; echo "ERROR: launch record failed for '$TARGET'; new target removed" >&2; exit 1; }
         mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
             >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
         _print_attach_hint

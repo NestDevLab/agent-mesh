@@ -110,6 +110,27 @@ $BIN/mesh-graph.mjs show --tree
 $BIN/agent-session.sh --agent codex inspect <SESSION_ID> --json --graph-target mesh-codex-main
 ```
 
+An unqualified Codex `new` or `resume` uses the `developer` role profile and
+auto-discovers the v2, then legacy, user Limen policy. The profile is the
+generic implementation-oriented default; callers should name another authored
+profile when the task has a different role. Limen alone supplies model and
+effort. If Limen or the auto-discovered policy is unavailable, launch fails
+open with a visible warning and records `route.status="unavailable"` plus null
+model/effort; never invent a replacement model.
+
+Every launch appends `agent-mesh.bridge-launch-event.v1` JSONL to
+`${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/launches/events.jsonl`. Resumes
+record their known runtime UUID immediately. A new Codex thread is reconciled
+after its first successful send only when the read-only `state_5.sqlite` query
+finds exactly one matching non-child thread; ambiguity is recorded, never
+guessed. Inspect one target with:
+
+```bash
+python3 "$BIN/bridge-launch-record.py" \
+  --state "${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/launches/events.jsonl" \
+  show --target <TMUX_TARGET>
+```
+
 Do not resume a persisted session that already has a writer. For a governed
 call to an active Codex session, use the native queue collector so the existing
 writer owns the turn and the result remains correlated:
