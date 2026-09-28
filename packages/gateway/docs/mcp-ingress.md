@@ -178,6 +178,7 @@ route:
   "meshSocket": "mesh-ingress",
   "timeoutSeconds": 180,
   "scanLimit": 500,
+  "resultRecoverySeconds": 3600,
   "providers": [
     {
       "target_agent_id": "agent.ingress.codex",
@@ -219,11 +220,17 @@ reuse rechecks the unique Claude writer PID, its pane ancestry, and the pane
 PID; the sender still refuses a busy TUI or occupied composer. This ownership
 proof is process-local and disappears on gateway restart. Otherwise Claude is
 writable only when the deployment explicitly owns its event-driven Monitor
-transport. If Claude's TUI omits result text and the terminal collector reports
-`result_uncorrelated`, the gateway checks the same authorized session's native
-assistant transcript for one exact correlated marker pair. It returns that
-reply only when the unique, nonempty match exists; otherwise the typed failure
-is preserved. This fallback never sends another prompt.
+transport.
+
+When the terminal collector reports `result_uncorrelated` (long replies scroll
+out of the pane) or `result_timeout` (the turn outlasts `timeoutSeconds`), the
+gateway reads the same session's native transcript through
+`agent-session.sh --agent claude result`. It returns the whole reply only when
+exactly one assistant text block holds exactly one correlated marker pair;
+several or unterminated pairs give `result_parsing_failure`, and no match keeps
+the original typed failure. `agentSessions.resultRecoverySeconds` (0 to 14400,
+default 0 = check once) sets how long it keeps waiting for a late reply; the
+task stays `working` meanwhile. This path never sends another prompt.
 
 Managed inbox files are named
 `<session-id>.jsonl` under `agentManagedInboxRoot`; delivery additionally
@@ -301,9 +308,11 @@ correlated result-marker path as other session turns.
 The session UUID is minted once, when the task is created. A replay with the
 same `idempotency_key` and input returns that task and session and starts
 nothing new; the launch itself is also idempotent because an existing target
-with that name is reused rather than relaunched. A session created before a
-delivery failure or cancellation stays running and is not reused by another
-task.
+with that name is reused rather than relaunched. If the new pane cannot be
+proven to own the session, its target is killed before anything is sent. A
+session that already received its prompt stays running after a delivery
+failure or cancellation, since it may still be working; it is not reused by
+another task.
 
 Session profiles (for example a read-only reviewer and a write-enabled
 implementer) are not implemented yet. When added, they must be server-side

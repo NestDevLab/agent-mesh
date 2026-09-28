@@ -53,6 +53,15 @@ function fakeBridge(behavior = {}) {
         stderr: ""
       };
     }
+    if (command === "/bridge/agent-session.sh" && sub === "result") {
+      const correlationId = args[args.indexOf("--correlation-id") + 1];
+      return behavior.transcriptResult === undefined
+        ? { code: 124, stdout: "", stderr: "ERROR: No correlated result in the session transcript yet." }
+        : { code: 0, stdout: `${behavior.transcriptResult(correlationId)}\n`, stderr: "" };
+    }
+    if (command === "/bridge/agent-session.sh" && sub === "kill") {
+      return { code: 0, stdout: `Killed ${args[3]}\n`, stderr: "" };
+    }
     if (command === "/bridge/agent-session.sh" && sub === "target-status") {
       return { code: 0, stdout: JSON.stringify({ target: args[3], pane_pid: 4241, writer_pid: 4242 }), stderr: "" };
     }
@@ -348,8 +357,36 @@ test("a failed session creation fails the task without falling back to another s
       assert.equal(sessionCommands(h.bridge.calls, "new").length, 1);
       assert.equal(sessionCommands(h.bridge.calls, "resume").length, 0);
       assert.equal(h.bridge.calls.some((call) => call.command === "/bridge/agent-send.sh"), false);
+      // the bridge retires a failed launch itself, an unproven owner is retired by the provider
+      const killed = sessionCommands(h.bridge.calls, "kill").map((call) => call.args[3]);
+      assert.deepEqual(killed, behavior.noWriter ? [`mesh-claude-${task.session_id}`] : []);
     } finally { await h.cleanup(); }
   }
+});
+
+test("a fresh task whose provider lost fresh support fails with fresh_session_unsupported at execution", async () => {
+  const h = await harness();
+  try {
+    const created = await h.store.create({
+      contextId: "context-unsupported",
+      principalId: PRINCIPAL.id,
+      principalKind: PRINCIPAL.kind,
+      requesterId: PRINCIPAL.requesterId,
+      targetAgentId: CODEX,
+      sessionMode: "fresh",
+      sessionProvider: "codex",
+      workspaceId: WORKSPACE,
+      domainId: DOMAIN,
+      message: "Config changed after submit.",
+      labels: [],
+      idempotencyKey: `${PRINCIPAL.id}:unsupported`
+    });
+    await h.taskCoordinator.resume();
+    const task = await waitForTerminal(h.facade, created.task.task_id);
+    assert.equal(task.status, "failed");
+    assert.equal(task.error.code, "fresh_session_unsupported");
+    assert.equal(h.bridge.calls.length, 0);
+  } finally { await h.cleanup(); }
 });
 
 test("a delivery failure after creation fails the task instead of completing it", async () => {
@@ -396,6 +433,22 @@ test("an uncorrelated or timed-out fresh result is never reported as completed",
       assert.equal(task.error.code, code);
     } finally { await h.cleanup(); }
   }
+});
+
+test("a long fresh reply lost by the terminal collector is recovered whole from the transcript", async () => {
+  const body = `OVERALL: PASS\n${"finding ".repeat(2000)}`.trim();
+  const h = await harness({
+    send: () => ({ code: 66, stdout: "", stderr: "markers scrolled away" }),
+    transcriptResult: () => body
+  });
+  try {
+    const { task } = await h.facade.callTask(fresh(), 2_000);
+    assert.equal(task.status, "completed", JSON.stringify(task.error));
+    assert.equal(task.result.text, body);
+    const recovery = sessionCommands(h.bridge.calls, "result")[0];
+    assert.equal(recovery.args[recovery.args.indexOf("--correlation-id") + 1], task.task_id);
+    assert.equal(recovery.args[3], task.session_id);
+  } finally { await h.cleanup(); }
 });
 
 test("mesh_call returns a task handle when the wait expires and mesh_task_get later reads the result", async () => {

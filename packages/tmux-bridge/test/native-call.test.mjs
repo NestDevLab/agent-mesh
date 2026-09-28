@@ -37,6 +37,7 @@ if (${JSON.stringify(mode)} === "success" || ${JSON.stringify(mode)} === "rotati
   lines.push({ type: "event_msg", payload: { type: "agent_message", message: begin + " MULTI\\nLINE " + end } });
   lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: begin + " MULTI\\nLINE " + end }] } });
 }
+if (${JSON.stringify(mode)} === "large") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: begin + "\\n" + "0123456789".repeat(20000) + "\\n" + end }] } });
 if (${JSON.stringify(mode)} === "fallback") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "MESH_CORRELATION_OK" }] } });
 if (${JSON.stringify(mode)} === "uncorrelated") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "plain output" }] } });
 if (${JSON.stringify(mode)} === "parsing") lines.push({ type: "response_item", payload: { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: begin + " broken" }] } });
@@ -84,6 +85,12 @@ test("native Codex queue ignores an earlier completion and returns correlated mu
   const result = await invoke("success");
   assert.equal(result.code, 0, result.stderr);
   assert.equal(result.stdout, "MULTI\nLINE\n");
+});
+
+test("native Codex queue returns a result larger than the pipe buffer intact", async () => {
+  const result = await invoke("large");
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, `${"0123456789".repeat(20000)}\n`);
 });
 
 test("native Codex queue accepts the final answer when the anchored turn omits optional markers", async () => {

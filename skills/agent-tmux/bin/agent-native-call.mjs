@@ -3,6 +3,7 @@
 
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { writeSync } from "node:fs";
 import { access, open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -140,7 +141,7 @@ function finish(bodies, begin, end) {
   if (beginIndex >= 0 && endIndex >= 0) {
     const result = text.slice(beginIndex + begin.length, endIndex).trim();
     if (!result) fail("Agent produced no textual result.", 65);
-    process.stdout.write(`${result}\n`);
+    writeAll(`${result}\n`);
     process.exit(0);
   }
   if (bodies.length === 0) fail("Agent produced no textual result.", 65);
@@ -148,7 +149,7 @@ function finish(bodies, begin, end) {
   // The unique user-turn anchor plus the following task_complete event already
   // establishes deterministic correlation. Markers remain an optional stronger
   // extraction protocol for agents that honor them.
-  process.stdout.write(`${text.trim()}\n`);
+  writeAll(`${text.trim()}\n`);
   process.exit(0);
 }
 
@@ -305,6 +306,16 @@ function required(value, flag) {
   return text;
 }
 
+// process.exit() right after an async stdout write cuts piped output at 8 KiB.
+function writeAll(text) {
+  const buffer = Buffer.from(text);
+  let offset = 0;
+  while (offset < buffer.length) {
+    try { offset += writeSync(1, buffer, offset); }
+    catch (error) { if (error.code !== "EAGAIN") throw error; }
+  }
+}
+
 function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, Math.max(10, ms)));
 }
@@ -343,6 +354,6 @@ function blockClaudeVisibleTurn(id, correlation, reasonOverride) {
       ],
     },
   };
-  process.stdout.write(`${JSON.stringify(blocker)}\n`);
+  writeAll(`${JSON.stringify(blocker)}\n`);
   process.exit(78);
 }

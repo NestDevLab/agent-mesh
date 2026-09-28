@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import test from "node:test";
 
 import "./ts-extension-resolver.mjs";
@@ -321,11 +320,9 @@ test("two Claude calls reuse only the writer resumed by this provider", async ()
   assert.equal(calls.some((call) => call.command === process.execPath), false);
 });
 
-test("Claude recovers an exact correlated reply from its native transcript when TUI capture loses it", async () => {
+test("Claude recovers the whole correlated reply from its native transcript when TUI capture loses it", async () => {
   const correlationId = "task-transcript-fallback";
-  const token = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
-  const begin = `[[R:${token}]]`;
-  const end = `[[/R:${token}]]`;
+  const longReply = `expected reply\n${"detail ".repeat(1500)}`.trim();
   const calls = [];
   let resumed = false;
   const instance = new ShellAgentSessionProvider({
@@ -339,10 +336,7 @@ test("Claude recovers an exact correlated reply from its native transcript when 
       if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
       if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({ target: "mesh-claude-session-new", pane_pid: 42, writer_pid: 43 }), stderr: "" };
       if (command === "/bridge/agent-send.sh") return { code: 66, stdout: "", stderr: "UNCORRELATED-OUTPUT" };
-      if (args.includes("search")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", results: [
-        { agent_type: "claude", session_id: "other-session", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:00Z", matches: [{ event_id: "wrong", role: "assistant", timestamp: null, text: `${begin}wrong${end}` }] },
-        { agent_type: "claude", session_id: "session-new", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:01Z", matches: [{ event_id: "right", role: "assistant", timestamp: null, text: `${begin}\nexpected reply\n${end}` }] }
-      ], next_cursor: null }), stderr: "" };
+      if (args[2] === "result") return { code: 0, stdout: `${longReply}\n`, stderr: "" };
       throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
     }
   });
@@ -350,9 +344,42 @@ test("Claude recovers an exact correlated reply from its native transcript when 
     sessionId: "session-new", workspaceId: "workspace.allowed", message: "canary",
     messageId: "message", contextId: "context", correlationId, idempotencyKey: "idem"
   });
-  assert.deepEqual(result, { ok: true, reply: "expected reply" });
+  assert.deepEqual(result, { ok: true, reply: longReply });
   assert.equal(calls.filter((call) => call.command === "/bridge/agent-send.sh").length, 1);
-  assert.equal(calls.filter((call) => call.args.includes("search")).length, 1);
+  const recovery = calls.find((call) => call.args[2] === "result");
+  assert.deepEqual(recovery.args, [
+    "--agent", "claude", "result", "session-new", "--correlation-id", correlationId, "--wait", "0"
+  ]);
+  assert.equal(calls.some((call) => call.args.includes("search")), false);
+});
+
+test("Claude waits for a late correlated reply after the terminal collector times out", async () => {
+  const calls = [];
+  let resumed = false;
+  const instance = new ShellAgentSessionProvider({
+    agentId: "agent.ingress.claude", agentType: "claude",
+    agentSessionPath: "/bridge/agent-session.sh", agentSendPath: "/bridge/agent-send.sh",
+    workspaceRoots: { "workspace.allowed": ["/workspace"] },
+    resultRecoverySeconds: 900,
+    run: async (command, args, options) => {
+      calls.push({ command, args: [...args], timeoutMs: options.timeoutMs });
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", sessions: [{ ...sessions[0], agent_type: "claude" }] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "claude", sessionId: "session-new", discovery: { complete: true }, writers: resumed ? [{ pid: 43, kind: "claude-cli" }] : [] }), stderr: "" };
+      if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
+      if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({ target: "mesh-claude-session-new", pane_pid: 42, writer_pid: 43 }), stderr: "" };
+      if (command === "/bridge/agent-send.sh") return { code: 124, stdout: "", stderr: "timed out" };
+      if (args[2] === "result") return { code: 0, stdout: "late review\n", stderr: "" };
+      throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+    }
+  });
+  const result = await instance.send({
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "long review",
+    messageId: "message", contextId: "context", correlationId: "task-late", idempotencyKey: "idem"
+  });
+  assert.deepEqual(result, { ok: true, reply: "late review" });
+  const recovery = calls.find((call) => call.args[2] === "result");
+  assert.deepEqual(recovery.args.slice(-2), ["--wait", "900"]);
+  assert.equal(recovery.timeoutMs, 930_000);
 });
 
 test("Claude transcript recovery keeps an uncorrelated failure when no exact assistant reply exists", async () => {
@@ -370,9 +397,7 @@ test("Claude transcript recovery keeps an uncorrelated failure when no exact ass
       if (args.includes("resume")) { resumed = true; return { code: 0, stdout: "mesh-claude-session-new\n", stderr: "" }; }
       if (args.includes("target-status")) return { code: 0, stdout: JSON.stringify({ target: "mesh-claude-session-new", pane_pid: 42, writer_pid: 43 }), stderr: "" };
       if (command === "/bridge/agent-send.sh") return { code: 66, stdout: "", stderr: "UNCORRELATED-OUTPUT" };
-      if (args.includes("search")) return { code: 0, stdout: JSON.stringify({ agent_type: "claude", results: [
-        { agent_type: "claude", session_id: "session-new", cwd: "/workspace/project-a", updated_at: "2026-08-30T12:00:01Z", matches: [{ event_id: "user", role: "user", timestamp: null, text: args[3] }] }
-      ], next_cursor: null }), stderr: "" };
+      if (args[2] === "result") return { code: 124, stdout: "", stderr: "ERROR: No correlated result in the session transcript yet." };
       throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
     }
   });

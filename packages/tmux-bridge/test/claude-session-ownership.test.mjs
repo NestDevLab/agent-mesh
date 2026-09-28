@@ -8,7 +8,7 @@ import { inspectClaudeSessionOwnership } from "../bin/claude-session-ownership.m
 
 const SESSION = "22222222-2222-4222-8222-222222222222";
 
-test("a Claude CLI launched with --session-id owns that session", () => {
+test("a Claude CLI launched with --session-id owns that session, a forked resume does not own its source", () => {
   const root = mkdtempSync(join(tmpdir(), "mesh-claude-ownership-"));
   try {
     const proc = join(root, "proc");
@@ -16,7 +16,9 @@ test("a Claude CLI launched with --session-id owns that session", () => {
       200: ["claude", "--session-id", SESSION],
       201: ["claude", `--session-id=${SESSION}`],
       202: ["claude", "--session-id", "33333333-3333-4333-8333-333333333333"],
-      203: ["node", "--session-id", SESSION]
+      203: ["node", "--session-id", SESSION],
+      204: ["claude", "--resume", SESSION, "--fork-session"],
+      205: ["claude", "--resume", "44444444-4444-4444-8444-444444444444", "--fork-session", "--session-id", SESSION]
     };
     for (const [pid, argv] of Object.entries(argvs)) {
       mkdirSync(join(proc, pid), { recursive: true });
@@ -31,7 +33,8 @@ test("a Claude CLI launched with --session-id owns that session", () => {
     assert.equal(ownership.discovery.complete, true);
     assert.deepEqual(ownership.writers.map((writer) => [writer.pid, writer.kind]), [
       [200, "claude-cli"],
-      [201, "claude-cli"]
+      [201, "claude-cli"],
+      [205, "claude-cli"]
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
