@@ -54,6 +54,9 @@ fresh sessions configured for at least one of the caller's workspaces. Callers s
 
 ## Serving safely
 
+For standalone Linux service installation and boot-safe runtime directories, see
+[Systemd deployment](systemd-deployment.md). Fleet orchestration is optional.
+
 Mount `createMeshMcpHandler(options).fetch` at `/mcp` using a Streamable HTTP
 host. The handler fails closed unless the host passes validated `AuthInfo` and
 the configured resolver maps it to a principal. Keep it behind an OAuth-aware
