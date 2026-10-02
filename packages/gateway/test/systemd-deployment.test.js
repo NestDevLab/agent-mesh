@@ -14,15 +14,20 @@ test("CLI plans without writes and checks applied standalone files", { skip: !av
   const root = mkdtempSync(join(tmpdir(), "mesh-systemd-cli-"));
   try {
     const installer = fileURLToPath(new URL("../scripts/install-systemd.mjs", import.meta.url));
-    const args = [installer, "--uid", String(options.uid), "--gid", String(options.gid), "--root", root];
+    // Releases are commonly invoked through an atomic current symlink.
+    const current = join(root, "current");
+    symlinkSync(installer, current);
+    const args = [current, "--uid", String(options.uid), "--gid", String(options.gid), "--root", root];
     const planned = spawnSync(process.execPath, args, { encoding: "utf8" });
     assert.equal(planned.status, 0, planned.stderr);
+    assert.equal(JSON.parse(planned.stdout).uid, options.uid);
     assert.equal(existsSync(join(root, "etc")), false);
     assert.equal(spawnSync(process.execPath, [...args, "--check"]).status, 1);
     const applied = spawnSync(process.execPath, [...args, "--apply"], { encoding: "utf8" });
     assert.equal(applied.status, 0, applied.stderr);
     const checked = spawnSync(process.execPath, [...args, "--check"], { encoding: "utf8" });
     assert.equal(checked.status, 0, checked.stderr);
+    assert.match(checked.stdout, /deployment matches/);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
