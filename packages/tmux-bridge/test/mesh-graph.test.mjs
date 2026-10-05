@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -488,6 +488,56 @@ test("mesh-graph compaction plans first and preserves projection after apply", a
     const second = await run(state, ["add", "--agent", "claude", "--tmux-target", "later", "--json"]);
     assert.equal(second.code, 0, second.stderr);
     assert.equal(JSON.parse((await run(state, ["show", "--json"])).stdout).nodes.length, 2);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("mesh-graph checkpoints the event cursor and reads only appended events", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-cursor-"));
+  try {
+    const added = await run(state, ["add", "--agent", "codex", "--tmux-target", "fixture", "--json"]);
+    assert.equal(added.code, 0, added.stderr);
+    const node = JSON.parse(added.stdout).node;
+    const event = JSON.parse((await readFile(join(state, "events.jsonl"), "utf8")).trim());
+    const historical = Array.from({ length: 100 }, (_, index) => JSON.stringify({
+      ...event, id: `event-historical-${index}`, padding: "x".repeat(150_000),
+    })).join("\n");
+    await appendFile(join(state, "events.jsonl"), `${historical}\n`);
+
+    const updated = await run(state, ["summary", "--id", node.id, "--summary", "checkpoint", "--json"]);
+    assert.equal(updated.code, 0, updated.stderr);
+    const checkpoint = JSON.parse(await readFile(join(state, "checkpoint.json"), "utf8"));
+    assert.equal(checkpoint.cursor.offset, (await stat(join(state, "events.jsonl"))).size);
+    assert.equal(checkpoint.graph.nodes[0].summary, "checkpoint");
+
+    const constrained = await exec(process.execPath, ["--max-old-space-size=32", graphBin, "--state", state, "show", "--json"]);
+    assert.equal(JSON.parse(constrained.stdout).nodes[0].summary, "checkpoint");
+
+    await appendFile(join(state, "events.jsonl"), `${JSON.stringify({
+      ...event, id: "event-tail", node: { ...node, summary: "tail" },
+    })}\n`);
+    const tailed = await run(state, ["show", "--json"]);
+    assert.equal(tailed.code, 0, tailed.stderr);
+    assert.equal(JSON.parse(tailed.stdout).nodes[0].summary, "tail");
+
+    await writeFile(join(state, "checkpoint.json"), "invalid cache");
+    const recovered = await run(state, ["show", "--json"]);
+    assert.equal(recovered.code, 0, recovered.stderr);
+    assert.equal(JSON.parse(recovered.stdout).nodes[0].summary, "tail");
+
+    const noChange = await run(state, ["summary", "--id", node.id, "--summary", "tail", "--json"]);
+    assert.equal(noChange.code, 0, noChange.stderr);
+    assert.equal(JSON.parse(noChange.stdout).changed, false);
+    assert.equal(JSON.parse(await readFile(join(state, "checkpoint.json"), "utf8")).cursor.offset,
+      (await stat(join(state, "events.jsonl"))).size);
+
+    const replacement = join(state, "replacement.jsonl");
+    await writeFile(replacement, await readFile(join(state, "events.jsonl")));
+    await rename(replacement, join(state, "events.jsonl"));
+    const replaced = await run(state, ["show", "--json"]);
+    assert.equal(replaced.code, 0, replaced.stderr);
+    assert.equal(JSON.parse(replaced.stdout).nodes[0].summary, "tail");
   } finally {
     await rm(state, { recursive: true, force: true });
   }

@@ -14,6 +14,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -714,23 +715,64 @@ function printResult(result, options) {
 function mutate(statePath, operation) {
   ensureStateDir(statePath);
   return withLock(statePath, () => {
-    const graph = loadGraph(statePath);
+    const { graph, checkpointValid } = readGraphState(statePath);
     const result = operation(graph);
     const events = result.events || (result.event ? [result.event] : []);
     if (events.length === 0) {
       if (Array.isArray(result.result?.nodes)) writeProjection(statePath, graph);
+      if (!checkpointValid) writeCheckpoint(statePath, graph);
       return result.result;
     }
     for (const item of events) appendEvent(statePath, item);
-    const derived = loadGraph(statePath);
+    const derived = deriveGraph(events, graph);
     writeProjection(statePath, derived);
+    writeCheckpoint(statePath, derived);
     return result.result;
   });
 }
 
 function loadGraph(statePath) {
+  return readGraphState(statePath).graph;
+}
+
+function readGraphState(statePath) {
+  const checkpoint = readCheckpoint(statePath);
+  if (checkpoint) {
+    return { graph: deriveGraph(readEvents(statePath, checkpoint.offset), checkpoint.graph), checkpointValid: true };
+  }
   const snapshot = readSnapshot(statePath);
-  return deriveGraph(tailEvents(readEvents(statePath), snapshot?.lastEventId), snapshot?.graph);
+  const offset = snapshot ? findEventEnd(statePath, snapshot.lastEventId) : 0;
+  return { graph: deriveGraph(readEvents(statePath, offset), snapshot?.graph), checkpointValid: false };
+}
+
+function readCheckpoint(statePath) {
+  const path = join(statePath, "checkpoint.json");
+  if (!existsSync(path)) return null;
+  let checkpoint;
+  try {
+    checkpoint = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  const cursor = checkpoint.cursor;
+  if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
+      !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
+      !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
+      !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
+    return null;
+  }
+  const eventsPath = join(statePath, "events.jsonl");
+  if (!existsSync(eventsPath)) return null;
+  const file = statSync(eventsPath);
+  if (file.dev !== cursor.dev || file.ino !== cursor.ino || file.size < cursor.offset) return null;
+  return { graph: checkpoint.graph, offset: cursor.offset };
+}
+
+function writeCheckpoint(statePath, graph) {
+  const file = statSync(join(statePath, "events.jsonl"), { throwIfNoEntry: false });
+  if (!file) return;
+  const checkpoint = { schema: GRAPH_SCHEMA, graph, cursor: { dev: file.dev, ino: file.ino, offset: file.size } };
+  writeAtomic(join(statePath, "checkpoint.json"), `${JSON.stringify(checkpoint)}\n`);
 }
 
 function readSnapshot(statePath) {
@@ -747,22 +789,57 @@ function tailEvents(events, lastEventId) {
   return index < 0 ? events : events.slice(index + 1);
 }
 
-function readEvents(statePath) {
+function findEventEnd(statePath, id) {
+  for (const record of readEventRecords(statePath)) if (record.event.id === id) return record.end;
+  return 0;
+}
+
+function* readEvents(statePath, offset = 0) {
+  for (const record of readEventRecords(statePath, offset)) yield record.event;
+}
+
+function* readEventRecords(statePath, offset = 0) {
   const path = join(statePath, "events.jsonl");
-  if (!existsSync(path)) return [];
-  const body = readFileSync(path, "utf8").trim();
-  if (!body) return [];
-  return body.split("\n").map((line, index) => {
+  if (!existsSync(path)) return;
+  const fd = openSync(path, "r");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let position = offset;
+  let remainder = Buffer.alloc(0);
+  let lineNumber = 0;
+  const parse = (bytes) => {
     try {
-      const parsed = JSON.parse(line);
+      const parsed = JSON.parse(bytes.toString("utf8"));
       if (parsed.schema !== EVENT_SCHEMA || typeof parsed.type !== "string") {
         throw new Error("invalid event schema");
       }
       return parsed;
     } catch (error) {
-      throw new Error(`invalid event at ${path}:${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`invalid event at ${path}:${lineNumber}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  });
+  };
+  try {
+    for (;;) {
+      const size = readSync(fd, chunk, 0, chunk.length, position);
+      if (size === 0) break;
+      const data = remainder.length ? Buffer.concat([remainder, chunk.subarray(0, size)]) : chunk.subarray(0, size);
+      let start = 0;
+      for (let index = 0; index < data.length; index++) {
+        if (data[index] !== 10) continue;
+        const line = data.subarray(start, index);
+        lineNumber++;
+        if (line.length) yield { event: parse(line), end: position + size - data.length + index + 1 };
+        start = index + 1;
+      }
+      remainder = Buffer.from(data.subarray(start));
+      position += size;
+    }
+    if (remainder.length) {
+      lineNumber++;
+      if (remainder.toString("utf8").trim()) yield { event: parse(remainder), end: position };
+    }
+  } finally {
+    closeSync(fd);
+  }
 }
 
 function deriveGraph(events, base = null) {
@@ -801,7 +878,7 @@ function compactGraph(statePath, options) {
   ensureStateDir(statePath);
   return withLock(statePath, () => {
     const previous = readSnapshot(statePath);
-    const events = tailEvents(readEvents(statePath), previous?.lastEventId);
+    const events = tailEvents([...readEvents(statePath)], previous?.lastEventId);
     const split = events.findIndex((item) => Date.parse(item.at) >= cutoff);
     const count = options["all-history"] ? events.length : (split < 0 ? events.length : split);
     const old = events.slice(0, count);
