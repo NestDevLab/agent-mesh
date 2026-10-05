@@ -50,6 +50,14 @@ stay within that gap (for example, every five minutes):
 $BIN/agent-idle-expiry.py --execute
 ```
 
+Every `--execute` pass runs `mesh-graph sweep` first. This records the separate
+tmux, worktree, and transcript observations before the reaper can collect a
+pane. If the sweep fails, expiry fails closed and no pane is removed. The graph
+quiet threshold must be no greater than the idle-expiry threshold: with the
+defaults, 3,600 seconds is observed before 18,000 seconds of continuously idle
+time can reach the expiry checkpoint. A tmux close is memory garbage collection,
+not task completion; the reaper never closes a graph node.
+
 Use `--state <path>` to choose the runtime state file. By default it is
 `$XDG_STATE_HOME/agent-mesh/idle-expiry.json` (or
 `~/.local/state/agent-mesh/idle-expiry.json`) and is atomically written with
@@ -61,6 +69,7 @@ state in the repository.
 | `--idle-seconds` / `MESH_IDLE_EXPIRY_SECONDS` | `18000` | Required continuously observed idle time |
 | `--grace-seconds` / `MESH_IDLE_EXPIRY_GRACE_SECONDS` | `300` | Delay before the final re-check |
 | `--max-check-gap-seconds` / `MESH_IDLE_EXPIRY_MAX_CHECK_GAP_SECONDS` | `900` | Largest allowed gap between observations |
+| `--graph-quiet-after` / `MESH_GRAPH_QUIET_AFTER_SECONDS` | `3600` | Graph quiet threshold, required to be no greater than idle expiry |
 | `--agent` | `codex`, `claude` | Configured agent type; repeatable |
 | `--target` | all managed targets | Restrict to named managed target; repeatable |
 | `--delivery-guard` / `MESH_IDLE_EXPIRY_DELIVERY_GUARD` | unset | Existing file blocks all expiry passes for possible delivery uncertainty |
@@ -78,6 +87,7 @@ Run the focused isolated-socket regression test:
 python3 packages/tmux-bridge/scripts/idle-expiry-test.py
 ```
 
-It proves inspection is non-writing, a continuously idle single pane closes only
-after the grace checkpoint, and working, approval-pending, error, delivery-guard,
-and multi-pane targets remain open.
+It proves inspection is non-writing, `--execute` runs the graph sweep before
+expiry, a continuously idle single pane closes only after the grace checkpoint,
+and working, approval-pending, error, delivery-guard, and multi-pane targets
+remain open.

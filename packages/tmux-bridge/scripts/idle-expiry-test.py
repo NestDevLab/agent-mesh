@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -70,6 +71,12 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="agent-mesh-idle-expiry-") as temporary:
         state = Path(temporary) / "state.json"
         guard = Path(temporary) / "delivery.guard"
+        graph_log = Path(temporary) / "graph-sweep.log"
+        graph_bin = Path(temporary) / "graph-sweep"
+        graph_bin.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$MESH_GRAPH_SWEEP_LOG"\n', encoding="utf-8")
+        graph_bin.chmod(0o755)
+        env["MESH_GRAPH_BIN"] = str(graph_bin)
+        env["MESH_GRAPH_SWEEP_LOG"] = str(graph_log)
 
         def start(label: str) -> str:
             target = f"mesh-{agent}-{label}"
@@ -84,11 +91,13 @@ def main() -> int:
                     "--state",
                     str(state),
                     "--idle-seconds",
-                    "0",
+                    "1",
                     "--grace-seconds",
                     "0",
                     "--max-check-gap-seconds",
                     "30",
+                    "--graph-quiet-after",
+                    "1",
                     *extra,
                 ],
                 env,
@@ -98,10 +107,18 @@ def main() -> int:
             # Inspection is default and must not create or alter runtime state.
             expiring = start("expire")
             report = reap("--target", expiring)
-            assert "grace" in report.stdout, report.stdout
+            assert "observe" in report.stdout, report.stdout
             assert not state.exists(), "dry-run created state"
+            assert not graph_log.exists(), "dry-run invoked graph sweep"
             reap("--execute", "--target", expiring)
             assert has_session(socket, expiring, env), "first execute must only arm the grace checkpoint"
+            assert graph_log.read_text(encoding="utf-8").strip() == "sweep --quiet-after 1"
+            persisted = json.loads(state.read_text(encoding="utf-8"))
+            entry = next(iter(persisted["targets"].values()))
+            entry["idle_since"] = int(time.time()) - 2
+            entry["last_checked_at"] = int(time.time())
+            state.write_text(json.dumps(persisted), encoding="utf-8")
+            reap("--execute", "--target", expiring)
             closed = reap("--execute", "--target", expiring)
             assert "closed" in closed.stdout, closed.stdout
             assert not has_session(socket, expiring, env), "eligible idle session was not closed"
@@ -109,7 +126,7 @@ def main() -> int:
             assert any(item.get("phase") == "closed" for item in persisted["targets"].values())
 
             # Working, approval, and error states all suppress expiry even with a
-            # zero threshold. These keys run only on this isolated test socket.
+            # short threshold. These keys run only on this isolated test socket.
             working = start("working")
             send(socket, working, "printf 'WORKING\\n'", env)
             assert "working" in reap("--execute", "--target", working).stdout

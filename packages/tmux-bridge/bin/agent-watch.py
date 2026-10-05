@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -100,7 +101,9 @@ def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
     sessions: dict[str, Path] = {}
     for candidate in root.glob("**/*.jsonl"):
         match = re.search(SESSION_UUID, candidate.name, re.I)
-        if not match or not candidate.is_file():
+        if not candidate.is_file():
+            continue
+        if not match:
             continue
         session_id = match.group(0).lower()
         previous = sessions.get(session_id)
@@ -111,8 +114,178 @@ def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
     )
 
 
-def discover_transcripts(agent: str) -> list[dict[str, Any]]:
-    return [transcript_facts(agent, session_id, path) for session_id, path in transcript_candidates(agent)]
+def first_real_prompt(body: str) -> str:
+    text = body.split("My request for Codex:", 1)[-1] if "My request for Codex:" in body else body
+    return next((line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(("<", "# AGENTS.md"))), "")[:240]
+
+
+def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dict[str, Any]) -> None:
+    payload = record.get("payload") or {}
+    if agent == "codex" and record.get("type") in {"session_meta", "turn_context"}:
+        facts["cwd"] = str(payload.get("cwd") or facts.get("cwd") or "")
+    elif agent == "claude":
+        facts["cwd"] = str(record.get("cwd") or facts.get("cwd") or "")
+    for item in events_for(agent, record, session_id):
+        kind = item["kind"]
+        timestamp = item.get("timestamp")
+        if kind == "human_message":
+            body = str(item.get("body") or "")
+            if body == facts.get("_last_human_body"):
+                continue
+            facts["_last_human_body"] = body
+            facts["human_turns"] += 1
+            facts["last_human_at"] = timestamp
+            if not facts["first_real_prompt"]:
+                facts["first_real_prompt"] = first_real_prompt(body)
+            facts["pending_question"] = False
+            facts["turn_active"] = True
+        elif kind == "agent_message":
+            body = str(item.get("body") or "")
+            if body != facts.get("_last_agent_body"):
+                facts["assistant_turns"] += 1
+            facts["_last_agent_body"] = body
+            facts["last_assistant"] = body
+            if item.get("phase") == "final" or agent == "claude":
+                facts["last_final_at"] = timestamp
+                facts["pending_question"] = body.rstrip().endswith("?")
+        elif kind == "tool":
+            name = str(item.get("tool_name") or "")
+            if name in {"Edit", "Write", "NotebookEdit", "apply_patch"}:
+                facts["mutating_tool_calls"] += 1
+            if name in {"AskUserQuestion", "request_user_input", "request_user_input_async"}:
+                facts["pending_question"] = True
+        elif kind == "turn_complete":
+            facts["turn_active"] = False
+        if kind in {"human_message", "agent_message", "tool", "turn_complete"}:
+            facts["last_event_kind"] = kind
+
+
+def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
+    return {
+        "agent": agent, "runtime_uuid": session_id, "path": str(transcript), "cwd": "", "title": "",
+        "last_assistant": "", "assistant_turns": 0, "human_turns": 0,
+        "mutating_tool_calls": 0, "last_human_at": None, "last_final_at": None,
+        "last_event_kind": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
+    }
+
+
+def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None) -> dict[str, Any]:
+    stat = transcript.stat()
+    reusable = (prior is not None and prior.get("path") == str(transcript)
+                and isinstance(prior.get("offset"), int) and prior["offset"] <= stat.st_size
+                and (prior["offset"] < stat.st_size or prior.get("mtime_ns") == stat.st_mtime_ns))
+    facts = dict(prior) if reusable else empty_facts(agent, session_id, transcript)
+    offset = int(facts.get("offset", 0))
+    with transcript.open("rb") as handle:
+        handle.seek(offset)
+        while handle.tell() < stat.st_size:
+            line = handle.readline(stat.st_size - handle.tell())
+            if not line.endswith(b"\n"):
+                break
+            offset += len(line)
+            try:
+                record = json.loads(line.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                update_facts(facts, agent, session_id, record)
+    facts.update(offset=offset, mtime_ns=stat.st_mtime_ns, size=stat.st_size, updated_at=stat.st_mtime_ns)
+    facts["title"] = facts.get("title") or facts["first_real_prompt"]
+    return facts
+
+
+def codex_metadata() -> dict[str, dict[str, Any]]:
+    if os.environ.get("CODEX_SESSION_ROOT") and not os.environ.get("CODEX_STATE_DB"):
+        return {}
+    path = Path(os.environ.get("CODEX_STATE_DB", Path.home() / ".codex" / "state_5.sqlite"))
+    if not path.is_file():
+        return {}
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(threads)")}
+        needed = {"id", "name", "title", "cwd", "source", "thread_source", "archived", "is_pinned"}
+        if not needed <= columns:
+            raise RuntimeError("Codex threads schema is missing required metadata columns")
+        time_column = "updated_at_ms" if "updated_at_ms" in columns else "NULL"
+        created_column = "created_at_ms" if "created_at_ms" in columns else "NULL"
+        rows = connection.execute(f"SELECT id,name,title,cwd,source,thread_source,archived,is_pinned,{time_column},{created_column} FROM threads")
+        return {
+            row[0]: {"name": row[1] or row[2] or "", "cwd": row[3] or "", "source": row[4],
+                     "thread_source": row[5], "archived": bool(row[6]), "pinned": bool(row[7]),
+                     "metadata_updated_at_ns": int(row[8] or 0) * 1_000_000, "created_at_ms": row[9]}
+            for row in rows
+        }
+
+
+def claude_metadata() -> dict[str, dict[str, Any]]:
+    if os.environ.get("CLAUDE_SESSION_ROOT") and not os.environ.get("CLAUDE_SESSION_METADATA_ROOT"):
+        return {}
+    root = Path(os.environ.get("CLAUDE_SESSION_METADATA_ROOT", Path.home() / ".claude" / "sessions"))
+    result = {}
+    for path in root.glob("*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(value, dict) and isinstance(value.get("sessionId"), str):
+            try:
+                os.kill(int(value["pid"]), 0)
+                alive = True
+            except (KeyError, ValueError, ProcessLookupError, PermissionError):
+                alive = False
+            entry = {key: value.get(key) for key in ("name", "status", "waitingFor", "hostSessionId", "entrypoint", "kind", "cwd", "startedAt", "updatedAt")}
+            entry["live_writer"] = alive and value.get("status") == "busy"
+            if not alive:
+                entry.update(status=None, waitingFor=None)
+            result[value["sessionId"]] = entry
+    return result
+
+
+def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    root = session_root(agent)
+    cached = load_state(cache_path) if cache_path else {}
+    entries = cached.get(agent, {}) if cached.get("version") == 1 else {}
+    metadata = codex_metadata() if agent == "codex" else claude_metadata()
+    facts = []
+    for session_id, path in transcript_candidates(agent):
+        item = read_appended_facts(agent, session_id, path, entries.get(session_id)) if cache_path else transcript_facts(agent, session_id, path)
+        item.update(metadata.get(session_id, {}))
+        if item.get("name"):
+            item["title"] = str(item["name"])
+        if cache_path:
+            entries[session_id] = item
+        facts.append({key: value for key, value in item.items() if not key.startswith("_")})
+    if agent == "codex":
+        present = {item["runtime_uuid"] for item in facts}
+        for session_id, entry in metadata.items():
+            if session_id in present or entry["archived"] or not re.fullmatch(SESSION_UUID, session_id, re.I):
+                continue
+            item = empty_facts(agent, session_id, Path(""))
+            item.update(entry)
+            item.update(path="", title=entry["name"], updated_at=entry["metadata_updated_at_ns"], metadata_only=True)
+            facts.append(item)
+    else:
+        present = {item["runtime_uuid"] for item in facts}
+        for session_id, entry in metadata.items():
+            if session_id in present or not re.fullmatch(SESSION_UUID, session_id, re.I):
+                continue
+            item = empty_facts(agent, session_id, Path(""))
+            item.update(entry)
+            updated = entry.get("updatedAt") or entry.get("startedAt")
+            try:
+                updated_ns = int(datetime.datetime.fromisoformat(str(updated).replace("Z", "+00:00")).timestamp() * 1_000_000_000)
+            except ValueError:
+                updated_ns = 0
+            item.update(path="", title=entry.get("name") or "", updated_at=updated_ns, metadata_only=True)
+            facts.append(item)
+    if cache_path:
+        cached.update(version=1, **{agent: entries})
+        save_state(cache_path, cached)
+    skipped = []
+    if root.is_dir():
+        for candidate in root.glob("**/*.jsonl"):
+            if candidate.is_file() and not re.search(SESSION_UUID, candidate.name, re.I):
+                skipped.append({"name": candidate.name, "reason": "unrecognized-session-id"})
+    return facts, skipped
 
 
 def visible_transcript(agent: str, session_id: str, transcript: Path) -> list[dict[str, Any]]:
@@ -203,7 +376,7 @@ def load_state(path: Path) -> dict[str, Any]:
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp")
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
     temporary.chmod(0o600)
     os.replace(temporary, path)
@@ -552,12 +725,18 @@ def main() -> int:
     mode.add_argument("--discover", action="store_true", help="read facts for every transcript without cursors")
     mode.add_argument("--transcript", action="store_true", help="read a bounded page of visible user and assistant turns")
     mode.add_argument("--search", metavar="QUERY", help="search visible turns across persisted transcripts")
+    parser.add_argument("--report-skipped", action="store_true", help="with --discover, report transcript files skipped for an unrecognized session id")
+    parser.add_argument("--cache", type=Path, help="with --discover, retain incremental transcript facts in this file")
     args = parser.parse_args()
 
     if not args.discover and args.search is None and not args.session_id:
         parser.error("session_id is required unless --discover or --search is used")
     if (args.discover or args.search is not None) and args.session_id:
         parser.error("session_id cannot be combined with --discover or --search")
+    if args.report_skipped and not args.discover:
+        parser.error("--report-skipped requires --discover")
+    if args.cache and not args.discover:
+        parser.error("--cache requires --discover")
     if args.session_id is not None and not valid_session_id(args.session_id):
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
@@ -576,8 +755,9 @@ def main() -> int:
         parser.error(f"inbox does not exist: {args.inbox}")
 
     if args.discover:
-        facts = discover_transcripts(args.agent)
-        print(json.dumps(facts, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        facts, skipped = discover_transcripts(args.agent, args.cache)
+        report: Any = {"transcripts": facts, "skipped": skipped} if args.report_skipped else facts
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     if args.search is not None:

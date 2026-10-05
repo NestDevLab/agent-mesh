@@ -14,6 +14,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  readSync,
   readlinkSync,
   renameSync,
   rmSync,
@@ -61,6 +62,9 @@ const { values, positionals } = parseArgs({
     to: { type: "string" },
     type: { type: "string" },
     id: { type: "string" },
+    apply: { type: "boolean", default: false },
+    "all-history": { type: "boolean", default: false },
+    "retention-days": { type: "string" },
     json: { type: "boolean", default: false },
     tree: { type: "boolean", default: false },
     compact: { type: "boolean", default: false },
@@ -114,6 +118,9 @@ try {
       break;
     case "purge":
       printResult(purgeNode(stateDir, values), values);
+      break;
+    case "compact":
+      printResult(compactGraph(stateDir, values), values);
       break;
     case "show":
       showGraph(stateDir, values);
@@ -252,27 +259,41 @@ function inspectTranscript(agent, runtimeUuid) {
   return { ...facts, updatedAt: new Date(Number(facts.updated_at) / 1_000_000).toISOString() };
 }
 
-function inspectTranscripts(agent) {
-  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--format", "jsonl"]);
+function inspectTranscripts(agent, statePath) {
+  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--report-skipped", "--cache", join(statePath, `facts-${agent}.json`), "--format", "jsonl"]);
   if (result.error) throw new Error(`could not discover transcripts: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`transcript discovery failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
-  let facts;
-  try { facts = JSON.parse(result.stdout); } catch { throw new Error("transcript discovery returned invalid JSON"); }
+  let report;
+  try { report = JSON.parse(result.stdout); } catch { throw new Error("transcript discovery returned invalid JSON"); }
+  const facts = report?.transcripts;
   if (!Array.isArray(facts)) throw new Error("transcript discovery returned invalid facts");
-  return facts.map((item) => ({ ...item, runtimeUuid: requiredRuntimeUuid(item.runtime_uuid), cwd: String(item.cwd || ""), title: String(item.title || ""), updatedAt: new Date(Number(item.updated_at) / 1_000_000).toISOString() }));
+  if (!Array.isArray(report.skipped)) throw new Error("transcript discovery returned invalid skipped transcript report");
+  return {
+    facts: facts.map((item) => {
+      let runtimeUuid;
+      try {
+        runtimeUuid = requiredRuntimeUuid(item.runtime_uuid);
+      } catch (error) {
+        throw new Error(`transcript discovery rejected runtime UUID '${String(item?.runtime_uuid || "missing")}': ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return { ...item, runtimeUuid, cwd: String(item.cwd || ""), title: String(item.title || ""), updatedAt: new Date(Number(item.updated_at) / 1_000_000).toISOString() };
+    }),
+    skipped: report.skipped,
+  };
 }
 
 function discoverNodes(statePath, options) {
   const agent = requiredAdoptAgent(options.agent);
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const facts = inspectTranscripts(agent);
+  const { facts, skipped } = inspectTranscripts(agent, statePath);
   return mutate(statePath, (graph) => {
     const events = [], nodes = [];
     for (const fact of facts) {
       const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
-      const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: now() };
-      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: existing?.class || "unclassified" });
+      const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: factCreatedAt(fact, now()) };
+      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: factClass(fact, existing?.class), surface: factSurface(fact) });
+      node.attention = factAttention(fact, node.refs || [], now());
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!existing || ["active", "quiet"].includes(existing.status)) node.status = observedStatus;
       if (!existing || JSON.stringify(node) !== JSON.stringify(existing)) {
@@ -281,14 +302,16 @@ function discoverNodes(statePath, options) {
       }
       nodes.push(node);
     }
-    return { graph, events, result: { nodes, changed: events.length > 0 } };
+    return { graph, events, result: { nodes, skippedTranscripts: skipped, changed: events.length > 0 } };
   });
 }
 
 function sweepNodes(statePath, options) {
   const agents = options.agent === undefined ? ["codex", "claude"] : [requiredAdoptAgent(options.agent)];
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const transcriptFacts = agents.flatMap((agent) => inspectTranscripts(agent).map((fact) => ({ ...fact, agent })));
+  const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent, statePath) }));
+  const transcriptFacts = transcriptReports.flatMap(({ agent, facts }) => facts.map((fact) => ({ ...fact, agent })));
+  const skippedTranscripts = transcriptReports.flatMap(({ agent, skipped }) => skipped.map((item) => ({ agent, ...item })));
   const tmuxSessions = inspectTmuxSessions();
   const observedAt = now();
 
@@ -302,18 +325,21 @@ function sweepNodes(statePath, options) {
       if (!node) {
         node = {
           id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [],
-          primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: observedAt,
+          primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: factCreatedAt(fact, observedAt),
         };
         desired.push(node);
       }
       Object.assign(node, {
         agent: fact.agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid,
-        lastSeenAt: fact.updatedAt, class: node.class || "unclassified",
+        lastSeenAt: fact.updatedAt, class: factClass(fact, node.class),
+        surface: factSurface(fact),
       });
+      node.attention = factAttention(fact, node.refs || [], observedAt);
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!original.has(node.id) || (!node.tmuxTarget && ["active", "quiet"].includes(node.status))) node.status = observedStatus;
     }
 
+    const transcriptsByIdentity = new Map(transcriptFacts.map((fact) => [transcriptIdentity(fact.agent, fact.runtimeUuid), fact]));
     const liveTargets = new Set();
     for (const session of tmuxSessions) {
       liveTargets.add(session.tmuxTarget);
@@ -321,27 +347,53 @@ function sweepNodes(statePath, options) {
       if (!node && session.runtimeUuid) node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
       if (!node) {
         node = {
-          id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "active",
+          id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "quiet",
           class: "unclassified", domainsExplicit: false, primaryDomains: [], domainPredecessors: {},
           refs: [], createdAt: observedAt, runtimeUuid: null,
         };
         desired.push(node);
       }
+      const worktreeState = inspectWorktree(session.cwd);
+      const shell = worktreeState === "unknown" && (!session.cwd || !existsSync(session.cwd));
+      const state = shell ? "shell" : "live";
+      const previousObservation = node.tmuxObservation;
+      const observation = previousObservation?.state === state && previousObservation?.worktreeState === worktreeState
+        ? previousObservation : { state, observedAt, worktreeState };
       Object.assign(node, {
         agent: session.agent, tmuxTarget: session.tmuxTarget, cwd: session.cwd,
-        lastSeenAt: observedAt, tmuxObservation: { state: "live", observedAt },
+        lastSeenAt: observation === previousObservation ? node.lastSeenAt : observedAt,
+        tmuxObservation: observation,
       });
       if (session.runtimeUuid) node.runtimeUuid = session.runtimeUuid;
       if (!node.domainsExplicit) node.domains = domainsFor(session.cwd, {});
-      if (!original.has(node.id) || node.status === "quiet" || node.status === "closed") node.status = "active";
+      const transcript = node.runtimeUuid ? transcriptsByIdentity.get(transcriptIdentity(node.agent, node.runtimeUuid)) : null;
+      const transcriptIsActive = transcript && Date.now() - Date.parse(transcript.updatedAt) < quietAfter * 1000;
+      if (shell) {
+        if (node.status === "active") node.status = "quiet";
+      } else if (transcriptIsActive && ["active", "quiet"].includes(node.status)) {
+        node.status = "active";
+      }
     }
 
     const worktreeStates = new Map();
     for (const node of desired) {
       if (!node.tmuxTarget || liveTargets.has(node.tmuxTarget)) continue;
       if (!worktreeStates.has(node.cwd)) worktreeStates.set(node.cwd, inspectWorktree(node.cwd));
-      node.tmuxObservation = { state: "missing", observedAt, worktreeState: worktreeStates.get(node.cwd) };
-      if (node.status !== "closed") node.status = "quiet";
+      const worktreeState = worktreeStates.get(node.cwd);
+      if (node.tmuxObservation?.state !== "missing" || node.tmuxObservation?.worktreeState !== worktreeState) {
+        node.tmuxObservation = { state: "missing", observedAt, worktreeState };
+      }
+      if (node.status === "active") node.status = "quiet";
+    }
+
+    for (const node of desired) {
+      const reasons = [];
+      if (!node.runtimeUuid) reasons.push("missing-runtime-uuid");
+      if (!node.cwd || !existsSync(node.cwd)) reasons.push("missing-cwd");
+      if (node.runtimeUuid && !transcriptsByIdentity.has(transcriptIdentity(node.agent, node.runtimeUuid))) reasons.push("missing-transcript");
+      node.resumable = reasons.length === 0;
+      node.resumabilityReasons = reasons;
+      if (JSON.stringify(reasons) !== JSON.stringify(original.get(node.id)?.resumabilityReasons)) node.resumabilityObservedAt = observedAt;
     }
 
     const events = [];
@@ -359,10 +411,56 @@ function sweepNodes(statePath, options) {
         nodes: desired,
         liveTargets: tmuxSessions.map((session) => session.tmuxTarget),
         missingTargets: desired.filter((node) => node.tmuxTarget && !liveTargets.has(node.tmuxTarget)).map((node) => node.tmuxTarget),
+        skippedTranscripts,
         changed: events.length > 0,
       },
     };
   });
+}
+
+function transcriptIdentity(agent, runtimeUuid) {
+  return `${agent}:${String(runtimeUuid || "").toLowerCase()}`;
+}
+
+function factClass(fact, previous) {
+  if (previous && previous !== "unclassified" && previous !== "ephemeral") return previous;
+  const source = String(fact.source || "");
+  const prompt = String(fact.first_real_prompt || "").toLowerCase();
+  const noise = ["subagent", "guardian_review", "automation", "realtime_voice"].includes(fact.thread_source)
+    || fact.kind === "background" || String(fact.path || "").includes("/subagents/")
+    || ["exec", "mcp"].includes(source) || source.startsWith("{")
+    || /^(automation:|the following is the codex agent history|probe:)/.test(prompt)
+    || (String(fact.cwd || "").startsWith("/tmp/") && /fixture|test|probe/.test(prompt));
+  return noise ? "ephemeral" : "unclassified";
+}
+
+function factCreatedAt(fact, fallback) {
+  const timestamp = fact.startedAt ? Date.parse(fact.startedAt) : Number(fact.created_at_ms);
+  return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toISOString() : fallback;
+}
+
+function factSurface(fact) {
+  if (fact.agent === "codex") return { sidebar: fact.source === "vscode" ? "desktop" : "cli", archived: fact.archived === true, pinned: fact.pinned === true };
+  return { sidebar: fact.entrypoint === "claude-desktop" ? "desktop" : "cli", hostId: fact.hostSessionId || null, archived: null };
+}
+
+function factAttention(fact, refs, observedAt) {
+  const age = Math.max(0, Date.parse(observedAt) - Date.parse(fact.updatedAt));
+  const status = String(fact.status || "");
+  const active = status === "busy";
+  let state = "idle", since = fact.updatedAt, evidence = [];
+  if ((active || fact.turn_active === true) && age < 30 * 60_000) { state = "working"; evidence = [active ? "active-writer" : "recent-turn", "recent-transcript"]; }
+  else if (active && age >= 30 * 60_000) { state = "stalled-hung"; evidence = ["active-writer", "stale-transcript"]; }
+  else if (status === "waiting" || fact.waitingFor === "input needed" || fact.pending_question) {
+    state = "waiting-joseph"; since = fact.last_final_at || fact.updatedAt; evidence = ["pending-question"];
+  } else if (Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
+    state = "never-started"; evidence = ["no-human-turns"];
+  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && Number(fact.mutating_tool_calls) === 0) {
+    state = "finished"; evidence = ["completed-turn", "unlinked-read-only"];
+  } else if (["human_message", "tool"].includes(fact.last_event_kind) && age >= 2 * 60 * 60_000) {
+    state = "stalled-abandoned"; evidence = ["unfinished-turn", "idle-writer"];
+  }
+  return { state, since, evidence };
 }
 
 function inspectTmuxSessions() {
@@ -601,6 +699,14 @@ function printResult(result, options) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     return;
   }
+  if (Array.isArray(result.nodes)) {
+    process.stdout.write(`nodes=${result.nodes.length} changed=${result.changed === true}\n`);
+    return;
+  }
+  if (result.compaction) {
+    process.stdout.write(`compaction=${result.compaction} events=${result.events} retained=${result.retained}\n`);
+    return;
+  }
   const item = result.node || result.edge;
   const identity = result.node ? result.node.id : item.id;
   process.stdout.write(`${identity}${result.changed ? "" : " (unchanged)"}\n`);
@@ -609,43 +715,136 @@ function printResult(result, options) {
 function mutate(statePath, operation) {
   ensureStateDir(statePath);
   return withLock(statePath, () => {
-    const graph = loadGraph(statePath);
+    const { graph, checkpointValid } = readGraphState(statePath);
     const result = operation(graph);
     const events = result.events || (result.event ? [result.event] : []);
-    if (events.length === 0) return result.result;
+    if (events.length === 0) {
+      if (Array.isArray(result.result?.nodes)) writeProjection(statePath, graph);
+      if (!checkpointValid) writeCheckpoint(statePath, graph);
+      return result.result;
+    }
     for (const item of events) appendEvent(statePath, item);
-    const derived = deriveGraph(readEvents(statePath));
+    const derived = deriveGraph(events, graph);
     writeProjection(statePath, derived);
+    writeCheckpoint(statePath, derived);
     return result.result;
   });
 }
 
 function loadGraph(statePath) {
-  if (!existsSync(join(statePath, "events.jsonl"))) return emptyGraph();
-  return deriveGraph(readEvents(statePath));
+  return readGraphState(statePath).graph;
 }
 
-function readEvents(statePath) {
+function readGraphState(statePath) {
+  const checkpoint = readCheckpoint(statePath);
+  if (checkpoint) {
+    return { graph: deriveGraph(readEvents(statePath, checkpoint.offset), checkpoint.graph), checkpointValid: true };
+  }
+  const snapshot = readSnapshot(statePath);
+  const offset = snapshot ? findEventEnd(statePath, snapshot.lastEventId) : 0;
+  return { graph: deriveGraph(readEvents(statePath, offset), snapshot?.graph), checkpointValid: false };
+}
+
+function readCheckpoint(statePath) {
+  const path = join(statePath, "checkpoint.json");
+  if (!existsSync(path)) return null;
+  let checkpoint;
+  try {
+    checkpoint = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+  const cursor = checkpoint.cursor;
+  if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
+      !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
+      !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
+      !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
+    return null;
+  }
+  const eventsPath = join(statePath, "events.jsonl");
+  if (!existsSync(eventsPath)) return null;
+  const file = statSync(eventsPath);
+  if (file.dev !== cursor.dev || file.ino !== cursor.ino || file.size < cursor.offset) return null;
+  return { graph: checkpoint.graph, offset: cursor.offset };
+}
+
+function writeCheckpoint(statePath, graph) {
+  const file = statSync(join(statePath, "events.jsonl"), { throwIfNoEntry: false });
+  if (!file) return;
+  const checkpoint = { schema: GRAPH_SCHEMA, graph, cursor: { dev: file.dev, ino: file.ino, offset: file.size } };
+  writeAtomic(join(statePath, "checkpoint.json"), `${JSON.stringify(checkpoint)}\n`);
+}
+
+function readSnapshot(statePath) {
+  const path = join(statePath, "snapshot.json");
+  if (!existsSync(path)) return null;
+  const snapshot = JSON.parse(readFileSync(path, "utf8"));
+  if (snapshot.schema !== GRAPH_SCHEMA || !snapshot.graph || typeof snapshot.lastEventId !== "string") throw new Error("invalid graph snapshot");
+  return snapshot;
+}
+
+function tailEvents(events, lastEventId) {
+  if (!lastEventId) return events;
+  const index = events.findIndex((item) => item.id === lastEventId);
+  return index < 0 ? events : events.slice(index + 1);
+}
+
+function findEventEnd(statePath, id) {
+  for (const record of readEventRecords(statePath)) if (record.event.id === id) return record.end;
+  return 0;
+}
+
+function* readEvents(statePath, offset = 0) {
+  for (const record of readEventRecords(statePath, offset)) yield record.event;
+}
+
+function* readEventRecords(statePath, offset = 0) {
   const path = join(statePath, "events.jsonl");
-  if (!existsSync(path)) return [];
-  const body = readFileSync(path, "utf8").trim();
-  if (!body) return [];
-  return body.split("\n").map((line, index) => {
+  if (!existsSync(path)) return;
+  const fd = openSync(path, "r");
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let position = offset;
+  let remainder = Buffer.alloc(0);
+  let lineNumber = 0;
+  const parse = (bytes) => {
     try {
-      const parsed = JSON.parse(line);
+      const parsed = JSON.parse(bytes.toString("utf8"));
       if (parsed.schema !== EVENT_SCHEMA || typeof parsed.type !== "string") {
         throw new Error("invalid event schema");
       }
       return parsed;
     } catch (error) {
-      throw new Error(`invalid event at ${path}:${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(`invalid event at ${path}:${lineNumber}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  });
+  };
+  try {
+    for (;;) {
+      const size = readSync(fd, chunk, 0, chunk.length, position);
+      if (size === 0) break;
+      const data = remainder.length ? Buffer.concat([remainder, chunk.subarray(0, size)]) : chunk.subarray(0, size);
+      let start = 0;
+      for (let index = 0; index < data.length; index++) {
+        if (data[index] !== 10) continue;
+        const line = data.subarray(start, index);
+        lineNumber++;
+        if (line.length) yield { event: parse(line), end: position + size - data.length + index + 1 };
+        start = index + 1;
+      }
+      remainder = Buffer.from(data.subarray(start));
+      position += size;
+    }
+    if (remainder.length) {
+      lineNumber++;
+      if (remainder.toString("utf8").trim()) yield { event: parse(remainder), end: position };
+    }
+  } finally {
+    closeSync(fd);
+  }
 }
 
-function deriveGraph(events) {
-  const nodes = new Map();
-  const edges = new Map();
+function deriveGraph(events, base = null) {
+  const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
+  const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
   for (const item of events) {
     if (item.type === "node.upserted") {
       validateNode(item.node);
@@ -671,6 +870,28 @@ function deriveGraph(events) {
     nodes: [...nodes.values()].sort((left, right) => left.id.localeCompare(right.id)),
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
   };
+}
+
+function compactGraph(statePath, options) {
+  const days = optionalPositiveInteger(options["retention-days"], "--retention-days") || 30;
+  const cutoff = Date.now() - days * 86_400_000;
+  ensureStateDir(statePath);
+  return withLock(statePath, () => {
+    const previous = readSnapshot(statePath);
+    const events = tailEvents([...readEvents(statePath)], previous?.lastEventId);
+    const split = events.findIndex((item) => Date.parse(item.at) >= cutoff);
+    const count = options["all-history"] ? events.length : (split < 0 ? events.length : split);
+    const old = events.slice(0, count);
+    const retained = events.slice(count);
+    const report = { compaction: options.apply && old.length ? "applied" : "dry-run", events: old.length, retained: retained.length, retentionDays: options["all-history"] ? 0 : days };
+    if (!options.apply || old.length === 0) return report;
+    const graph = deriveGraph(old, previous?.graph);
+    const snapshot = { schema: GRAPH_SCHEMA, lastEventId: old.at(-1).id, graph };
+    writeAtomic(join(statePath, "snapshot.json"), `${JSON.stringify(snapshot)}\n`);
+    writeAtomic(join(statePath, "events.jsonl"), retained.map((item) => JSON.stringify(item)).join("\n") + (retained.length ? "\n" : ""));
+    writeProjection(statePath, loadGraph(statePath));
+    return report;
+  });
 }
 
 function emptyGraph() {
@@ -820,9 +1041,12 @@ function validateNode(node) {
   if (node.primaryDomains !== undefined && (!Array.isArray(node.primaryDomains) || node.primaryDomains.some((domain) => typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(domain)))) throw new Error(`node '${node.id}' has invalid primaryDomains`);
   if (node.tmuxObservation !== undefined) {
     const observation = node.tmuxObservation;
-    if (!observation || typeof observation !== "object" || !["live", "missing"].includes(observation.state) || typeof observation.observedAt !== "string") throw new Error(`node '${node.id}' has invalid tmuxObservation`);
+    if (!observation || typeof observation !== "object" || !["live", "missing", "shell"].includes(observation.state) || typeof observation.observedAt !== "string") throw new Error(`node '${node.id}' has invalid tmuxObservation`);
     if (observation.worktreeState !== undefined && !["dirty", "clean", "unknown"].includes(observation.worktreeState)) throw new Error(`node '${node.id}' has invalid worktreeState`);
   }
+  if (node.resumable !== undefined && typeof node.resumable !== "boolean") throw new Error(`node '${node.id}' has invalid resumable`);
+  if (node.resumabilityReasons !== undefined && (!Array.isArray(node.resumabilityReasons) || node.resumabilityReasons.some((reason) => typeof reason !== "string"))) throw new Error(`node '${node.id}' has invalid resumabilityReasons`);
+  if (node.resumabilityObservedAt !== undefined && typeof node.resumabilityObservedAt !== "string") throw new Error(`node '${node.id}' has invalid resumabilityObservedAt`);
   assertStatus(node.status);
 }
 
@@ -935,5 +1159,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph sweep [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph sweep [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
