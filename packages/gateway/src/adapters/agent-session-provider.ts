@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { env as processEnv } from "node:process";
 
@@ -171,6 +170,8 @@ export interface ShellAgentSessionProviderOptions {
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
   /** Trusted cwd per workspace for fresh sessions, must be inside that workspace's roots. */
   freshSessionCwds?: Readonly<Record<string, string>>;
+  /** Seconds to keep polling the Claude transcript for a reply the collector missed. 0 = check once. */
+  resultRecoverySeconds?: number;
   meshSocket?: string;
   timeoutSeconds?: number;
   scanLimit?: number;
@@ -193,6 +194,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly agentNativeCallPath?: string;
   private readonly agentManagedInboxRoot?: string;
   private readonly timeoutSeconds: number;
+  private readonly resultRecoverySeconds: number;
   private readonly run: ShellRun;
   private readonly sender: ShellTmuxSender;
   private readonly sendQueues = new Map<string, Promise<void>>();
@@ -226,6 +228,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     this.agentNativeCallPath = options.agentNativeCallPath;
     this.agentManagedInboxRoot = options.agentManagedInboxRoot;
     this.timeoutSeconds = options.timeoutSeconds ?? 120;
+    this.resultRecoverySeconds = options.resultRecoverySeconds ?? 0;
     this.run = options.run ?? defaultRun;
     this.sender = new ShellTmuxSender({
       agentSendPath: options.agentSendPath,
@@ -460,49 +463,48 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     if (created.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) !== target) {
       return failed("Fresh session creation returned an unexpected target.");
     }
-    try {
-      const writerStatus = await this.command(["--agent", "claude", "writer-status", input.sessionId, "--json"], true);
-      if (writerStatus.code !== 0) return failed(safeProcessError("Fresh session writer inspection failed", writerStatus));
-      const writers = parseWriterStatus(writerStatus.stdout, "claude", input.sessionId);
-      const writer = writers.length === 1 && writers[0]?.kind === "claude-cli" ? writers[0] : undefined;
-      if (writer === undefined) return failed("Fresh session has no unique CLI writer.");
-      const targetStatus = await this.command([
-        "--agent", "claude", "target-status", target, "--writer-pid", String(writer.pid), "--json"
-      ], true);
-      if (targetStatus.code !== 0) return failed(safeProcessError("Fresh session target ownership failed", targetStatus));
-      const owned = parseOwnedClaudeTarget(targetStatus.stdout, target, writer.pid);
-      this.ownedClaudeTargets.set(`${input.workspaceId}:${input.sessionId}`, {
-        target, writerPid: writer.pid, panePid: owned.panePid
-      });
-    } catch (error) {
-      return failed(error instanceof Error ? error.message : String(error));
+    const ownershipError = await this.claimFreshTarget(input, target);
+    if (ownershipError !== undefined) {
+      // nothing sent yet, and the target name carries this task's session id
+      await this.command(["--agent", "claude", "kill", target], true);
+      return failed(ownershipError);
     }
     return this.sendToOwnedClaudeTarget(input, target);
   }
 
+  private async claimFreshTarget(input: AgentSessionSendInput, target: string): Promise<string | undefined> {
+    try {
+      const writerStatus = await this.command(["--agent", "claude", "writer-status", input.sessionId, "--json"], true);
+      if (writerStatus.code !== 0) return safeProcessError("Fresh session writer inspection failed", writerStatus);
+      const writers = parseWriterStatus(writerStatus.stdout, "claude", input.sessionId);
+      const writer = writers.length === 1 && writers[0]?.kind === "claude-cli" ? writers[0] : undefined;
+      if (writer === undefined) return "Fresh session has no unique CLI writer.";
+      const targetStatus = await this.command([
+        "--agent", "claude", "target-status", target, "--writer-pid", String(writer.pid), "--json"
+      ], true);
+      if (targetStatus.code !== 0) return safeProcessError("Fresh session target ownership failed", targetStatus);
+      const owned = parseOwnedClaudeTarget(targetStatus.stdout, target, writer.pid);
+      this.ownedClaudeTargets.set(`${input.workspaceId}:${input.sessionId}`, {
+        target, writerPid: writer.pid, panePid: owned.panePid
+      });
+      return undefined;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
   private async sendToOwnedClaudeTarget(input: AgentSessionSendInput, target: string): Promise<TmuxSendResult> {
     const result = await this.sender.send(this.tmuxSendInput(input, target));
-    if (result.result_error_code !== "result_uncorrelated" || input.correlationId === undefined) return result;
-    const token = createHash("sha256").update(input.correlationId).digest("hex").slice(0, 16);
-    const begin = `[[R:${token}]]`;
-    const end = `[[/R:${token}]]`;
-    try {
-      const page = await this.search({ workspaceId: input.workspaceId, query: begin, limit: 20 });
-      const matches = page.results
-        .filter((session) => session.session_id === input.sessionId)
-        .flatMap((session) => session.matches)
-        .filter((event) => event.role === "assistant");
-      const replies = matches.map((event) => {
-        const start = event.text.indexOf(begin);
-        if (start < 0 || event.text.indexOf(begin, start + begin.length) >= 0) return undefined;
-        const finish = event.text.indexOf(end, start + begin.length);
-        if (finish < 0 || event.text.indexOf(end, finish + end.length) >= 0) return undefined;
-        return event.text.slice(start + begin.length, finish).trim();
-      }).filter((reply): reply is string => typeof reply === "string" && reply.length > 0);
-      if (replies.length === 1) return { ok: true, reply: replies[0] };
-    } catch {
-      // Native transcript recovery is best-effort; preserve the collector's typed failure.
-    }
+    const recoverable = result.result_error_code === "result_uncorrelated" || result.result_error_code === "result_timeout";
+    if (!recoverable || input.correlationId === undefined) return result;
+    // long replies scroll out of the pane and long turns outlast the collector, the transcript has the full reply
+    const recovered = await this.command([
+      "--agent", "claude", "result", input.sessionId,
+      "--correlation-id", input.correlationId, "--wait", String(this.resultRecoverySeconds)
+    ], true, (this.resultRecoverySeconds + 30) * 1000);
+    if (recovered.code === 0 && recovered.stdout.trim().length > 0) return { ok: true, reply: recovered.stdout.trim() };
+    if (recovered.code === 65) return { ok: true, result_error_code: "result_no_output", error: "Agent produced no textual result." };
+    if (recovered.code === 67) return { ok: true, result_error_code: "result_parsing_failure", error: "Correlated result markers could not be parsed." };
     return result;
   }
 
@@ -541,7 +543,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     };
   }
 
-  private async command(args: readonly string[], allowFailure = false) {
+  private async command(args: readonly string[], allowFailure = false, timeoutMs = 45_000) {
     const env = { ...processEnv };
     if (this.meshSocket !== undefined) env.MESH_TMUX_SOCKET = this.meshSocket;
     if (args[2] === "new") env.MESH_STRICT_READY = "1";
@@ -554,7 +556,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       env,
       // A cold resume waits up to 30 seconds for the provider TUI to become
       // ready; keep the host ceiling above that bridge-owned bound.
-      timeoutMs: 45_000
+      timeoutMs
     });
     if (!allowFailure && response.code !== 0) {
       throw new Error(safeProcessError("Agent session command failed", response));

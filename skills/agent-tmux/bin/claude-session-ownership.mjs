@@ -88,11 +88,16 @@ function classifyClaudeProcess(argv) {
   return undefined;
 }
 
-// --session-id owns the session the same way --resume does
+// --session-id owns the session the same way --resume does, but a forked resume
+// only reads its source and writes under a new id.
 function claimsSession(argv, sessionId) {
+  const forked = argv.includes("--fork-session");
   return argv.some((value, index) => (
-    value === `--resume=${sessionId}`
-    || value === `--session-id=${sessionId}`
-    || ((value === "--resume" || value === "-r" || value === "--session-id") && argv[index + 1] === sessionId)
+    value === `--session-id=${sessionId}`
+    || (value === "--session-id" && argv[index + 1] === sessionId)
+    || (!forked && (
+      value === `--resume=${sessionId}`
+      || ((value === "--resume" || value === "-r") && argv[index + 1] === sessionId)
+    ))
   ));
 }

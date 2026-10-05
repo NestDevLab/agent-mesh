@@ -81,6 +81,7 @@ interface AgentSessionsConfig {
   meshSocket?: string;
   timeoutSeconds?: number;
   scanLimit?: number;
+  resultRecoverySeconds?: number;
   providers: Array<{
     target_agent_id: string;
     agent_type: "codex" | "claude";
@@ -449,7 +450,9 @@ function validateAgentSessions(
     (value.meshSocket !== undefined &&
       (typeof value.meshSocket !== "string" || !/^[A-Za-z0-9_.-]{1,64}$/.test(value.meshSocket))) ||
     (value.timeoutSeconds !== undefined && (!Number.isInteger(value.timeoutSeconds) || value.timeoutSeconds < 1 || value.timeoutSeconds > 600)) ||
-    (value.scanLimit !== undefined && (!Number.isInteger(value.scanLimit) || value.scanLimit < 1 || value.scanLimit > 1000))
+    (value.scanLimit !== undefined && (!Number.isInteger(value.scanLimit) || value.scanLimit < 1 || value.scanLimit > 1000)) ||
+    (value.resultRecoverySeconds !== undefined &&
+      (!Number.isInteger(value.resultRecoverySeconds) || value.resultRecoverySeconds < 0 || value.resultRecoverySeconds > 14_400))
   ) {
     throw new Error("Invalid agent sessions runtime limits configuration.");
   }
@@ -522,7 +525,8 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     ...(provider.fresh_session === undefined ? {} : { freshSessionCwds: provider.fresh_session.workspace_cwd }),
     ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
     ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds }),
-    ...(config.scanLimit === undefined ? {} : { scanLimit: config.scanLimit })
+    ...(config.scanLimit === undefined ? {} : { scanLimit: config.scanLimit }),
+    ...(config.resultRecoverySeconds === undefined ? {} : { resultRecoverySeconds: config.resultRecoverySeconds })
   })));
 }
 

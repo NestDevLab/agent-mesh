@@ -10,6 +10,7 @@
 #   agent-session.sh --agent <NAME> transcript <SESSION_ID> [--json] [--cursor <OFFSET>] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
+#   agent-session.sh --agent claude result <SESSION_ID> --correlation-id <ID> [--wait <SECONDS>]
 #   agent-session.sh --agent claude target-status <TMUX_NAME> --writer-pid <PID> --json
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
@@ -848,6 +849,13 @@ case "$cmd" in
         WATCH_ARGS=(--agent "$AGENT_NAME" --search "$SEARCH_QUERY" --cursor "$SEARCH_CURSOR" --limit "$SEARCH_LIMIT" --scan-limit "$SEARCH_SCAN_LIMIT")
         [[ "$SEARCH_JSON" == "true" ]] && WATCH_ARGS+=(--format jsonl)
         python3 "$SCRIPT_DIR/agent-watch.py" "${WATCH_ARGS[@]}"
+        ;;
+
+    result)
+        [[ "$AGENT_NAME" == "claude" ]] || { echo "ERROR: result is only implemented for claude" >&2; exit 2; }
+        SESSION_ID="${1:-}"
+        shift || true
+        node "$SCRIPT_DIR/claude-transcript-result.mjs" --session "$SESSION_ID" --root "$AGENT_SESSION_DIR" "$@"
         ;;
 
     writer-status)

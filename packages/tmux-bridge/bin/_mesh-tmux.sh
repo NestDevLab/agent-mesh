@@ -13,6 +13,13 @@
 #
 # Override the socket name with MESH_TMUX_SOCKET (e.g. tests use a throwaway one).
 
+# prompt and trust-dialog patterns use non-ASCII glyphs (❯, ·), which tmux and grep
+# mangle under a C locale, so readiness and dialog checks would never match
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) ;;
+    *) export LC_ALL=C.UTF-8 ;;
+esac
+
 : "${MESH_TMUX_SOCKET:=mesh}"
 
 # Wrapper: every bridge tmux call goes through the dedicated socket.

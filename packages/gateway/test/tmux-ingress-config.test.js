@@ -112,6 +112,15 @@ test("runtime config accepts a workspace-scoped Codex session provider", async (
   );
 });
 
+test("result recovery wait is bounded", async () => {
+  const accepted = await readRuntimeConfig(await writeConfig({ agentSessions: { ...AGENT_SESSIONS, resultRecoverySeconds: 3600 } }));
+  assert.equal(accepted.agentSessions.resultRecoverySeconds, 3600);
+  for (const value of [-1, 14_401, 1.5, "60"]) {
+    const path = await writeConfig({ agentSessions: { ...AGENT_SESSIONS, resultRecoverySeconds: value } });
+    await assert.rejects(readRuntimeConfig(path), /runtime limits/);
+  }
+});
+
 test("session native call path must be absolute when configured", async () => {
   const path = await writeConfig({
     agentSessions: { ...AGENT_SESSIONS, agentNativeCallPath: "agent-native-call.mjs" }
