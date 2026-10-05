@@ -253,19 +253,32 @@ function inspectTranscript(agent, runtimeUuid) {
 }
 
 function inspectTranscripts(agent) {
-  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--format", "jsonl"]);
+  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--report-skipped", "--format", "jsonl"]);
   if (result.error) throw new Error(`could not discover transcripts: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`transcript discovery failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
-  let facts;
-  try { facts = JSON.parse(result.stdout); } catch { throw new Error("transcript discovery returned invalid JSON"); }
+  let report;
+  try { report = JSON.parse(result.stdout); } catch { throw new Error("transcript discovery returned invalid JSON"); }
+  const facts = report?.transcripts;
   if (!Array.isArray(facts)) throw new Error("transcript discovery returned invalid facts");
-  return facts.map((item) => ({ ...item, runtimeUuid: requiredRuntimeUuid(item.runtime_uuid), cwd: String(item.cwd || ""), title: String(item.title || ""), updatedAt: new Date(Number(item.updated_at) / 1_000_000).toISOString() }));
+  if (!Array.isArray(report.skipped)) throw new Error("transcript discovery returned invalid skipped transcript report");
+  return {
+    facts: facts.map((item) => {
+      let runtimeUuid;
+      try {
+        runtimeUuid = requiredRuntimeUuid(item.runtime_uuid);
+      } catch (error) {
+        throw new Error(`transcript discovery rejected runtime UUID '${String(item?.runtime_uuid || "missing")}': ${error instanceof Error ? error.message : String(error)}`);
+      }
+      return { ...item, runtimeUuid, cwd: String(item.cwd || ""), title: String(item.title || ""), updatedAt: new Date(Number(item.updated_at) / 1_000_000).toISOString() };
+    }),
+    skipped: report.skipped,
+  };
 }
 
 function discoverNodes(statePath, options) {
   const agent = requiredAdoptAgent(options.agent);
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const facts = inspectTranscripts(agent);
+  const { facts, skipped } = inspectTranscripts(agent);
   return mutate(statePath, (graph) => {
     const events = [], nodes = [];
     for (const fact of facts) {
@@ -281,14 +294,16 @@ function discoverNodes(statePath, options) {
       }
       nodes.push(node);
     }
-    return { graph, events, result: { nodes, changed: events.length > 0 } };
+    return { graph, events, result: { nodes, skippedTranscripts: skipped, changed: events.length > 0 } };
   });
 }
 
 function sweepNodes(statePath, options) {
   const agents = options.agent === undefined ? ["codex", "claude"] : [requiredAdoptAgent(options.agent)];
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const transcriptFacts = agents.flatMap((agent) => inspectTranscripts(agent).map((fact) => ({ ...fact, agent })));
+  const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent) }));
+  const transcriptFacts = transcriptReports.flatMap(({ agent, facts }) => facts.map((fact) => ({ ...fact, agent })));
+  const skippedTranscripts = transcriptReports.flatMap(({ agent, skipped }) => skipped.map((item) => ({ agent, ...item })));
   const tmuxSessions = inspectTmuxSessions();
   const observedAt = now();
 
@@ -314,6 +329,7 @@ function sweepNodes(statePath, options) {
       if (!original.has(node.id) || (!node.tmuxTarget && ["active", "quiet"].includes(node.status))) node.status = observedStatus;
     }
 
+    const transcriptsByIdentity = new Map(transcriptFacts.map((fact) => [transcriptIdentity(fact.agent, fact.runtimeUuid), fact]));
     const liveTargets = new Set();
     for (const session of tmuxSessions) {
       liveTargets.add(session.tmuxTarget);
@@ -321,19 +337,28 @@ function sweepNodes(statePath, options) {
       if (!node && session.runtimeUuid) node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
       if (!node) {
         node = {
-          id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "active",
+          id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "quiet",
           class: "unclassified", domainsExplicit: false, primaryDomains: [], domainPredecessors: {},
           refs: [], createdAt: observedAt, runtimeUuid: null,
         };
         desired.push(node);
       }
+      const worktreeState = inspectWorktree(session.cwd);
+      const shell = worktreeState === "unknown" && (!session.cwd || !existsSync(session.cwd));
       Object.assign(node, {
         agent: session.agent, tmuxTarget: session.tmuxTarget, cwd: session.cwd,
-        lastSeenAt: observedAt, tmuxObservation: { state: "live", observedAt },
+        lastSeenAt: observedAt,
+        tmuxObservation: { state: shell ? "shell" : "live", observedAt, worktreeState },
       });
       if (session.runtimeUuid) node.runtimeUuid = session.runtimeUuid;
       if (!node.domainsExplicit) node.domains = domainsFor(session.cwd, {});
-      if (!original.has(node.id) || node.status === "quiet" || node.status === "closed") node.status = "active";
+      const transcript = node.runtimeUuid ? transcriptsByIdentity.get(transcriptIdentity(node.agent, node.runtimeUuid)) : null;
+      const transcriptIsActive = transcript && Date.now() - Date.parse(transcript.updatedAt) < quietAfter * 1000;
+      if (shell) {
+        if (node.status === "active") node.status = "quiet";
+      } else if (transcriptIsActive && ["active", "quiet"].includes(node.status)) {
+        node.status = "active";
+      }
     }
 
     const worktreeStates = new Map();
@@ -341,7 +366,17 @@ function sweepNodes(statePath, options) {
       if (!node.tmuxTarget || liveTargets.has(node.tmuxTarget)) continue;
       if (!worktreeStates.has(node.cwd)) worktreeStates.set(node.cwd, inspectWorktree(node.cwd));
       node.tmuxObservation = { state: "missing", observedAt, worktreeState: worktreeStates.get(node.cwd) };
-      if (node.status !== "closed") node.status = "quiet";
+      if (node.status === "active") node.status = "quiet";
+    }
+
+    for (const node of desired) {
+      const reasons = [];
+      if (!node.runtimeUuid) reasons.push("missing-runtime-uuid");
+      if (!node.cwd || !existsSync(node.cwd)) reasons.push("missing-cwd");
+      if (node.runtimeUuid && !transcriptsByIdentity.has(transcriptIdentity(node.agent, node.runtimeUuid))) reasons.push("missing-transcript");
+      node.resumable = reasons.length === 0;
+      node.resumabilityReasons = reasons;
+      node.resumabilityObservedAt = observedAt;
     }
 
     const events = [];
@@ -359,10 +394,15 @@ function sweepNodes(statePath, options) {
         nodes: desired,
         liveTargets: tmuxSessions.map((session) => session.tmuxTarget),
         missingTargets: desired.filter((node) => node.tmuxTarget && !liveTargets.has(node.tmuxTarget)).map((node) => node.tmuxTarget),
+        skippedTranscripts,
         changed: events.length > 0,
       },
     };
   });
+}
+
+function transcriptIdentity(agent, runtimeUuid) {
+  return `${agent}:${String(runtimeUuid || "").toLowerCase()}`;
 }
 
 function inspectTmuxSessions() {
@@ -820,9 +860,12 @@ function validateNode(node) {
   if (node.primaryDomains !== undefined && (!Array.isArray(node.primaryDomains) || node.primaryDomains.some((domain) => typeof domain !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(domain)))) throw new Error(`node '${node.id}' has invalid primaryDomains`);
   if (node.tmuxObservation !== undefined) {
     const observation = node.tmuxObservation;
-    if (!observation || typeof observation !== "object" || !["live", "missing"].includes(observation.state) || typeof observation.observedAt !== "string") throw new Error(`node '${node.id}' has invalid tmuxObservation`);
+    if (!observation || typeof observation !== "object" || !["live", "missing", "shell"].includes(observation.state) || typeof observation.observedAt !== "string") throw new Error(`node '${node.id}' has invalid tmuxObservation`);
     if (observation.worktreeState !== undefined && !["dirty", "clean", "unknown"].includes(observation.worktreeState)) throw new Error(`node '${node.id}' has invalid worktreeState`);
   }
+  if (node.resumable !== undefined && typeof node.resumable !== "boolean") throw new Error(`node '${node.id}' has invalid resumable`);
+  if (node.resumabilityReasons !== undefined && (!Array.isArray(node.resumabilityReasons) || node.resumabilityReasons.some((reason) => typeof reason !== "string"))) throw new Error(`node '${node.id}' has invalid resumabilityReasons`);
+  if (node.resumabilityObservedAt !== undefined && typeof node.resumabilityObservedAt !== "string") throw new Error(`node '${node.id}' has invalid resumabilityObservedAt`);
   assertStatus(node.status);
 }
 

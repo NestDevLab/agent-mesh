@@ -28,6 +28,7 @@ BRIDGE_DIR = SCRIPT_DIR.parent
 AGENTS_DIR = Path(os.environ.get("AGENT_MESH_AGENTS_DIR", BRIDGE_DIR / "agents"))
 READ_BIN = SCRIPT_DIR / "agent-read.sh"
 SESSION_BIN = SCRIPT_DIR / "agent-session.sh"
+GRAPH_BIN = Path(os.environ.get("MESH_GRAPH_BIN", SCRIPT_DIR / "mesh-graph.mjs"))
 STATE_VERSION = 1
 KNOWN_STATUSES = {"idle", "working", "approval-pending", "error"}
 
@@ -97,6 +98,13 @@ def non_negative(value: str) -> int:
         raise argparse.ArgumentTypeError("must be a whole number of seconds") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
+def positive(value: str) -> int:
+    parsed = non_negative(value)
+    if parsed == 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
     return parsed
 
 
@@ -214,6 +222,15 @@ def session_gone(socket: str, target: str) -> bool | None:
     return None
 
 
+def sweep_graph(quiet_after: int) -> None:
+    if not GRAPH_BIN.is_file():
+        raise ReaperError(f"graph sweep executable is missing: {GRAPH_BIN}")
+    result = run([str(GRAPH_BIN), "sweep", "--quiet-after", str(quiet_after)], timeout=120)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "unknown error").strip()
+        raise ReaperError(f"graph sweep failed before idle expiry: {detail}")
+
+
 def print_report(records: list[dict[str, Any]], as_json: bool) -> None:
     if as_json:
         print(json.dumps({"targets": records}, sort_keys=True, indent=2))
@@ -234,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--idle-seconds", type=non_negative, default=non_negative(os.environ.get("MESH_IDLE_EXPIRY_SECONDS", "18000")))
     parser.add_argument("--grace-seconds", type=non_negative, default=non_negative(os.environ.get("MESH_IDLE_EXPIRY_GRACE_SECONDS", "300")))
     parser.add_argument("--max-check-gap-seconds", type=non_negative, default=non_negative(os.environ.get("MESH_IDLE_EXPIRY_MAX_CHECK_GAP_SECONDS", "900")))
+    parser.add_argument("--graph-quiet-after", type=positive, default=positive(os.environ.get("MESH_GRAPH_QUIET_AFTER_SECONDS", "3600")), help="pass this quiet threshold to mesh-graph sweep before expiry")
     parser.add_argument("--delivery-guard", type=Path, default=Path(os.environ["MESH_IDLE_EXPIRY_DELIVERY_GUARD"]) if os.environ.get("MESH_IDLE_EXPIRY_DELIVERY_GUARD") else None)
     parser.add_argument("--execute", action="store_true", help="persist observations and permit one managed close after the grace re-check")
     parser.add_argument("--dry-run", action="store_true", help="explicitly inspect only; this is also the default")
@@ -252,6 +270,14 @@ def main() -> int:
     for agent in agents:
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", agent) or not (AGENTS_DIR / f"{agent}.conf").is_file():
             raise ReaperError(f"unknown agent config: {agent}")
+    if options.idle_seconds and options.graph_quiet_after > options.idle_seconds:
+        raise ReaperError("graph quiet threshold must not exceed idle expiry; set MESH_GRAPH_QUIET_AFTER_SECONDS <= MESH_IDLE_EXPIRY_SECONDS")
+
+    # A tmux close is memory GC, not task completion. Persist the graph's
+    # independent worktree and transcript observations before it can occur.
+    # A failed sweep fails closed so the reaper cannot erase that evidence.
+    if options.execute:
+        sweep_graph(options.graph_quiet_after)
 
     socket = os.environ.get("MESH_TMUX_SOCKET", "mesh")
     prefix = os.environ.get("TMUX_SESSION_PREFIX", "mesh")

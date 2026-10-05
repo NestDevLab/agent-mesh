@@ -368,66 +368,90 @@ test("mesh-graph discover reports an empty sweep instead of failing on an unknow
       MESH_DOMAIN_ROOTS_FILE: "",
     });
     assert.equal(swept.code, 0, swept.stderr);
-    assert.deepEqual(JSON.parse(swept.stdout), { nodes: [], changed: false });
+    assert.deepEqual(JSON.parse(swept.stdout), { nodes: [], skippedTranscripts: [], changed: false });
     await assert.rejects(access(join(state, "events.jsonl")));
   } finally {
     await rm(state, { recursive: true, force: true });
   }
 });
 
-test("mesh-graph sweep registers live tmux targets and quiets missing targets with worktree evidence", async () => {
+test("mesh-graph sweep derives shell, quiet, blocking, and resumability observations", async () => {
   const state = await mkdtemp(join(tmpdir(), "mesh-graph-sweep-"));
   const fixtures = await mkdtemp(join(tmpdir(), "mesh-graph-sweep-fixtures-"));
   const clean = join(fixtures, "clean");
   const dirty = join(fixtures, "dirty");
-  const liveCwd = join(fixtures, "live");
+  const absent = join(fixtures, "absent");
+  const transcripts = join(fixtures, "transcripts");
   const fakeTmux = join(fixtures, "tmux-fixture.mjs");
+  const resumableUuid = "11111111-1111-4111-8111-111111111111";
   try {
-    await Promise.all([mkdir(clean), mkdir(dirty), mkdir(liveCwd)]);
+    await Promise.all([mkdir(clean), mkdir(dirty), mkdir(join(transcripts, "2026", "09", "07"), { recursive: true })]);
     await exec("git", ["init", "--quiet", clean]);
     await exec("git", ["init", "--quiet", dirty]);
     await writeFile(join(dirty, "uncommitted.txt"), "risk\n");
+    const resumableTranscript = join(transcripts, "2026", "09", "07", `rollout-${resumableUuid}.jsonl`);
+    await writeFile(resumableTranscript, JSON.stringify({ type: "session_meta", payload: { id: resumableUuid, cwd: clean } }) + "\n");
+    await writeFile(join(transcripts, "unsupported-session-id.jsonl"), "{}\n");
     await writeFile(fakeTmux, `#!/usr/bin/env node\nif (process.env.FAKE_TMUX_FAIL) { process.stderr.write("fixture failure\\n"); process.exit(3); }\nprocess.stdout.write(process.env.FAKE_TMUX_OUTPUT || "");\n`);
     await chmod(fakeTmux, 0o755);
 
-    for (const [target, cwd] of [["dead-dirty", dirty], ["dead-clean", clean], ["dead-unknown", join(fixtures, "absent")], ["closed-target", clean]]) {
+    for (const [target, cwd] of [["dead-dirty", dirty], ["dead-clean", clean], ["dead-unknown", absent], ["closed-target", clean], ["blocked-target", clean], ["shell-target", absent], ["quiet-target", clean]]) {
       const added = await run(state, ["add", "--agent", "codex", "--tmux-target", target, "--cwd", cwd, "--json"]);
       assert.equal(added.code, 0, added.stderr);
       if (target === "closed-target") {
         const closed = await run(state, ["close", "--id", JSON.parse(added.stdout).node.id, "--json"]);
         assert.equal(closed.code, 0, closed.stderr);
       }
+      if (target === "blocked-target") {
+        const blocked = await run(state, ["summary", "--id", JSON.parse(added.stdout).node.id, "--summary", "waiting for approval", "--status", "blocked", "--json"]);
+        assert.equal(blocked.code, 0, blocked.stderr);
+      }
+      if (target === "quiet-target") {
+        const quiet = await run(state, ["summary", "--id", JSON.parse(added.stdout).node.id, "--summary", "idle", "--status", "quiet", "--json"]);
+        assert.equal(quiet.code, 0, quiet.stderr);
+      }
     }
+    const resumable = await run(state, ["add", "--agent", "codex", "--tmux-target", "resumable-target", "--cwd", clean, "--runtime-uuid", resumableUuid, "--json"]);
+    assert.equal(resumable.code, 0, resumable.stderr);
 
     const environment = {
       MESH_TMUX_BIN: fakeTmux,
-      FAKE_TMUX_OUTPUT: `live-target::MESH::0::MESH::codex::MESH::${liveCwd}\n`,
-      CODEX_SESSION_ROOT: join(fixtures, "absent-codex"),
+      FAKE_TMUX_OUTPUT: `live-target::MESH::0::MESH::codex::MESH::${clean}\nshell-target::MESH::0::MESH::codex::MESH::${absent}\nquiet-target::MESH::0::MESH::codex::MESH::${clean}\nresumable-target::MESH::0::MESH::codex::MESH::${clean}\n`,
+      CODEX_SESSION_ROOT: transcripts,
       CLAUDE_SESSION_ROOT: join(fixtures, "absent-claude"),
       MESH_DOMAIN_ROOTS_FILE: "",
     };
     const swept = await run(state, ["sweep", "--json"], environment);
     assert.equal(swept.code, 0, swept.stderr);
     const result = JSON.parse(swept.stdout);
-    assert.deepEqual(result.liveTargets, ["live-target"]);
+    assert.deepEqual(result.liveTargets, ["live-target", "quiet-target", "resumable-target", "shell-target"]);
     const byTarget = new Map(result.nodes.map((node) => [node.tmuxTarget, node]));
-    assert.equal(byTarget.get("live-target").status, "active");
+    assert.equal(byTarget.get("live-target").status, "quiet");
     assert.equal(byTarget.get("live-target").tmuxObservation.state, "live");
+    assert.equal(byTarget.get("live-target").resumable, false);
+    assert.deepEqual(byTarget.get("live-target").resumabilityReasons, ["missing-runtime-uuid"]);
+    assert.equal(byTarget.get("shell-target").status, "quiet");
+    assert.equal(byTarget.get("shell-target").tmuxObservation.state, "shell");
+    assert.equal(byTarget.get("shell-target").resumable, false);
+    assert.ok(byTarget.get("shell-target").resumabilityReasons.includes("missing-cwd"));
+    assert.equal(byTarget.get("quiet-target").status, "quiet");
+    assert.equal(byTarget.get("resumable-target").status, "active");
+    assert.equal(byTarget.get("resumable-target").resumable, true);
     assert.equal(byTarget.get("dead-dirty").status, "quiet");
     assert.equal(byTarget.get("dead-dirty").tmuxObservation.worktreeState, "dirty");
     assert.equal(byTarget.get("dead-clean").tmuxObservation.worktreeState, "clean");
     assert.equal(byTarget.get("dead-unknown").tmuxObservation.worktreeState, "unknown");
     assert.equal(byTarget.get("closed-target").status, "closed");
+    assert.equal(byTarget.get("blocked-target").status, "blocked");
     assert.equal(result.nodes.some((node) => node.status === "closed" && node.tmuxTarget !== "closed-target"), false);
+    assert.deepEqual(result.skippedTranscripts, [{ agent: "codex", name: "unsupported-session-id.jsonl", reason: "unrecognized-session-id" }]);
 
-    const returned = await run(state, ["sweep", "--json"], {
-      ...environment,
-      FAKE_TMUX_OUTPUT: `dead-dirty::MESH::0::MESH::codex::MESH::${dirty}\nlive-target::MESH::0::MESH::codex::MESH::${liveCwd}\n`,
-    });
-    assert.equal(returned.code, 0, returned.stderr);
-    const returnedDirty = JSON.parse(returned.stdout).nodes.find((node) => node.tmuxTarget === "dead-dirty");
-    assert.equal(returnedDirty.status, "active");
-    assert.equal(returnedDirty.tmuxObservation.state, "live");
+    await rm(resumableTranscript);
+    const transcriptGone = await run(state, ["sweep", "--json"], environment);
+    assert.equal(transcriptGone.code, 0, transcriptGone.stderr);
+    const missingTranscript = JSON.parse(transcriptGone.stdout).nodes.find((node) => node.tmuxTarget === "resumable-target");
+    assert.equal(missingTranscript.resumable, false);
+    assert.deepEqual(missingTranscript.resumabilityReasons, ["missing-transcript"]);
 
     const eventCount = (await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length;
     const failed = await run(state, ["sweep", "--json"], { ...environment, FAKE_TMUX_FAIL: "1" });

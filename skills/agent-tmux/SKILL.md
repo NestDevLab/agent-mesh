@@ -253,10 +253,15 @@ MESH_TMUX_SOCKET=mesh MESH_DOMAIN_ROOTS_FILE=/path/to/domain-roots.json \
   $BIN/mesh-graph.mjs sweep --quiet-after 3600 --json
 ```
 
-A missing tmux target becomes `quiet`, never `closed`. Its `tmuxObservation`
-records the observation time and whether the recorded cwd is a `dirty`, `clean`,
-or `unknown` Git worktree. A failed tmux inventory aborts without changing the
-graph; absence is recorded only after a successful inventory.
+A missing tmux target becomes `quiet`, never `closed`. A live pane whose cwd
+has disappeared is recorded as `tmuxObservation.state: "shell"`, never as
+`active`; a live pane alone also cannot promote `quiet` back to `active` without
+fresh transcript evidence. `waiting`, `blocked`, and `closed` keep their state.
+Each sweep derives `resumable`, reasons, and an observation timestamp from the
+runtime UUID, cwd existence, and readable transcript. Unsupported transcript
+identifier shapes are reported as `skippedTranscripts`, rather than silently
+ignored. A failed tmux inventory aborts without changing the graph; absence is
+recorded only after a successful inventory.
 
 ### Connect two sessions
 

@@ -232,9 +232,19 @@ closes a quiet session.
 
 `mesh-graph.mjs sweep` combines transcript discovery with one successful live
 tmux inventory. It registers live Codex and Claude targets and changes missing
-targets to `quiet`, never `closed`. Each missing-target observation includes a
-`dirty`, `clean`, or `unknown` Git worktree result for the recorded cwd. A tmux
-inspection failure aborts the sweep before the event log changes.
+targets to `quiet`, never `closed`. It inspects every observed cwd: a live pane
+whose cwd disappeared is recorded as `tmuxObservation.state: "shell"`, not as
+an active session. `waiting`, `blocked`, and `closed` are never overwritten by
+a missing pane. A `quiet` node needs fresh transcript evidence before it can
+become `active` again; a live pane alone is not enough.
+
+Each sweep derives `resumable`, `resumabilityReasons`, and
+`resumabilityObservedAt` from the runtime UUID, cwd existence, and readable
+transcript. These fields are observations, never user-set lifecycle state. A
+missing UUID, cwd, or transcript is explicitly non-resumable. Transcript files
+whose names do not contain a supported UUID shape are returned as
+`skippedTranscripts` rather than silently ignored. A tmux inspection failure
+aborts the sweep before the event log changes.
 
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
 and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's

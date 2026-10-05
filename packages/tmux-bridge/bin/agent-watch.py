@@ -96,11 +96,15 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
 def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
     root = session_root(agent)
     if not root.is_dir():
-        return []
+        return [], []
     sessions: dict[str, Path] = {}
+    skipped: list[dict[str, str]] = []
     for candidate in root.glob("**/*.jsonl"):
         match = re.search(SESSION_UUID, candidate.name, re.I)
-        if not match or not candidate.is_file():
+        if not candidate.is_file():
+            continue
+        if not match:
+            skipped.append({"name": candidate.name, "reason": "unrecognized-session-id"})
             continue
         session_id = match.group(0).lower()
         previous = sessions.get(session_id)
@@ -111,8 +115,15 @@ def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
     )
 
 
-def discover_transcripts(agent: str) -> list[dict[str, Any]]:
-    return [transcript_facts(agent, session_id, path) for session_id, path in transcript_candidates(agent)]
+def discover_transcripts(agent: str) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    facts = [transcript_facts(agent, session_id, path) for session_id, path in transcript_candidates(agent)]
+    skipped = []
+    root = session_root(agent)
+    if root.is_dir():
+        for candidate in root.glob("**/*.jsonl"):
+            if candidate.is_file() and not re.search(SESSION_UUID, candidate.name, re.I):
+                skipped.append({"name": candidate.name, "reason": "unrecognized-session-id"})
+    return facts, skipped
 
 
 def visible_transcript(agent: str, session_id: str, transcript: Path) -> list[dict[str, Any]]:
@@ -552,12 +563,15 @@ def main() -> int:
     mode.add_argument("--discover", action="store_true", help="read facts for every transcript without cursors")
     mode.add_argument("--transcript", action="store_true", help="read a bounded page of visible user and assistant turns")
     mode.add_argument("--search", metavar="QUERY", help="search visible turns across persisted transcripts")
+    parser.add_argument("--report-skipped", action="store_true", help="with --discover, report transcript files skipped for an unrecognized session id")
     args = parser.parse_args()
 
     if not args.discover and args.search is None and not args.session_id:
         parser.error("session_id is required unless --discover or --search is used")
     if (args.discover or args.search is not None) and args.session_id:
         parser.error("session_id cannot be combined with --discover or --search")
+    if args.report_skipped and not args.discover:
+        parser.error("--report-skipped requires --discover")
     if args.session_id is not None and not valid_session_id(args.session_id):
         parser.error("session_id may contain only letters, numbers, underscores, and hyphens")
     if args.interval <= 0:
@@ -576,8 +590,9 @@ def main() -> int:
         parser.error(f"inbox does not exist: {args.inbox}")
 
     if args.discover:
-        facts = discover_transcripts(args.agent)
-        print(json.dumps(facts, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(facts, ensure_ascii=False, indent=2, sort_keys=True))
+        facts, skipped = discover_transcripts(args.agent)
+        report: Any = {"transcripts": facts, "skipped": skipped} if args.report_skipped else facts
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
 
     if args.search is not None:
