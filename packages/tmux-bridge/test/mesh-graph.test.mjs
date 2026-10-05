@@ -453,6 +453,12 @@ test("mesh-graph sweep derives shell, quiet, blocking, and resumability observat
     assert.equal(missingTranscript.resumable, false);
     assert.deepEqual(missingTranscript.resumabilityReasons, ["missing-transcript"]);
 
+    const beforeNoop = await readFile(join(state, "events.jsonl"), "utf8");
+    const noOp = await run(state, ["sweep", "--json"], environment);
+    assert.equal(noOp.code, 0, noOp.stderr);
+    assert.equal(JSON.parse(noOp.stdout).changed, false);
+    assert.equal(await readFile(join(state, "events.jsonl"), "utf8"), beforeNoop);
+
     const eventCount = (await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").length;
     const failed = await run(state, ["sweep", "--json"], { ...environment, FAKE_TMUX_FAIL: "1" });
     assert.equal(failed.code, 2);
@@ -461,5 +467,28 @@ test("mesh-graph sweep derives shell, quiet, blocking, and resumability observat
   } finally {
     await rm(state, { recursive: true, force: true });
     await rm(fixtures, { recursive: true, force: true });
+  }
+});
+
+test("mesh-graph compaction plans first and preserves projection after apply", async () => {
+  const state = await mkdtemp(join(tmpdir(), "mesh-graph-compact-"));
+  try {
+    const added = await run(state, ["add", "--agent", "codex", "--tmux-target", "fixture", "--json"]);
+    assert.equal(added.code, 0, added.stderr);
+    const before = JSON.parse((await run(state, ["show", "--json"])).stdout);
+    const planned = await run(state, ["compact", "--all-history", "--json"]);
+    assert.equal(planned.code, 0, planned.stderr);
+    assert.equal(JSON.parse(planned.stdout).events, 1);
+    await assert.rejects(access(join(state, "snapshot.json")));
+    const applied = await run(state, ["compact", "--all-history", "--apply", "--json"]);
+    assert.equal(applied.code, 0, applied.stderr);
+    assert.equal(JSON.parse(applied.stdout).compaction, "applied");
+    assert.equal(await readFile(join(state, "events.jsonl"), "utf8"), "");
+    assert.deepEqual(JSON.parse((await run(state, ["show", "--json"])).stdout).nodes, before.nodes);
+    const second = await run(state, ["add", "--agent", "claude", "--tmux-target", "later", "--json"]);
+    assert.equal(second.code, 0, second.stderr);
+    assert.equal(JSON.parse((await run(state, ["show", "--json"])).stdout).nodes.length, 2);
+  } finally {
+    await rm(state, { recursive: true, force: true });
   }
 });

@@ -12,6 +12,7 @@ SESSION_BIN="$BIN_DIR/agent-session.sh"
 export MESH_TMUX_SOCKET="mesh-launch-options-test-$$"
 
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-mesh-launch-options.XXXXXX")"
+export XDG_STATE_HOME="$WORKDIR/state"
 export MESH_LAUNCH_RECORD_FILE="$WORKDIR/launch-events.jsonl"
 FAKE_CLI="$WORKDIR/fake-cli"
 LOG_FILE="$WORKDIR/argv"
