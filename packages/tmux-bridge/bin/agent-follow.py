@@ -261,15 +261,26 @@ def outbox(root: Path) -> tuple[list[dict[str, Any]], set[str]]:
     path = root / "outbox.jsonl"
     if not path.exists():
         return rows, ids
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
+    with path.open("r+b") as handle:
+        data = handle.read()
+        complete_end = data.rfind(b"\n") + 1
+        if complete_end < len(data):
+            # A process killed during append can leave an incomplete final line.
+            # Its cursor was not advanced; the next tick will derive it again.
+            handle.truncate(complete_end)
+            handle.flush()
+            os.fsync(handle.fileno())
+        for number, line in enumerate(data[:complete_end].splitlines(), 1):
             try:
                 row = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and isinstance(row.get("seq"), int):
-                rows.append(row)
-                ids.add(str(row.get("event_id") or ""))
+            except ValueError as error:
+                raise RuntimeError(f"outbox line {number} is corrupt") from error
+            if not isinstance(row, dict) or not isinstance(row.get("seq"), int) or not isinstance(row.get("event_id"), str):
+                raise RuntimeError(f"outbox line {number} has invalid fields")
+            if rows and row["seq"] != rows[-1]["seq"] + 1:
+                raise RuntimeError(f"outbox sequence gap at line {number}")
+            rows.append(row)
+            ids.add(row["event_id"])
     return rows, ids
 
 
@@ -306,10 +317,12 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
         prior = {}
     current: dict[str, float] = {}
     metadata = watch.codex_metadata()
+    parents = watch.bridge_parents()
     rules = config.get("noise", {}) if isinstance(config.get("noise"), dict) else {}
     follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
     thread_noise = set(rules.get("threadSources", ("subagent", "guardian_review", "automation", "realtime_voice")))
     source_noise = set(rules.get("sources", ("exec", "mcp")))
+    bridge_children: list[tuple[str, str, str, str]] = []
     for agent in ("codex", "claude"):
         for session_id, path in watch.transcript_candidates(agent):
             ref = f"{agent}:{session_id}"
@@ -321,12 +334,6 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
             current[ref] = mtime
             if ref == self_ref or ref in selected:
                 continue
-            if agent == "codex":
-                meta = metadata.get(session_id, {})
-                thread_source = meta.get("thread_source")
-                source = meta.get("source")
-                if (isinstance(thread_source, str) and thread_source in thread_noise) or (isinstance(source, str) and source in source_noise):
-                    continue
             try:
                 if mtime < last_run and created_at(agent, path) < last_run - 60:
                     continue
@@ -335,8 +342,21 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
             prompt, subagent = prompt_and_origin(agent, path)
             if subagent or noise(prompt, config):
                 continue
+            parent_id = parents.get(session_id)
+            origin = watch.session_origin(agent, {"path": str(path), **metadata.get(session_id, {})}, parent_id)
+            if origin not in {"human", "desktop-task", "bridge-worker"}:
+                continue
+            if agent == "codex":
+                meta = metadata.get(session_id, {})
+                thread_source = meta.get("thread_source")
+                source = meta.get("source")
+                if (isinstance(thread_source, str) and thread_source in thread_noise) or (isinstance(source, str) and source in source_noise):
+                    continue
             created = created_at(agent, path)
             kind = "NEW" if created >= last_run - 60 else "RESUMED"
+            if parent_id:
+                bridge_children.append((ref, session_id, parent_id, prompt))
+                continue
             if kind == "NEW" and not follower.get("autoNewHuman", True):
                 continue
             if kind == "RESUMED" and (not follower.get("autoResumedKnown", True) or ref not in prior):
@@ -344,6 +364,12 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
             label = f"{agent}-{session_id[:8]}"
             selected[ref] = {"label": label, "mode": "observe", "addedBy": "discovery"}
             discoveries.append({"event_id": f"discovery:{ref}:{kind}", "ref": ref, "kind": kind, "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
+    for ref, session_id, parent_id, prompt in bridge_children:
+        parent = next((entry for key, entry in selected.items() if key.split(":", 1)[1] == parent_id), None)
+        if parent is None:
+            continue
+        selected[ref] = {"label": f"{ref.split(':', 1)[0]}-{session_id[:8]}", "mode": "child", "parent": parent["label"], "addedBy": "bridge"}
+        discoveries.append({"event_id": f"discovery:{ref}:SPAWNED", "ref": ref, "kind": "SPAWNED", "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
     return discoveries, paths, current
 
 

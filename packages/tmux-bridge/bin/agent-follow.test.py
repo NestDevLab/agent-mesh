@@ -48,6 +48,41 @@ class FollowerTest(unittest.TestCase):
             self.assertEqual(follow.print_pending(self.root, replay_window=120), 1)
         self.assertEqual(output.getvalue().count("ERROR capacity"), 2)
 
+    def test_torn_outbox_tail_is_repaired_before_rederived_event(self):
+        item = {"event_id": "turn-one", "ref": REF, "kind": "REPLY", "body": "First", "timestamp": "2026-10-08T12:00:00Z", "selection": ENTRY}
+        follow.append_outbox(self.root, [item])
+        with (self.root / "outbox.jsonl").open("ab") as handle:
+            handle.write(b'{"event_id":"turn-two","seq":')
+        second = {**item, "event_id": "turn-two", "body": "Second"}
+        follow.append_outbox(self.root, [second])
+        rows, _ = follow.outbox(self.root)
+        self.assertEqual([(row["seq"], row["event_id"]) for row in rows], [(1, "turn-one"), (2, "turn-two")])
+
+    def test_bridge_child_is_folded_and_orphan_is_not_auto_human(self):
+        parent_id = "11111111-1111-4111-8111-111111111111"
+        child_id = "22222222-2222-4222-8222-222222222222"
+        child_ref = f"codex:{child_id}"
+        path = self.root / f"rollout-2026-10-08T12-00-00-{child_id}.jsonl"
+        path.write_text('{}\n')
+        parent = {f"claude:{parent_id}": {"label": "coordinator", "mode": "steer", "addedBy": "test"}}
+        candidates = [[(child_id, path)], []]
+        with patch.object(follow.watch, "transcript_candidates", side_effect=candidates), \
+             patch.object(follow.watch, "codex_metadata", return_value={}), \
+             patch.object(follow.watch, "bridge_parents", return_value={child_id: parent_id}), \
+             patch.object(follow, "created_at", return_value=time.time()), \
+             patch.object(follow, "prompt_and_origin", return_value=("Implement", False)):
+            found, _, _ = follow.discover(self.root, parent, {}, None)
+        self.assertEqual([item["kind"] for item in found], ["SPAWNED"])
+        self.assertEqual(parent[child_ref]["mode"], "child")
+        self.assertEqual(parent[child_ref]["parent"], "coordinator")
+        with patch.object(follow.watch, "transcript_candidates", side_effect=[[(child_id, path)], []]), \
+             patch.object(follow.watch, "codex_metadata", return_value={}), \
+             patch.object(follow.watch, "bridge_parents", return_value={child_id: parent_id}), \
+             patch.object(follow, "created_at", return_value=time.time()), \
+             patch.object(follow, "prompt_and_origin", return_value=("Implement", False)):
+            orphan, _, _ = follow.discover(self.root, {}, {}, None)
+        self.assertEqual(orphan, [])
+
     def test_child_hides_reply_but_keeps_error_and_question(self):
         entry = {**ENTRY, "mode": "child", "parent": "parent"}
         events = [
