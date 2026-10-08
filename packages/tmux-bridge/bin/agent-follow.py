@@ -210,15 +210,19 @@ def one_line(seq: int, ref: str, selection: dict[str, str], kind: str, body: str
     return prefix + flat[: max(0, MAX_LINE - len(prefix))]
 
 
-def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pending: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pending: dict[str, Any], config: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     out: list[dict[str, Any]] = []
     mode = selected.get("mode", "observe")
+    follower = (config or {}).get("follower", {})
+    observe_questions_only = bool(follower.get("observeQuestionAndErrorOnly", False)) if isinstance(follower, dict) else False
     for event in events:
         kind = event.get("kind")
         event_id = str(event.get("source_event_id") or "")
         if kind == "human_message":
             pending["last_human"] = str(event.get("body") or "")
             pending.pop("last_reply", None)
+            pending["active"] = True
+            pending.pop("stalled", None)
         elif kind == "agent_message":
             if event.get("phase") == "final":
                 pending["last_reply"] = str(event.get("body") or "")
@@ -235,9 +239,10 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
                 body, line_kind = "turn completed without a reply", "NOREPLY"
             else:
                 body, line_kind = str(reply), "REPLY"
-            if mode != "child" or line_kind != "REPLY":
+            if (mode != "child" or line_kind != "REPLY") and (mode != "observe" or not observe_questions_only or line_kind == "ERROR"):
                 out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected})
             pending.pop("last_reply", None)
+            pending["active"] = False
     return out, pending
 
 
@@ -281,19 +286,29 @@ def append_outbox(root: Path, candidates: list[dict[str, Any]]) -> list[dict[str
     return fresh
 
 
-def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, Any], self_ref: str | None) -> tuple[list[dict[str, Any]], dict[str, Path]]:
+def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, Any], self_ref: str | None) -> tuple[list[dict[str, Any]], dict[str, Path], dict[str, float]]:
     last_run_path = root / "last-run"
     last_run = float(last_run_path.read_text()) if last_run_path.exists() else time.time()
     discoveries: list[dict[str, Any]] = []
     paths: dict[str, Path] = {}
+    prior = read_json(root / "discover-cache.json", {})
+    if not isinstance(prior, dict):
+        prior = {}
+    current: dict[str, float] = {}
     metadata = watch.codex_metadata()
     rules = config.get("noise", {}) if isinstance(config.get("noise"), dict) else {}
+    follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
     thread_noise = set(rules.get("threadSources", ("subagent", "guardian_review", "automation", "realtime_voice")))
     source_noise = set(rules.get("sources", ("exec", "mcp")))
     for agent in ("codex", "claude"):
         for session_id, path in watch.transcript_candidates(agent):
             ref = f"{agent}:{session_id}"
             paths[ref] = path
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            current[ref] = mtime
             if ref == self_ref or ref in selected:
                 continue
             if agent == "codex":
@@ -303,7 +318,7 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
                 if (isinstance(thread_source, str) and thread_source in thread_noise) or (isinstance(source, str) and source in source_noise):
                     continue
             try:
-                if path.stat().st_mtime < last_run and created_at(agent, path) < last_run - 60:
+                if mtime < last_run and created_at(agent, path) < last_run - 60:
                     continue
             except OSError:
                 continue
@@ -312,16 +327,20 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
                 continue
             created = created_at(agent, path)
             kind = "NEW" if created >= last_run - 60 else "RESUMED"
+            if kind == "NEW" and not follower.get("autoNewHuman", True):
+                continue
+            if kind == "RESUMED" and (not follower.get("autoResumedKnown", True) or ref not in prior):
+                continue
             label = f"{agent}-{session_id[:8]}"
             selected[ref] = {"label": label, "mode": "observe", "addedBy": "discovery"}
             discoveries.append({"event_id": f"discovery:{ref}:{kind}", "ref": ref, "kind": kind, "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
-    return discoveries, paths
+    return discoveries, paths, current
 
 
 def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
     with locked(root / "state.lock"):
         selected = load_selection(root)
-        new, paths = discover(root, selected, config, self_ref)
+        new, paths, discovered = discover(root, selected, config, self_ref)
         staged: list[tuple[Path, dict[str, Any]]] = []
         candidates = list(new)
         for ref, selection in selected.items():
@@ -338,18 +357,26 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
                 start = 0 if any(item["ref"] == ref for item in new) else path.stat().st_size
                 cursor = {"path": str(path), "offset": start, "pending": {}}
             events, next_cursor = read_records(agent, ref, path, cursor)
-            lines, next_cursor["pending"] = derive(ref, selection, events, next_cursor["pending"])
+            lines, next_cursor["pending"] = derive(ref, selection, events, next_cursor["pending"], config)
+            follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
+            stalled_seconds = float(follower.get("stalledMinutes", 30)) * 60
+            if events:
+                next_cursor["last_growth_at"] = time.time()
+            elif selection.get("mode") == "steer" and next_cursor["pending"].get("active") and not next_cursor["pending"].get("stalled") and time.time() - float(next_cursor.get("last_growth_at", time.time())) >= stalled_seconds:
+                next_cursor["pending"]["stalled"] = True
+                lines.append({"event_id": f"stalled:{ref}:{next_cursor['offset']}", "ref": ref, "kind": "STALLED", "body": "active turn has not grown", "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selection})
             candidates.extend(lines)
             staged.append((cp, next_cursor))
         fresh = append_outbox(root, candidates)
         save_selection(root, selected)
+        atomic_json(root / "discover-cache.json", discovered)
         for path, value in staged:
             atomic_json(path, value)
         atomic_text(root / "last-run", str(time.time()) + "\n")
         return len(fresh)
 
 
-def print_pending(root: Path, replay_window: int = 0) -> int:
+def print_pending(root: Path, replay_window: int = 0, limit: int = MAX_PER_TICK) -> int:
     with locked(root / "state.lock"):
         rows, _ = outbox(root)
         printed_path = root / "printed.seq"
@@ -357,7 +384,7 @@ def print_pending(root: Path, replay_window: int = 0) -> int:
         cutoff = time.time() - replay_window
         eligible = [row for row in rows if row["seq"] > printed or (replay_window and row.get("emitted_at", 0) >= cutoff)]
         count = 0
-        for row in eligible[:MAX_PER_TICK]:
+        for row in eligible[:limit]:
             print(row["line"], flush=True)
             printed = max(printed, row["seq"])
             atomic_text(printed_path, str(printed) + "\n")
@@ -422,15 +449,19 @@ def main(argv: list[str] | None = None) -> int:
     config = read_json(args.config, {}) if args.config else {}
     if not isinstance(config, dict):
         raise ValueError("--config must contain a JSON object")
+    follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
+    limit = int(follower.get("maxLinesPerTick", MAX_PER_TICK))
+    if limit <= 0:
+        raise ValueError("maxLinesPerTick must be positive")
     if args.command == "drain":
         tick(root, config, args.self_ref)
-        print_pending(root)
+        print_pending(root, limit=limit)
         return 0
     if args.command == "wait":
         deadline = time.monotonic() + args.timeout
         while True:
             tick(root, config, args.self_ref)
-            if print_pending(root):
+            if print_pending(root, limit=limit):
                 return 0
             if time.monotonic() >= deadline:
                 return 1
@@ -442,7 +473,7 @@ def main(argv: list[str] | None = None) -> int:
         replay = args.replay_window
         while time.monotonic() - started < args.max_runtime:
             tick(root, config, args.self_ref)
-            print_pending(root, replay)
+            print_pending(root, replay, limit)
             replay = 0
             time.sleep(min(args.interval, max(0, args.max_runtime - (time.monotonic() - started))))
         print("FOLLOWER exit rearm", flush=True)

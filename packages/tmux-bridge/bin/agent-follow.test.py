@@ -87,7 +87,7 @@ class FollowerTest(unittest.TestCase):
             sessions[ref] = {"label": f"worker-{number}", "mode": "observe", "addedBy": "test"}
             transcripts[ref] = path
         follow.save_selection(self.root, sessions)
-        with patch.object(follow, "discover", return_value=([], transcripts)):
+        with patch.object(follow, "discover", return_value=([], transcripts, {})):
             began = time.monotonic()
             follow.tick(self.root, {}, None)
             elapsed = time.monotonic() - began
