@@ -37,6 +37,7 @@ class FollowerTest(unittest.TestCase):
         self.assertEqual(follow.append_outbox(self.root, again), [])
         rows, _ = follow.outbox(self.root)
         self.assertEqual([(row["seq"], row["kind"]) for row in rows], [(1, "REPLY")])
+        self.assertEqual((self.root / "outbox.jsonl").stat().st_mode & 0o777, 0o600)
 
     def test_restart_replays_recently_printed_line(self):
         follow.append_outbox(self.root, [{"event_id": "one", "ref": REF, "kind": "ERROR", "body": "capacity", "timestamp": "2026-10-08T12:00:00Z", "selection": ENTRY}])

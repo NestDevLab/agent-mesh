@@ -16,6 +16,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -42,9 +43,10 @@ def state_dir(name: str) -> Path:
 
 
 def atomic_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         json.dump(value, handle, ensure_ascii=False, sort_keys=True)
         handle.write("\n")
         handle.flush()
@@ -53,9 +55,10 @@ def atomic_json(path: Path, value: Any) -> None:
 
 
 def atomic_text(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(value)
         handle.flush()
         os.fsync(handle.fileno())
@@ -70,10 +73,14 @@ def read_json(path: Path, default: Any) -> Any:
 
 
 @contextlib.contextmanager
-def locked(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+b") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+def locked(path: Path, *, nonblocking: bool = False):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(descriptor, "a+b") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+        except BlockingIOError as error:
+            raise RuntimeError(f"another follower owns {path.parent.name}") from error
         try:
             yield
         finally:
@@ -280,7 +287,8 @@ def append_outbox(root: Path, candidates: list[dict[str, Any]]) -> list[dict[str
         fresh.append(row)
     if fresh:
         path = root / "outbox.jsonl"
-        with path.open("a", encoding="utf-8") as handle:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(descriptor, "a", encoding="utf-8") as handle:
             for row in fresh:
                 handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
             handle.flush()
@@ -425,7 +433,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     root = state_dir(args.name)
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
     if args.command in {"add", "remove"}:
         ref = args.session.lower()
         if not SESSION.fullmatch(ref):
@@ -460,17 +469,18 @@ def main(argv: list[str] | None = None) -> int:
         print_pending(root, limit=limit)
         return 0
     if args.command == "wait":
-        deadline = time.monotonic() + args.timeout
-        while True:
-            tick(root, config, args.self_ref)
-            if print_pending(root, limit=limit):
-                return 0
-            if time.monotonic() >= deadline:
-                return 1
-            time.sleep(min(2.0, max(0, deadline - time.monotonic())))
+        with locked(root / "engine.lock", nonblocking=True):
+            deadline = time.monotonic() + args.timeout
+            while True:
+                tick(root, config, args.self_ref)
+                if print_pending(root, limit=limit):
+                    return 0
+                if time.monotonic() >= deadline:
+                    return 1
+                time.sleep(min(2.0, max(0, deadline - time.monotonic())))
     if args.interval <= 0 or args.max_runtime <= 0:
         raise ValueError("interval and max-runtime must be positive")
-    with locked(root / "engine.lock"):
+    with locked(root / "engine.lock", nonblocking=True):
         started = time.monotonic()
         replay = args.replay_window
         while time.monotonic() - started < args.max_runtime:
