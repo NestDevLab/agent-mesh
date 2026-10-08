@@ -226,7 +226,9 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
         elif kind == "agent_message":
             if event.get("phase") == "final":
                 pending["last_reply"] = str(event.get("body") or "")
-        elif kind == "tool" and event.get("tool_name") in {"AskUserQuestion", "request_user_input", "request_user_input_async"}:
+        elif kind == "question":
+            out.append({"event_id": event_id, "ref": ref, "kind": "QUESTION", "body": str(event.get("body") or ""), "timestamp": event.get("timestamp"), "selection": selected})
+        elif kind == "tool" and event.get("schema") != "agent-mesh.event.v2" and event.get("tool_name") in {"AskUserQuestion", "request_user_input", "request_user_input_async"}:
             out.append({"event_id": event_id, "ref": ref, "kind": "QUESTION", "body": str(event.get("body") or ""), "timestamp": event.get("timestamp"), "selection": selected})
         elif kind == "turn_complete":
             outcome = str(event.get("outcome") or "")

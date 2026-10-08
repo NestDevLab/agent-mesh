@@ -50,7 +50,8 @@ class FollowerTest(unittest.TestCase):
     def test_child_hides_reply_but_keeps_error_and_question(self):
         entry = {**ENTRY, "mode": "child", "parent": "parent"}
         events = [
-            {"source_event_id": "q", "kind": "tool", "tool_name": "AskUserQuestion", "body": "Choose", "timestamp": "2026-10-08T12:00:00Z"},
+            {"source_event_id": "q-tool", "schema": "agent-mesh.event.v2", "kind": "tool", "tool_name": "AskUserQuestion", "body": "raw input", "timestamp": "2026-10-08T12:00:00Z"},
+            {"source_event_id": "q", "schema": "agent-mesh.event.v2", "kind": "question", "body": "Choose", "timestamp": "2026-10-08T12:00:00Z"},
             {"source_event_id": "a", "kind": "turn_complete", "outcome": "replied", "reply": "Handled by parent", "timestamp": "2026-10-08T12:00:01Z"},
             {"source_event_id": "e", "kind": "turn_complete", "outcome": "error", "error": {"message": "capacity"}, "timestamp": "2026-10-08T12:00:02Z"},
         ]
