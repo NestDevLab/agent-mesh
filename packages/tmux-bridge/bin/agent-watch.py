@@ -55,6 +55,7 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
     title = ""
     last_assistant = ""
     assistant_turns = 0
+    first_timestamp = None
     for raw_line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
             record = json.loads(raw_line)
@@ -62,6 +63,7 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
             continue
         if not isinstance(record, dict):
             continue
+        first_timestamp = first_timestamp or record.get("timestamp")
         if agent == "codex":
             payload = record.get("payload") or {}
             if record.get("type") == "session_meta":
@@ -91,6 +93,7 @@ def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str,
         "last_assistant": last_assistant,
         "assistant_turns": assistant_turns,
         "updated_at": transcript.stat().st_mtime_ns,
+        "createdAt": transcript_created_at(agent, transcript, first_timestamp),
     }
 
 
@@ -154,9 +157,11 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["mutating_tool_calls"] += 1
             if name in {"AskUserQuestion", "request_user_input", "request_user_input_async"}:
                 facts["pending_question"] = True
+        elif kind == "question":
+            facts["pending_question"] = True
         elif kind == "turn_complete":
             facts["turn_active"] = False
-        if kind in {"human_message", "agent_message", "tool", "turn_complete"}:
+        if kind in {"human_message", "agent_message", "tool", "question", "turn_complete"}:
             facts["last_event_kind"] = kind
 
 
@@ -166,7 +171,16 @@ def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]
         "last_assistant": "", "assistant_turns": 0, "human_turns": 0,
         "mutating_tool_calls": 0, "last_human_at": None, "last_final_at": None,
         "last_event_kind": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
+        "createdAt": None, "origin": "human", "parent": None,
     }
+
+
+def transcript_created_at(agent: str, transcript: Path, first_timestamp: Any = None) -> str | None:
+    if agent == "codex":
+        stamp = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})", transcript.name)
+        if stamp:
+            return stamp.group(1)[:11] + stamp.group(1)[11:].replace("-", ":") + "Z"
+    return str(first_timestamp) if isinstance(first_timestamp, str) and first_timestamp else None
 
 
 def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None) -> dict[str, Any]:
@@ -188,6 +202,8 @@ def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: di
             except ValueError:
                 continue
             if isinstance(record, dict):
+                if not facts.get("createdAt"):
+                    facts["createdAt"] = transcript_created_at(agent, transcript, record.get("timestamp"))
                 update_facts(facts, agent, session_id, record)
     facts.update(offset=offset, mtime_ns=stat.st_mtime_ns, size=stat.st_size, updated_at=stat.st_mtime_ns)
     facts["title"] = facts.get("title") or facts["first_real_prompt"]
@@ -240,15 +256,61 @@ def claude_metadata() -> dict[str, dict[str, Any]]:
     return result
 
 
+def bridge_parents() -> dict[str, str]:
+    """Map completed bridge launches to their caller without relying on labels."""
+    state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    path = Path(os.environ.get("AGENT_MESH_LAUNCH_EVENTS", state_home / "agent-mesh" / "launches" / "events.jsonl"))
+    parents: dict[str, str] = {}
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    record = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(record, dict) or record.get("schema") != "agent-mesh.bridge-launch-event.v1":
+                    continue
+                child, caller = record.get("threadId"), record.get("caller")
+                if isinstance(child, str) and isinstance(caller, str) and child and caller:
+                    parents[child] = caller
+    except OSError:
+        pass
+    return parents
+
+
+def session_origin(agent: str, item: dict[str, Any], parent: str | None) -> str:
+    if parent:
+        return "bridge-worker"
+    if agent == "claude" and "/subagents/" in str(item.get("path") or ""):
+        return "subagent"
+    source = item.get("source")
+    if isinstance(source, str):
+        try:
+            source = json.loads(source)
+        except ValueError:
+            pass
+    thread_source = str(item.get("thread_source") or "").lower()
+    if thread_source in {"subagent", "guardian_review"} or (isinstance(source, dict) and source.get("subagent")):
+        return "subagent"
+    if thread_source in {"automation", "realtime_voice"}:
+        return "automation"
+    if item.get("kind") == "task":
+        return "desktop-task"
+    return "human"
+
+
 def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     root = session_root(agent)
     cached = load_state(cache_path) if cache_path else {}
     entries = cached.get(agent, {}) if cached.get("version") == 1 else {}
     metadata = codex_metadata() if agent == "codex" else claude_metadata()
+    parents = bridge_parents()
     facts = []
     for session_id, path in transcript_candidates(agent):
         item = read_appended_facts(agent, session_id, path, entries.get(session_id)) if cache_path else transcript_facts(agent, session_id, path)
         item.update(metadata.get(session_id, {}))
+        item["parent"] = parents.get(session_id)
+        item["origin"] = session_origin(agent, item, item["parent"])
         if item.get("name"):
             item["title"] = str(item["name"])
         if cache_path:
@@ -261,6 +323,10 @@ def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[li
                 continue
             item = empty_facts(agent, session_id, Path(""))
             item.update(entry)
+            item["parent"] = parents.get(session_id)
+            item["origin"] = session_origin(agent, item, item["parent"])
+            if entry.get("created_at_ms"):
+                item["createdAt"] = datetime.datetime.fromtimestamp(int(entry["created_at_ms"]) / 1000, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
             item.update(path="", title=entry["name"], updated_at=entry["metadata_updated_at_ns"], metadata_only=True)
             facts.append(item)
     else:
@@ -270,6 +336,9 @@ def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[li
                 continue
             item = empty_facts(agent, session_id, Path(""))
             item.update(entry)
+            item["parent"] = parents.get(session_id)
+            item["origin"] = session_origin(agent, item, item["parent"])
+            item["createdAt"] = entry.get("startedAt")
             updated = entry.get("updatedAt") or entry.get("startedAt")
             try:
                 updated_ns = int(datetime.datetime.fromisoformat(str(updated).replace("Z", "+00:00")).timestamp() * 1_000_000_000)
@@ -412,8 +481,13 @@ def event(
     body: str = "",
     phase: str | None = None,
     tool_name: str | None = None,
+    turn_id: str | None = None,
+    outcome: str | None = None,
+    reply: str | None = None,
+    error: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
+        "schema": "agent-mesh.event.v2",
         "timestamp": timestamp,
         "agent": agent,
         "session_id": session_id,
@@ -421,7 +495,29 @@ def event(
         "body": body,
         **({"phase": phase} if phase else {}),
         **({"tool_name": tool_name} if tool_name else {}),
+        **({"turn_id": turn_id} if turn_id else {}),
+        **({"outcome": outcome} if outcome else {}),
+        **({"reply": reply} if reply is not None else {}),
+        **({"error": error} if error else {}),
     }
+
+
+def question_text(value: Any) -> str:
+    """Extract human-facing question text from a runtime tool input."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError:
+            return clipped(value)
+    if isinstance(value, dict):
+        questions = value.get("questions")
+        if isinstance(questions, list):
+            return clipped("\n".join(
+                str(item.get("question") or item.get("header") or "")
+                for item in questions if isinstance(item, dict)
+            ))
+        return clipped(value.get("question") or value.get("prompt") or "")
+    return ""
 
 
 def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, Any]]:
@@ -453,7 +549,19 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             if body:
                 yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="reasoning", body=body)
         elif payload_type == "task_complete":
-            yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="turn_complete")
+            reply = payload.get("last_agent_message")
+            failure = payload.get("error")
+            failure = failure if isinstance(failure, dict) else {}
+            error = {
+                "message": str(failure.get("message") or ""),
+                "code": str(failure.get("codex_error_info") or "unknown"),
+            } if failure else None
+            outcome = "error" if error else "replied" if isinstance(reply, str) and reply else "no_reply"
+            yield event(
+                timestamp=timestamp, agent="codex", session_id=session_id,
+                kind="turn_complete", turn_id=str(payload.get("turn_id") or "") or None,
+                outcome=outcome, reply=reply if isinstance(reply, str) else None, error=error,
+            )
         return
 
     if record_type == "response_item" and payload_type == "message":
@@ -462,19 +570,26 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             if payload.get("role") == "user":
                 yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="human_message", body=body)
             elif payload.get("role") == "assistant":
-                yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="agent_message", body=body)
+                raw_phase = str(payload.get("phase") or "unknown")
+                phase = "final" if raw_phase in {"final", "final_answer"} else raw_phase
+                yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="agent_message", body=body, phase=phase)
         return
 
     if record_type == "response_item" and payload_type in {"custom_tool_call", "function_call"}:
         body = clipped(payload.get("input") or payload.get("arguments"), 260)
+        name = str(payload.get("name") or "unknown")
         yield event(
             timestamp=timestamp,
             agent="codex",
             session_id=session_id,
             kind="tool",
             body=body,
-            tool_name=str(payload.get("name") or "unknown"),
+            tool_name=name,
         )
+        if name in {"request_user_input", "request_user_input_async", "AskUserQuestion"}:
+            question = question_text(payload.get("input") or payload.get("arguments"))
+            if question:
+                yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="question", body=question, tool_name=name)
     elif record_type == "turn_context":
         body = json.dumps(
             {
@@ -574,6 +689,7 @@ def claude_events(
         return
 
     final_message_seen = False
+    final_reply = ""
     for block in content:
         if not isinstance(block, dict):
             continue
@@ -589,6 +705,8 @@ def claude_events(
             if body:
                 phase = "final" if message.get("stop_reason") == "end_turn" else "commentary"
                 final_message_seen = final_message_seen or phase == "final"
+                if phase == "final":
+                    final_reply = body
                 yield event(
                     timestamp=timestamp,
                     agent="claude",
@@ -603,16 +721,23 @@ def claude_events(
                 yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="reasoning", body=body)
         elif record_type == "assistant" and block_type == "tool_use":
             body = clipped(json.dumps(block.get("input") or {}, ensure_ascii=False, sort_keys=True), 260)
+            name = str(block.get("name") or "unknown")
             yield event(
                 timestamp=timestamp,
                 agent="claude",
                 session_id=session_id,
                 kind="tool",
                 body=body,
-                tool_name=str(block.get("name") or "unknown"),
+                tool_name=name,
             )
+            if name == "AskUserQuestion":
+                question = question_text(block.get("input"))
+                if question:
+                    yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="question", body=question, tool_name=name)
     if final_message_seen:
-        yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete")
+        yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete", outcome="replied", reply=final_reply)
+    elif record_type == "assistant" and message.get("stop_reason") not in {None, "end_turn", "tool_use"}:
+        yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete", outcome="error", error={"message": str(message.get("stop_reason")), "code": "unknown"})
 
 
 def events_for(
