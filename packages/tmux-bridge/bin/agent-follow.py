@@ -390,7 +390,7 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
             cp = cursor_path(root, ref)
             cursor = read_json(cp, {})
             kind = discovery_kinds.get(ref)
-            if kind == "RESUMED" and cursor:
+            if cursor:
                 try:
                     offset = int(cursor.get("offset", 0))
                 except (TypeError, ValueError):
@@ -401,6 +401,9 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
                 # Only newly created sessions and bridge children replay their history.
                 start = 0 if kind in {"NEW", "SPAWNED"} else path.stat().st_size
                 cursor = {"path": str(path), "offset": start, "pending": {}}
+                # Save the starting point before selection/outbox can survive a crash.
+                # Otherwise a resumed session may lose lines appended before retry.
+                atomic_json(cp, cursor)
             events, next_cursor = read_records(agent, ref, path, cursor)
             lines, next_cursor["pending"] = derive(ref, selection, events, next_cursor["pending"], config)
             follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
