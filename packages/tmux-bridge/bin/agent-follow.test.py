@@ -105,6 +105,118 @@ class FollowerTest(unittest.TestCase):
         self.assertEqual(cursor["offset"], path.stat().st_size)
         self.assertEqual(len(events), 1)
 
+    def test_discovered_resumed_session_starts_after_history(self):
+        session_id = REF.split(":", 1)[1]
+        path = self.root / f"rollout-2026-10-08T12-00-00-{session_id}.jsonl"
+        path.write_text(json.dumps({"id": "old", "body": "Already seen"}) + "\n")
+        follow.atomic_text(self.root / "last-run", str(time.time() - 10))
+        follow.atomic_json(self.root / "discover-cache.json", {REF: path.stat().st_mtime})
+
+        def event_for_record(_agent, record, _session_id):
+            return [{"source_event_id": record["id"], "kind": "turn_complete", "outcome": "replied", "reply": record["body"], "timestamp": "2026-10-08T12:00:00Z"}]
+
+        with patch.object(follow.watch, "transcript_candidates", side_effect=lambda agent: [(session_id, path)] if agent == "codex" else []), \
+             patch.object(follow.watch, "codex_metadata", return_value={}), \
+             patch.object(follow.watch, "bridge_parents", return_value={}), \
+             patch.object(follow.watch, "session_origin", return_value="human"), \
+             patch.object(follow.watch, "events_for", side_effect=event_for_record), \
+             patch.object(follow, "created_at", return_value=time.time() - 3600), \
+             patch.object(follow, "prompt_and_origin", return_value=("Start", False)):
+            self.assertEqual(follow.tick(self.root, {}, None), 1)
+            rows, _ = follow.outbox(self.root)
+            self.assertEqual([row["kind"] for row in rows], ["RESUMED"])
+            self.assertEqual(follow.read_json(follow.cursor_path(self.root, REF), {})["offset"], path.stat().st_size)
+            with path.open("a") as handle:
+                handle.write(json.dumps({"id": "new", "body": "Fresh reply"}) + "\n")
+            self.assertEqual(follow.tick(self.root, {}, None), 1)
+        rows, _ = follow.outbox(self.root)
+        self.assertEqual([(row["kind"], row["body"]) for row in rows], [("RESUMED", "Start"), ("REPLY", "Fresh reply")])
+
+    def test_discovered_new_human_session_reads_from_start(self):
+        session_id = REF.split(":", 1)[1]
+        path = self.root / f"rollout-2026-10-08T12-00-00-{session_id}.jsonl"
+        path.write_text(json.dumps({"id": "first", "body": "First reply"}) + "\n")
+        follow.atomic_text(self.root / "last-run", str(time.time() - 10))
+        with patch.object(follow.watch, "transcript_candidates", side_effect=lambda agent: [(session_id, path)] if agent == "codex" else []), \
+             patch.object(follow.watch, "codex_metadata", return_value={}), \
+             patch.object(follow.watch, "bridge_parents", return_value={}), \
+             patch.object(follow.watch, "session_origin", return_value="human"), \
+             patch.object(follow.watch, "events_for", side_effect=lambda _agent, record, _session_id: [{"source_event_id": record["id"], "kind": "turn_complete", "outcome": "replied", "reply": record["body"], "timestamp": "2026-10-08T12:00:00Z"}]), \
+             patch.object(follow, "created_at", return_value=time.time()), \
+             patch.object(follow, "prompt_and_origin", return_value=("Start", False)):
+            self.assertEqual(follow.tick(self.root, {}, None), 2)
+        rows, _ = follow.outbox(self.root)
+        self.assertEqual([(row["kind"], row["body"]) for row in rows], [("NEW", "Start"), ("REPLY", "First reply")])
+
+    def test_resumed_session_uses_saved_cursor(self):
+        path = self.root / "session.jsonl"
+        old_line = json.dumps({"id": "old", "body": "Already seen"}) + "\n"
+        path.write_text(old_line + json.dumps({"id": "new", "body": "Unread reply"}) + "\n")
+        follow.atomic_json(follow.cursor_path(self.root, REF), {"path": str(path), "offset": len(old_line.encode()), "pending": {}})
+
+        def resumed(_root, selected, _config, _self_ref):
+            selected[REF] = ENTRY
+            item = {"event_id": f"discovery:{REF}:RESUMED", "ref": REF, "kind": "RESUMED", "body": "Start", "timestamp": "2026-10-08T12:00:00Z", "selection": ENTRY}
+            return [item], {REF: path}, {REF: path.stat().st_mtime}
+
+        with patch.object(follow, "discover", side_effect=resumed), \
+             patch.object(follow.watch, "events_for", side_effect=lambda _agent, record, _session_id: [{"source_event_id": record["id"], "kind": "turn_complete", "outcome": "replied", "reply": record["body"], "timestamp": "2026-10-08T12:00:00Z"}]):
+            self.assertEqual(follow.tick(self.root, {}, None), 2)
+        rows, _ = follow.outbox(self.root)
+        self.assertEqual([(row["kind"], row["body"]) for row in rows], [("RESUMED", "Start"), ("REPLY", "Unread reply")])
+
+    def test_resumed_cursor_survives_crash_after_selection_save(self):
+        path = self.root / "session.jsonl"
+        path.write_text(json.dumps({"id": "old", "body": "Already seen"}) + "\n")
+
+        def discover(_root, selected, _config, _self_ref):
+            if REF in selected:
+                return [], {REF: path}, {REF: path.stat().st_mtime}
+            selected[REF] = ENTRY
+            return [{"event_id": f"discovery:{REF}:RESUMED", "ref": REF, "kind": "RESUMED", "body": "Start", "timestamp": "2026-10-08T12:00:00Z", "selection": ENTRY}], {REF: path}, {REF: path.stat().st_mtime}
+
+        real_atomic_json = follow.atomic_json
+        cp = follow.cursor_path(self.root, REF)
+        cursor_writes = 0
+
+        def crash_before_final_cursor(target, value):
+            nonlocal cursor_writes
+            if target == cp:
+                cursor_writes += 1
+                if cursor_writes == 2:
+                    raise RuntimeError("interrupted before final cursor save")
+            return real_atomic_json(target, value)
+
+        with patch.object(follow, "discover", side_effect=discover), \
+             patch.object(follow.watch, "events_for", side_effect=lambda _agent, record, _session_id: [{"source_event_id": record["id"], "kind": "turn_complete", "outcome": "replied", "reply": record["body"], "timestamp": "2026-10-08T12:00:00Z"}]):
+            with patch.object(follow, "atomic_json", side_effect=crash_before_final_cursor):
+                with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                    follow.tick(self.root, {}, None)
+            self.assertEqual(follow.read_json(cp, {})["offset"], path.stat().st_size)
+            with path.open("a") as handle:
+                handle.write(json.dumps({"id": "new", "body": "Fresh reply"}) + "\n")
+            self.assertEqual(follow.tick(self.root, {}, None), 1)
+        rows, _ = follow.outbox(self.root)
+        self.assertEqual([(row["kind"], row["body"]) for row in rows], [("RESUMED", "Start"), ("REPLY", "Fresh reply")])
+
+    def test_selected_session_path_change_starts_at_new_file_end(self):
+        old_path = self.root / "old.jsonl"
+        old_path.write_text(json.dumps({"id": "old", "body": "Already seen"}) + "\n")
+        new_path = self.root / "new.jsonl"
+        new_path.write_text(json.dumps({"id": "history", "body": "Historical reply"}) + "\n")
+        follow.save_selection(self.root, {REF: ENTRY})
+        follow.atomic_json(follow.cursor_path(self.root, REF), {"path": str(old_path), "offset": old_path.stat().st_size, "pending": {}})
+
+        with patch.object(follow, "discover", side_effect=lambda _root, _selected, _config, _self_ref: ([], {REF: new_path}, {REF: new_path.stat().st_mtime})), \
+             patch.object(follow.watch, "events_for", side_effect=lambda _agent, record, _session_id: [{"source_event_id": record["id"], "kind": "turn_complete", "outcome": "replied", "reply": record["body"], "timestamp": "2026-10-08T12:00:00Z"}]):
+            self.assertEqual(follow.tick(self.root, {}, None), 0)
+            self.assertEqual(follow.read_json(follow.cursor_path(self.root, REF), {})["offset"], new_path.stat().st_size)
+            with new_path.open("a") as handle:
+                handle.write(json.dumps({"id": "new", "body": "Fresh reply"}) + "\n")
+            self.assertEqual(follow.tick(self.root, {}, None), 1)
+        rows, _ = follow.outbox(self.root)
+        self.assertEqual([(row["kind"], row["body"]) for row in rows], [("REPLY", "Fresh reply")])
+
     def test_selection_cli_round_trip(self):
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}):
             self.assertEqual(follow.main(["add", "--name", "test", REF, "--label", "Worker", "--mode", "steer"]), 0)
