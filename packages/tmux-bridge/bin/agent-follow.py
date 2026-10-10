@@ -377,6 +377,7 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
     with locked(root / "state.lock"):
         selected = load_selection(root)
         new, paths, discovered = discover(root, selected, config, self_ref)
+        discovery_kinds = {item["ref"]: item["kind"] for item in new}
         staged: list[tuple[Path, dict[str, Any]]] = []
         candidates = list(new)
         for ref, selection in selected.items():
@@ -388,9 +389,17 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
                 continue
             cp = cursor_path(root, ref)
             cursor = read_json(cp, {})
+            kind = discovery_kinds.get(ref)
+            if kind == "RESUMED" and cursor:
+                try:
+                    offset = int(cursor.get("offset", 0))
+                except (TypeError, ValueError):
+                    offset = -1
+                if cursor.get("path") != str(path) or not 0 <= offset <= path.stat().st_size:
+                    cursor = {}
             if not cursor:
-                # Arm established sessions at EOF. A new session is read from start.
-                start = 0 if any(item["ref"] == ref for item in new) else path.stat().st_size
+                # Only newly created sessions and bridge children replay their history.
+                start = 0 if kind in {"NEW", "SPAWNED"} else path.stat().st_size
                 cursor = {"path": str(path), "offset": start, "pending": {}}
             events, next_cursor = read_records(agent, ref, path, cursor)
             lines, next_cursor["pending"] = derive(ref, selection, events, next_cursor["pending"], config)
