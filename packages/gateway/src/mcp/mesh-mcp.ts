@@ -18,6 +18,7 @@ import type {
   AgentSessionSearchPage,
   AgentTranscriptPage
 } from "../adapters/agent-session-provider.js";
+import type { SessionAccessProfile } from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
 
@@ -36,6 +37,7 @@ export const MESH_MCP_TOOLS = [
   "mesh_task_cancel",
   "mesh_thread_get",
   "mesh_agent_sessions_list",
+  "mesh_agent_session_create",
   "mesh_agent_session_get",
   "mesh_agent_sessions_search",
   "mesh_agent_session_transcript"
@@ -112,6 +114,7 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_task_cancel: 20,
       mesh_thread_get: 60,
       mesh_agent_sessions_list: 30,
+      mesh_agent_session_create: 3,
       mesh_agent_session_get: 60,
       mesh_agent_sessions_search: 20,
       mesh_agent_session_transcript: 60
@@ -202,9 +205,12 @@ export class MeshMcpFacade {
     return this.options.agents
       .filter((agent) => this.options.principal.allowedAgentIds.includes(agent.id))
       .map((agent) => {
-        const capabilities = [...(agent.capabilities ?? [])];
+        const capabilities = (agent.capabilities ?? []).filter((capability) => capability !== CREATE_SESSION_CAPABILITY);
         const canCreate = this.options.principal.allowedWorkspaceIds.some((workspaceId) => (
-          this.options.sessionRegistry?.freshSessionSupport(agent.id, workspaceId) === "supported"
+          ((this.options.principal.allowedTools.includes("mesh_call") || this.options.principal.allowedTools.includes("mesh_submit")) &&
+            this.options.sessionRegistry?.freshSessionSupport(agent.id, workspaceId) === "supported") ||
+          (this.options.principal.allowedTools.includes("mesh_agent_session_create") &&
+            this.options.sessionRegistry?.createSessionSupport(agent.id, workspaceId) === "supported")
         ));
         if (canCreate && !capabilities.includes(CREATE_SESSION_CAPABILITY)) capabilities.push(CREATE_SESSION_CAPABILITY);
         return {
@@ -379,6 +385,22 @@ export class MeshMcpFacade {
     return transcript;
   }
 
+  async createAgentSession(input: {
+    targetAgentId: string;
+    workspaceId?: string;
+    accessProfile: SessionAccessProfile;
+  }): Promise<AgentSessionSummary> {
+    this.assertAllowed("mesh_agent_session_create");
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    const support = this.options.sessionRegistry?.createSessionSupport(target.id, workspaceId) ?? "unsupported";
+    if (support !== "supported") throw new MeshMcpError(
+      support === "workspace_unauthorized" ? "fresh_session_workspace_unauthorized" : "fresh_session_unsupported",
+      `Session creation is not configured for ${target.id} in ${workspaceId}.`
+    );
+    return this.sessions(target.id).create(target.id, { workspaceId, accessProfile: input.accessProfile });
+  }
+
   private async taskInput(input: MeshTaskDispatchInput) {
     const target = this.allowedTarget(input.targetAgentId);
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
@@ -490,6 +512,11 @@ const agentSessionsListSchema = z.object({
   workspace_id: identifierSchema.optional(),
   cursor: z.string().min(1).max(512).optional(),
   limit: z.number().int().min(1).max(100).optional()
+});
+const agentSessionCreateSchema = z.object({
+  target_agent_id: identifierSchema,
+  workspace_id: identifierSchema.optional(),
+  access_profile: z.enum(["read-only", "full-access"]).default("read-only")
 });
 const agentSessionGetSchema = z.object({
   target_agent_id: identifierSchema,
@@ -683,6 +710,26 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
           cursor: input.cursor,
           limit: input.limit ?? 25
         }));
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
+  if (options.principal.allowedTools.includes("mesh_agent_session_create")) server.registerTool(
+    "mesh_agent_session_create",
+    {
+      title: "Create an Agent Mesh session",
+      description: "Creates a new Codex session in a configured workspace. Defaults to read-only; full-access must be requested explicitly and enabled by the host.",
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+      inputSchema: agentSessionCreateSchema
+    },
+    async (input) => {
+      try {
+        const session = await facade.createAgentSession({
+          targetAgentId: input.target_agent_id,
+          workspaceId: input.workspace_id,
+          accessProfile: input.access_profile
+        });
+        return result({ session, access_profile: input.access_profile });
       } catch (error) { return errorResult(error); }
     }
   );

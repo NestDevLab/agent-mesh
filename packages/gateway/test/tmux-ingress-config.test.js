@@ -176,14 +176,33 @@ test("runtime config accepts an opt-in Claude fresh-session directory", async ()
   });
 });
 
-test("fresh sessions are rejected for Codex providers and unconfigured workspaces", async () => {
+test("Codex create-session profiles are explicit and unknown values fail closed", async () => {
   const codex = await writeConfig({
     agentSessions: {
       ...AGENT_SESSIONS,
-      providers: [{ ...AGENT_SESSIONS.providers[0], fresh_session: CLAUDE_SESSIONS.providers[0].fresh_session }]
+      providers: [{ ...AGENT_SESSIONS.providers[0], fresh_session: {
+        ...CLAUDE_SESSIONS.providers[0].fresh_session,
+        access_profiles: ["read-only", "full-access"], full_access_socket: "mesh-host"
+      } }]
     }
   });
-  await assert.rejects(readRuntimeConfig(codex), /Invalid agent sessions fresh_session at index 0/);
+  assert.deepEqual((await readRuntimeConfig(codex)).agentSessions.providers[0].fresh_session.access_profiles,
+    ["read-only", "full-access"]);
+  const invalid = await writeConfig({ agentSessions: { ...AGENT_SESSIONS, providers: [{
+    ...AGENT_SESSIONS.providers[0], fresh_session: {
+      ...CLAUDE_SESSIONS.providers[0].fresh_session, access_profiles: ["root"]
+    }
+  }] } });
+  await assert.rejects(readRuntimeConfig(invalid), /Invalid agent sessions access profiles/);
+  const missingSocket = await writeConfig({ agentSessions: { ...AGENT_SESSIONS, providers: [{
+    ...AGENT_SESSIONS.providers[0], fresh_session: {
+      ...CLAUDE_SESSIONS.providers[0].fresh_session, access_profiles: ["read-only", "full-access"]
+    }
+  }] } });
+  await assert.rejects(readRuntimeConfig(missingSocket), /requires a trusted host tmux socket/);
+});
+
+test("fresh session directories reject unconfigured workspaces", async () => {
 
   const unknownWorkspace = await writeConfig({
     agents: [CLAUDE_AGENT],

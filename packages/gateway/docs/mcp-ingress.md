@@ -19,6 +19,7 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | `mesh_task_cancel` | Marks an owned task cancelled and ignores a late result. |
 | `mesh_thread_get` | Reads the ordered owned tasks in one context. |
 | `mesh_agent_sessions_list` | Lists bounded, path-free native session metadata inside one allowed workspace. |
+| `mesh_agent_session_create` | Starts a new Codex session with a host-allowed access profile and returns its native ID. |
 | `mesh_agent_session_get` | Reads bounded metadata for one allowed native session. |
 | `mesh_agent_sessions_search` | Searches visible user and assistant text in native transcripts. |
 | `mesh_agent_session_transcript` | Reads a paginated visible transcript for one native session ID. |
@@ -265,7 +266,35 @@ session, deliver the message as its first turn, and collect the correlated
 result. It is opt-in per provider and per workspace, and currently supported
 for Claude only: Claude accepts a caller-chosen `--session-id`, so the task is
 bound to its session before anything launches. Codex assigns the id after
-launch and reports `fresh_session_unsupported`.
+launch; use `mesh_agent_session_create` for Codex instead.
+
+For a configured Codex provider, `mesh_agent_session_create` launches an empty
+session and returns its verified native session ID. It defaults to `read-only`.
+The caller must explicitly set `access_profile: "full-access"`, and the host
+must enable that profile in `fresh_session.access_profiles`. Unknown profiles
+and unauthorized workspaces are rejected before launch. Existing sessions are
+never changed. The returned ID can be used with session tools and later turns.
+The gateway checks the new tmux pane, resolves one native ID from the bridge's
+launch record, verifies one Codex writer belongs to that pane, and checks the
+session cwd against the configured workspace roots. Failed identity or ownership
+checks retire only the newly named target.
+
+```json
+{
+  "target_agent_id": "agent.ingress.codex",
+  "workspace_id": "workspace.example",
+  "access_profile": "full-access"
+}
+```
+
+The Codex provider uses the same trusted `fresh_session.workspace_cwd` map and
+adds `"access_profiles": ["read-only", "full-access"]` when full access is
+permitted. It must also set `full_access_socket` to a distinct, already running
+host tmux server whose mount namespace can write the intended workspace. The
+gateway checks that the server exists, has a different mount namespace, and
+sees a writable workspace mount before launch; otherwise it fails closed. This keeps its own
+read-only systemd filesystem boundary and existing session policies intact.
+With `access_profiles` absent, only read-only is allowed.
 
 ```json
 {
@@ -283,10 +312,9 @@ The result is the normal task handle. `session_id` is the new session, and
 never inferred from the endpoint name. Later turns address the same session
 with `session_id`.
 
-Enable it on the provider with a trusted working directory per workspace. Each
-directory must lie inside that workspace's `workspace_roots`; the runtime
-config is rejected when it is read otherwise, and for any `agent_type` other
-than `claude`:
+Enable Claude fresh tasks on the provider with a trusted working directory per
+workspace. Each directory must lie inside that workspace's `workspace_roots`;
+the runtime config is rejected when it is read otherwise:
 
 ```json
 {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { env as processEnv } from "node:process";
@@ -61,6 +62,7 @@ export interface AgentSessionSendInput {
 }
 
 export type FreshSessionSupport = "supported" | "unsupported" | "workspace_unauthorized";
+export type SessionAccessProfile = "read-only" | "full-access";
 
 export interface AgentSessionProvider {
   readonly agentId: string;
@@ -72,6 +74,8 @@ export interface AgentSessionProvider {
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
   /** Workspaces allowed to start a fresh session. Absent means unsupported. */
   readonly freshSessionWorkspaceIds?: readonly string[];
+  readonly createSessionWorkspaceIds?: readonly string[];
+  create?(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary>;
 }
 
 export class AgentSessionRegistry {
@@ -119,6 +123,18 @@ export class AgentSessionRegistry {
     return this.providers.get(agentId)?.freshSessionWorkspaceIds?.includes(workspaceId) === true
       ? "supported"
       : "workspace_unauthorized";
+  }
+
+  createSessionSupport(agentId: string, workspaceId: string): FreshSessionSupport {
+    const provider = this.providers.get(agentId);
+    if (!provider?.create || !provider.createSessionWorkspaceIds?.length) return "unsupported";
+    return provider.createSessionWorkspaceIds.includes(workspaceId) ? "supported" : "workspace_unauthorized";
+  }
+
+  create(agentId: string, input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
+    const provider = this.require(agentId);
+    if (!provider.create) throw new Error(`Agent cannot create sessions: ${agentId}`);
+    return provider.create(input);
   }
 
   private require(agentId: string): AgentSessionProvider {
@@ -171,6 +187,9 @@ export interface ShellAgentSessionProviderOptions {
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
   /** Trusted cwd per workspace for fresh sessions, must be inside that workspace's roots. */
   freshSessionCwds?: Readonly<Record<string, string>>;
+  createSessionProfiles?: readonly SessionAccessProfile[];
+  /** Pre-existing host tmux server outside the gateway's read-only mount namespace. */
+  fullAccessMeshSocket?: string;
   meshSocket?: string;
   timeoutSeconds?: number;
   scanLimit?: number;
@@ -184,12 +203,15 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   readonly agentId: string;
   readonly provider: "codex" | "claude";
   readonly freshSessionWorkspaceIds?: readonly string[];
+  readonly createSessionWorkspaceIds?: readonly string[];
 
   private readonly agentSessionPath: string;
   private readonly workspaceRoots: Readonly<Record<string, readonly string[]>>;
   private readonly freshSessionCwds?: Readonly<Record<string, string>>;
+  private readonly createSessionProfiles: readonly SessionAccessProfile[];
   private readonly scanLimit: number;
   private readonly meshSocket?: string;
+  private readonly fullAccessMeshSocket?: string;
   private readonly agentNativeCallPath?: string;
   private readonly agentManagedInboxRoot?: string;
   private readonly timeoutSeconds: number;
@@ -206,21 +228,28 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       Object.entries(options.workspaceRoots).map(([workspaceId, roots]) => [workspaceId, roots.map((root) => resolve(root))])
     );
     if (options.freshSessionCwds !== undefined) {
-      // codex only picks its session id after launch, so we can't bind the task to it up front
-      if (options.agentType !== "claude") {
-        throw new Error(`Fresh sessions are not supported for agent type: ${options.agentType}`);
-      }
       const cwds: Record<string, string> = {};
       for (const [workspaceId, cwd] of Object.entries(options.freshSessionCwds)) {
         const roots = this.workspaceRoots[workspaceId];
-        if (!isAbsolute(cwd) || roots === undefined || !roots.some((root) => isWithin(cwd, root))) {
+        if (!isAbsolute(cwd) || roots === undefined || !roots.some((root) => isWithin(cwd, root)) ||
+            (this.provider === "codex" && !/^\/[A-Za-z0-9_./-]+$/.test(cwd))) {
           throw new Error(`Fresh session directory is outside the workspace roots: ${workspaceId}`);
         }
         cwds[workspaceId] = resolve(cwd);
       }
       this.freshSessionCwds = cwds;
-      this.freshSessionWorkspaceIds = Object.keys(cwds);
+      if (this.provider === "claude") this.freshSessionWorkspaceIds = Object.keys(cwds);
+      if (this.provider === "codex") this.createSessionWorkspaceIds = Object.keys(cwds);
     }
+    this.createSessionProfiles = options.createSessionProfiles ?? ["read-only"];
+    if (!this.createSessionProfiles.includes("read-only") || this.createSessionProfiles.some((profile) => profile !== "read-only" && profile !== "full-access")) {
+      throw new Error("Unknown session access profile in provider configuration.");
+    }
+    if (this.createSessionProfiles.includes("full-access") && (
+      !options.fullAccessMeshSocket || !/^[A-Za-z0-9_.-]{1,64}$/.test(options.fullAccessMeshSocket) ||
+      options.fullAccessMeshSocket === options.meshSocket
+    )) throw new Error("Full-access Codex creation requires a distinct trusted host tmux socket.");
+    this.fullAccessMeshSocket = options.fullAccessMeshSocket;
     this.scanLimit = options.scanLimit ?? 500;
     this.meshSocket = options.meshSocket;
     this.agentNativeCallPath = options.agentNativeCallPath;
@@ -334,6 +363,51 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
   }
 
+  /** Create a Codex session, then bind its native ID to this exact new tmux pane. */
+  async create(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
+    if (this.provider !== "codex" || this.freshSessionCwds === undefined) throw new Error("Codex session creation is not configured.");
+    const cwd = this.freshSessionCwds[input.workspaceId];
+    if (cwd === undefined) throw new Error("Session creation is not configured for this workspace.");
+    if (!this.createSessionProfiles.includes(input.accessProfile)) throw new Error(`Session access profile is not allowed: ${input.accessProfile}`);
+    const socket = input.accessProfile === "full-access" ? this.fullAccessMeshSocket : this.meshSocket;
+    if (input.accessProfile === "full-access") {
+      const status = await this.command(["--agent", "codex", "socket-status", cwd], true, socket);
+      if (status.code !== 0) throw new Error("Trusted full-access tmux server is not running.");
+    }
+    const target = `mesh-codex-${randomUUID()}`;
+    const flags = input.accessProfile === "full-access"
+      ? ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
+      : ["--sandbox", "read-only"];
+    const created = await this.command(["--agent", "codex", "new", cwd, target, "--", ...flags], true, socket);
+    if (created.code !== 0) {
+      await this.command(["--agent", "codex", "kill", target], true, socket);
+      throw new Error(safeProcessError("Codex session creation failed", created));
+    }
+    if (created.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) !== target) {
+      await this.command(["--agent", "codex", "kill", target], true, socket);
+      throw new Error("Codex session creation returned an unexpected target.");
+    }
+    try {
+      const resolved = await this.command(["--agent", "codex", "target-session", target], true, socket);
+      const sessionId = resolved.stdout.trim();
+      if (resolved.code !== 0 || !SESSION_UUID.test(sessionId)) throw new Error("Codex session ID was not uniquely resolved.");
+      const writerStatus = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, socket);
+      if (writerStatus.code !== 0) throw new Error(safeProcessError("Codex writer inspection failed", writerStatus));
+      const writers = parseWriterStatus(writerStatus.stdout, "codex", sessionId);
+      const writer = writers.length === 1 && writers[0]?.kind === "codex" ? writers[0] : undefined;
+      if (writer === undefined) throw new Error("Fresh Codex session has no unique CLI writer.");
+      const targetStatus = await this.command(["--agent", "codex", "target-status", target, "--writer-pid", String(writer.pid), "--json"], true, socket);
+      if (targetStatus.code !== 0) throw new Error(safeProcessError("Codex target ownership failed", targetStatus));
+      parseOwnedTarget(targetStatus.stdout, target, writer.pid);
+      const session = await this.get({ workspaceId: input.workspaceId, sessionId });
+      if (session === undefined) throw new Error("Created Codex session is outside the authorized workspace.");
+      return session;
+    } catch (error) {
+      await this.command(["--agent", "codex", "kill", target], true, socket);
+      throw error;
+    }
+  }
+
   private async sendUnlocked(input: AgentSessionSendInput): Promise<TmuxSendResult> {
     if (input.sessionMode === "fresh") return this.sendFresh(input);
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
@@ -359,7 +433,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
               "--writer-pid", String(writer.pid), "--json"
             ], true);
             if (targetStatus.code === 0) {
-              const target = parseOwnedClaudeTarget(targetStatus.stdout, owned.target, writer.pid);
+              const target = parseOwnedTarget(targetStatus.stdout, owned.target, writer.pid);
               if (target.panePid === owned.panePid) {
                 return this.sendToOwnedClaudeTarget(input, owned.target);
               }
@@ -427,7 +501,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       if (targetStatus.code !== 0) {
         return { ok: false, error: safeProcessError("Resumed Claude target ownership failed", targetStatus) };
       }
-      const target = parseOwnedClaudeTarget(targetStatus.stdout, tmuxTarget, writer.pid);
+      const target = parseOwnedTarget(targetStatus.stdout, tmuxTarget, writer.pid);
       this.ownedClaudeTargets.set(queueKey, { target: tmuxTarget, writerPid: writer.pid, panePid: target.panePid });
     }
     return this.provider === "claude"
@@ -470,7 +544,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
         "--agent", "claude", "target-status", target, "--writer-pid", String(writer.pid), "--json"
       ], true);
       if (targetStatus.code !== 0) return failed(safeProcessError("Fresh session target ownership failed", targetStatus));
-      const owned = parseOwnedClaudeTarget(targetStatus.stdout, target, writer.pid);
+      const owned = parseOwnedTarget(targetStatus.stdout, target, writer.pid);
       this.ownedClaudeTargets.set(`${input.workspaceId}:${input.sessionId}`, {
         target, writerPid: writer.pid, panePid: owned.panePid
       });
@@ -541,9 +615,9 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     };
   }
 
-  private async command(args: readonly string[], allowFailure = false) {
+  private async command(args: readonly string[], allowFailure = false, socket = this.meshSocket) {
     const env = { ...processEnv };
-    if (this.meshSocket !== undefined) env.MESH_TMUX_SOCKET = this.meshSocket;
+    if (socket !== undefined) env.MESH_TMUX_SOCKET = socket;
     if (args[2] === "new") env.MESH_STRICT_READY = "1";
     if (args.includes("resume")) {
       env.MESH_STRICT_READY = "1";
@@ -591,17 +665,17 @@ function parseWriterStatus(value: string, expectedAgent: string, expectedSession
   return candidate.writers;
 }
 
-function parseOwnedClaudeTarget(value: string, expectedTarget: string, expectedWriterPid: number): { panePid: number } {
+function parseOwnedTarget(value: string, expectedTarget: string, expectedWriterPid: number): { panePid: number } {
   let parsed: unknown;
   try { parsed = JSON.parse(value); }
-  catch { throw new Error("Claude target ownership bridge returned invalid JSON."); }
+  catch { throw new Error("Target ownership bridge returned invalid JSON."); }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("Claude target ownership bridge returned an invalid payload.");
+    throw new Error("Target ownership bridge returned an invalid payload.");
   }
   const target = parsed as { target?: unknown; pane_pid?: unknown; writer_pid?: unknown };
   if (target.target !== expectedTarget || !Number.isSafeInteger(target.pane_pid) ||
       Number(target.pane_pid) <= 0 || target.writer_pid !== expectedWriterPid) {
-    throw new Error("Claude target ownership bridge returned mismatched metadata.");
+    throw new Error("Target ownership bridge returned mismatched metadata.");
   }
   return { panePid: Number(target.pane_pid) };
 }
