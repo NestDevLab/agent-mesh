@@ -187,7 +187,7 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
 });
 
 for (const writerKind of ["desktop", "cli"]) {
-test(`managed Claude ${writerKind} background inbox returns a correlated visible result`, async () => {
+test(`managed Claude ${writerKind} background inbox returns a correlated visible result`, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mesh-native-claude-managed-"));
   const procRoot = join(root, "proc");
   const ownerPid = 8552;
@@ -216,7 +216,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
   const token = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
   const child = spawn(process.execPath, [nativeCall,
     "--agent", "claude", "--session", sessionId,
-    "--correlation-id", correlationId, "--timeout", "2", "--message", "Visible request",
+    "--correlation-id", correlationId, "--timeout", "5", "--message", "Visible request",
     "--managed-inbox-root", inboxRoot,
   ], { env: {
     ...process.env,
@@ -225,13 +225,21 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     AGENT_WRITER_PROC_ROOT: procRoot,
     AGENT_NATIVE_CALL_POLL_MS: "10",
   } });
+  const completed = new Promise((resolveExit) => child.on("exit", resolveExit));
+  t.after(() => { if (child.exitCode === null) child.kill(); });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
   child.stderr.on("data", (chunk) => { stderr += chunk; });
 
-  await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
-  assert.match(await readFile(inbox, "utf8"), /agent-mesh\.monitor-inbox\.v1/);
+  const deadline = Date.now() + 3000;
+  let delivered = "";
+  while (Date.now() < deadline && child.exitCode === null) {
+    delivered = await readFile(inbox, "utf8");
+    if (delivered.includes("agent-mesh.monitor-inbox.v1")) break;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
+  }
+  assert.match(delivered, /agent-mesh\.monitor-inbox\.v1/, stderr);
   await appendFile(transcript, [
     { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
     { type: "assistant", message: { stop_reason: "end_turn", content: [] } },
@@ -239,7 +247,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
       { type: "text", text: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` }
     ] } }
   ].map(JSON.stringify).join("\n") + "\n");
-  const code = await new Promise((resolveExit) => child.on("exit", resolveExit));
+  const code = await completed;
   assert.equal(code, 0, stderr);
   assert.equal(stdout, "CLAUDE_MANAGED_OK\n");
 });
