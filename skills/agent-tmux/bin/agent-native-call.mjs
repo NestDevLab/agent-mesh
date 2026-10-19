@@ -282,7 +282,7 @@ async function requireManagedClaudeInbox(id, correlation, configuredRoot) {
     writerStatusPath,
     "--agent", "claude",
     "--session", id,
-    "--require-kind", "claude-desktop",
+    "--require-single",
     "--require-monitor-inbox", inbox,
   ], 15_000);
   if (checked.code !== 0) blockClaudeVisibleTurn(id, correlation, "claude_managed_transport_unavailable");

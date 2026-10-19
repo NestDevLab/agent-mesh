@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** Stream durable session-link inbox records as Claude Monitor notifications. */
+/** Stream durable session-link inbox records as background task notifications. */
 
 import {
   chmodSync,
@@ -60,8 +60,11 @@ const watcher = watch(dirname(inboxPath), (event, filename) => {
   });
 });
 
+// fs.watch can coalesce events or race the initial drain. Poll as a fallback.
+const polling = setInterval(() => { try { drain(); } catch {} }, 1000);
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
+    clearInterval(polling);
     watcher.close();
     process.exit(0);
   });

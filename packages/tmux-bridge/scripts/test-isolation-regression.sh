@@ -57,6 +57,7 @@ cd "$BRIDGE_DIR"
 node --test test/*.test.mjs
 scripts/agent-result-test.sh
 python3 test/bridge-launch-record.test.py
+python3 test/session-inbox.test.py
 scripts/socket-isolation-test.sh
 scripts/smoke-test.sh
 scripts/agent-send-readiness-test.sh

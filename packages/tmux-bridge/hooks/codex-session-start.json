@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${AGENT_MESH_BIN:?}/agent-session-inbox.py\" hook --agent codex",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
