@@ -11,6 +11,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(python3 \"${AGENT_MESH_BIN:?}/agent-session-inbox.py\" hook --agent codex) 2>/dev/null || true",
+            "timeout": 1
+          }
+        ]
+      }
     ]
   }
 }

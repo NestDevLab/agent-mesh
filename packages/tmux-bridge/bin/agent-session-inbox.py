@@ -19,7 +19,7 @@ DEFAULT_ROOT = "/var/lib/agent-mesh-mcp/claude-managed-inboxes"
 
 
 def private_file(path):
-    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise ValueError("mailbox state must be a regular file")
@@ -27,31 +27,51 @@ def private_file(path):
     return fd
 
 
-def prepare(root, session):
+def mailbox_path(root, session):
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session):
         raise ValueError("invalid session identity")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if root.is_symlink() or not root.is_dir():
+    if root.is_symlink() or (root.exists() and not root.is_dir()):
         raise ValueError("mailbox root must be a real directory")
-    inbox = root / (session + ".jsonl")
+    return root / (session + ".jsonl")
+
+
+def prepare(root, session):
+    inbox = mailbox_path(root, session)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.close(private_file(inbox))
     return inbox
 
 
-def hook(args):
-    payload = json.load(sys.stdin)
-    if payload.get("hook_event_name", "SessionStart") != "SessionStart":
-        return
-    session = payload.get("session_id", "")
-    inbox = prepare(args.root, session)
-    descriptor = private_file(inbox.with_suffix(".watch.lock"))
-    active = False
+def watcher_active(inbox):
+    """Probe the existing per-session lock without writing or waiting."""
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        active = True
+        descriptor = os.open(inbox.with_suffix(".watch.lock"),
+                             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return False
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("watcher lock must be a regular file")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        return False
     finally:
         os.close(descriptor)
+
+
+def hook(args):
+    payload = json.load(sys.stdin)
+    event = payload.get("hook_event_name", "SessionStart")
+    if event not in {"SessionStart", "UserPromptSubmit"}:
+        return
+    session = payload.get("session_id", "")
+    inbox = mailbox_path(args.root, session)
+    active = watcher_active(inbox)
+    if event == "UserPromptSubmit" and active:
+        return
+    inbox = prepare(args.root, session)
     command = shlex.join([sys.executable, str(Path(__file__).resolve()), "watch",
                           "--root", str(args.root), "--session", session])
     tool = ("Bash with run_in_background=true (never Monitor)" if args.agent == "claude"
@@ -70,7 +90,7 @@ def hook(args):
                    "do not start a second watcher. After it completes with real inbox events, "
                    f"handle the batch and rearm `{command}` using {tool}. "
                    "Do not report idle/rearm activity to the user.")
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart",
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": event,
                                                "additionalContext": context}}))
 
 
@@ -157,11 +177,19 @@ def main():
     args = parser.parse_args()
     args.root = args.root.absolute()
     if args.mode == "hook":
+        def expire(_signum, _frame):
+            raise TimeoutError("hook budget expired")
+
+        previous = signal.signal(signal.SIGALRM, expire)
+        signal.setitimer(signal.ITIMER_REAL, 0.2)
         try:
             hook(args)
-        except (OSError, ValueError, TypeError):
-            # Hook failure must never prevent a session from opening.
-            print("agent-mesh: session inbox unavailable", file=sys.stderr)
+        except Exception:
+            # Hooks are advisory: errors and slow input must never reject a prompt.
+            pass
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
     else:
         if not args.session or args.batch_seconds < 0 or args.retry_seconds <= 0:
             parser.error("watch requires --session and valid timing")

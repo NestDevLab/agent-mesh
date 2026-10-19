@@ -1,10 +1,10 @@
 # Automatic session inbox activation
 
 `bin/agent-session-inbox.py hook --agent claude|codex` accepts a SessionStart
-payload on stdin. It creates or reopens `<session_id>.jsonl` without truncation,
+or UserPromptSubmit payload on stdin. It creates or reopens `<session_id>.jsonl` without truncation,
 enforces mode 0600, and returns `hookSpecificOutput.additionalContext` instructing
 the session to start a silent background reader. Invalid input or unavailable
-storage fails open, with a short diagnostic on stderr and no readiness claim.
+storage fails open silently, with exit 0 and no readiness claim.
 The hook never starts another model, resumes a second writer, or sends a message.
 
 The default mailbox root is `/var/lib/agent-mesh-mcp/claude-managed-inboxes`.
@@ -15,7 +15,8 @@ inbox root. Mailboxes and cursors are private runtime state; never commit them.
 ## Hook configuration
 
 The source fragments `hooks/claude-session-start.json` and
-`hooks/codex-session-start.json` cover startup, resume, clear and compact. Merge
+`hooks/codex-session-start.json` cover startup, resume, clear and compact, plus
+UserPromptSubmit for sessions that were already running when hooks were enabled. Merge
 the appropriate fragment into the harness's existing hooks through its managed
 configuration; preserve all other hook handlers. Set `AGENT_MESH_BIN` to the
 installed bridge binaries directory in that execution environment. The new
@@ -38,6 +39,23 @@ claiming automatic reachability if that capability is unavailable. Native Codex
 queue delivery remains the existing transport; this change does not replace it
 or require the desktop application. A deployment must verify hook firing and
 background notification delivery for its actual harness before marking it ready.
+
+## Prompt fallback
+
+Both harnesses support UserPromptSubmit context injection (see the official hook
+references above). On each prompt the hook probes only the session's existing
+advisory lock, using nonblocking flock. If it is held, the hook exits with no
+stdout or stderr, without preparing or modifying the mailbox. If the lock is
+missing or stale (unlocked), it prepares the inbox and injects the same activation
+instructions as SessionStart, with `hookEventName: UserPromptSubmit`. Actual
+watcher creation still enforces the exclusive session lock.
+
+The hook has a 200 ms internal budget, including reading stdin, and suppresses
+errors. Prompt hook fragments additionally set a one-second harness timeout and
+wrap command failures as silent success. It never returns a blocking decision.
+No prompt text is stored or included in output. Hook configuration must still be
+loaded by the running harness; this fallback does not claim to hot-reload hooks
+on surfaces that only load configuration at session startup.
 
 ## Reader lifecycle
 
