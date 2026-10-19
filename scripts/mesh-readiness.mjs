@@ -11,6 +11,8 @@ const agentTmuxBundleFiles = [
   "bin/_mesh-result.sh",
   "bin/_mesh-tmux.sh",
   "bin/agent-read.sh",
+  "bin/agent-follow.py",
+  "bin/agent-watch.py",
   "bin/agent-send.sh",
   "bin/agent-spawn.sh",
   "bin/agent-session.sh",
