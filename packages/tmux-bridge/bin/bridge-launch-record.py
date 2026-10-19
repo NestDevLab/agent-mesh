@@ -105,15 +105,10 @@ def start(args: argparse.Namespace) -> int:
     return 0
 
 
-def latest_open_launch(events: list[dict], target: str, agent: str) -> dict | None:
-    resolved = {
-        event.get("launchId")
-        for event in events
-        if event.get("event") == "launch.thread_resolved" and event.get("threadId")
-    }
+def latest_launch(events: list[dict], target: str, agent: str) -> dict | None:
     for event in reversed(events):
         if (event.get("event") == "launch.started" and event.get("tmuxTarget") == target
-                and event.get("agent") == agent and event.get("launchId") not in resolved):
+                and event.get("agent") == agent):
             return event
     return None
 
@@ -139,9 +134,14 @@ def codex_candidates(db_path: Path, cwd: str, launched_at_ms: int) -> list[str]:
 
 def reconcile(args: argparse.Namespace) -> int:
     events = read_events(args.state)
-    launch = latest_open_launch(events, args.target, args.agent)
+    launch = latest_launch(events, args.target, args.agent)
     if launch is None:
         return 0
+    for event in reversed(events):
+        if (event.get("launchId") == launch.get("launchId")
+                and event.get("event") == "launch.thread_resolved" and event.get("threadId")):
+            print(event["threadId"])
+            return 0
     if launch.get("threadId"):
         print(launch["threadId"])
         return 0

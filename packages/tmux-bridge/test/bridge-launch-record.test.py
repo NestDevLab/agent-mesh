@@ -91,6 +91,12 @@ class BridgeLaunchRecordTest(unittest.TestCase):
         event = self.read_events()[-1]
         self.assertEqual(event["event"], "launch.thread_resolved")
         self.assertEqual(event["candidateCount"], 1)
+        repeated = self.run_record(
+            "reconcile", "--agent", "codex", "--target", "mesh-codex-test",
+            "--codex-db", str(self.db), "--attempts", "1",
+        )
+        self.assertEqual(repeated.stdout.strip(), result.stdout.strip())
+        self.assertEqual(len(self.read_events()), 2)
 
     def test_reconcile_marks_multiple_candidates_ambiguous(self):
         self.start()

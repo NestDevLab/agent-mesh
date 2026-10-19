@@ -11,6 +11,8 @@
 #   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
 #   agent-session.sh --agent claude target-status <TMUX_NAME> --writer-pid <PID> --json
+#   agent-session.sh --agent codex target-session <TMUX_NAME>
+#   agent-session.sh --agent codex socket-status <CWD>
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #
 # --agent defaults to "codex". Config files: ../agents/<name>.conf
@@ -862,11 +864,40 @@ case "$cmd" in
         node "$SCRIPT_DIR/session-writer-status.mjs" "${WRITER_ARGS[@]}"
         ;;
 
+    socket-status)
+        CWD="${1:-}"
+        [[ "$AGENT_NAME" == "codex" && $# -eq 1 && "$CWD" =~ ^/[A-Za-z0-9_./-]+$ ]] \
+            || { echo "ERROR: socket-status requires a safe Codex cwd" >&2; exit 2; }
+        mtmux list-sessions >/dev/null 2>&1 \
+            || { echo "ERROR: trusted Codex tmux server is not running" >&2; exit 3; }
+        SERVER_PID="$(mtmux display-message -p '#{pid}')"
+        [[ "$SERVER_PID" =~ ^[1-9][0-9]*$ && -e "/proc/$SERVER_PID/ns/mnt" ]] \
+            || { echo "ERROR: Codex tmux server identity is unavailable" >&2; exit 4; }
+        [[ "$(readlink "/proc/$SERVER_PID/ns/mnt")" != "$(readlink /proc/self/ns/mnt)" ]] \
+            || { echo "ERROR: Codex tmux server shares the gateway read-only mount namespace" >&2; exit 4; }
+        MOUNT_OPTIONS="$(findmnt -N "$SERVER_PID" -T "$CWD" -o OPTIONS -n 2>/dev/null)"
+        [[ "$MOUNT_OPTIONS" == rw || "$MOUNT_OPTIONS" == rw,* ]] \
+            || { echo "ERROR: Codex tmux server cannot write the requested workspace mount" >&2; exit 4; }
+        printf 'ready\n'
+        ;;
+
+    target-session)
+        TARGET="${1:-}"
+        [[ "$AGENT_NAME" == "codex" && "$TARGET" =~ ^[a-z0-9-]+$ && $# -eq 1 ]] \
+            || { echo "ERROR: target-session requires a safe Codex target" >&2; exit 2; }
+        mtmux has-session -t "$TARGET" 2>/dev/null \
+            || { echo "ERROR: target not found" >&2; exit 3; }
+        THREAD_ID="$(mesh_launch_record_reconcile codex "$TARGET")"
+        [[ "$THREAD_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+            || { echo "ERROR: Codex target has no uniquely resolved session" >&2; exit 4; }
+        printf '%s\n' "$THREAD_ID"
+        ;;
+
     target-status)
         TARGET="${1:-}"
         shift || true
-        [[ "$AGENT_NAME" == "claude" && "$TARGET" =~ ^[a-z0-9-]+$ ]] \
-            || { echo "ERROR: target-status requires a safe Claude target" >&2; exit 2; }
+        [[ ( "$AGENT_NAME" == "claude" || "$AGENT_NAME" == "codex" ) && "$TARGET" =~ ^[a-z0-9-]+$ ]] \
+            || { echo "ERROR: target-status requires a safe target" >&2; exit 2; }
         [[ "${1:-}" == "--writer-pid" && "${2:-}" =~ ^[1-9][0-9]*$ && "${3:-}" == "--json" && $# -eq 3 ]] \
             || { echo "ERROR: target-status requires --writer-pid <PID> --json" >&2; exit 2; }
         WRITER_PID="$2"
@@ -876,8 +907,8 @@ case "$cmd" in
             || { echo "ERROR: target has multiple panes" >&2; exit 4; }
         IFS='|' read -r ACTUAL_TARGET PANE_PID PANE_COMMAND PANE_DEAD ATTACHED <<< "$PANES"
         [[ "$ACTUAL_TARGET" == "$TARGET" && "$PANE_PID" =~ ^[1-9][0-9]*$ \
-            && "$PANE_COMMAND" == "claude" && "$PANE_DEAD" == "0" && "$ATTACHED" == "0" ]] \
-            || { echo "ERROR: target is not an unattended live Claude pane" >&2; exit 4; }
+            && "$PANE_COMMAND" == "$AGENT_NAME" && "$PANE_DEAD" == "0" && "$ATTACHED" == "0" ]] \
+            || { echo "ERROR: target is not an unattended live $AGENT_NAME pane" >&2; exit 4; }
         PROC_ROOT="${AGENT_WRITER_PROC_ROOT:-/proc}"
         CURRENT_PID="$WRITER_PID"
         OWNER_FOUND=false
@@ -888,7 +919,7 @@ case "$cmd" in
             [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] || break
         done
         [[ "$OWNER_FOUND" == true ]] \
-            || { echo "ERROR: Claude writer is not owned by target pane" >&2; exit 4; }
+            || { echo "ERROR: $AGENT_NAME writer is not owned by target pane" >&2; exit 4; }
         printf '{"target":"%s","pane_pid":%s,"writer_pid":%s}\n' "$TARGET" "$PANE_PID" "$WRITER_PID"
         ;;
 

@@ -86,7 +86,12 @@ interface AgentSessionsConfig {
     agent_type: "codex" | "claude";
     workspace_roots: Record<string, string[]>;
     /** Opt-in. Fresh sessions only ever start in these dirs. */
-    fresh_session?: { workspace_cwd: Record<string, string> };
+    fresh_session?: {
+      workspace_cwd: Record<string, string>;
+      /** Codex only; absent means read-only. */
+      access_profiles?: Array<"read-only" | "full-access">;
+      full_access_socket?: string;
+    };
   }>;
 }
 
@@ -477,19 +482,32 @@ function validateAgentSessions(
         throw new Error(`Unknown agent sessions workspace at index ${index}: ${workspaceId}`);
       }
     }
-    if (provider.fresh_session !== undefined) validateFreshSession(provider, index);
+    if (provider.fresh_session !== undefined) validateFreshSession(provider, index, value.meshSocket);
     seen.add(provider.target_agent_id);
   }
 }
 
-function validateFreshSession(provider: AgentSessionsConfig["providers"][number], index: number): void {
+function validateFreshSession(provider: AgentSessionsConfig["providers"][number], index: number, defaultSocket?: string): void {
   const cwds = provider.fresh_session?.workspace_cwd;
   if (
-    provider.agent_type !== "claude" ||
+    (provider.agent_type !== "claude" && provider.agent_type !== "codex") ||
     typeof cwds !== "object" || cwds === null || Array.isArray(cwds) ||
     Object.keys(cwds).length === 0
   ) {
     throw new Error(`Invalid agent sessions fresh_session at index ${index}.`);
+  }
+  const profiles = provider.fresh_session?.access_profiles;
+  if (profiles !== undefined && (
+    provider.agent_type !== "codex" || !Array.isArray(profiles) || !profiles.includes("read-only") ||
+    new Set(profiles).size !== profiles.length ||
+    profiles.some((profile) => profile !== "read-only" && profile !== "full-access")
+  )) throw new Error(`Invalid agent sessions access profiles at index ${index}.`);
+  const fullSocket = provider.fresh_session?.full_access_socket;
+  if (fullSocket !== undefined && (provider.agent_type !== "codex" || !/^[A-Za-z0-9_.-]{1,64}$/.test(fullSocket) || fullSocket === defaultSocket)) {
+    throw new Error(`Invalid agent sessions full-access socket at index ${index}.`);
+  }
+  if (profiles?.includes("full-access") && fullSocket === undefined) {
+    throw new Error(`Full-access Codex creation requires a trusted host tmux socket at index ${index}.`);
   }
   for (const [workspaceId, cwd] of Object.entries(cwds)) {
     if (
@@ -520,6 +538,8 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     ...(config.agentManagedInboxRoot === undefined ? {} : { agentManagedInboxRoot: config.agentManagedInboxRoot }),
     workspaceRoots: provider.workspace_roots,
     ...(provider.fresh_session === undefined ? {} : { freshSessionCwds: provider.fresh_session.workspace_cwd }),
+    ...(provider.fresh_session?.access_profiles === undefined ? {} : { createSessionProfiles: provider.fresh_session.access_profiles }),
+    ...(provider.fresh_session?.full_access_socket === undefined ? {} : { fullAccessMeshSocket: provider.fresh_session.full_access_socket }),
     ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),
     ...(config.timeoutSeconds === undefined ? {} : { timeoutSeconds: config.timeoutSeconds }),
     ...(config.scanLimit === undefined ? {} : { scanLimit: config.scanLimit })

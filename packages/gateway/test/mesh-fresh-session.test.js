@@ -577,7 +577,7 @@ test("create_session is advertised only for workspaces the principal can use for
   } finally { await h.cleanup(); }
 });
 
-test("fresh-session configuration is limited to Claude and to directories inside the workspace roots", () => {
+test("session creation is provider-scoped and directories stay inside workspace roots", () => {
   const base = {
     agentId: CLAUDE,
     agentType: "claude",
@@ -586,10 +586,10 @@ test("fresh-session configuration is limited to Claude and to directories inside
     workspaceRoots: { [WORKSPACE]: ["/srv/workspaces/example"] },
     run: async () => { throw new Error("unexpected"); }
   };
-  assert.throws(
-    () => new ShellAgentSessionProvider({ ...base, agentType: "codex", freshSessionCwds: { [WORKSPACE]: TRUSTED_CWD } }),
-    /not supported for agent type: codex/
-  );
+  const codex = new ShellAgentSessionProvider({ ...base, agentId: CODEX, agentType: "codex", freshSessionCwds: { [WORKSPACE]: TRUSTED_CWD } });
+  const codexRegistry = new AgentSessionRegistry([codex]);
+  assert.equal(codexRegistry.freshSessionSupport(CODEX, WORKSPACE), "unsupported");
+  assert.equal(codexRegistry.createSessionSupport(CODEX, WORKSPACE), "supported");
   assert.throws(
     () => new ShellAgentSessionProvider({ ...base, freshSessionCwds: { [WORKSPACE]: "/srv/workspaces/elsewhere" } }),
     /outside the workspace roots/
