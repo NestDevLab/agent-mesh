@@ -372,3 +372,9 @@ collection follows matching transcript rollover and distinguishes accepted
 requests with result timeouts/parsing errors from transport rejection. Consumers
 must retain the task handle and must not resend an accepted request merely
 because its result could not be collected.
+
+## Isolated writable sessions
+
+`mesh_call` and `mesh_submit` accept `access_mode` (default `read-only`; opt-in `workspace-write`).
+See [workspace-write-sessions.md](workspace-write-sessions.md) for exact policy, worker confinement,
+configuration, activation, rollback and acceptance limits. No repository is enabled implicitly.

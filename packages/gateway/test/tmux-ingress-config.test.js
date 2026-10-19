@@ -234,3 +234,23 @@ test("fresh session directories reject unconfigured workspaces", async () => {
   });
   await assert.rejects(readRuntimeConfig(outsideRoots), /fresh_session directory is outside the workspace roots at index 0/);
 });
+
+const WORKER_ROUTE = {
+  id: "worker.example", principalId: "principal.example", agentId: "agent.ingress.codex",
+  workspaceId: "workspace.example", accessMode: "workspace-write", socketPath: "/srv/control/worker.sock"
+};
+test("runtime config retains explicit worker routes and rejects unknown scopes and duplicate grants", async () => {
+  const config = await readRuntimeConfig(await writeConfig({ workspaceWorkers: [WORKER_ROUTE] }));
+  assert.deepEqual(config.workspaceWorkers, [WORKER_ROUTE]);
+  for (const routes of [[{ ...WORKER_ROUTE, agentId: "agent.unknown" }], [{ ...WORKER_ROUTE, workspaceId: "workspace.unknown" }], [WORKER_ROUTE, WORKER_ROUTE], [{ ...WORKER_ROUTE, principalId: "*" }]]) {
+    await assert.rejects(readRuntimeConfig(await writeConfig({ workspaceWorkers: routes })), /workspace worker|Duplicate|Invalid/);
+  }
+});
+
+test("Codex fresh task_sessions opt-in is wired and rejects nonboolean values and Claude", async () => {
+  const provider = { ...AGENT_SESSIONS.providers[0], fresh_session: { workspace_cwd: { "workspace.example": "/srv/workspaces/example" }, task_sessions: true } };
+  const config = await readRuntimeConfig(await writeConfig({ agentSessions: { ...AGENT_SESSIONS, providers: [provider] } }));
+  assert.equal(config.agentSessions.providers[0].fresh_session.task_sessions, true);
+  await assert.rejects(readRuntimeConfig(await writeConfig({ agentSessions: { ...AGENT_SESSIONS, providers: [{ ...provider, fresh_session: { ...provider.fresh_session, task_sessions: "yes" } }] } })), /task_sessions/);
+  await assert.rejects(readRuntimeConfig(await writeConfig({ agents: [CLAUDE_AGENT], bindings: [{ ...BINDING, allowedAgentIds: [CLAUDE_AGENT.id] }], agentSessions: { ...AGENT_SESSIONS, providers: [{ ...provider, target_agent_id: CLAUDE_AGENT.id, agent_type: "claude" }] } })), /task_sessions/);
+});

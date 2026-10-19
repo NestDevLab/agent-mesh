@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 
 const dispatcher = new URL("../bin/mesh-capacity-dispatch.mjs", import.meta.url).pathname;
@@ -819,6 +819,68 @@ test("mesh send falls back to the legacy provider policy during migration", asyn
   assert.equal(result.code, 75);
   assert.match(result.stderr, /waiting_capacity/);
   assert.match(await readFile(argsFile, "utf8"), new RegExp(`--config\\n${policy.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+});
+
+test("the dispatcher still runs when invoked through a symlinked release path", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-symlink-"));
+  try {
+    const release = join(dir, "current");
+    await symlink(dirname(dirname(dispatcher)), release);
+    const result = await runCommand(process.execPath, [join(release, "bin", "mesh-capacity-dispatch.mjs"), "unknown-command"], process.env);
+    assert.equal(result.code, 2);
+    assert.match(result.stderr, /usage: mesh-capacity-dispatch\.mjs/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("agent-session fails closed when a governed launch leaves no live target", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "mesh-session-no-target-"));
+  const bin = join(dir, "bin"), agents = join(dir, "agents"), config = join(dir, "config");
+  const limen = join(bin, "limen"), codex = join(bin, "fake-codex");
+  const socket = `mesh-no-target-${process.pid}-${Date.now()}`;
+  const target = `mesh-codex-no-target-${process.pid}`;
+  await mkdir(bin); await mkdir(agents); await mkdir(join(config, "limen"), { recursive: true });
+  await writeFile(join(config, "limen", "codex-shadow-policy-v2.json"), "{}\n");
+  await writeFile(limen, `#!/bin/sh
+if [ "$1" = route ]; then
+  echo '{"decision":"route","provider":"codex","model":"policy-model","nativeModel":"native-model","effort":"medium","decisionId":"route-gone","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"policy-model","nativeModel":"native-model","effort":"medium","capacityCostBase":null}}}'
+  exit 0
+fi
+if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi
+exit 2
+`);
+  await writeFile(codex, "#!/bin/sh\nprintf 'FAKE>\\n'\nsleep 5\n");
+  await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"
+AGENT_ALIVE_PROCESS_PATTERN="^not-a-live-agent$"
+AGENT_SUBMIT_KEY="Enter"
+AGENT_PROMPT_CHAR="FAKE>"
+AGENT_WORKING_PATTERN="WORKING"
+AGENT_IDLE_PATTERN="FAKE>"
+AGENT_RESUME_CMD="fake-codex"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_NEW_CMD="fake-codex"
+AGENT_SESSION_DIR="${dir}"
+AGENT_DEFAULT_PROFILE="developer"
+AGENT_SUPPORTS_MODEL="true"
+AGENT_MODEL_ARGS=(--model "{VALUE}")
+AGENT_MODEL_PASSTHRU_PATTERNS=()
+AGENT_SUPPORTS_EFFORT="true"
+AGENT_EFFORT_ARGS=(--effort "{VALUE}")
+AGENT_EFFORT_PASSTHRU_PATTERNS=()
+`);
+  await chmod(limen, 0o700); await chmod(codex, 0o700);
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_STRICT_READY: "1", MESH_CAPACITY_STATE: join(dir, "queue.json"), MESH_LEASE_RENEW_MS: "20", AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: join(dir, "launch-events.jsonl") };
+  try {
+    const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
+    assert.notEqual(launched.code, 0);
+    assert.equal(launched.stdout.trim(), "");
+    assert.match(launched.stderr, /governed launch reported success but target '.+' does not exist/);
+  } finally {
+    await runCommand("tmux", ["-L", socket, "kill-server"], env);
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 function run(args) {

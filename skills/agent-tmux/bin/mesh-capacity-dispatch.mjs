@@ -1,8 +1,10 @@
 #!/usr/bin/env node
+import { realpathSync } from "node:fs";
 import { appendFile, chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const EXIT_DEFER = 75;
 const classes = new Set(["L1", "L2", "L3"]);
@@ -574,4 +576,6 @@ async function monitor(options, io) {
 }
 
 function usage(io) { io.stderr.write("usage: mesh-capacity-dispatch.mjs submit --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 [--profile NAME] [--eligible-work N] -- COMMAND... | drain --state FILE [--events FILE] [--now MS] [--limit N] | monitor --state FILE [--events FILE] --policy FILE --provider codex|claude --harness codex|claude --run-id ID --class L1|L2|L3 --session ID --target TMUX_TARGET\n"); return 2; }
-if (import.meta.url === `file://${process.argv[1]}`) main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => { console.error(bounded(error)); process.exitCode = error?.kind === "limen_infrastructure" ? EXIT_LIMEN_INFRASTRUCTURE : 2; });
+// Node resolves symlinks for import.meta.url but not argv[1]; releases are run through a symlinked path.
+const invokedDirectly = process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+if (invokedDirectly) main(process.argv.slice(2)).then(code => { process.exitCode = code; }).catch(error => { console.error(bounded(error)); process.exitCode = error?.kind === "limen_infrastructure" ? EXIT_LIMEN_INFRASTRUCTURE : 2; });

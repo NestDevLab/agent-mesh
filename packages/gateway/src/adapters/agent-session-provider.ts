@@ -187,6 +187,10 @@ export interface ShellAgentSessionProviderOptions {
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
   /** Trusted cwd per workspace for fresh sessions, must be inside that workspace's roots. */
   freshSessionCwds?: Readonly<Record<string, string>>;
+  /** Codex only: also allow session_mode "fresh" tasks, which always launch read-only. */
+  freshTaskSessions?: boolean;
+  /** Only set by the isolated worker, never wired from gateway config. */
+  isolatedAccessMode?: "read-only" | "workspace-write";
   createSessionProfiles?: readonly SessionAccessProfile[];
   /** Pre-existing host tmux server outside the gateway's read-only mount namespace. */
   fullAccessMeshSocket?: string;
@@ -209,6 +213,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly workspaceRoots: Readonly<Record<string, readonly string[]>>;
   private readonly freshSessionCwds?: Readonly<Record<string, string>>;
   private readonly createSessionProfiles: readonly SessionAccessProfile[];
+  private readonly isolatedAccessMode?: "read-only" | "workspace-write";
   private readonly scanLimit: number;
   private readonly meshSocket?: string;
   private readonly fullAccessMeshSocket?: string;
@@ -221,6 +226,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly ownedClaudeTargets = new Map<string, { target: string; writerPid: number; panePid: number }>();
 
   constructor(options: ShellAgentSessionProviderOptions) {
+    this.isolatedAccessMode = options.isolatedAccessMode;
     this.agentId = options.agentId;
     this.provider = options.agentType;
     this.agentSessionPath = options.agentSessionPath;
@@ -240,6 +246,10 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       this.freshSessionCwds = cwds;
       if (this.provider === "claude") this.freshSessionWorkspaceIds = Object.keys(cwds);
       if (this.provider === "codex") this.createSessionWorkspaceIds = Object.keys(cwds);
+      if (this.provider === "codex" && options.freshTaskSessions === true) this.freshSessionWorkspaceIds = Object.keys(cwds);
+    }
+    if (options.freshTaskSessions === true && (this.provider !== "codex" || this.freshSessionCwds === undefined)) {
+      throw new Error("Fresh task sessions require a Codex provider with trusted fresh-session directories.");
     }
     this.createSessionProfiles = options.createSessionProfiles ?? ["read-only"];
     if (!this.createSessionProfiles.includes("read-only") || this.createSessionProfiles.some((profile) => profile !== "read-only" && profile !== "full-access")) {
@@ -363,8 +373,12 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
   }
 
-  /** Create a Codex session, then bind its native ID to this exact new tmux pane. */
   async create(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
+    return (await this.launchCodex(input)).session;
+  }
+
+  /** Create a Codex session, then bind its native ID to this exact new tmux pane. */
+  private async launchCodex(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<{ session: AgentSessionSummary; target: string }> {
     if (this.provider !== "codex" || this.freshSessionCwds === undefined) throw new Error("Codex session creation is not configured.");
     const cwd = this.freshSessionCwds[input.workspaceId];
     if (cwd === undefined) throw new Error("Session creation is not configured for this workspace.");
@@ -377,7 +391,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     const target = `mesh-codex-${randomUUID()}`;
     const flags = input.accessProfile === "full-access"
       ? ["--sandbox", "danger-full-access", "--ask-for-approval", "never"]
-      : ["--sandbox", "read-only"];
+      : ["--sandbox", this.isolatedAccessMode ?? "read-only", ...(this.isolatedAccessMode === undefined ? [] : ["--ask-for-approval", "never"])];
     const created = await this.command(["--agent", "codex", "new", cwd, target, "--", ...flags], true, socket);
     if (created.code !== 0) {
       await this.command(["--agent", "codex", "kill", target], true, socket);
@@ -401,7 +415,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       parseOwnedTarget(targetStatus.stdout, target, writer.pid);
       const session = await this.get({ workspaceId: input.workspaceId, sessionId });
       if (session === undefined) throw new Error("Created Codex session is outside the authorized workspace.");
-      return session;
+      return { session, target };
     } catch (error) {
       await this.command(["--agent", "codex", "kill", target], true, socket);
       throw error;
@@ -482,7 +496,9 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       };
     }
     const tmuxTarget = resumed.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1);
-    if (tmuxTarget === undefined) return { ok: false, error: "Agent session resume returned no tmux target." };
+    if (tmuxTarget === undefined) {
+      return { ok: false, error: safeProcessError("Agent session resume returned no tmux target", resumed) };
+    }
     if (this.provider === "claude") {
       const resumedWriterStatus = await this.command([
         "--agent", "claude", "writer-status", input.sessionId, "--json"
@@ -511,10 +527,10 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
 
   /** Launches via the bridge's `new`, checks we own the writer, then sends the first turn. Never falls back to another session. */
   private async sendFresh(input: AgentSessionSendInput): Promise<TmuxSendResult> {
-    if (this.freshSessionCwds === undefined || this.provider !== "claude") {
+    if (this.freshSessionCwds === undefined || this.freshSessionWorkspaceIds === undefined) {
       return { ok: false, error_code: "fresh_session_unsupported", error: "Fresh session creation is not configured for this agent." };
     }
-    const cwd = Object.hasOwn(this.freshSessionCwds, input.workspaceId)
+    const cwd = Object.hasOwn(this.freshSessionCwds, input.workspaceId) && this.freshSessionWorkspaceIds.includes(input.workspaceId)
       ? this.freshSessionCwds[input.workspaceId]
       : undefined;
     if (cwd === undefined) {
@@ -525,10 +541,22 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       };
     }
     const failed = (error: string): TmuxSendResult => ({ ok: false, error_code: "fresh_session_create_failed", error });
+    if (this.provider === "codex") {
+      // Codex mints its own thread ID, so the task's pre-minted ID is only a placeholder.
+      let launched: { session: AgentSessionSummary; target: string };
+      try {
+        launched = await this.launchCodex({ workspaceId: input.workspaceId, accessProfile: "read-only" });
+      } catch (error) {
+        return failed(error instanceof Error ? error.message : String(error));
+      }
+      const result = await this.sender.send(this.tmuxSendInput(input, launched.target));
+      return { ...result, session_id: launched.session.session_id };
+    }
     if (!SESSION_UUID.test(input.sessionId)) return failed("Fresh session id must be a lowercase UUID.");
     const target = `mesh-claude-${input.sessionId}`;
     const created = await this.command([
-      "--agent", "claude", "new", cwd, target, "--", "--session-id", input.sessionId
+      "--agent", "claude", "new", cwd, target, "--", "--session-id", input.sessionId,
+      ...(this.isolatedAccessMode === undefined ? [] : ["--permission-mode", this.isolatedAccessMode === "workspace-write" ? "acceptEdits" : "default", "--allowedTools", ...(this.isolatedAccessMode === "workspace-write" ? ["Read", "Edit", "Write", "Bash", "Glob", "Grep"] : ["Read", "Bash", "Glob", "Grep"])])
     ], true);
     if (created.code !== 0) return failed(safeProcessError("Fresh session creation failed", created));
     if (created.stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) !== target) {

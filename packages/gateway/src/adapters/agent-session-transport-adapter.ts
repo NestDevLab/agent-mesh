@@ -40,14 +40,16 @@ export class AgentSessionTransportAdapter implements MeshTransportAdapter {
         idempotencyKey: envelope.idempotency_key,
         ...(fresh ? { sessionMode: "fresh" as const } : {})
       });
+      const resolved = result.session_id === undefined ? {} : { resolved_session_id: result.session_id };
       if (!result.ok) return {
         status: "failed",
-        details: { reason: result.error_code ?? result.error ?? "session_send_failed", ...correlation }
+        details: { reason: result.error_code ?? result.error ?? "session_send_failed", ...correlation, ...resolved }
       };
       return {
         status: "delivered",
         details: {
           ...correlation,
+          ...resolved,
           ...(result.reply === undefined ? {} : { reply: result.reply }),
           ...(result.result_error_code === undefined ? {} : {
             result_error_code: result.result_error_code,

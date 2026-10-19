@@ -1,3 +1,4 @@
+import type { WorkspaceWorkerRouter } from "./workspace-worker.js";
 import { randomUUID } from "crypto";
 import {
   McpServer,
@@ -72,6 +73,7 @@ export interface MeshMcpOptions {
   rateLimiter: MeshMcpRateLimiter;
   taskCoordinator?: MeshTaskCoordinator;
   sessionRegistry?: AgentSessionRegistry;
+  workspaceWorkers?: WorkspaceWorkerRouter;
   now?: () => Date;
 }
 
@@ -164,6 +166,7 @@ export interface MeshTaskDispatchInput {
   sessionId?: string;
   /** "fresh": start a new session. Can't be combined with sessionId. */
   sessionMode?: "fresh";
+  accessMode?: "read-only" | "workspace-write";
   workspaceId?: string;
   domainId?: string;
   contextId?: string;
@@ -208,7 +211,8 @@ export class MeshMcpFacade {
         const capabilities = (agent.capabilities ?? []).filter((capability) => capability !== CREATE_SESSION_CAPABILITY);
         const canCreate = this.options.principal.allowedWorkspaceIds.some((workspaceId) => (
           ((this.options.principal.allowedTools.includes("mesh_call") || this.options.principal.allowedTools.includes("mesh_submit")) &&
-            this.options.sessionRegistry?.freshSessionSupport(agent.id, workspaceId) === "supported") ||
+            (this.options.sessionRegistry?.freshSessionSupport(agent.id, workspaceId) === "supported" ||
+             this.options.workspaceWorkers?.supports(this.options.principal.id, agent.id, workspaceId) === true)) ||
           (this.options.principal.allowedTools.includes("mesh_agent_session_create") &&
             this.options.sessionRegistry?.createSessionSupport(agent.id, workspaceId) === "supported")
         ));
@@ -404,11 +408,21 @@ export class MeshMcpFacade {
   private async taskInput(input: MeshTaskDispatchInput) {
     const target = this.allowedTarget(input.targetAgentId);
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    const binding = input.sessionId === undefined ? undefined : await this.options.taskCoordinator?.sessionBinding(input.sessionId);
+    if (binding !== undefined && (binding.principal_id !== this.options.principal.id || binding.target_agent_id !== target.id || binding.workspace_id !== workspaceId)) {
+      throw new Error("Session access denied: principal, agent or workspace mismatch.");
+    }
+    if (binding?.worker_id !== undefined && this.options.workspaceWorkers === undefined) throw new Error("workspace_worker_unavailable: session worker configuration is missing.");
+    const accessMode = input.accessMode ?? binding?.access_mode ?? "read-only";
+    if (binding !== undefined && accessMode !== (binding.access_mode ?? "read-only")) throw new Error("Session access mode is immutable.");
+    const workerId = this.options.workspaceWorkers?.authorize({ principalId: this.options.principal.id,
+      agentId: target.id, workspaceId, accessMode, sessionMode: input.sessionMode, sessionId: input.sessionId, binding });
+    if (accessMode === "workspace-write" && workerId === undefined) throw new Error("workspace_write_denied: no authorized isolated worker.");
     if (input.sessionMode === "fresh") {
       if (input.sessionId !== undefined) {
         throw new MeshMcpError("session_mode_conflict", "session_id cannot be combined with session_mode \"fresh\".");
       }
-      const support = this.options.sessionRegistry?.freshSessionSupport(target.id, workspaceId) ?? "unsupported";
+      const support = workerId === undefined ? (this.options.sessionRegistry?.freshSessionSupport(target.id, workspaceId) ?? "unsupported") : "supported";
       if (support === "unsupported") {
         throw new MeshMcpError("fresh_session_unsupported", `Target agent cannot create fresh sessions: ${target.id}`);
       }
@@ -419,7 +433,7 @@ export class MeshMcpFacade {
         );
       }
     }
-    if (input.sessionId !== undefined) {
+    if (input.sessionId !== undefined && workerId === undefined) {
       const session = await this.sessions(target.id).get(target.id, {
         workspaceId,
         sessionId: input.sessionId
@@ -430,6 +444,8 @@ export class MeshMcpFacade {
     }
     return {
       ...(input.contextId === undefined ? {} : { contextId: input.contextId }),
+      accessMode,
+      ...(workerId === undefined ? {} : { workerId }),
       principalId: this.options.principal.id,
       principalKind: this.options.principal.kind,
       requesterId: this.options.principal.requesterId,
@@ -493,6 +509,7 @@ const taskDispatchInputSchema = z.object({
   target_agent_id: identifierSchema,
   session_id: identifierSchema.optional(),
   session_mode: z.enum(["fresh"]).optional(),
+  access_mode: z.enum(["read-only", "workspace-write"]).optional().describe("Defaults to read-only for new sessions. workspace-write requires an explicit owner grant and isolated worker. Existing sessions retain their original mode; explicit changes are rejected."),
   workspace_id: identifierSchema.optional(),
   domain_id: identifierSchema.optional(),
   context_id: identifierSchema.optional(),
@@ -802,6 +819,7 @@ function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDisp
     targetAgentId: input.target_agent_id,
     sessionId: input.session_id,
     sessionMode: input.session_mode,
+    accessMode: input.access_mode,
     workspaceId: input.workspace_id,
     domainId: input.domain_id,
     contextId: input.context_id,
@@ -820,6 +838,7 @@ export function publicTask(task: MeshTaskRecord) {
     ...(task.session_id === undefined ? {} : { session_id: task.session_id }),
     ...(task.session_mode === undefined ? {} : { session_mode: task.session_mode }),
     ...(task.session_provenance === undefined ? {} : { session_provenance: { ...task.session_provenance } }),
+    access_mode: task.access_mode ?? "read-only",
     status: task.status,
     created_at: task.created_at,
     updated_at: task.updated_at,
@@ -834,6 +853,7 @@ export async function executeMeshTask(
   task: MeshTaskRecord,
   now: () => Date = () => new Date(),
   options: {
+    bindSession?: (sessionId: string) => Promise<void>;
     resultWaitMs?: number;
     resultPollMs?: number;
     sleep?: (ms: number) => Promise<void>;
@@ -872,6 +892,12 @@ export async function executeMeshTask(
   const transportAdapterId = task.session_id === undefined ? "tmux-transport" : "agent-session-transport";
   const transport = [...submitted.deliveries].reverse()
     .find((delivery) => delivery.adapter_id === transportAdapterId);
+  if (task.session_mode === "fresh" && options.bindSession !== undefined) {
+    for (const event of await gateway.listAudit({ type: "delivery.updated", message_id: task.message_id })) {
+      const details = event.details.adapter_details as Record<string, unknown> | undefined;
+      if (event.details.adapter_id === transportAdapterId && details?.correlation_id === task.task_id && typeof details.resolved_session_id === "string") await options.bindSession(details.resolved_session_id);
+    }
+  }
   if (transport === undefined || transport.status !== "delivered") {
     const freshFailure = task.session_mode === "fresh"
       ? await freshSessionFailure(gateway, task.message_id, transportAdapterId)
