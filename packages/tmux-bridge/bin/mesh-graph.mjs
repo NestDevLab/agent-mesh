@@ -452,7 +452,7 @@ function factAttention(fact, refs, observedAt) {
   if ((active || fact.turn_active === true) && age < 30 * 60_000) { state = "working"; evidence = [active ? "active-writer" : "recent-turn", "recent-transcript"]; }
   else if (active && age >= 30 * 60_000) { state = "stalled-hung"; evidence = ["active-writer", "stale-transcript"]; }
   else if (status === "waiting" || fact.waitingFor === "input needed" || fact.pending_question) {
-    state = "waiting-joseph"; since = fact.last_final_at || fact.updatedAt; evidence = ["pending-question"];
+    state = "waiting-user"; since = fact.last_final_at || fact.updatedAt; evidence = ["pending-question"];
   } else if (Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
     state = "never-started"; evidence = ["no-human-turns"];
   } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && Number(fact.mutating_tool_calls) === 0) {
