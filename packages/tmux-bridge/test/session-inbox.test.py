@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Hermetic owner, cursor, privacy and prompt fallback regressions."""
+import contextlib
 import fcntl
+import io
 import importlib.util
 import json
 import os
@@ -9,6 +11,8 @@ import select
 import subprocess
 import sys
 import tempfile
+import threading
+from types import SimpleNamespace
 import time
 import unittest
 from unittest.mock import patch
@@ -77,6 +81,8 @@ class SessionInboxTest(unittest.TestCase):
             self.assertIn('never user approval', context)
             self.assertIn('do not expand permissions', context)
             self.assertIn('--owner-pid', context)
+            self.assertIn('AGENT_MESH_INBOX_DUPLICATE do-not-relaunch', context)
+            self.assertIn('do not relaunch it', context)
         inbox = self.root / (SESSION + '.jsonl')
         inbox.write_text('retained\n')
         inbox.chmod(0o644)
@@ -149,7 +155,7 @@ class SessionInboxTest(unittest.TestCase):
         for name, info in before.items():
             self.assertEqual(((self.root/name).stat().st_mtime_ns, (self.root/name).stat().st_mode), info)
         self.assertIn('Start', self.hook(session='other-session', event='UserPromptSubmit').stdout)
-        self.assertEqual(self.watcher().communicate(timeout=2), ('', ''))
+        self.assertEqual(self.watcher().communicate(timeout=2), ('AGENT_MESH_INBOX_DUPLICATE do-not-relaunch\n', ''))
 
     def test_owner_exit_releases_lock_and_new_owner_takes_over(self):
         owner = subprocess.Popen(['sleep', '30'])
@@ -250,15 +256,60 @@ class SessionInboxTest(unittest.TestCase):
 
     def test_io_failure_retries_without_noise(self):
         self.hook()
-        watcher = self.watcher()
-        self.ready()
+        spec = importlib.util.spec_from_file_location('inbox_retry_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
         inbox = self.root / (SESSION + '.jsonl')
-        inbox.unlink()
-        time.sleep(0.15)
-        self.assertIsNone(watcher.poll())
-        self.assertFalse(select.select([watcher.stdout], [], [], 0.1)[0])
-        inbox.write_text(record('recovered'))
-        self.assertIn('recovered', watcher.communicate(timeout=3)[0])
+        failed, recover = threading.Event(), threading.Event()
+        original_open = os.open
+        emitted = []
+        stdout, stderr = io.StringIO(), io.StringIO()
+        def fail_then_recover(path, flags, *args, **kwargs):
+            if Path(path) == inbox and not flags & os.O_CREAT:
+                if not failed.is_set():
+                    failed.set()
+                    raise OSError('synthetic read failure')
+                if not recover.wait(timeout=5):
+                    raise OSError('test did not release recovery')
+            return original_open(path, flags, *args, **kwargs)
+        args = SimpleNamespace(root=self.root, session=SESSION, owner_pid=os.getpid(),
+                               owner_start=None, batch_seconds=0, retry_seconds=0.001)
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), patch.object(module.os, 'open', side_effect=fail_then_recover), patch.object(
+                module, 'emit_batch', side_effect=lambda batch, owner: emitted.extend(batch) or True):
+            worker = threading.Thread(target=module.watch, args=(args,))
+            worker.start()
+            try:
+                self.assertTrue(failed.wait(timeout=5))
+                self.assertTrue(worker.is_alive())
+                self.assertEqual(emitted, [])
+                replacement = self.root / 'replacement'
+                replacement.write_text(record('recovered'))
+                replacement.replace(inbox)
+            finally:
+                recover.set()
+                worker.join(timeout=5)
+            self.assertFalse(worker.is_alive())
+        self.assertEqual((stdout.getvalue(), stderr.getvalue()), ('', ''))
+        self.assertEqual(len(emitted), 1)
+        self.assertIn('recovered', emitted[0])
+
+    def test_probe_contention_retries_when_registered_supervisor_is_dead(self):
+        self.hook()
+        lock = self.root / (SESSION + '.watch.lock')
+        lock.write_text(json.dumps({'schema': 'agent-mesh.session-inbox-lock.v1',
+                                   'owner': identity(os.getpid()),
+                                   'supervisor': {'pid': os.getpid(), 'start': 'expired'}}))
+        lock.chmod(0o600)
+        spec = importlib.util.spec_from_file_location('inbox_probe_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        # A status probe takes the lock briefly; after it leaves the next attempt succeeds.
+        with patch.object(module.fcntl, 'flock', side_effect=[BlockingIOError(), None]) as probe:
+            fd = module.acquire_lock(self.root / (SESSION + '.jsonl'), identity(os.getpid()))
+        self.assertIsNotNone(fd)
+        os.close(fd)
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(json.loads(lock.read_text())['supervisor'], identity(os.getpid()))
 
     def test_readiness_accepts_live_supervisor_without_child_reader(self):
         self.hook()
@@ -278,6 +329,47 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(watcher.poll())
 
+    def test_openpack_declares_claude_hooks_and_configurable_binary(self):
+        repo = SCRIPT.parents[3]
+        manifest = json.loads((repo / 'openpack.json').read_text())
+        declarations = [entry for entry in manifest['provides'] if entry['type'] == 'hooks']
+        self.assertEqual(len(declarations), 1)
+        declaration = declarations[0]
+        self.assertEqual(declaration['runtimes'], ['claude'])
+        config = json.loads((repo / declaration['path']).read_text())
+        self.assertEqual(set(config['hooks']), {'SessionStart', 'UserPromptSubmit'})
+        env = {**os.environ, 'HOME': self.temp.name, 'CLAUDE_CONFIG_DIR': str(Path(self.temp.name) / '.claude'),
+               'CLAUDE_PROJECT_DIR': str(Path(self.temp.name) / 'project'),
+               'AGENT_MESH_HARNESS_PID': str(os.getpid()), 'AGENT_MESH_INBOX_ROOT': str(self.root)}
+        env.pop('AGENT_MESH_BIN', None)
+        installed = Path(env['CLAUDE_PROJECT_DIR']) / '.claude' / 'skills' / 'agent-tmux' / 'bin'
+        installed.mkdir(parents=True)
+        (installed / 'agent-session-inbox.py').symlink_to(SCRIPT)
+        payload = json.dumps({'session_id': SESSION, 'hook_event_name': 'UserPromptSubmit'})
+        for event in ('SessionStart', 'UserPromptSubmit'):
+            handler = config['hooks'][event][0]['hooks'][0]
+            self.assertEqual(handler['timeout'], 1)
+            result = subprocess.run(['sh', '-c', handler['command']], env=env, input=payload,
+                                    text=True, capture_output=True, timeout=3)
+            self.assertEqual((result.returncode, result.stderr), (0, ''))
+            self.assertIn('additionalContext', result.stdout)
+            disabled = subprocess.run(['sh', '-c', handler['command']], env={**env, 'AGENT_MESH_INBOX_DISABLED': '1'},
+                                      input=payload, text=True, capture_output=True, timeout=3)
+            self.assertEqual((disabled.returncode, disabled.stdout, disabled.stderr), (0, '', ''))
+        # User-level managed skills work when there is no project-local copy.
+        (installed / 'agent-session-inbox.py').unlink()
+        user_bin = Path(env['CLAUDE_CONFIG_DIR']) / 'skills' / 'agent-tmux' / 'bin'
+        user_bin.mkdir(parents=True)
+        (user_bin / 'agent-session-inbox.py').symlink_to(SCRIPT)
+        result = subprocess.run(['sh', '-c', config['hooks']['UserPromptSubmit'][0]['hooks'][0]['command']],
+                                env=env, input=payload, text=True, capture_output=True, timeout=3)
+        self.assertIn('additionalContext', result.stdout)
+        # A launcher override wins over the default installed location.
+        env['AGENT_MESH_BIN'] = str(SCRIPT.parent)
+        result = subprocess.run(['sh', '-c', config['hooks']['UserPromptSubmit'][0]['hooks'][0]['command']],
+                                env=env, input=payload, text=True, capture_output=True, timeout=3)
+        self.assertIn('additionalContext', result.stdout)
+
     def test_hook_timeout_and_command_failures_are_silent(self):
         proc = subprocess.Popen([sys.executable, str(SCRIPT), 'hook', '--root', str(self.root)],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -293,6 +385,7 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(handler['timeout'], 1)
         env = {**os.environ}
         env.pop('AGENT_MESH_BIN', None)
+        env.update({'HOME': self.temp.name, 'CLAUDE_PROJECT_DIR': self.temp.name, 'CLAUDE_CONFIG_DIR': str(Path(self.temp.name) / '.claude')})
         result = subprocess.run(['sh', '-c', handler['command']], env=env, capture_output=True, timeout=2)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b'', b''))
         env.update({'AGENT_MESH_BIN': str(SCRIPT.parent), 'AGENT_MESH_INBOX_ROOT': str(self.root),

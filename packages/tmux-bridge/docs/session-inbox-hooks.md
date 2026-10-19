@@ -15,10 +15,30 @@ Mailbox, cursor and lock files are private 0600 local state, never source assets
 
 ## Hooks and owner identity
 
-Merge `hooks/claude-session-start.json` into managed configuration, preserving
-existing handlers. Set `AGENT_MESH_BIN` to the installed bridge binaries directory.
-The existing `*.py` skill asset rule includes the supervisor; hook wiring is a
-separate deployment operation. No live hooks or services are changed here.
+`openpack.json` declares the Claude-only hook artifact at
+`packages/tmux-bridge/hooks/claude-session-start.json`. Agentwheel merges its
+SessionStart and UserPromptSubmit handlers into Claude settings. Select both
+`skills/agent-tmux` (including its `*.py` assets) and
+`hooks/claude-session-start.json` in the managed profile; selecting skills alone
+does not install the hook. No live hooks or services are changed here.
+
+`AGENT_MESH_BIN` overrides the binary location. Without it, hook commands check
+`$CLAUDE_PROJECT_DIR/.claude/skills/agent-tmux/bin` (or the current project
+working directory), then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/agent-tmux/bin`.
+Both handlers fail open with a one-second timeout. A launcher or private Claude
+settings profile can configure the environment, for example:
+
+```json
+{
+  "env": {
+    "AGENT_MESH_BIN": "/path/to/installed/bridge/bin",
+    "AGENT_MESH_INBOX_DISABLED": "1"
+  }
+}
+```
+
+Use the disable setting for automation; omit it or set it to `0` for interactive
+activation. The package does not override an inherited disable setting.
 
 The hook discovers the owning Claude process in its ancestry, or uses the
 explicit `AGENT_MESH_HARNESS_PID` supplied by a trusted launcher. It pins both PID
@@ -27,7 +47,10 @@ that identity and its own PID/start ticks in the session lock. A held lock is
 ready only while both identities are alive. PID reuse and zombie processes do not
 count as ownership. The supervisor exits silently when its harness exits; a new
 owner waits briefly for the stale owner's lock to be released, then claims it.
-An unrelated live owner is never displaced.
+An unrelated live owner is never displaced. Lock contention with a dead recorded
+supervisor is retried, including a brief lock held by a readiness probe. A true
+second watcher emits `AGENT_MESH_INBOX_DUPLICATE do-not-relaunch`; the injected
+context explicitly says not to relaunch it, leaving the existing watcher alone.
 
 Set `AGENT_MESH_INBOX_DISABLED=1` (also `true` or `yes`) for `claude -p`, automation
 or any launch that must not start an inbox. It makes hook and watch modes silent

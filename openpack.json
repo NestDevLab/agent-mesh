@@ -65,6 +65,14 @@
     {
       "type": "plugins",
       "path": "plugins"
+    },
+    {
+      "type": "hooks",
+      "path": "packages/tmux-bridge/hooks/claude-session-start.json",
+      "runtimes": [
+        "claude"
+      ],
+      "required": false
     }
   ]
 }
