@@ -536,9 +536,14 @@ function projectRegistry(graph, options) {
   const directory = lstatSync(dirname(output));
   if (!directory.isDirectory() || (directory.mode & 0o077) || (process.getuid && directory.uid !== process.getuid())) throw new Error("registry output directory must be private and owned by the current user");
   if (existsSync(output)) {
-    const previous = JSON.parse(readFileSync(output, "utf8"));
+    let previous;
+    try { previous = JSON.parse(readFileSync(output, "utf8")); } catch {
+      // The registry is a replaceable cache; valid canonical graph state wins.
+    }
     const withoutTime = (value) => JSON.stringify({ ...value, generatedAt: null });
-    if (withoutTime(previous) === withoutTime(registry)) { chmodSync(output, 0o600); return previous; }
+    if (previous?.schema === REGISTRY_SCHEMA && withoutTime(previous) === withoutTime(registry)) {
+      chmodSync(output, 0o600); return previous;
+    }
   }
   writeAtomic(output, `${JSON.stringify(registry, null, 2)}\n`);
   return registry;

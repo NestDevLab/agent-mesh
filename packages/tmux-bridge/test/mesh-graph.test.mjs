@@ -620,6 +620,15 @@ test("registry deduplicates identities, preserves exclusions and writes private 
     assert.equal((await stat(output)).mtimeMs, before.mtimeMs);
     assert.equal((await run(state, [...args, "--open-window-days", "0"])).code, 2);
     assert.equal(await readFile(output, "utf8"), bytes);
+    await writeFile(output, "{broken");
+    const regenerated = await run(state, args);
+    assert.equal(regenerated.code, 0, regenerated.stderr);
+    assert.deepEqual(JSON.parse(regenerated.stdout).sessions, registry.sessions);
+    assert.equal((await stat(output)).mode & 0o777, 0o600);
+    const recovered = await readFile(output, "utf8");
+    await appendFile(join(state, "events.jsonl"), JSON.stringify({ schema: "bad" }) + "\n");
+    assert.equal((await run(state, args)).code, 2);
+    assert.equal(await readFile(output, "utf8"), recovered);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
