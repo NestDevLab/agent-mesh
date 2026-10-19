@@ -7,6 +7,8 @@
  */
 
 import {
+  chmodSync,
+  lstatSync,
   closeSync,
   existsSync,
   fsyncSync,
@@ -28,6 +30,8 @@ import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 
+const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
+const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation"]);
 const GRAPH_SCHEMA = "agent-mesh.session-graph.v1";
 const EVENT_SCHEMA = "agent-mesh.session-graph-event.v1";
 const NODE_STATUSES = new Set(["active", "waiting", "blocked", "quiet", "closed"]);
@@ -53,6 +57,8 @@ const { values, positionals } = parseArgs({
     role: { type: "string" },
     "take-over": { type: "string" },
     "quiet-after": { type: "string" },
+    "registry-out": { type: "string" },
+    "open-window-days": { type: "string" },
     summary: { type: "string" },
     status: { type: "string" },
     "runtime-uuid": { type: "string" },
@@ -100,6 +106,9 @@ try {
       break;
     case "sweep":
       printResult(sweepNodes(stateDir, values), values);
+      break;
+    case "registry":
+      printResult(writeRegistry(stateDir, values), { ...values, json: true });
       break;
     case "claim":
       printResult(claimDomain(stateDir, values), values);
@@ -292,7 +301,7 @@ function discoverNodes(statePath, options) {
       const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: factCreatedAt(fact, now()) };
-      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: factClass(fact, existing?.class), surface: factSurface(fact) });
+      Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: factClass(fact, existing?.class), surface: factSurface(fact), origin: fact.origin || existing?.origin || "human" });
       node.attention = factAttention(fact, node.refs || [], now());
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!existing || ["active", "quiet"].includes(existing.status)) node.status = observedStatus;
@@ -302,11 +311,19 @@ function discoverNodes(statePath, options) {
       }
       nodes.push(node);
     }
+    applyLaunchProvenance(nodes);
+    for (const node of nodes) {
+      const prior = graph.nodes.find((item) => item.id === node.id);
+      if (JSON.stringify(prior) !== JSON.stringify(node) && !events.some((item) => item.node.id === node.id)) {
+        node.updatedAt = now(); events.push(event("node.upserted", { node }));
+      }
+    }
     return { graph, events, result: { nodes, skippedTranscripts: skipped, changed: events.length > 0 } };
   });
 }
 
 function sweepNodes(statePath, options) {
+  optionalPositiveInteger(options["open-window-days"], "--open-window-days");
   const agents = options.agent === undefined ? ["codex", "claude"] : [requiredAdoptAgent(options.agent)];
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
   const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent, statePath) }));
@@ -332,7 +349,7 @@ function sweepNodes(statePath, options) {
       Object.assign(node, {
         agent: fact.agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid,
         lastSeenAt: fact.updatedAt, class: factClass(fact, node.class),
-        surface: factSurface(fact),
+        surface: factSurface(fact), origin: fact.origin || node.origin || "human",
       });
       node.attention = factAttention(fact, node.refs || [], observedAt);
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
@@ -396,6 +413,7 @@ function sweepNodes(statePath, options) {
       if (JSON.stringify(reasons) !== JSON.stringify(original.get(node.id)?.resumabilityReasons)) node.resumabilityObservedAt = observedAt;
     }
 
+    applyLaunchProvenance(desired);
     const events = [];
     for (const node of desired) {
       const before = original.get(node.id);
@@ -415,7 +433,120 @@ function sweepNodes(statePath, options) {
         changed: events.length > 0,
       },
     };
-  });
+  }, options);
+}
+
+
+
+function launchHistory() {
+  const path = process.env.AGENT_MESH_LAUNCH_EVENTS || process.env.MESH_LAUNCH_RECORD_FILE ||
+    join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "agent-mesh", "launches", "events.jsonl");
+  if (!existsSync(path)) return [];
+  const launches = new Map();
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    if (record?.schema !== "agent-mesh.bridge-launch-event.v1" || typeof record.launchId !== "string") continue;
+    const item = launches.get(record.launchId) || { launchId: record.launchId };
+    if (record.event === "launch.started") Object.assign(item, {
+      agent: record.agent, kind: record.kind || (record.threadId ? "resume" : "spawn"),
+      caller: typeof record.caller === "string" && record.caller.trim() && record.caller.trim() !== "unknown" ? record.caller.trim() : null,
+      at: record.launchedAt || record.recordedAt || record.at,
+    });
+    if (typeof record.threadId === "string" && record.threadId) item.threadId = record.threadId.toLowerCase();
+    launches.set(record.launchId, item);
+  }
+  return [...launches.values()].filter((item) => ["spawn", "resume"].includes(item.kind) &&
+    typeof item.threadId === "string" && Number.isFinite(Date.parse(item.at)))
+    .sort((a, b) => a.at.localeCompare(b.at) || a.launchId.localeCompare(b.launchId));
+}
+
+function applyLaunchProvenance(nodes) {
+  const launches = launchHistory();
+  for (const node of nodes) {
+    node.launches = launches.filter((item) => item.agent === node.agent && item.threadId === node.runtimeUuid)
+      .map(({ launchId, kind, caller, at }) => ({ launchId, kind, caller, at }));
+    if (!ORIGINS.has(node.origin)) node.origin = "human";
+    // A resume never changes human ownership into bridge parentage.
+    if (!["subagent", "automation"].includes(node.origin) && node.launches.some((item) => item.kind === "spawn")) node.origin = "bridge-worker";
+  }
+}
+
+function registryProjection(graph, days) {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const identity = (node) => node && ["codex", "claude"].includes(node.agent) &&
+    /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(node.runtimeUuid || "")
+    ? `${node.agent}:${node.runtimeUuid.toLowerCase()}` : null;
+  const groups = new Map();
+  for (const node of graph.nodes) {
+    const ref = identity(node);
+    if (!ref) continue;
+    if (!groups.has(ref)) groups.set(ref, []);
+    groups.get(ref).push(node);
+  }
+  const sessions = {}, excluded = {}, recentlyClosed = {};
+  for (const [ref, nodes] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
+    nodes.sort((a, b) => String(b.lastSeenAt || b.updatedAt).localeCompare(String(a.lastSeenAt || a.updatedAt)) || a.id.localeCompare(b.id));
+    const newest = nodes[0];
+    const union = (field) => [...new Set(nodes.flatMap((node) => node[field] || []))].sort();
+    const launches = [...new Map(nodes.flatMap((node) => node.launches || []).map((item) => [item.launchId, item])).values()]
+      .sort((a, b) => a.at.localeCompare(b.at) || a.launchId.localeCompare(b.launchId));
+    const tmuxTargets = [...new Set(nodes.map((node) => node.tmuxTarget).filter(Boolean))].sort();
+    const tmuxLive = nodes.some((node) => node.tmuxObservation?.state === "live");
+    const attention = nodes.map((node) => node.attention).find((item) => item &&
+      (["working", "waiting-user", "waiting-joseph"].includes(item.state) || String(item.state).startsWith("stalled-"))) || newest.attention || { state: "idle", since: newest.lastSeenAt };
+    const parents = graph.edges.filter((edge) => edge.type === "spawned-by" && nodes.some((node) => node.id === edge.to))
+      .map((edge) => identity(byId.get(edge.from))).filter(Boolean);
+    for (const launch of launches.filter((item) => item.kind === "spawn" && item.caller)) {
+      const candidates = [...groups.keys()].filter((key) => key === launch.caller || key.split(":")[1] === launch.caller);
+      if (candidates.length === 1) parents.push(candidates[0]);
+    }
+    const item = {
+      agent: newest.agent, runtimeUuid: newest.runtimeUuid.toLowerCase(), nodeIds: nodes.map((node) => node.id).sort(),
+      cwd: newest.cwd, domains: union("domains"), title: newest.title,
+      createdAt: nodes.map((node) => node.createdAt).sort()[0], lastSeenAt: newest.lastSeenAt || newest.updatedAt,
+      closedAt: nodes.filter((node) => node.status === "closed" || node.surface?.archived).map((node) => node.updatedAt).sort().at(-1) || null,
+      status: newest.status, attention, surface: { ...newest.surface, archived: nodes.some((node) => node.surface?.archived === true) },
+      origin: nodes.find((node) => ["subagent", "automation"].includes(node.origin))?.origin || newest.origin || "human",
+      class: nodes.some((node) => node.class === "ephemeral") ? "ephemeral" : newest.class,
+      spawnedBy: [...new Set(parents)].length === 1 ? parents[0] : null, launches, tmuxTargets, tmuxLive, refs: union("refs"),
+      delegatedBy: [...new Set(graph.edges.filter((edge) => edge.type === "delegates-to" && nodes.some((node) => node.id === edge.to))
+        .map((edge) => identity(byId.get(edge.from))).filter(Boolean))].sort(),
+    };
+    let reason = null;
+    if (item.class === "ephemeral" || ["subagent", "automation"].includes(item.origin)) reason = "noise";
+    else if (item.surface.archived) reason = "archived";
+    else if (nodes.some((node) => node.status === "closed")) reason = "closed";
+    else if (!(Date.parse(item.lastSeenAt) >= Date.now() - days * 86400000 || tmuxLive ||
+      ["working", "waiting-user", "waiting-joseph"].includes(attention.state) || String(attention.state).startsWith("stalled-"))) reason = "aged-out";
+    if (reason) {
+      excluded[ref] = reason;
+      if (["closed", "archived"].includes(reason) && Date.parse(item.closedAt || item.lastSeenAt) >= Date.now() - 30 * 86400000) recentlyClosed[ref] = { ...item, exclusion: reason };
+    } else sessions[ref] = item;
+  }
+  return { schema: REGISTRY_SCHEMA, generatedAt: now(), graphGeneratedAt: graph.generatedAt, policy: { openWindowDays: days }, sessions, excluded, recentlyClosed };
+}
+
+function projectRegistry(graph, options) {
+  const days = optionalPositiveInteger(options["open-window-days"], "--open-window-days") || 14;
+  const registry = registryProjection(graph, days);
+  const output = resolve(options["registry-out"] || join(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "agent-mesh", "registry", "registry.json"));
+  mkdirSync(dirname(output), { recursive: true, mode: 0o700 });
+  if (lstatSync(dirname(output)).isSymbolicLink() || (existsSync(output) && lstatSync(output).isSymbolicLink())) throw new Error("registry output must not be a symlink");
+  const directory = lstatSync(dirname(output));
+  if (!directory.isDirectory() || (directory.mode & 0o077) || (process.getuid && directory.uid !== process.getuid())) throw new Error("registry output directory must be private and owned by the current user");
+  if (existsSync(output)) {
+    const previous = JSON.parse(readFileSync(output, "utf8"));
+    const withoutTime = (value) => JSON.stringify({ ...value, generatedAt: null });
+    if (withoutTime(previous) === withoutTime(registry)) { chmodSync(output, 0o600); return previous; }
+  }
+  writeAtomic(output, `${JSON.stringify(registry, null, 2)}\n`);
+  return registry;
+}
+
+function writeRegistry(statePath, options) {
+  ensureStateDir(statePath);
+  return withLock(statePath, () => projectRegistry(loadGraph(statePath), options));
 }
 
 function transcriptIdentity(agent, runtimeUuid) {
@@ -712,7 +843,7 @@ function printResult(result, options) {
   process.stdout.write(`${identity}${result.changed ? "" : " (unchanged)"}\n`);
 }
 
-function mutate(statePath, operation) {
+function mutate(statePath, operation, options = {}) {
   ensureStateDir(statePath);
   return withLock(statePath, () => {
     const { graph, checkpointValid } = readGraphState(statePath);
@@ -721,12 +852,14 @@ function mutate(statePath, operation) {
     if (events.length === 0) {
       if (Array.isArray(result.result?.nodes)) writeProjection(statePath, graph);
       if (!checkpointValid) writeCheckpoint(statePath, graph);
+      if (options["registry-out"]) projectRegistry(graph, options);
       return result.result;
     }
     for (const item of events) appendEvent(statePath, item);
     const derived = deriveGraph(events, graph);
     writeProjection(statePath, derived);
     writeCheckpoint(statePath, derived);
+    if (options["registry-out"]) projectRegistry(derived, options);
     return result.result;
   });
 }
@@ -845,7 +978,9 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
+  let generatedAt = base?.generatedAt || "1970-01-01T00:00:00.000Z";
   for (const item of events) {
+    generatedAt = item.at || generatedAt;
     if (item.type === "node.upserted") {
       validateNode(item.node);
       nodes.set(item.node.id, normalizeNode(item.node));
@@ -866,7 +1001,7 @@ function deriveGraph(events, base = null) {
   }
   return {
     schema: GRAPH_SCHEMA,
-    generatedAt: now(),
+    generatedAt,
     nodes: [...nodes.values()].sort((left, right) => left.id.localeCompare(right.id)),
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
   };
@@ -1047,6 +1182,8 @@ function validateNode(node) {
   if (node.resumable !== undefined && typeof node.resumable !== "boolean") throw new Error(`node '${node.id}' has invalid resumable`);
   if (node.resumabilityReasons !== undefined && (!Array.isArray(node.resumabilityReasons) || node.resumabilityReasons.some((reason) => typeof reason !== "string"))) throw new Error(`node '${node.id}' has invalid resumabilityReasons`);
   if (node.resumabilityObservedAt !== undefined && typeof node.resumabilityObservedAt !== "string") throw new Error(`node '${node.id}' has invalid resumabilityObservedAt`);
+  if (node.origin !== undefined && !ORIGINS.has(node.origin)) throw new Error("invalid node origin");
+  if (node.launches !== undefined && (!Array.isArray(node.launches) || node.launches.some((item) => !item || typeof item.launchId !== "string" || !["spawn", "resume"].includes(item.kind) || !(item.caller === null || typeof item.caller === "string") || !Number.isFinite(Date.parse(item.at))))) throw new Error("invalid node launches");
   assertStatus(node.status);
 }
 
@@ -1159,5 +1296,5 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph sweep [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }

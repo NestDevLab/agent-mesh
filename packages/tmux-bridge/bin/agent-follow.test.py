@@ -589,6 +589,20 @@ class FollowerTest(unittest.TestCase):
         rows, _ = follow.outbox(self.root)
         self.assertEqual([(row["kind"], row["body"]) for row in rows], [("REPLY", "Fresh reply")])
 
+    def test_registry_exclusions_prevent_new_discovery(self):
+        registry, graph = follow.source_paths({})
+        registry.parent.mkdir(parents=True)
+        registry.write_text(json.dumps({"schema": "agent-mesh.session-registry.v1", "sessions": {},
+                                        "excluded": {REF: "archived"}}))
+        sessions, rejected, _, source = follow.session_source({})
+        self.assertEqual(source, "registry")
+        self.assertEqual(rejected, {REF: "archived"})
+        selected = {REF: {"mode": "observe", "addedBy": "discovery"}}
+        events, _, excluded = follow.reconcile(self.root, selected, {}, None)
+        self.assertEqual(selected, {})
+        self.assertEqual(events[0]["kind"], "CLOSED")
+        self.assertIn(REF, excluded)
+
     def test_selection_cli_round_trip(self):
         with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.root)}):
             self.assertEqual(follow.main(["add", "--name", "test", REF, "--label", "Worker", "--mode", "observe"]), 0)
