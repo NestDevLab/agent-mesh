@@ -450,8 +450,19 @@ def reconcile(root: Path, selected: dict[str, Any], config: dict[str, Any], self
     for ref, entry in selected.items():
         entry.pop("parent", None)
         entry.update(authority(ref, selected, graph, self_ref, sessions.get(ref)))
-    atomic_json(root / "source-state.json", {"generation": int(generation), "source": source, "tombstones": tombstones})
+    atomic_json(root / "source-state.json", {"generation": int(generation), "source": source, "tombstones": tombstones, "excluded": sorted(excluded)})
     return events, graph, excluded
+
+
+def saved_exclusions(root: Path) -> set[str]:
+    """Use the last successful source snapshot during a degraded tick."""
+    try:
+        state = read_json(root / "source-state.json", {})
+        refs = state.get("excluded", []) if isinstance(state, dict) else []
+        return {ref for ref in refs if isinstance(ref, str) and SESSION.fullmatch(ref)} if isinstance(refs, list) else set()
+    except (OSError, ValueError):
+        # Discovery is disabled while degraded even if this snapshot is unreadable.
+        return set()
 
 
 def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, Any], self_ref: str | None) -> tuple[list[dict[str, Any]], dict[str, Path], dict[str, float]]:
@@ -463,9 +474,10 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
     prior = read_json(root / "discover-cache.json", {})
     if not isinstance(prior, dict):
         prior = {}
-    current: dict[str, float] = {}
-    metadata = watch.codex_metadata()
-    parents = watch.bridge_parents()
+    selected_only = bool(config.get("_selected_only", False))
+    current: dict[str, float] = dict(prior) if selected_only else {}
+    metadata = {} if selected_only else watch.codex_metadata()
+    parents = {} if selected_only else watch.bridge_parents()
     rules = config.get("noise", {}) if isinstance(config.get("noise"), dict) else {}
     follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
     thread_noise = set(rules.get("threadSources", ("subagent", "guardian_review", "automation", "realtime_voice")))
@@ -474,6 +486,8 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
     for agent in ("codex", "claude"):
         for session_id, path in watch.transcript_candidates(agent):
             ref = f"{agent}:{session_id}"
+            if selected_only and ref not in selected:
+                continue
             paths[ref] = path
             try:
                 mtime = path.stat().st_mtime
@@ -523,16 +537,18 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
     with locked(root / "state.lock"):
         selected = load_selection(root)
         reconciled = {ref: dict(entry) for ref, entry in selected.items()}
+        degraded = False
         try:
             closed, graph, excluded = reconcile(root, reconciled, config, self_ref)
         except (OSError, ValueError, TypeError, AttributeError) as error:
             # A transient/invalid source must not stop transcript observation or
             # partially remove selection entries. Retry the source on the next tick.
             print(f"FOLLOWER degraded source reconciliation skipped: {error}", file=sys.stderr, flush=True)
-            closed, graph, excluded = [], {}, set()
+            closed, graph, excluded = [], {}, saved_exclusions(root)
+            degraded = True
         else:
             selected = reconciled
-        new, paths, discovered = discover(root, selected, {**config, "_graph": graph, "_excluded": excluded}, self_ref)
+        new, paths, discovered = discover(root, selected, {**config, "_graph": graph, "_excluded": excluded, "_selected_only": degraded}, self_ref)
         discovery_kinds = {item["ref"]: item["kind"] for item in new}
         staged: list[tuple[Path, dict[str, Any]]] = []
         candidates = closed + list(new)

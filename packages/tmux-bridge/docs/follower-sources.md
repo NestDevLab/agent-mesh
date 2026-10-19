@@ -10,8 +10,10 @@ The default source is `$XDG_STATE_HOME/agent-mesh/registry/registry.json`
 not required. The XDG state home defaults to `$HOME/.local/state`.
 `--registry <path>` and `--graph <path>` override these locations. Invalid registry
 JSON causes that tick's reconciliation to be skipped with a diagnostic. Transcript
-observation continues using the saved selection, and reconciliation retries on the
-next tick; it never silently switches to another source because of invalid data.
+observation continues only for the saved selection, and reconciliation retries on
+the next tick. No new sessions are discovered while degraded, and the last saved
+exclusion snapshot remains in force. The follower never silently switches to
+another source because of invalid data.
 Missing sources preserve the selection.
 
 Graph identities are deduplicated by `agent:runtimeUuid`. Membership excludes
@@ -31,6 +33,9 @@ identities are temporarily protected against re-addition by transcript growth
 after leaving membership. Only departed identities are retained as tombstones,
 with a 14-day expiry and a maximum of 4096 entries (newest expirations retained).
 Current membership comes from the source and does not accumulate in this history.
+Each successful reconciliation also replaces the saved exclusion snapshot with
+that source's current rejections plus the bounded tombstones; rejected identities
+from older snapshots do not accumulate.
 Expired or evicted identities may be discovered again if they grow and the source
 has no exclusion for them.
 

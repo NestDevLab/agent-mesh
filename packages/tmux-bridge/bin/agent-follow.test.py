@@ -302,6 +302,78 @@ class FollowerTest(unittest.TestCase):
                     self.assertEqual(follow.tick(root, config, None), 0)
                 self.assertEqual(follow.load_selection(root)[REF]["mode"], "observe")
 
+    def test_saved_exclusions_replace_source_rejections_without_accumulating(self):
+        config = self.registry({REF: {"lastSeenAt": "2999-01-01T00:00:00Z", "surface": {"archived": True}}})
+        follow.reconcile(self.root, {}, config, None)
+        self.assertEqual(follow.saved_exclusions(self.root), {REF})
+        self.registry({})
+        follow.reconcile(self.root, {}, config, None)
+        self.assertEqual(follow.saved_exclusions(self.root), set())
+
+    def test_degraded_real_discovery_follows_selection_without_leaking_exclusions(self):
+        blocked_ref = "codex:00000000-0000-4000-8000-000000000002"
+        new_ref = "codex:00000000-0000-4000-8000-000000000003"
+        for source in ("graphPath", "registryPath"):
+            for keep_snapshot in (True, False):
+                with self.subTest(source=source, keep_snapshot=keep_snapshot):
+                    fixture = self.root / source / str(keep_snapshot)
+                    codex = fixture / "transcripts"
+                    codex.mkdir(parents=True)
+                    stamp = follow.dt.datetime.now(follow.dt.timezone.utc).isoformat()
+
+                    def write_event(ref, payload):
+                        path = codex / f"rollout-{ref.split(':')[1]}.jsonl"
+                        with path.open("a") as handle:
+                            handle.write(json.dumps({"type": "event_msg", "timestamp": stamp, "payload": payload}) + "\n")
+                        return path
+
+                    selected_path = write_event(REF, {"type": "user_message", "message": "Selected session"})
+                    write_event(blocked_ref, {"type": "user_message", "message": "EXCLUDED_CONTENT_MARKER"})
+                    graph = fixture / "graph.json"
+                    nodes = [{"id": f"node-{number}", "agent": "codex", "runtimeUuid": ref.split(':')[1], "lastSeenAt": stamp, "domains": [domain]}
+                             for number, (ref, domain) in enumerate(((REF, "sample"), (blocked_ref, "excluded")))]
+                    follow.atomic_json(graph, {"nodes": nodes, "edges": []})
+                    config = {"graphPath": str(graph), "follower": {"scope": {"excludeDomains": ["excluded"]}}}
+                    if source == "registryPath":
+                        registry = fixture / "registry.json"
+                        follow.atomic_json(registry, {"schema": "agent-mesh.session-registry.v1", "sessions": {f"codex:{node['runtimeUuid']}": node for node in nodes}})
+                        config["registryPath"] = str(registry)
+                    root = fixture / "follower"
+                    environment = {"CODEX_SESSION_ROOT": str(codex), "CODEX_STATE_DB": str(fixture / "absent.sqlite"), "CLAUDE_SESSION_ROOT": str(fixture / "claude"),
+                                   "AGENT_MESH_LAUNCH_EVENTS": str(fixture / "launches.jsonl")}
+                    # No watcher/discovery mocks: exercise real filesystem discovery,
+                    # transcript parsing, cursors, outbox and restart state together.
+                    with patch.dict(os.environ, environment):
+                        self.assertEqual(follow.tick(root, config, None), 0)
+                        self.assertEqual(set(follow.load_selection(root)), {REF})
+                        self.assertEqual(follow.saved_exclusions(root), {blocked_ref})
+                        prior_state = (root / "source-state.json").read_bytes()
+                        prior_cache = follow.read_json(root / "discover-cache.json", {})
+                        if not keep_snapshot:
+                            (root / "source-state.json").unlink()
+                        Path(config[source]).write_text('{')
+                        write_event(REF, {"type": "task_complete", "turn_id": "selected-fresh", "last_agent_message": "Selected observation continues"})
+                        write_event(blocked_ref, {"type": "task_complete", "turn_id": "blocked-fresh", "last_agent_message": "EXCLUDED_REPLY_MARKER"})
+                        write_event(new_ref, {"type": "user_message", "message": "UNSELECTED_CONTENT_MARKER"})
+                        output, stderr = io.StringIO(), io.StringIO()
+                        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(output):
+                            self.assertEqual(follow.tick(root, config, None), 1)
+                            follow.print_pending(root)
+                        self.assertIn("reconciliation skipped", stderr.getvalue())
+                        self.assertIn("Selected observation continues", output.getvalue())
+                        self.assertEqual(set(follow.load_selection(root)), {REF})
+                        rows, _ = follow.outbox(root)
+                        self.assertEqual([(row["ref"], row["kind"]) for row in rows], [(REF, "REPLY")])
+                        for marker in ("EXCLUDED_CONTENT_MARKER", "EXCLUDED_REPLY_MARKER", "UNSELECTED_CONTENT_MARKER"):
+                            self.assertNotIn(marker, output.getvalue() + json.dumps(rows))
+                        self.assertFalse(follow.cursor_path(root, blocked_ref).exists())
+                        self.assertFalse(follow.cursor_path(root, new_ref).exists())
+                        self.assertEqual(follow.read_json(root / "discover-cache.json", {})[blocked_ref], prior_cache[blocked_ref])
+                        if keep_snapshot:
+                            self.assertEqual((root / "source-state.json").read_bytes(), prior_state)
+                            self.assertEqual(follow.saved_exclusions(root), {blocked_ref})
+                        self.assertEqual(follow.read_json(follow.cursor_path(root, REF), {})["offset"], selected_path.stat().st_size)
+
     def test_null_registry_does_not_fall_back_and_close_graph_entries(self):
         follow.save_selection(self.root, {REF: {**ENTRY, "addedBy": "graph"}})
         registry = self.root / "null-registry.json"
