@@ -19,7 +19,9 @@ Missing sources preserve the selection.
 Graph identities are deduplicated by `agent:runtimeUuid`. Membership excludes
 closed, archived, ephemeral, subagent and automation sessions. Other identities
 are included when seen within 14 days, observed live in tmux, or carrying working,
-waiting-joseph or stalled attention. A graph duplicate marked closed or archived
+waiting-user or stalled attention. The legacy waiting-joseph attention state is
+also accepted when reading existing graphs or registries; new graph observations
+write waiting-user. A graph duplicate marked closed or archived
 excludes the identity. No transcript contents are needed to establish membership.
 
 Each tick adds source members, adopts discovery entries once the source knows

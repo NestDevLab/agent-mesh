@@ -335,7 +335,7 @@ def membership_reason(item: dict[str, Any], now: float, days: float) -> str | No
         return "closed"
     attention = (item.get("attention") or {}).get("state", "")
     live = (item.get("tmuxObservation") or {}).get("state") == "live" or item.get("tmuxLive") is True
-    if iso_epoch(item.get("lastSeenAt")) >= now - days * 86400 or live or attention in {"working", "waiting-joseph"} or attention.startswith("stalled-"):
+    if iso_epoch(item.get("lastSeenAt")) >= now - days * 86400 or live or attention in {"working", "waiting-user", "waiting-joseph"} or attention.startswith("stalled-"):
         return None
     return "aged-out"
 

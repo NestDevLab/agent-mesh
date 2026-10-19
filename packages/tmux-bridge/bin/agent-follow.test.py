@@ -151,6 +151,28 @@ class FollowerTest(unittest.TestCase):
         self.assertEqual(events[0]["kind"], "CLOSED")
         self.assertEqual(follow.scope_reason({}, {"follower": {"scope": {"unknownDomain": "exclude"}}}), "unknown-domain")
 
+    def test_current_and_legacy_waiting_attention_keep_old_source_members_open(self):
+        for state in ("waiting-user", "waiting-joseph"):
+            for source in ("graphPath", "registryPath"):
+                with self.subTest(state=state, source=source):
+                    item = {"id": "worker", "agent": "codex", "runtimeUuid": REF.split(":")[1],
+                            "lastSeenAt": "2000-01-01T00:00:00Z", "attention": {"state": state}}
+                    path = self.root / f"{source}-{state}.json"
+                    payload = {"nodes": [item], "edges": []} if source == "graphPath" else {
+                        "schema": "agent-mesh.session-registry.v1", "sessions": {REF: item}}
+                    follow.atomic_json(path, payload)
+                    selected = {}
+                    follow.reconcile(self.root, selected, {source: str(path)}, None)
+                    self.assertIn(REF, selected)
+                    self.assertEqual(selected[REF]["addedBy"], source.removesuffix("Path"))
+                    self.assertEqual(selected[REF]["mode"], "observe")
+                    # Waiting attention cannot override an explicit closure.
+                    item["status"] = "closed"
+                    follow.atomic_json(path, payload)
+                    events, _, _ = follow.reconcile(self.root, selected, {source: str(path)}, None)
+                    self.assertNotIn(REF, selected)
+                    self.assertEqual([event["kind"] for event in events], ["CLOSED"])
+
     def test_graph_fallback_deduplicates_and_requires_explicit_authority(self):
         owner = "claude:00000000-0000-4000-8000-000000000002"
         graph = {"nodes": [

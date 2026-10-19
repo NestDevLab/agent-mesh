@@ -360,6 +360,41 @@ test("mesh-graph discover registers persisted sessions as unclassified without r
   }
 });
 
+test("mesh-graph writes waiting-user attention for pending input", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-graph-waiting-"));
+  const state = join(root, "graph");
+  const transcripts = join(root, "transcripts");
+  const sessionId = "00000000-0000-4000-8000-000000000001";
+  const timestamp = new Date(Date.now() - 3_600_000).toISOString();
+  try {
+    await mkdir(transcripts);
+    const transcript = join(transcripts, `rollout-${sessionId}.jsonl`);
+    const records = [
+      { type: "session_meta", payload: { id: sessionId, cwd: "/workspace/sample" } },
+      { type: "response_item", payload: { type: "message", role: "user", content: [{ type: "input_text", text: "Prepare a sample" }] } },
+      { type: "response_item", payload: { type: "message", role: "assistant", phase: "final", content: [{ type: "output_text", text: "Which sample should I use?" }] } },
+      { type: "event_msg", payload: { type: "task_complete", last_agent_message: "Which sample should I use?" } },
+    ];
+    await writeFile(transcript, records.map((record) => JSON.stringify({ timestamp, ...record })).join("\n") + "\n");
+    const old = new Date(timestamp);
+    await utimes(transcript, old, old);
+    const result = await run(state, ["discover", "--agent", "codex", "--json"], {
+      CODEX_SESSION_ROOT: transcripts, MESH_DOMAIN_ROOTS_FILE: "",
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const [node] = JSON.parse(result.stdout).nodes;
+    assert.equal(node.attention.state, "waiting-user");
+    assert.equal(node.attention.since, timestamp);
+    assert.deepEqual(node.attention.evidence, ["pending-question"]);
+    const graph = JSON.parse(await readFile(join(state, "graph.json"), "utf8"));
+    assert.equal(graph.nodes[0].attention.state, "waiting-user");
+    const events = (await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(events[0].node.attention.state, "waiting-user");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("mesh-graph discover reports an empty sweep instead of failing on an unknown session root", async () => {
   const state = await mkdtemp(join(tmpdir(), "mesh-graph-discover-empty-"));
   try {
