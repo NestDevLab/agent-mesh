@@ -360,6 +360,10 @@ def session_source(config: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], d
             if not isinstance(ref, str) or not SESSION.fullmatch(ref) or not isinstance(item, dict):
                 raise ValueError("invalid session registry entry")
             sessions[ref.lower()] = dict(item)
+        for ref, reason in registry.get("excluded", {}).items():
+            if not isinstance(ref, str) or not SESSION.fullmatch(ref) or not isinstance(reason, str):
+                raise ValueError("invalid session registry exclusion")
+            rejected[ref.lower()] = reason
         source = "registry"
     elif graph_path.exists():
         for node in sorted(graph.get("nodes", []), key=lambda n: str(n.get("lastSeenAt", ""))):

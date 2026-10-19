@@ -577,3 +577,89 @@ test("mesh-graph checkpoints the event cursor and reads only appended events", a
     await rm(state, { recursive: true, force: true });
   }
 });
+
+test("registry deduplicates identities, preserves exclusions and writes private stable output", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-registry-"));
+  const state = join(root, "graph");
+  const output = join(root, "registry", "registry.json");
+  const uuid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const timestamp = new Date().toISOString();
+  const old = new Date(Date.now() - 40 * 86400000).toISOString();
+  const node = (id, runtime, extra = {}) => ({ id, agent: "codex", runtimeUuid: uuid(runtime), tmuxTarget: "", cwd: "/workspace/example", roleProfile: "", title: id, summary: "", status: "quiet", class: "unclassified", domains: ["example"], refs: [], createdAt: timestamp, updatedAt: timestamp, lastSeenAt: timestamp, ...extra });
+  try {
+    await mkdir(state);
+    const nodes = [node("owner", 1), node("duplicate", 1, { refs: ["work:item-1"], tmuxTarget: "mesh-example" }),
+      node("archived", 2, { surface: { archived: true } }), node("archived-duplicate", 2),
+      node("closed", 3, { status: "closed" }), node("noise", 4, { origin: "automation" }),
+      node("old", 5, { lastSeenAt: old }), node("old-live", 6, { lastSeenAt: old, tmuxObservation: { state: "live", observedAt: timestamp } }),
+      node("old-waiting", 7, { lastSeenAt: old, attention: { state: "waiting-joseph", since: old } }),
+      node("child", 8, { launches: [{ launchId: "spawn", kind: "spawn", caller: uuid(1), at: timestamp }] })];
+    const events = nodes.map((node) => ({ schema: "agent-mesh.session-graph-event.v1", id: `event-${node.id}`, at: timestamp, type: "node.upserted", node }));
+    events.push({ schema: "agent-mesh.session-graph-event.v1", id: "delegate", at: timestamp, type: "edge.added", edge: { id: "edge", from: "owner", to: "child", type: "delegates-to", createdAt: timestamp } });
+    await writeFile(join(state, "events.jsonl"), events.map((item) => JSON.stringify(item)).join("\n") + "\n");
+    const args = ["registry", "--registry-out", output, "--json"];
+    const result = await run(state, args);
+    assert.equal(result.code, 0, result.stderr);
+    const registry = JSON.parse(result.stdout);
+    assert.equal(registry.schema, "agent-mesh.session-registry.v1");
+    assert.equal(Object.keys(registry.sessions).length, 4);
+    assert.deepEqual(registry.sessions[`codex:${uuid(1)}`].nodeIds, ["duplicate", "owner"]);
+    assert.deepEqual(registry.sessions[`codex:${uuid(1)}`].refs, ["work:item-1"]);
+    assert.equal(registry.excluded[`codex:${uuid(2)}`], "archived");
+    assert.equal(registry.excluded[`codex:${uuid(3)}`], "closed");
+    assert.equal(registry.excluded[`codex:${uuid(4)}`], "noise");
+    assert.equal(registry.excluded[`codex:${uuid(5)}`], "aged-out");
+    assert.equal(registry.sessions[`codex:${uuid(8)}`].spawnedBy, `codex:${uuid(1)}`);
+    assert.deepEqual(registry.sessions[`codex:${uuid(8)}`].delegatedBy, [`codex:${uuid(1)}`]);
+    assert.ok(registry.recentlyClosed[`codex:${uuid(2)}`]);
+    assert.equal((await stat(output)).mode & 0o777, 0o600);
+    assert.equal((await stat(dirname(output))).mode & 0o777, 0o700);
+    const before = await stat(output), bytes = await readFile(output, "utf8");
+    assert.equal((await run(state, args)).code, 0);
+    assert.equal(await readFile(output, "utf8"), bytes);
+    assert.equal((await stat(output)).mtimeMs, before.mtimeMs);
+    assert.equal((await run(state, [...args, "--open-window-days", "0"])).code, 2);
+    assert.equal(await readFile(output, "utf8"), bytes);
+    await writeFile(output, "{broken");
+    const regenerated = await run(state, args);
+    assert.equal(regenerated.code, 0, regenerated.stderr);
+    assert.deepEqual(JSON.parse(regenerated.stdout).sessions, registry.sessions);
+    assert.equal((await stat(output)).mode & 0o777, 0o600);
+    const recovered = await readFile(output, "utf8");
+    await appendFile(join(state, "events.jsonl"), JSON.stringify({ schema: "bad" }) + "\n");
+    assert.equal((await run(state, args)).code, 2);
+    assert.equal(await readFile(output, "utf8"), recovered);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("sweep joins real bridge launch records, keeps resume origin and publishes registry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-registry-sweep-"));
+  const state = join(root, "graph"), transcripts = join(root, "sessions"), launches = join(root, "launches.jsonl");
+  const output = join(root, "registry", "registry.json"), tmux = join(root, "tmux");
+  const ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"];
+  try {
+    await mkdir(transcripts);
+    for (const id of ids) await writeFile(join(transcripts, `${id}.jsonl`), JSON.stringify({ type: "user", cwd: root, message: { role: "user", content: "Review the example" } }) + "\n");
+    const tmuxCalled = join(root, "tmux-called");
+    await writeFile(tmux, `#!/bin/sh\n: > "${tmuxCalled}"\nexit 0\n`, { mode: 0o755 });
+    const at = new Date().toISOString();
+    const records = [
+      { launchId: "spawn", event: "launch.started", caller: "unknown", agent: "claude", threadId: null },
+      { launchId: "spawn", event: "launch.thread_resolved", threadId: ids[0] },
+      { launchId: "resume", event: "launch.started", caller: ids[0], agent: "claude", threadId: ids[1] },
+    ].map((item) => ({ schema: "agent-mesh.bridge-launch-event.v1", recordedAt: at, ...item }));
+    await writeFile(launches, records.map((item) => JSON.stringify(item)).join("\n") + "\n");
+    const env = { CLAUDE_SESSION_ROOT: transcripts, CODEX_SESSION_ROOT: join(root, "none"), CODEX_STATE_DB: join(root, "none.db"), AGENT_MESH_LAUNCH_EVENTS: launches, MESH_TMUX_BIN: tmux, MESH_TMUX_SOCKET: "fixture-registry-sweep",
+      HOME: root, XDG_STATE_HOME: join(root, "state"), CLAUDE_HOME: join(root, "claude-home"), CODEX_HOME: join(root, "codex-home"), MESH_DOMAIN_ROOTS_FILE: "" };
+    const result = await run(state, ["sweep", "--agent", "claude", "--registry-out", output, "--json"], env);
+    assert.equal(result.code, 0, result.stderr);
+    await access(tmuxCalled);
+    const registry = JSON.parse(await readFile(output, "utf8"));
+    assert.equal(registry.sessions[`claude:${ids[0]}`].origin, "bridge-worker");
+    assert.equal(registry.sessions[`claude:${ids[0]}`].launches[0].caller, null);
+    assert.equal(registry.sessions[`claude:${ids[1]}`].origin, "human");
+    assert.equal(registry.sessions[`claude:${ids[1]}`].spawnedBy, null);
+    const graph = JSON.parse(await readFile(join(state, "graph.json"), "utf8"));
+    assert.equal(graph.nodes.find((node) => node.runtimeUuid === ids[0]).launches[0].kind, "spawn");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
