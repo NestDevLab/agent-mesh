@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Hermetic hook, privacy, restart and singleton checks."""
+"""Hermetic owner, cursor, privacy and prompt fallback regressions."""
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,14 +11,27 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
-SCRIPT = Path(__file__).resolve().parents[1] / "bin" / "agent-session-inbox.py"
+SCRIPT = Path(__file__).resolve().parents[1] / 'bin' / 'agent-session-inbox.py'
+SESSION = 'synthetic-session'
+SCHEMA = 'agent-mesh.monitor-inbox-cursor.v1'
+sys.dont_write_bytecode = True
+
+
+def record(text):
+    return json.dumps({'schema': 'agent-mesh.monitor-inbox.v1', 'prompt': text}) + '\n'
+
+
+def identity(pid):
+    fields = Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()
+    return {'pid': pid, 'start': fields[19]}
 
 
 class SessionInboxTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name) / "inboxes"
+        self.root = Path(self.temp.name) / 'inboxes'
         self.processes = []
 
     def tearDown(self):
@@ -27,161 +41,268 @@ class SessionInboxTest(unittest.TestCase):
             proc.communicate(timeout=5)
         self.temp.cleanup()
 
-    def hook(self, agent="claude", session="synthetic-session", event="SessionStart"):
-        return subprocess.run([sys.executable, str(SCRIPT), "hook", "--root", str(self.root),
-                               "--agent", agent], input=json.dumps({"session_id": session, "hook_event_name": event}),
-                              text=True, capture_output=True, check=True)
+    def hook(self, agent='claude', session=SESSION, event='SessionStart', owner=None, extra_env=None, payload=None):
+        env = {**os.environ, 'AGENT_MESH_HARNESS_PID': str(owner or os.getpid()), **(extra_env or {})}
+        return subprocess.run([sys.executable, str(SCRIPT), 'hook', '--root', str(self.root), '--agent', agent],
+                              input=json.dumps(payload if payload is not None else {'session_id': session, 'hook_event_name': event}),
+                              env=env, text=True, capture_output=True, check=True)
 
-    def watcher(self, env=None):
-        proc = subprocess.Popen([sys.executable, str(SCRIPT), "watch", "--root", str(self.root),
-                                 "--session", "synthetic-session", "--retry-seconds", "0.05"],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    def watcher(self, owner=None, batch=0.1, agent='claude', extra_env=None):
+        proc = subprocess.Popen([sys.executable, str(SCRIPT), 'watch', '--root', str(self.root),
+                                 '--session', SESSION, '--owner-pid', str(owner or os.getpid()),
+                                 '--batch-seconds', str(batch), '--retry-seconds', '0.02', '--agent', agent],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                env={**os.environ, **(extra_env or {})})
         self.processes.append(proc)
         return proc
 
-    def test_hook_new_resume_and_codex_context(self):
-        for agent in ("claude", "codex"):
-            for _ in range(2):
-                result = json.loads(self.hook(agent).stdout)["hookSpecificOutput"]
-                self.assertEqual(result["hookEventName"], "SessionStart")
-                self.assertIn("watch", result["additionalContext"])
-                if agent == "claude":
-                    self.assertIn("run_in_background=true", result["additionalContext"])
-        inbox = self.root / "synthetic-session.jsonl"
-        self.assertEqual(inbox.stat().st_mode & 0o777, 0o600)
-        inbox.write_text("retained\n")
+    def ready(self):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            result = subprocess.run([sys.executable, str(SCRIPT), 'status', '--root', str(self.root),
+                                     '--session', SESSION], capture_output=True, text=True)
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+            time.sleep(0.01)
+        self.fail('supervisor did not become ready')
+
+    def append(self, text):
+        with (self.root / (SESSION + '.jsonl')).open('a') as stream:
+            stream.write(text)
+
+    def test_hook_resume_context_permissions_and_authority(self):
+        for _ in range(2):
+            context = json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext']
+            self.assertIn('run_in_background=true', context)
+            self.assertIn('never user approval', context)
+            self.assertIn('do not expand permissions', context)
+            self.assertIn('--owner-pid', context)
+        inbox = self.root / (SESSION + '.jsonl')
+        inbox.write_text('retained\n')
         inbox.chmod(0o644)
         self.hook()
-        self.assertEqual(inbox.read_text(), "retained\n")
+        self.assertEqual(inbox.read_text(), 'retained\n')
         self.assertEqual(inbox.stat().st_mode & 0o777, 0o600)
 
-    def test_reject_traversal_and_symlink_fail_open(self):
-        self.assertEqual(self.hook(session="../outside").stdout, "")
-        self.root.mkdir(exist_ok=True)
-        target = Path(self.temp.name) / "target"
-        target.write_text("unchanged")
-        (self.root / "synthetic-session.jsonl").symlink_to(target)
-        self.assertEqual(self.hook().stdout, "")
-        self.assertEqual(target.read_text(), "unchanged")
+    def test_codex_and_automation_disabled_without_side_effects(self):
+        self.assertEqual(self.hook(agent='codex').stdout, '')
+        self.assertEqual(self.hook(extra_env={'AGENT_MESH_INBOX_DISABLED': '1'}).stdout, '')
+        self.assertFalse(self.root.exists())
+        self.assertEqual(self.watcher(agent='codex').communicate(timeout=2), ('', ''))
+        self.assertEqual(self.watcher(extra_env={'AGENT_MESH_INBOX_DISABLED': 'true'}).communicate(timeout=2), ('', ''))
+        self.assertFalse(self.root.exists())
+        self.assertFalse((SCRIPT.parent.parent / 'hooks' / 'codex-session-start.json').exists())
 
-    def test_singleton_silence_event_and_resume_cursor(self):
+    def test_root_requires_owner_and_no_group_or_other_writes(self):
+        self.root.mkdir(mode=0o700)
+        for mode in (0o770, 0o707, 0o777):
+            self.root.chmod(mode)
+            result = self.hook()
+            self.assertEqual((result.stdout, result.stderr), ('', ''))
+            self.assertEqual(list(self.root.iterdir()), [])
+            self.assertEqual(self.root.stat().st_mode & 0o777, mode)
+        self.root.chmod(0o700)
+        spec = importlib.util.spec_from_file_location('session_inbox_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with patch.object(module.os, 'geteuid', return_value=os.geteuid() + 1):
+            with self.assertRaises(ValueError):
+                module.secure_root(self.root)
+
+    def test_symlink_and_nonobject_payload_fail_open(self):
+        for payload in ([], 'text', 42):
+            result = self.hook(payload=payload)
+            self.assertEqual((result.stdout, result.stderr), ('', ''))
+        self.assertFalse(self.root.exists())
+        target = Path(self.temp.name) / 'target'
+        target.mkdir(mode=0o700)
+        self.root.symlink_to(target)
+        self.assertEqual(self.hook().stdout, '')
+        self.assertEqual(list(target.iterdir()), [])
+
+    def test_mailbox_symlink_and_invalid_session_are_rejected(self):
+        self.assertEqual(self.hook(session='../invalid').stdout, '')
+        self.root.mkdir(mode=0o700)
+        target = Path(self.temp.name) / 'outside'
+        target.write_text('untouched')
+        (self.root / (SESSION + '.jsonl')).symlink_to(target)
+        self.assertEqual(self.hook().stdout, '')
+        self.assertEqual(target.read_text(), 'untouched')
+
+    def test_prompt_fallback_without_start_and_unlocked_stale_lock(self):
+        result = json.loads(self.hook(event='UserPromptSubmit').stdout)['hookSpecificOutput']
+        self.assertEqual(result['hookEventName'], 'UserPromptSubmit')
+        self.assertEqual(result['additionalContext'], json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext'])
+        (self.root / (SESSION + '.watch.lock')).touch(mode=0o600)
+        self.assertIn('Start', self.hook(event='UserPromptSubmit').stdout)
+
+    def test_live_prompt_probe_is_silent_read_only_and_session_specific(self):
         self.hook()
-        first = self.watcher()
-        time.sleep(0.2)
-        self.assertIn("already active", self.hook().stdout)
-        self.assertEqual(self.hook(event="UserPromptSubmit").stdout, "")
-        duplicate = self.watcher()
-        self.assertEqual(duplicate.communicate(timeout=3), ("", ""))
-        self.assertIsNone(first.poll())
-        self.assertFalse(select.select([first.stdout], [], [], 0.15)[0])
-        inbox = self.root / "synthetic-session.jsonl"
-        with inbox.open("a") as stream:
-            stream.write('noise\n{"schema":"wrong","prompt":"ignore"}\n')
-            stream.flush()
+        watcher = self.watcher()
+        metadata = self.ready()
+        self.assertEqual(metadata['owner'], identity(os.getpid()))
+        self.assertEqual(metadata['supervisor']['pid'], watcher.pid)
+        before = {p.name: (p.stat().st_mtime_ns, p.stat().st_mode) for p in self.root.iterdir()}
+        for _ in range(3):
+            result = self.hook(event='UserPromptSubmit')
+            self.assertEqual((result.stdout, result.stderr), ('', ''))
+        for name, info in before.items():
+            self.assertEqual(((self.root/name).stat().st_mtime_ns, (self.root/name).stat().st_mode), info)
+        self.assertIn('Start', self.hook(session='other-session', event='UserPromptSubmit').stdout)
+        self.assertEqual(self.watcher().communicate(timeout=2), ('', ''))
+
+    def test_owner_exit_releases_lock_and_new_owner_takes_over(self):
+        owner = subprocess.Popen(['sleep', '30'])
+        self.processes.append(owner)
+        self.hook(owner=owner.pid)
+        old = self.watcher(owner=owner.pid)
+        self.assertEqual(self.ready()['owner']['pid'], owner.pid)
+        owner.terminate()
+        owner.wait(timeout=2)
+        new = self.watcher()
+        self.assertEqual(old.communicate(timeout=2), ('', ''))
+        self.assertEqual(self.ready()['supervisor']['pid'], new.pid)
+        self.append(record('new-owner'))
+        self.assertIn('new-owner', new.communicate(timeout=3)[0])
+
+    def test_owner_pid_reuse_or_invalid_start_does_not_claim_lock(self):
+        self.hook()
+        result = subprocess.run([sys.executable, str(SCRIPT), 'watch', '--root', str(self.root),
+                                 '--session', SESSION, '--owner-pid', str(os.getpid()), '--owner-start', 'wrong'],
+                                capture_output=True, timeout=2)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b'', b''))
+        self.assertFalse((self.root / (SESSION + '.watch.lock')).exists())
+
+    def test_cutover_starts_at_eof_without_replaying_old_messages(self):
+        self.root.mkdir(mode=0o700)
+        self.append(record('old-record'))
+        self.hook()
+        watcher = self.watcher()
+        self.ready()
+        self.assertFalse(select.select([watcher.stdout], [], [], 0.15)[0])
+        self.append(record('fresh-record'))
+        output, errors = watcher.communicate(timeout=3)
+        self.assertEqual(errors, '')
+        self.assertIn('fresh-record', output)
+        self.assertNotIn('old-record', output)
+
+    def test_cutover_adopts_legacy_cursor(self):
+        self.root.mkdir(mode=0o700)
+        inbox = self.root / (SESSION + '.jsonl')
+        old = record('already-delivered')
+        self.append(old + record('pending'))
+        legacy = self.root / '.cursors'
+        legacy.mkdir(mode=0o700)
+        (legacy / (SESSION + '.json')).write_text(json.dumps({'schema': SCHEMA, 'inbox': str(inbox), 'offset': len(old.encode())}))
+        self.hook()
+        output, errors = self.watcher().communicate(timeout=3)
+        self.assertEqual(errors, '')
+        self.assertIn('pending', output)
+        self.assertNotIn('already-delivered', output)
+
+    def test_supervisor_cursor_never_advances_past_emitted_batch(self):
+        self.hook()
+        watcher = self.watcher(batch=0)
+        self.ready()
+        messages = ''.join(record('message-' + str(i)) for i in range(1000))
+        self.append(messages)
+        output, errors = watcher.communicate(timeout=3)
+        self.assertEqual(errors, '')
+        self.assertEqual(len(output.splitlines()), 1000)
+        cursor = json.loads((self.root / (SESSION + '.cursor.json')).read_text())
+        self.assertEqual(cursor['offset'], len(messages.encode()))
+        self.append(record('after-batch'))
+        output, _ = self.watcher().communicate(timeout=3)
+        self.assertEqual(len(output.splitlines()), 1)
+        self.assertIn('after-batch', output)
+
+    def test_owner_exit_with_unemitted_batch_keeps_cursor_for_successor(self):
+        owner = subprocess.Popen(['sleep', '30'])
+        self.processes.append(owner)
+        self.hook(owner=owner.pid)
+        watcher = self.watcher(owner=owner.pid, batch=10)
+        self.ready()
+        self.append(record('pending-handover'))
+        time.sleep(0.1)
+        owner.terminate()
+        owner.wait(timeout=2)
+        self.assertEqual(watcher.communicate(timeout=2), ('', ''))
+        self.assertEqual(json.loads((self.root / (SESSION + '.cursor.json')).read_text())['offset'], 0)
+        self.assertIn('pending-handover', self.watcher().communicate(timeout=3)[0])
+
+    def test_output_backpressure_does_not_hold_dead_owner_lock(self):
+        owner = subprocess.Popen(['sleep', '30'])
+        self.processes.append(owner)
+        self.hook(owner=owner.pid)
+        watcher = self.watcher(owner=owner.pid, batch=0)
+        self.ready()
+        self.append(record('large-' + 'x' * 200000))
+        # Do not read stdout: the pipe fills while the supervisor owns the batch.
         time.sleep(0.15)
-        self.assertIsNone(first.poll())
-        record = {"schema": "agent-mesh.monitor-inbox.v1", "prompt": "real event", "deliveryId": "test"}
-        with inbox.open("a") as stream:
-            stream.write(json.dumps(record) + "\n")
-        output, errors = first.communicate(timeout=5)
-        self.assertEqual(errors, "")
-        self.assertIn("real event", output)
-        self.assertEqual(output.count("AGENT_MESH_INBOX"), 1)
-        resumed = self.watcher()
-        self.assertFalse(select.select([resumed.stdout], [], [], 0.3)[0])
-        self.assertIsNone(resumed.poll())
+        owner.terminate()
+        owner.wait(timeout=2)
+        watcher.wait(timeout=2)
+        self.assertEqual(json.loads((self.root / (SESSION + '.cursor.json')).read_text())['offset'], 0)
+        output, errors = self.watcher(batch=0).communicate(timeout=3)
+        self.assertEqual(errors, '')
+        self.assertEqual(len(output.splitlines()), 1)
+        self.assertIn('large-', output)
 
-    def test_prompt_fallback_without_session_start_and_stale_lock(self):
-        for agent in ("claude", "codex"):
-            missing = self.hook(agent, event="UserPromptSubmit")
-            self.assertEqual(missing.stderr, "")
-            result = json.loads(missing.stdout)["hookSpecificOutput"]
-            self.assertEqual(result["hookEventName"], "UserPromptSubmit")
-            start = json.loads(self.hook(agent).stdout)["hookSpecificOutput"]
-            self.assertEqual(result["additionalContext"], start["additionalContext"])
-            stale = self.root / "synthetic-session.watch.lock"
-            stale.touch(mode=0o600)
-            self.assertIn("Start", self.hook(agent, event="UserPromptSubmit").stdout)
-        self.assertEqual((self.root / "synthetic-session.jsonl").stat().st_mode & 0o777, 0o600)
-
-    def test_live_prompt_probe_is_silent_and_read_only(self):
+    def test_io_failure_retries_without_noise(self):
         self.hook()
-        inbox = self.root / "synthetic-session.jsonl"
-        lock = self.root / "synthetic-session.watch.lock"
-        inbox.write_text("retained\n")
-        inbox.chmod(0o640)
-        with lock.open("w") as descriptor:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            before = {p.name: p.stat() for p in self.root.iterdir()}
-            for agent in ("claude", "codex"):
-                for _ in range(2):
-                    result = self.hook(agent, event="UserPromptSubmit")
-                    self.assertEqual((result.stdout, result.stderr), ("", ""))
-                # A lock held for another identity cannot suppress activation.
-                self.assertIn("Start", self.hook(agent, session="other-session", event="UserPromptSubmit").stdout)
-            for name, original in before.items():
-                current = (self.root / name).stat()
-                self.assertEqual((current.st_mtime_ns, current.st_mode),
-                                 (original.st_mtime_ns, original.st_mode))
-        self.assertIn("Start", self.hook(event="UserPromptSubmit").stdout)
-        self.assertEqual(inbox.read_text(), "retained\n")
+        watcher = self.watcher()
+        self.ready()
+        inbox = self.root / (SESSION + '.jsonl')
+        inbox.unlink()
+        time.sleep(0.15)
+        self.assertIsNone(watcher.poll())
+        self.assertFalse(select.select([watcher.stdout], [], [], 0.1)[0])
+        inbox.write_text(record('recovered'))
+        self.assertIn('recovered', watcher.communicate(timeout=3)[0])
 
-    def test_hook_timeout_and_errors_never_block_or_emit(self):
-        proc = subprocess.Popen([sys.executable, str(SCRIPT), "hook", "--root", str(self.root)],
+    def test_readiness_accepts_live_supervisor_without_child_reader(self):
+        self.hook()
+        watcher = self.watcher()
+        self.ready()
+        proc = Path(self.temp.name) / 'proc' / str(os.getpid())
+        proc.mkdir(parents=True)
+        (proc / 'cmdline').write_bytes(b'claude\0--resume\0' + SESSION.encode() + b'\0')
+        provider = Path(self.temp.name) / 'claude-inventory'
+        provider.write_text('#!/bin/sh\nprintf "[]\\n"\n')
+        provider.chmod(0o700)
+        result = subprocess.run(['node', str(SCRIPT.with_name('session-writer-status.mjs')),
+                                 '--agent', 'claude', '--session', SESSION, '--require-single',
+                                 '--require-monitor-inbox', str(self.root / (SESSION + '.jsonl'))],
+                                env={**os.environ, 'AGENT_WRITER_PROC_ROOT': str(proc.parent), 'CLAUDE_BIN': str(provider)},
+                                text=True, capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(watcher.poll())
+
+    def test_hook_timeout_and_command_failures_are_silent(self):
+        proc = subprocess.Popen([sys.executable, str(SCRIPT), 'hook', '--root', str(self.root)],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        self.addCleanup(lambda: proc.kill() if proc.poll() is None else None)
+        self.processes.append(proc)
         started = time.monotonic()
-        # Keep stdin open without sending a payload; the internal budget must win.
         self.assertEqual(proc.wait(timeout=2), 0)
         self.assertLess(time.monotonic() - started, 1.5)
         proc.stdin.close()
-        self.assertEqual((proc.stdout.read(), proc.stderr.read()), (b"", b""))
-        proc.stdout.close()
-        proc.stderr.close()
-        result = self.hook(session="../invalid", event="UserPromptSubmit")
-        self.assertEqual((result.stdout, result.stderr), ("", ""))
-        self.root.write_text("not a directory")
-        result = self.hook(event="UserPromptSubmit")
-        self.assertEqual((result.stdout, result.stderr), ("", ""))
-
-    def test_prompt_hook_fragments_are_bounded_and_fail_open(self):
-        for agent in ("claude", "codex"):
-            config = json.loads((SCRIPT.parent.parent / "hooks" / f"{agent}-session-start.json").read_text())
-            handlers = config["hooks"]["UserPromptSubmit"][0]["hooks"]
-            self.assertEqual(len(handlers), 1)
-            handler = handlers[0]
-            self.assertEqual(handler["timeout"], 1)
-            # An absent binary configuration must also be a silent success.
-            env = {**os.environ}
-            env.pop("AGENT_MESH_BIN", None)
-            result = subprocess.run(["sh", "-c", handler["command"]], env=env,
-                                    capture_output=True, timeout=2)
-            self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"", b""))
-            env.update({"AGENT_MESH_BIN": str(SCRIPT.parent), "AGENT_MESH_INBOX_ROOT": str(self.root)})
-            result = subprocess.run(["sh", "-c", handler["command"]], env=env,
-                                    input=json.dumps({"session_id": "configured-session",
-                                                      "hook_event_name": "UserPromptSubmit"}),
-                                    text=True, capture_output=True, timeout=2)
-            self.assertEqual((result.returncode, result.stderr), (0, ""))
-            self.assertEqual(json.loads(result.stdout)["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-
-    def test_reader_failure_restarts_without_noise(self):
-        self.hook()
-        bin_dir = Path(self.temp.name) / "bin"
-        bin_dir.mkdir()
-        counter = bin_dir / "attempts"
-        fake = bin_dir / "node"
-        fake.write_text("#!/bin/sh\necho attempt >> \"$TEST_COUNTER\"\necho 'FOLLOWER exit rearm'\nexit 1\n")
-        fake.chmod(0o700)
-        proc = self.watcher({**os.environ, "PATH": str(bin_dir) + ":" + os.environ["PATH"],
-                             "TEST_COUNTER": str(counter)})
-        limit = time.monotonic() + 3
-        while (not counter.exists() or len(counter.read_text().splitlines()) < 2) and time.monotonic() < limit:
-            time.sleep(0.02)
-        self.assertGreaterEqual(len(counter.read_text().splitlines()), 2)
-        self.assertIsNone(proc.poll())
-        self.assertFalse(select.select([proc.stdout], [], [], 0.1)[0])
+        proc.stdin = None
+        self.assertEqual(proc.communicate(), (b'', b''))
+        config = json.loads((SCRIPT.parent.parent/'hooks'/'claude-session-start.json').read_text())
+        handler = config['hooks']['UserPromptSubmit'][0]['hooks'][0]
+        self.assertEqual(handler['timeout'], 1)
+        env = {**os.environ}
+        env.pop('AGENT_MESH_BIN', None)
+        result = subprocess.run(['sh', '-c', handler['command']], env=env, capture_output=True, timeout=2)
+        self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b'', b''))
+        env.update({'AGENT_MESH_BIN': str(SCRIPT.parent), 'AGENT_MESH_INBOX_ROOT': str(self.root),
+                    'AGENT_MESH_HARNESS_PID': str(os.getpid())})
+        result = subprocess.run(['sh', '-c', handler['command']], env=env,
+                                input=json.dumps({'hook_event_name': 'UserPromptSubmit', 'session_id': SESSION}),
+                                text=True, capture_output=True, timeout=2)
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()

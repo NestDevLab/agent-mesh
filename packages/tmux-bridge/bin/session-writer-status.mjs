@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Detect active writers for a persisted agent session without attaching to it. */
 
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -131,6 +133,17 @@ function detectCodexWriters(id) {
 function detectMonitorInboxWatchers(inbox) {
   if (!existsSync(procRoot)) return [];
   const watchers = [];
+  // The supervisor remains ready through retries even without a child reader.
+  const probe = spawnSync(process.env.PYTHON_BIN || "python3", [
+    fileURLToPath(new URL("./agent-session-inbox.py", import.meta.url)),
+    "status", "--root", resolve(inbox, ".."), "--session", basename(inbox, ".jsonl"),
+  ], { encoding: "utf8", timeout: 500 });
+  try {
+    const record = probe.status === 0 ? JSON.parse(probe.stdout) : undefined;
+    if (record && writers.some((writer) => writer.pid === record.owner?.pid)) {
+      watchers.push(record.supervisor.pid);
+    }
+  } catch { /* Missing/invalid supervisor evidence is not readiness. */ }
   for (const entry of readdirSync(procRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     let argv;

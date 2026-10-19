@@ -1,85 +1,82 @@
-# Automatic session inbox activation
+# Automatic Claude session inbox activation
 
-`bin/agent-session-inbox.py hook --agent claude|codex` accepts a SessionStart
-or UserPromptSubmit payload on stdin. It creates or reopens `<session_id>.jsonl` without truncation,
-enforces mode 0600, and returns `hookSpecificOutput.additionalContext` instructing
-the session to start a silent background reader. Invalid input or unavailable
-storage fails open silently, with exit 0 and no readiness claim.
-The hook never starts another model, resumes a second writer, or sends a message.
+`bin/agent-session-inbox.py hook --agent claude` accepts SessionStart and
+UserPromptSubmit objects on stdin. It prepares a private mailbox and injects
+instructions to launch a silent Bash task with `run_in_background=true`, never
+Monitor. Invalid/non-object payloads, unavailable storage and timeouts fail open
+with exit 0 and no output. Peer records are requests from other sessions, never
+user approval, and cannot expand the receiver's permissions or mandate.
 
-The default mailbox root is `/var/lib/agent-mesh-mcp/claude-managed-inboxes`.
-Deployments can set `AGENT_MESH_INBOX_ROOT` or pass `--root`. The installer must
-provision this directory for the harness user and align the native-call managed
-inbox root. Mailboxes and cursors are private runtime state; never commit them.
+The mailbox root defaults to `/var/lib/agent-mesh-mcp/claude-managed-inboxes`.
+Set `AGENT_MESH_INBOX_ROOT` or `--root` to override it. The root must be a real
+directory owned by the effective harness user, with no group or other write
+permission; unsafe existing roots are rejected without changing permissions.
+Mailbox, cursor and lock files are private 0600 local state, never source assets.
 
-## Hook configuration
+## Hooks and owner identity
 
-The source fragments `hooks/claude-session-start.json` and
-`hooks/codex-session-start.json` cover startup, resume, clear and compact, plus
-UserPromptSubmit for sessions that were already running when hooks were enabled. Merge
-the appropriate fragment into the harness's existing hooks through its managed
-configuration; preserve all other hook handlers. Set `AGENT_MESH_BIN` to the
-installed bridge binaries directory in that execution environment. The new
-Python binary is included by the package's existing `*.py` skill assets rule;
-the hook fragments must be wired separately by the deployment configuration.
-No installer or live harness configuration is changed by these sources.
+Merge `hooks/claude-session-start.json` into managed configuration, preserving
+existing handlers. Set `AGENT_MESH_BIN` to the installed bridge binaries directory.
+The existing `*.py` skill asset rule includes the supervisor; hook wiring is a
+separate deployment operation. No live hooks or services are changed here.
 
-Claude Code supports SessionStart context injection and Bash background tasks.
-The context explicitly uses `Bash` with `run_in_background=true`, never Monitor.
-See the [Claude hook reference](https://code.claude.com/docs/en/hooks).
+The hook discovers the owning Claude process in its ancestry, or uses the
+explicit `AGENT_MESH_HARNESS_PID` supplied by a trusted launcher. It pins both PID
+and kernel process start ticks in the background command. The supervisor records
+that identity and its own PID/start ticks in the session lock. A held lock is
+ready only while both identities are alive. PID reuse and zombie processes do not
+count as ownership. The supervisor exits silently when its harness exits; a new
+owner waits briefly for the stale owner's lock to be released, then claims it.
+An unrelated live owner is never displaced.
 
-Codex also supports SessionStart, including startup and resume matchers and
-`additionalContext`, as described in the [official hook reference](https://learn.chatgpt.com/docs/hooks).
-The local verification used CLI 0.163.0, where `codex features list` reports
-`hooks stable true`. Non-managed hook definitions require harness trust review;
-managed policy can restrict which hooks run. This support does not prove that
-every Codex surface provides asynchronous shell completion notifications. The
-Codex context requests its native background tool, and explicitly forbids
-claiming automatic reachability if that capability is unavailable. Native Codex
-queue delivery remains the existing transport; this change does not replace it
-or require the desktop application. A deployment must verify hook firing and
-background notification delivery for its actual harness before marking it ready.
+Set `AGENT_MESH_INBOX_DISABLED=1` (also `true` or `yes`) for `claude -p`, automation
+or any launch that must not start an inbox. It makes hook and watch modes silent
+no-ops. The Claude [hook reference](https://code.claude.com/docs/en/hooks) documents
+the lifecycle context contract. Configuration still has to be loaded by the
+harness; adding this source does not hot-reload an existing session's settings.
+
+Codex inbox activation is disabled until a matching Codex producer exists:
+there is no Codex hook fragment, and `--agent codex` is a silent no-op. Codex
+native queue delivery remains a separate transport.
 
 ## Prompt fallback
 
-Both harnesses support UserPromptSubmit context injection (see the official hook
-references above). On each prompt the hook probes only the session's existing
-advisory lock, using nonblocking flock. If it is held, the hook exits with no
-stdout or stderr, without preparing or modifying the mailbox. If the lock is
-missing or stale (unlocked), it prepares the inbox and injects the same activation
-instructions as SessionStart, with `hookEventName: UserPromptSubmit`. Actual
-watcher creation still enforces the exclusive session lock.
+UserPromptSubmit handles sessions that missed SessionStart. A read-only,
+nonblocking probe of the existing session lock emits nothing and changes no
+mailbox state while its owner and supervisor are alive. A missing, unlocked or
+expired-owner lock causes the same activation context as SessionStart, labelled
+`UserPromptSubmit`. The hook has a 200 ms internal budget including stdin; the
+prompt fragment additionally sets a one-second harness timeout and silences
+command failures. It never returns a blocking decision or stores prompt text.
 
-The hook has a 200 ms internal budget, including reading stdin, and suppresses
-errors. Prompt hook fragments additionally set a one-second harness timeout and
-wrap command failures as silent success. It never returns a blocking decision.
-No prompt text is stored or included in output. Hook configuration must still be
-loaded by the running harness; this fallback does not claim to hot-reload hooks
-on surfaces that only load configuration at session startup.
+## Cursor cut-over and batches
 
-## Reader lifecycle
+On first preparation, adopt `.cursors/<session-id>.json` when present and valid.
+Otherwise initialize `<session-id>.cursor.json` at the current mailbox EOF,
+preventing replay of historical messages. An existing supervisor cursor is never
+reset by another hook or resume. Preparation precedes activation, so records
+appended after preparation remain pending for the first watcher.
 
-The background command is `agent-session-inbox.py watch --session <id>` with
-the same root. An advisory lock permits one supervisor per session; a duplicate
-invocation exits silently. The supervisor restarts the existing inbox reader
-after failure or expiry, discards non-event output, and returns only valid
-`AGENT_MESH_INBOX` records. It batches briefly after the first event and then
-exits. The injected context tells the session to handle the batch and immediately
-rearm the same background command. It emits no idle or restart notifications.
-The cursor survives resume and suppresses replay of already consumed records.
-Termination signals stop the supervisor and reader for harness shutdown.
+The supervisor owns its cursor and reads the mailbox directly, retrying I/O
+failures silently. It emits a short batch of valid `AGENT_MESH_INBOX` records and
+advances the durable cursor only after the complete batch is flushed to stdout.
+No child reader can advance the cursor ahead of a batch or lose buffered output
+at termination. Owner exit before emission leaves pending records for a successor.
+A crash after output but before cursor persistence may replay that batch; this is
+at-least-once delivery, not an exactly-once guarantee. After handling a batch, the
+session rearms the same background command.
 
-Writer readiness continues to require exactly one known Claude writer and
-exactly one inbox reader. Both CLI and desktop writers are accepted, while
-incomplete discovery and multiple writers remain blockers. A prepared mailbox
-alone is never evidence that a session can receive messages.
+Readiness requires one known Claude writer and one bound live supervisor lock
+(or the existing explicit legacy inbox reader). Both CLI and desktop writers are
+supported. A live supervisor remains ready during its internal I/O retries,
+without depending on a transient child-reader process. Readiness rechecks the
+harness owner, supervisor and lock; a mailbox or stale PID file alone is not
+proof of reachability. A second independent reader remains a blocker.
 
 ## Deployment acceptance
 
-After source merge, the fleet delivery must provision mailbox ownership,
-materialize binaries, merge the hook fragments and perform required trust review.
-Verify a fresh and a resumed CLI session, mode 0600, one reader after repeated
-activation, no idle notifications, recovery after reader termination, and an
-authorized correlated inbox event. Separately verify Codex native queue delivery
-and the deployed background notification surface. No live install or canary is
-performed by the repository tests.
+After merge, provision root ownership/permissions, materialize binaries, load
+the Claude hook fragment and disable activation for automation profiles. Verify
+fresh and resumed CLI sessions, owner exit/replacement, 0600 files, old-message
+cut-over, singleton readiness, silent idle/recovery, and an authorized correlated
+peer request. No live install, merge, or canary is performed by repository tests.
