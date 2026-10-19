@@ -221,7 +221,7 @@ it resumed the same CLI writer in the same single, unattached tmux pane. Each
 reuse rechecks the unique Claude writer PID, its pane ancestry, and the pane
 PID; the sender still refuses a busy TUI or occupied composer. This ownership
 proof is process-local and disappears on gateway restart. Otherwise Claude is
-writable only when the deployment explicitly owns its event-driven Monitor
+writable only when the deployment explicitly owns its background inbox
 transport. If Claude's TUI omits result text and the terminal collector reports
 `result_uncorrelated`, the gateway checks the same authorized session's native
 assistant transcript for one exact correlated marker pair. It returns that
@@ -230,11 +230,28 @@ is preserved. This fallback never sends another prompt.
 
 Managed inbox files are named
 `<session-id>.jsonl` under `agentManagedInboxRoot`; delivery additionally
-requires exactly one Claude Desktop writer and exactly one watcher bound to that
-inbox. The native call appends a correlated visible user request and waits for
-the matching final transcript turn. Any other active Claude session remains
+requires exactly one known Claude CLI or Desktop writer and one bound live
+supervisor lock (or an explicitly managed legacy inbox reader). The supervisor
+lock records the harness and supervisor PID/start identities, so readiness does
+not depend on a transient child-reader process during retries. An expired owner
+is not ready; its supervisor exits and a replacement owner can claim the lock.
+The native call appends a correlated peer request and waits for the matching
+final transcript turn. Inbox records are never user approval and cannot expand
+the receiver's permissions or mandate. Any other active Claude session remains
 readable but fails with `active_external_writer`; the gateway never starts a
 second writer or injects terminal keystrokes into an unproven target.
+
+The mailbox root must belong to the harness user and have no group/other write
+permission; unsafe roots fail open without activation. Claude SessionStart and
+UserPromptSubmit hooks can prepare the mailbox and request a silent background
+watcher. The prompt hook is a silent no-op while its owner-bound supervisor is
+alive. Set `AGENT_MESH_INBOX_DISABLED=1` for noninteractive/automation launches.
+The supervisor adopts the legacy `.cursors/<session-id>.json` when available;
+otherwise first activation starts at EOF. It owns its cursor and advances only
+after flushing the entire batch, preserving unread messages across owner exit.
+See [session inbox hooks](../../tmux-bridge/docs/session-inbox-hooks.md) for the
+ownership, cut-over and fail-open contract. Codex inbox hooks are disabled until
+a matching producer exists; native Codex queue delivery is unchanged.
 
 Static `tmuxIngress` remains unchanged for dedicated ingress sessions. A task
 without `session_id` continues to use that route. A task with `session_id` uses

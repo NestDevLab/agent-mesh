@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /** Detect active writers for a persisted agent session without attaching to it. */
 
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
@@ -13,6 +15,7 @@ const { values } = parseArgs({
     agent: { type: "string" },
     session: { type: "string" },
     json: { type: "boolean", default: false },
+    "require-single": { type: "boolean", default: false },
     "require-free": { type: "boolean", default: false },
     "require-kind": { type: "string" },
     "forbid-kind": { type: "string" },
@@ -25,6 +28,7 @@ const { values } = parseArgs({
 if (values.help) {
   console.log(`Usage:
   session-writer-status.mjs --agent codex|claude --session <ID> [--json]
+  session-writer-status.mjs --agent claude --session <ID> --require-single
   session-writer-status.mjs --agent claude --session <ID> --require-free
   session-writer-status.mjs --agent claude --session <ID> --require-kind claude-desktop
   session-writer-status.mjs --agent claude --session <ID> --forbid-kind claude-desktop
@@ -57,6 +61,10 @@ if (values["require-free"] && (
   );
 }
 
+if (values["require-single"] && (writers.length !== 1 || (agent === "claude" && !claudeOwnership.discovery.complete))) {
+  fail(`session ${sessionId} must have exactly one known writer; found ${summarize(writers)}`, 4);
+}
+
 if (values["require-kind"]) {
   const kind = values["require-kind"];
   const matching = writers.filter((writer) => writer.kind === kind);
@@ -83,7 +91,7 @@ if (values["require-monitor-inbox"]) {
   const inbox = resolve(values["require-monitor-inbox"]);
   const watchers = detectMonitorInboxWatchers(inbox);
   if (watchers.length !== 1) {
-    fail(`inbox ${inbox} must have exactly one event-driven Monitor watcher; found ${watchers.length}`, 4);
+    fail(`inbox ${inbox} must have exactly one background inbox watcher; found ${watchers.length}`, 4);
   }
 }
 
@@ -125,6 +133,17 @@ function detectCodexWriters(id) {
 function detectMonitorInboxWatchers(inbox) {
   if (!existsSync(procRoot)) return [];
   const watchers = [];
+  // The supervisor remains ready through retries even without a child reader.
+  const probe = spawnSync(process.env.PYTHON_BIN || "python3", [
+    fileURLToPath(new URL("./agent-session-inbox.py", import.meta.url)),
+    "status", "--root", resolve(inbox, ".."), "--session", basename(inbox, ".jsonl"),
+  ], { encoding: "utf8", timeout: 500 });
+  try {
+    const record = probe.status === 0 ? JSON.parse(probe.stdout) : undefined;
+    if (record && writers.some((writer) => writer.pid === record.owner?.pid)) {
+      watchers.push(record.supervisor.pid);
+    }
+  } catch { /* Missing/invalid supervisor evidence is not readiness. */ }
   for (const entry of readdirSync(procRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     let argv;

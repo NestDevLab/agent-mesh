@@ -103,4 +103,12 @@ if node "$STATUS" --agent claude --session "$SESSION_ID" --forbid-kind claude-de
     fail "Desktop writer bypassed the tmux transport guard"
 fi
 
+if node "$STATUS" --agent claude --session "$SESSION_ID" --require-single >/dev/null 2>&1; then
+    fail "dual writers passed the exactly-one writer contract"
+fi
+kill "$DESKTOP_PID"
+wait "$DESKTOP_PID" 2>/dev/null || true
+DESKTOP_PID=""
+node "$STATUS" --agent claude --session "$SESSION_ID" --require-single >/dev/null
+
 echo "PASS: Claude session writer ownership"

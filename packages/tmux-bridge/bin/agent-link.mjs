@@ -268,7 +268,7 @@ function prepareDeliveryEndpoints(rawConfig, rawEndpoints, requireReady = true) 
 function preflightDeliveryEndpoint(target, requireReady = true) {
   if (target.agent !== "claude") return;
   const requirement = target.transport === "monitor-inbox"
-    ? ["--require-kind", "claude-desktop"]
+    ? ["--require-single"]
     : ["--require-kind", "claude-cli"];
   if (target.transport === "monitor-inbox" && requireReady) {
     requirement.push("--require-monitor-inbox", target.inbox);
@@ -405,5 +405,5 @@ Modes:
 The watcher buffers messages, reasoning, and tool events. Only turn_complete can
 produce one dispatch_once. Use --retry-delivery or --drop-delivery to resolve a
 delivery left uncertain by an interrupted or failed send. monitor-inbox requires
-exactly one active Claude Desktop writer and event-driven inbox watcher.`);
+exactly one active Claude writer and background inbox watcher.`);
 }

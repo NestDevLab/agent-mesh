@@ -1,0 +1,27 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(mesh_bin=\"${AGENT_MESH_BIN:-}\"; if [ -z \"$mesh_bin\" ]; then mesh_bin=\"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/skills/agent-tmux/bin\"; [ -f \"$mesh_bin/agent-session-inbox.py\" ] || mesh_bin=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/agent-tmux/bin\"; fi; AGENT_MESH_BIN=\"$mesh_bin\" python3 \"$mesh_bin/agent-session-inbox.py\" hook --agent claude) 2>/dev/null || true",
+            "timeout": 1
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(mesh_bin=\"${AGENT_MESH_BIN:-}\"; if [ -z \"$mesh_bin\" ]; then mesh_bin=\"${CLAUDE_PROJECT_DIR:-$PWD}/.claude/skills/agent-tmux/bin\"; [ -f \"$mesh_bin/agent-session-inbox.py\" ] || mesh_bin=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/agent-tmux/bin\"; fi; AGENT_MESH_BIN=\"$mesh_bin\" python3 \"$mesh_bin/agent-session-inbox.py\" hook --agent claude) 2>/dev/null || true",
+            "timeout": 1
+          }
+        ]
+      }
+    ]
+  }
+}
