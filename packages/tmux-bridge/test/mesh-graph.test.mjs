@@ -640,7 +640,8 @@ test("sweep joins real bridge launch records, keeps resume origin and publishes 
   try {
     await mkdir(transcripts);
     for (const id of ids) await writeFile(join(transcripts, `${id}.jsonl`), JSON.stringify({ type: "user", cwd: root, message: { role: "user", content: "Review the example" } }) + "\n");
-    await writeFile(tmux, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const tmuxCalled = join(root, "tmux-called");
+    await writeFile(tmux, `#!/bin/sh\n: > "${tmuxCalled}"\nexit 0\n`, { mode: 0o755 });
     const at = new Date().toISOString();
     const records = [
       { launchId: "spawn", event: "launch.started", caller: "unknown", agent: "claude", threadId: null },
@@ -648,9 +649,11 @@ test("sweep joins real bridge launch records, keeps resume origin and publishes 
       { launchId: "resume", event: "launch.started", caller: ids[0], agent: "claude", threadId: ids[1] },
     ].map((item) => ({ schema: "agent-mesh.bridge-launch-event.v1", recordedAt: at, ...item }));
     await writeFile(launches, records.map((item) => JSON.stringify(item)).join("\n") + "\n");
-    const env = { CLAUDE_SESSION_ROOT: transcripts, CODEX_SESSION_ROOT: join(root, "none"), CODEX_STATE_DB: join(root, "none.db"), AGENT_MESH_LAUNCH_EVENTS: launches, TMUX_BIN: tmux, MESH_DOMAIN_ROOTS_FILE: "" };
+    const env = { CLAUDE_SESSION_ROOT: transcripts, CODEX_SESSION_ROOT: join(root, "none"), CODEX_STATE_DB: join(root, "none.db"), AGENT_MESH_LAUNCH_EVENTS: launches, MESH_TMUX_BIN: tmux, MESH_TMUX_SOCKET: "fixture-registry-sweep",
+      HOME: root, XDG_STATE_HOME: join(root, "state"), CLAUDE_HOME: join(root, "claude-home"), CODEX_HOME: join(root, "codex-home"), MESH_DOMAIN_ROOTS_FILE: "" };
     const result = await run(state, ["sweep", "--agent", "claude", "--registry-out", output, "--json"], env);
     assert.equal(result.code, 0, result.stderr);
+    await access(tmuxCalled);
     const registry = JSON.parse(await readFile(output, "utf8"));
     assert.equal(registry.sessions[`claude:${ids[0]}`].origin, "bridge-worker");
     assert.equal(registry.sessions[`claude:${ids[0]}`].launches[0].caller, null);
