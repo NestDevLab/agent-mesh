@@ -33,6 +33,8 @@ NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")
 SESSION = re.compile(rf"^(codex|claude):({watch.SESSION_UUID})$", re.I)
 MAX_LINE = 500
 MAX_PER_TICK = 20
+MAX_TOMBSTONES = 4096
+TOMBSTONE_SECONDS = 14 * 86400
 
 
 def state_dir(name: str) -> Path:
@@ -345,12 +347,13 @@ def session_source(config: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], d
     """
     registry_path, graph_path = source_paths(config)
     graph = read_json(graph_path, {})
+    registry_exists = registry_path.exists()
     registry = read_json(registry_path, None)
     if graph_path.exists() and (not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list) or not isinstance(graph.get("edges"), list) or not all(isinstance(node, dict) for node in graph["nodes"]) or not all(isinstance(edge, dict) for edge in graph["edges"])):
         raise ValueError("invalid session graph")
     sessions: dict[str, dict[str, Any]] = {}
     rejected: dict[str, str] = {}
-    if registry is not None:
+    if registry_exists:
         if not isinstance(registry, dict) or registry.get("schema") != "agent-mesh.session-registry.v1" or not isinstance(registry.get("sessions"), dict):
             raise ValueError("invalid session registry")
         for ref, item in registry["sessions"].items():
@@ -390,8 +393,11 @@ def authority(ref: str, selected: dict[str, Any], graph: dict[str, Any], self_re
     # A claim's explicit predecessor chain transfers its delegation relationships.
     pending = list(owners)
     while pending:
-        for predecessor in (nodes[pending.pop()].get("domainPredecessors") or {}).values():
-            if predecessor in nodes and predecessor not in owners:
+        predecessors = nodes[pending.pop()].get("domainPredecessors")
+        if not isinstance(predecessors, dict):
+            continue
+        for predecessor in predecessors.values():
+            if isinstance(predecessor, str) and predecessor in nodes and predecessor not in owners:
                 owners.add(predecessor)
                 pending.append(predecessor)
     for edge in graph.get("edges", []):
@@ -399,10 +405,6 @@ def authority(ref: str, selected: dict[str, Any], graph: dict[str, Any], self_re
             continue
         if edge.get("type") == "delegates-to" and edge.get("from") in owners:
             return {"mode": "steer"}
-    # delegatedBy is the registry's projection of explicit delegates-to edges.
-    owner_refs = {identities[key] for key in owners} | ({self_ref} if self_ref else set())
-    if owner_refs.intersection((item or {}).get("delegatedBy", [])):
-        return {"mode": "steer"}
     for edge in graph.get("edges", []):
         parent = identities.get(edge.get("from"))
         if edge.get("type") == "spawned-by" and identities.get(edge.get("to")) == ref and parent and (parent == self_ref or parent in selected):
@@ -415,12 +417,28 @@ def reconcile(root: Path, selected: dict[str, Any], config: dict[str, Any], self
     events = []
     prior_source = read_json(root / "source-state.json", {})
     generation = str(prior_source.get("generation", 0) + 1)
-    seen = set(prior_source.get("seen", [])) | set(sessions)
-    excluded = set(rejected) | (seen - set(sessions) if source else set())
+    now = time.time()
+    # Only departed identities need history. Expire and cap that history instead of
+    # retaining every identity ever observed; current membership is in the source.
+    tombstones = {ref: float(expires) for ref, expires in prior_source.get("tombstones", {}).items()
+                  if isinstance(ref, str) and SESSION.fullmatch(ref) and isinstance(expires, (int, float)) and expires > now}
+    for ref in prior_source.get("seen", [])[-MAX_TOMBSTONES:]:
+        if isinstance(ref, str) and SESSION.fullmatch(ref) and ref not in sessions:
+            tombstones.setdefault(ref, now + TOMBSTONE_SECONDS)
+    for ref in sessions:
+        if ref not in rejected:
+            tombstones.pop(ref, None)
     for ref, entry in list(selected.items()):
-        if entry.get("addedBy") in {"registry", "graph"} and source and (ref not in sessions or ref in rejected):
+        if entry.get("addedBy") == "im-session-management":
+            entry["addedBy"] = "graph"
+        automatic = entry.get("addedBy") in {"registry", "graph", "discovery", "bridge"}
+        departed = entry.get("addedBy") in {"registry", "graph"} and ref not in sessions
+        if source and automatic and (departed or ref in rejected):
             events.append({"event_id": f"closed:{ref}:{entry.get('sourceToken', 'legacy')}", "ref": ref, "kind": "CLOSED", "body": rejected.get(ref, "left source"), "selection": dict(entry)})
             del selected[ref]
+            tombstones[ref] = now + TOMBSTONE_SECONDS
+    tombstones = dict(sorted(tombstones.items(), key=lambda pair: (pair[1], pair[0]))[-MAX_TOMBSTONES:])
+    excluded = set(rejected) | set(tombstones)
     for ref, item in sessions.items():
         if ref == self_ref or ref in rejected:
             continue
@@ -432,7 +450,7 @@ def reconcile(root: Path, selected: dict[str, Any], config: dict[str, Any], self
     for ref, entry in selected.items():
         entry.pop("parent", None)
         entry.update(authority(ref, selected, graph, self_ref, sessions.get(ref)))
-    atomic_json(root / "source-state.json", {"generation": int(generation), "source": source, "seen": sorted(seen)})
+    atomic_json(root / "source-state.json", {"generation": int(generation), "source": source, "tombstones": tombstones})
     return events, graph, excluded
 
 
@@ -492,10 +510,10 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
             if kind == "RESUMED" and (not follower.get("autoResumedKnown", True) or (ref not in prior and not bootstrap)):
                 continue
             label = f"{agent}-{session_id[:8]}"
-            selected[ref] = {"label": label, "mode": "observe", "addedBy": "discovery"}
+            selected[ref] = {"label": label, "mode": "observe", "addedBy": "discovery", "sourceToken": str(time.time_ns())}
             discoveries.append({"event_id": f"discovery:{ref}:{kind}", "ref": ref, "kind": kind, "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
     for ref, session_id, parent_id, prompt in bridge_children:
-        selected[ref] = {"label": f"{ref.split(':', 1)[0]}-{session_id[:8]}", "addedBy": "bridge",
+        selected[ref] = {"label": f"{ref.split(':', 1)[0]}-{session_id[:8]}", "addedBy": "bridge", "sourceToken": str(time.time_ns()),
                          **authority(ref, selected, config.get("_graph", {}), self_ref)}
         discoveries.append({"event_id": f"discovery:{ref}:SPAWNED", "ref": ref, "kind": "SPAWNED", "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
     return discoveries, paths, current
@@ -504,7 +522,16 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
 def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
     with locked(root / "state.lock"):
         selected = load_selection(root)
-        closed, graph, excluded = reconcile(root, selected, config, self_ref)
+        reconciled = {ref: dict(entry) for ref, entry in selected.items()}
+        try:
+            closed, graph, excluded = reconcile(root, reconciled, config, self_ref)
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            # A transient/invalid source must not stop transcript observation or
+            # partially remove selection entries. Retry the source on the next tick.
+            print(f"FOLLOWER degraded source reconciliation skipped: {error}", file=sys.stderr, flush=True)
+            closed, graph, excluded = [], {}, set()
+        else:
+            selected = reconciled
         new, paths, discovered = discover(root, selected, {**config, "_graph": graph, "_excluded": excluded}, self_ref)
         discovery_kinds = {item["ref"]: item["kind"] for item in new}
         staged: list[tuple[Path, dict[str, Any]]] = []
@@ -609,6 +636,8 @@ def main(argv: list[str] | None = None) -> int:
         ref = args.session.lower()
         if not SESSION.fullmatch(ref):
             raise ValueError("session must be codex:<uuid> or claude:<uuid>")
+        if args.command == "add" and args.mode != "observe":
+            raise ValueError("add supports only --mode observe; steer and child require explicit graph relationships")
         with locked(root / "state.lock"):
             selected = load_selection(root)
             if args.command == "add":

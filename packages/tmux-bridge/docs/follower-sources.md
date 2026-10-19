@@ -9,7 +9,10 @@ The default source is `$XDG_STATE_HOME/agent-mesh/registry/registry.json`
 `$XDG_STATE_HOME/agent-mesh/graph/graph.json` directly, so a registry producer is
 not required. The XDG state home defaults to `$HOME/.local/state`.
 `--registry <path>` and `--graph <path>` override these locations. Invalid registry
-JSON fails visibly rather than silently falling back to another source.
+JSON causes that tick's reconciliation to be skipped with a diagnostic. Transcript
+observation continues using the saved selection, and reconciliation retries on the
+next tick; it never silently switches to another source because of invalid data.
+Missing sources preserve the selection.
 
 Graph identities are deduplicated by `agent:runtimeUuid`. Membership excludes
 closed, archived, ephemeral, subagent and automation sessions. Other identities
@@ -19,16 +22,26 @@ excludes the identity. No transcript contents are needed to establish membership
 
 Each tick adds source members, adopts discovery entries once the source knows
 them, and removes source-owned entries that leave membership. Removal emits one
-`CLOSED` line. CLI pins survive membership removal. Discovery remains a faster
+`CLOSED` line. CLI pins survive membership removal. Discovery/bridge entries already excluded
+by the source emit `CLOSED` even before adoption. Legacy projection-owned entries
+migrate to graph ownership during the follower's locked reconciliation.
+Discovery remains a faster
 path for new activity; source exclusions also apply there. Previously source-owned
-identities cannot be re-added by transcript growth after leaving membership.
+identities are temporarily protected against re-addition by transcript growth
+after leaving membership. Only departed identities are retained as tombstones,
+with a 14-day expiry and a maximum of 4096 entries (newest expirations retained).
+Current membership comes from the source and does not accumulate in this history.
+Expired or evicted identities may be discovered again if they grow and the source
+has no exclusion for them.
 
 All selections default to `observe`, including CLI pins. Mode is recomputed each
 tick: an explicit graph `delegates-to` edge from `--self` (or its recorded claim
 predecessor chain) permits `steer`; an explicit graph `spawned-by` edge from self
-or a selected parent permits `child`. Registry `delegatedBy` is the projection of
-explicit delegation edges. Neither `spawnedBy` launch provenance nor a bridge
-caller grants authority. A bridge spawn with an unknown/unselected caller is
+or a selected parent permits `child`. Both edge types run from parent/owner to
+child. Registry `delegatedBy` and `spawnedBy` are provenance, not authority;
+control modes require the explicit edge in the graph. A bridge caller grants
+no authority. `add --mode steer` and `add --mode child` are rejected; CLI additions
+support only `observe`. A bridge spawn with an unknown/unselected caller is
 observed and emits a line. Resume launches never establish parentage.
 A child of self uses the owner's short identity as its parent label. The follower
 never sends, resumes, archives, or controls a session itself.
