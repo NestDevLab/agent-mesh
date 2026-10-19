@@ -104,6 +104,7 @@ def load_selection(root: Path) -> dict[str, dict[str, str]]:
             "mode": mode,
             "addedBy": str(entry.get("addedBy") or "manual")[:120],
             **({"parent": str(entry["parent"])[:100]} if entry.get("parent") else {}),
+            **({"sourceToken": str(entry["sourceToken"])} if entry.get("sourceToken") else {}),
         }
     return selected
 
@@ -307,9 +308,138 @@ def append_outbox(root: Path, candidates: list[dict[str, Any]]) -> list[dict[str
     return fresh
 
 
+def source_paths(config: dict[str, Any]) -> tuple[Path, Path]:
+    base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "agent-mesh"
+    return Path(config.get("registryPath") or base / "registry" / "registry.json"), Path(config.get("graphPath") or base / "graph" / "graph.json")
+
+
+def scope_reason(item: dict[str, Any], config: dict[str, Any]) -> str | None:
+    scope = config.get("follower", {}).get("scope", {})
+    domains = set(item.get("domains") or [])
+    if not domains:
+        return "unknown-domain" if scope.get("unknownDomain", "observe") == "exclude" else None
+    if domains.intersection(scope.get("excludeDomains", [])):
+        return "excluded-domain"
+    include = scope.get("includeDomains", [])
+    return "outside-included-domains" if include and not domains.intersection(include) else None
+
+
+def membership_reason(item: dict[str, Any], now: float, days: float) -> str | None:
+    if item.get("class") == "ephemeral" or item.get("origin") in {"subagent", "automation"}:
+        return "noise"
+    if (item.get("surface") or {}).get("archived"):
+        return "archived"
+    if item.get("status") == "closed":
+        return "closed"
+    attention = (item.get("attention") or {}).get("state", "")
+    live = (item.get("tmuxObservation") or {}).get("state") == "live" or item.get("tmuxLive") is True
+    if iso_epoch(item.get("lastSeenAt")) >= now - days * 86400 or live or attention in {"working", "waiting-joseph"} or attention.startswith("stalled-"):
+        return None
+    return "aged-out"
+
+
+def session_source(config: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, Any], str | None]:
+    """Read the registry, or derive membership directly from the existing graph.
+
+    Launch provenance is deliberately excluded from the authority calculation.
+    """
+    registry_path, graph_path = source_paths(config)
+    graph = read_json(graph_path, {})
+    registry = read_json(registry_path, None)
+    if graph_path.exists() and (not isinstance(graph, dict) or not isinstance(graph.get("nodes"), list) or not isinstance(graph.get("edges"), list) or not all(isinstance(node, dict) for node in graph["nodes"]) or not all(isinstance(edge, dict) for edge in graph["edges"])):
+        raise ValueError("invalid session graph")
+    sessions: dict[str, dict[str, Any]] = {}
+    rejected: dict[str, str] = {}
+    if registry is not None:
+        if not isinstance(registry, dict) or registry.get("schema") != "agent-mesh.session-registry.v1" or not isinstance(registry.get("sessions"), dict):
+            raise ValueError("invalid session registry")
+        for ref, item in registry["sessions"].items():
+            if not isinstance(ref, str) or not SESSION.fullmatch(ref) or not isinstance(item, dict):
+                raise ValueError("invalid session registry entry")
+            sessions[ref.lower()] = dict(item)
+        source = "registry"
+    elif graph_path.exists():
+        for node in sorted(graph.get("nodes", []), key=lambda n: str(n.get("lastSeenAt", ""))):
+            ref = f"{node.get('agent')}:{node.get('runtimeUuid')}".lower()
+            if not SESSION.fullmatch(ref):
+                continue
+            old = sessions.get(ref, {})
+            node = {**node, "tmuxLive": old.get("tmuxLive", False) or (node.get("tmuxObservation") or {}).get("state") == "live"}
+            sessions[ref] = {**old, **node, "domains": sorted(set(old.get("domains", []) + node.get("domains", [])))}
+            # Any archived/closed identity must not be resurrected by a duplicate.
+            if node.get("status") == "closed" or (node.get("surface") or {}).get("archived"):
+                rejected[ref] = "closed" if node.get("status") == "closed" else "archived"
+        source = "graph"
+    else:
+        source = None
+    days = float((registry or {}).get("policy", {}).get("openWindowDays", config.get("follower", {}).get("openWindowDays", 14)))
+    if days <= 0:
+        raise ValueError("openWindowDays must be positive")
+    for ref, item in sessions.items():
+        reason = membership_reason(item, time.time(), days) or scope_reason(item, config)
+        if reason:
+            rejected[ref] = reason
+    return sessions, rejected, graph, source
+
+
+def authority(ref: str, selected: dict[str, Any], graph: dict[str, Any], self_ref: str | None,
+              item: dict[str, Any] | None = None) -> dict[str, str]:
+    nodes = {n.get("id"): n for n in graph.get("nodes", [])}
+    identities = {key: f"{n.get('agent')}:{n.get('runtimeUuid')}".lower() for key, n in nodes.items()}
+    owners = {key for key, identity in identities.items() if identity == self_ref}
+    # A claim's explicit predecessor chain transfers its delegation relationships.
+    pending = list(owners)
+    while pending:
+        for predecessor in (nodes[pending.pop()].get("domainPredecessors") or {}).values():
+            if predecessor in nodes and predecessor not in owners:
+                owners.add(predecessor)
+                pending.append(predecessor)
+    for edge in graph.get("edges", []):
+        if identities.get(edge.get("to")) != ref:
+            continue
+        if edge.get("type") == "delegates-to" and edge.get("from") in owners:
+            return {"mode": "steer"}
+    # delegatedBy is the registry's projection of explicit delegates-to edges.
+    owner_refs = {identities[key] for key in owners} | ({self_ref} if self_ref else set())
+    if owner_refs.intersection((item or {}).get("delegatedBy", [])):
+        return {"mode": "steer"}
+    for edge in graph.get("edges", []):
+        parent = identities.get(edge.get("from"))
+        if edge.get("type") == "spawned-by" and identities.get(edge.get("to")) == ref and parent and (parent == self_ref or parent in selected):
+            return {"mode": "child", "parent": selected.get(parent, {}).get("label") or parent.split(":", 1)[1][:8]}
+    return {"mode": "observe"}
+
+
+def reconcile(root: Path, selected: dict[str, Any], config: dict[str, Any], self_ref: str | None) -> tuple[list[dict[str, Any]], dict[str, Any], set[str]]:
+    sessions, rejected, graph, source = session_source(config)
+    events = []
+    prior_source = read_json(root / "source-state.json", {})
+    generation = str(prior_source.get("generation", 0) + 1)
+    seen = set(prior_source.get("seen", [])) | set(sessions)
+    excluded = set(rejected) | (seen - set(sessions) if source else set())
+    for ref, entry in list(selected.items()):
+        if entry.get("addedBy") in {"registry", "graph"} and source and (ref not in sessions or ref in rejected):
+            events.append({"event_id": f"closed:{ref}:{entry.get('sourceToken', 'legacy')}", "ref": ref, "kind": "CLOSED", "body": rejected.get(ref, "left source"), "selection": dict(entry)})
+            del selected[ref]
+    for ref, item in sessions.items():
+        if ref == self_ref or ref in rejected:
+            continue
+        entry = selected.setdefault(ref, {"label": str(item.get("title") or ref.split(":", 1)[1][:8])[:80], "mode": "observe", "addedBy": source})
+        if entry.get("addedBy") in {"discovery", "bridge"}:
+            entry["addedBy"] = source
+        if entry.get("addedBy") in {"registry", "graph"}:
+            entry.setdefault("sourceToken", generation)
+    for ref, entry in selected.items():
+        entry.pop("parent", None)
+        entry.update(authority(ref, selected, graph, self_ref, sessions.get(ref)))
+    atomic_json(root / "source-state.json", {"generation": int(generation), "source": source, "seen": sorted(seen)})
+    return events, graph, excluded
+
+
 def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, Any], self_ref: str | None) -> tuple[list[dict[str, Any]], dict[str, Path], dict[str, float]]:
     last_run_path = root / "last-run"
-    last_run = float(last_run_path.read_text()) if last_run_path.exists() else time.time()
+    last_run = float(last_run_path.read_text()) if last_run_path.exists() else time.time() - float(config.get("follower", {}).get("bootstrapHours", 336)) * 3600
+    bootstrap = not last_run_path.exists()
     discoveries: list[dict[str, Any]] = []
     paths: dict[str, Path] = {}
     prior = read_json(root / "discover-cache.json", {})
@@ -332,7 +462,7 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
             except OSError:
                 continue
             current[ref] = mtime
-            if ref == self_ref or ref in selected:
+            if ref == self_ref or ref in selected or ref in config.get("_excluded", set()):
                 continue
             try:
                 if mtime < last_run and created_at(agent, path) < last_run - 60:
@@ -340,7 +470,7 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
             except OSError:
                 continue
             prompt, subagent = prompt_and_origin(agent, path)
-            if subagent or noise(prompt, config):
+            if subagent or noise(prompt, config) or scope_reason(metadata.get(session_id, {}), config):
                 continue
             parent_id = parents.get(session_id)
             origin = watch.session_origin(agent, {"path": str(path), **metadata.get(session_id, {})}, parent_id)
@@ -353,22 +483,20 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
                 if (isinstance(thread_source, str) and thread_source in thread_noise) or (isinstance(source, str) and source in source_noise):
                     continue
             created = created_at(agent, path)
-            kind = "NEW" if created >= last_run - 60 else "RESUMED"
+            kind = "NEW" if created >= (time.time() - 60 if bootstrap else last_run - 60) else "RESUMED"
             if parent_id:
                 bridge_children.append((ref, session_id, parent_id, prompt))
                 continue
             if kind == "NEW" and not follower.get("autoNewHuman", True):
                 continue
-            if kind == "RESUMED" and (not follower.get("autoResumedKnown", True) or ref not in prior):
+            if kind == "RESUMED" and (not follower.get("autoResumedKnown", True) or (ref not in prior and not bootstrap)):
                 continue
             label = f"{agent}-{session_id[:8]}"
             selected[ref] = {"label": label, "mode": "observe", "addedBy": "discovery"}
             discoveries.append({"event_id": f"discovery:{ref}:{kind}", "ref": ref, "kind": kind, "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
     for ref, session_id, parent_id, prompt in bridge_children:
-        parent = next((entry for key, entry in selected.items() if key.split(":", 1)[1] == parent_id), None)
-        if parent is None:
-            continue
-        selected[ref] = {"label": f"{ref.split(':', 1)[0]}-{session_id[:8]}", "mode": "child", "parent": parent["label"], "addedBy": "bridge"}
+        selected[ref] = {"label": f"{ref.split(':', 1)[0]}-{session_id[:8]}", "addedBy": "bridge",
+                         **authority(ref, selected, config.get("_graph", {}), self_ref)}
         discoveries.append({"event_id": f"discovery:{ref}:SPAWNED", "ref": ref, "kind": "SPAWNED", "body": prompt, "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selected[ref]})
     return discoveries, paths, current
 
@@ -376,10 +504,11 @@ def discover(root: Path, selected: dict[str, dict[str, str]], config: dict[str, 
 def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
     with locked(root / "state.lock"):
         selected = load_selection(root)
-        new, paths, discovered = discover(root, selected, config, self_ref)
+        closed, graph, excluded = reconcile(root, selected, config, self_ref)
+        new, paths, discovered = discover(root, selected, {**config, "_graph": graph, "_excluded": excluded}, self_ref)
         discovery_kinds = {item["ref"]: item["kind"] for item in new}
         staged: list[tuple[Path, dict[str, Any]]] = []
-        candidates = list(new)
+        candidates = closed + list(new)
         for ref, selection in selected.items():
             if ref == self_ref:
                 continue
@@ -449,9 +578,11 @@ def parser() -> argparse.ArgumentParser:
     for command in ("run", "wait", "drain", "add", "remove", "list"):
         sub = commands.add_parser(command)
         sub.add_argument("--name", required=True)
-        if command in {"run", "wait", "drain"}:
+        if command in {"run", "wait", "drain", "list"}:
             sub.add_argument("--config", type=Path)
             sub.add_argument("--self", dest="self_ref")
+            sub.add_argument("--registry", type=Path)
+            sub.add_argument("--graph", type=Path)
         if command == "run":
             sub.add_argument("--interval", type=float, default=30)
             sub.add_argument("--max-runtime", type=float, default=1680)
@@ -465,6 +596,7 @@ def parser() -> argparse.ArgumentParser:
             sub.add_argument("--mode", choices=("steer", "observe", "child"), default="observe")
         if command == "list":
             sub.add_argument("--json", action="store_true")
+            sub.add_argument("--coverage", action="store_true")
     return cli
 
 
@@ -485,8 +617,23 @@ def main(argv: list[str] | None = None) -> int:
                 selected.pop(ref, None)
             save_selection(root, selected)
         return 0
+    config = read_json(args.config, {}) if args.config else {}
+    if not isinstance(config, dict):
+        raise ValueError("--config must contain a JSON object")
+    if args.registry:
+        config["registryPath"] = str(args.registry)
+    if args.graph:
+        config["graphPath"] = str(args.graph)
+    if args.self_ref:
+        args.self_ref = args.self_ref.lower()
     if args.command == "list":
-        selected = load_selection(root)
+        with locked(root / "state.lock"):
+            selected = load_selection(root)
+        if args.coverage:
+            sessions, rejected, _, source = session_source(config)
+            rows = {ref: {"selected": ref in selected, "excluded": "self" if ref == args.self_ref else rejected.get(ref)} for ref in sorted(sessions)}
+            print(json.dumps({"source": source, "coverage": rows}, sort_keys=True))
+            return 0
         if args.json:
             print(json.dumps({"version": 1, "sessions": selected}, ensure_ascii=False, sort_keys=True))
         else:
@@ -495,9 +642,6 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.self_ref and not SESSION.fullmatch(args.self_ref):
         raise ValueError("--self must be codex:<uuid> or claude:<uuid>")
-    config = read_json(args.config, {}) if args.config else {}
-    if not isinstance(config, dict):
-        raise ValueError("--config must contain a JSON object")
     follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
     limit = int(follower.get("maxLinesPerTick", MAX_PER_TICK))
     if limit <= 0:

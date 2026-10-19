@@ -261,6 +261,7 @@ def bridge_parents() -> dict[str, str]:
     state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     path = Path(os.environ.get("AGENT_MESH_LAUNCH_EVENTS", state_home / "agent-mesh" / "launches" / "events.jsonl"))
     parents: dict[str, str] = {}
+    launches: dict[str, dict[str, Any]] = {}
     try:
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -270,9 +271,20 @@ def bridge_parents() -> dict[str, str]:
                     continue
                 if not isinstance(record, dict) or record.get("schema") != "agent-mesh.bridge-launch-event.v1":
                     continue
-                child, caller = record.get("threadId"), record.get("caller")
-                if isinstance(child, str) and isinstance(caller, str) and child and caller:
-                    parents[child] = caller
+                launch_id = record.get("launchId")
+                if not isinstance(launch_id, str):
+                    continue
+                launch = launches.setdefault(launch_id, {})
+                if record.get("event") == "launch.started":
+                    launch.update(caller=record.get("caller"),
+                                  kind=record.get("kind") or ("resume" if record.get("threadId") else "spawn"))
+                if record.get("threadId"):
+                    launch["threadId"] = record["threadId"]
+        for launch in launches.values():
+            child, caller = launch.get("threadId"), launch.get("caller")
+            if launch.get("kind") == "spawn" and isinstance(child, str) and child:
+                # Unknown callers retain provenance but never acquire authority.
+                parents[child] = caller if isinstance(caller, str) and caller.strip() not in {"", "unknown"} else "unknown"
     except OSError:
         pass
     return parents

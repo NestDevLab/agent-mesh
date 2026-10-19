@@ -196,4 +196,6 @@ if python3 "$WATCHER" '../bad' --agent claude --state "$CLAUDE_STATE" --inbox "$
     fail "unsafe session id was accepted"
 fi
 
+python3 "$BRIDGE_DIR/bin/agent-follow.test.py"
+
 echo "PASS: session watcher"
