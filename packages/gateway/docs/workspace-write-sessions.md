@@ -76,9 +76,9 @@ No new `danger-full-access` path is added. The pre-existing separately configure
    Install the reviewed release only through the owning deployment/Agentwheel configuration.
    Keep private configuration in the private operations source, never in this portable repository.
 2. Select **one repository**, its exact authenticated principal ID, provider/agent ID and workspace
-   ID. Use a repository root with its canonical `.git` directory inside that root (nested governed
-   worktrees can then refer back to it). A checkout whose git-dir lives outside the grant is not
-   auto-mounted or supported as a root. Do not use a workspace parent directory as a repository grant. Create separate configs and
+   ID. Repository and plain directory roots are supported. Git metadata outside a selected root is
+   not auto-mounted; select a repository root containing its own `.git` directory when Git access
+   is required (nested governed worktrees can refer back to that metadata). Do not use a workspace parent directory as a repository grant. Create separate configs and
    private state directories for read-only and workspace-write, and separately for Claude/Codex.
    See `../examples/workspace-worker.json` for the worker shape; all values are synthetic.
 3. Provision worker-specific provider authentication and self-contained CLI binaries visible through
@@ -142,3 +142,48 @@ Automated tests cover real filesystem isolation, worker startup/shutdown, admiss
 idempotency, native IDs and adapter fixtures. They do not authenticate to paid provider APIs or prove
 that an installed CLI/authentication setup works in production. Live Claude/Codex turns and private
 operations configuration remain activation acceptance, not a claimed result of fixture tests.
+
+## Client-selected directories
+
+An owner can explicitly enable `pathSelection: "client"` on a route. `mesh_call` and `mesh_submit`
+then require `workspace_path` for fresh sessions; a resumed session inherits its original path and
+rejects a different one. Plain directories are supported; a `.git` directory is not required.
+This avoids one configuration entry per repository while retaining exact principal/agent/mode grants.
+
+The separately supervised `workspace-broker.js` receives the task outside the gateway, validates the
+canonical path against owner `allowedRoots`/`deniedRoots`, and starts a distinct isolated worker for
+that principal/agent/mode/destination. The selected directory is mounted as `/workspace` inside the
+worker, avoiding shell interpolation of client pathnames (spaces and shell metacharacters stay data).
+Only that destination is RW; another fresh task can choose another approved directory. Existing
+sessions cannot change path or mode. No host-wide RW mount is made, even if `allowedRoots: ["/"]`
+is explicitly chosen by the owner.
+
+Invariant exclusions reject system roots (`/etc`, `/usr`, `/var`, `/opt`, `/proc`, `/sys`, `/dev`,
+`/run`, `/boot`, `/root` and runtime library paths), the launching user's credential/harness homes,
+broker state, control sockets, provider templates, runtime binaries and the release itself. Ancestors
+of those paths are rejected too, so `/` and a complete user home cannot become a destination.
+`deniedRoots` must additionally name the deployment/gateway source control planes. These exclusions
+cannot be disabled by MCP arguments. Unavailable or malformed paths and symlink aliases fail closed.
+
+See `../examples/workspace-broker.json`. Supply one route for each enabled principal/agent/mode,
+and run `node packages/gateway/dist/mcp/workspace-broker.js /private/broker.json` from the reviewed
+release. The gateway route repeats only the public route fields plus `pathSelection: "client"`;
+it never receives host path policy, provider credentials or permission to start processes.
+
+Provider CLI binaries installed through host-home symlinks can be supplied as an exact canonical
+`providerBinary: { "source": "/private/provider-binary", "name": "codex" }`; the launcher binds
+that regular file read-only at `/opt/mesh-bin/codex` (or `claude`). It does not expose the containing
+host home. Optional `readOnlyFiles` bind the existing approved provider authentication file directly
+to `.codex/auth.json` or `.claude/.credentials.json` under the private worker home. Source paths
+must be canonical regular files and are pinned before mounting. No value is put in argv, logs or
+the broker protocol, and credentials are not copied into destination homes. Use a **non-secret**
+`homeTemplate` for onboarding/preferences only. Read-only auth may require the credential owner to
+refresh its approved binding if a provider insists on rewriting that file; do not widen mounts or
+copy personal credentials to work around a refresh error.
+
+Each worker has separate home/temp/control state. Clean broker shutdown terminates only its own
+children, waits for exit and then removes their socket. IPC disconnect also terminates workers
+when their broker disappears. After a crash, an existing socket requires owner inspection; it is
+never silently adopted, replaced or removed. Cancelling a task is not process termination. Stop the
+specific broker to revoke in-flight workers. Durable task audit remains in the protected gateway
+journal, independently of the chosen directory and worker recovery files.

@@ -1,0 +1,15 @@
+{
+  "id": "broker.example.codex.write",
+  "principalId": "principal.example",
+  "agentId": "agent.ingress.codex",
+  "workspaceId": "workspace.example",
+  "accessMode": "workspace-write",
+  "pathSelection": "client",
+  "socketPath": "/srv/mesh-control/codex-write/broker.sock",
+  "provider": "codex",
+  "allowedRoots": ["/srv/projects", "/srv/scratch"],
+  "deniedRoots": ["/srv/projects/private-control"],
+  "codeRoot": "/opt/mesh-worker/release",
+  "stateRoot": "/srv/mesh-state/codex-write",
+  "homeTemplate": "/srv/mesh-templates/codex"
+}

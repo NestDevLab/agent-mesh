@@ -58,6 +58,7 @@ export interface MeshTaskRecord {
   session_mode?: "fresh";
   access_mode?: "read-only" | "workspace-write";
   worker_id?: string;
+  workspace_path?: string;
   session_provenance?: MeshTaskSessionProvenance;
   workspace_id: string;
   domain_id: string;
@@ -84,6 +85,7 @@ export interface CreateMeshTaskInput {
   sessionMode?: "fresh";
   accessMode?: "read-only" | "workspace-write";
   workerId?: string;
+  workspacePath?: string;
   sessionProvider?: string;
   workspaceId: string;
   domainId: string;
@@ -124,6 +126,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       ...(input.sessionMode === undefined ? {} : { session_mode: input.sessionMode }),
       ...(input.accessMode === "workspace-write" || input.workerId !== undefined ? { access_mode: input.accessMode ?? "read-only" } : {}),
       ...(input.workerId === undefined ? {} : { worker_id: input.workerId }),
+      ...(input.workspacePath === undefined ? {} : { workspace_path: input.workspacePath }),
       workspace_id: input.workspaceId,
       domain_id: input.domainId,
       message: input.message,
@@ -165,6 +168,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       }),
       access_mode: input.accessMode ?? "read-only",
       ...(input.workerId === undefined ? {} : { worker_id: input.workerId }),
+      ...(input.workspacePath === undefined ? {} : { workspace_path: input.workspacePath }),
       workspace_id: input.workspaceId,
       domain_id: input.domainId,
       message: input.message,

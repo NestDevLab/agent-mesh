@@ -1,3 +1,4 @@
+import { isAbsolute, resolve } from "node:path";
 import { request } from "node:http";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
 import type { MeshTaskExecutionHooks } from "./mesh-task-coordinator.js";
@@ -16,11 +17,12 @@ export interface WorkspaceWorkerRoute {
   workspaceId: string;
   accessMode: AccessMode;
   socketPath: string;
+  pathSelection?: "client";
 }
 
 export function validateWorkerRoute(route: WorkspaceWorkerRoute): void {
   if (!route || [route.id, route.principalId, route.agentId, route.workspaceId].some((v) => typeof v !== "string" || !/^[A-Za-z0-9_.:-]{1,160}$/.test(v)) ||
-      !["read-only", "workspace-write"].includes(route.accessMode) || typeof route.socketPath !== "string" || !route.socketPath.startsWith("/") || route.socketPath.includes("..")) {
+      (route.pathSelection !== undefined && route.pathSelection !== "client") || !["read-only", "workspace-write"].includes(route.accessMode) || typeof route.socketPath !== "string" || !route.socketPath.startsWith("/") || route.socketPath.includes("..")) {
     throw new Error("Invalid explicit workspace worker route.");
   }
 }
@@ -41,9 +43,11 @@ export class WorkspaceWorkerRouter {
   }
 
   authorize(input: { principalId: string; agentId: string; workspaceId: string; accessMode: AccessMode;
-    sessionMode?: "fresh"; sessionId?: string; binding?: MeshTaskRecord }): string | undefined {
+    workspacePath?: string; sessionMode?: "fresh"; sessionId?: string; binding?: MeshTaskRecord }): string | undefined {
     const route = this.routes.find((r) => r.principalId === input.principalId && r.agentId === input.agentId &&
       r.workspaceId === input.workspaceId && r.accessMode === input.accessMode);
+    if (input.workspacePath !== undefined && (route?.pathSelection !== "client" || !isAbsolute(input.workspacePath) || resolve(input.workspacePath) !== input.workspacePath || input.workspacePath.includes("\0"))) throw new Error("workspace_path_denied: canonical client path and an explicit path-selection policy are required.");
+    if (route?.pathSelection === "client" && input.sessionMode === "fresh" && input.workspacePath === undefined) throw new Error("workspace_path_required: select the destination directory.");
     if (input.binding?.worker_id !== undefined) {
       if (route?.id !== input.binding.worker_id) throw new Error("workspace_write_denied: session worker grant was revoked or changed.");
       return route.id;

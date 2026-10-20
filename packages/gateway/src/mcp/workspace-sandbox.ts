@@ -18,6 +18,10 @@ export interface WorkspaceSandboxConfig {
   home: string;
   temporary: string;
   accessMode: AccessMode;
+  mountPath?: "/workspace";
+  providerBinary?: { source: string; name: "claude" | "codex" };
+  readOnlyFiles?: Array<{ source: string; target: ".codex/auth.json" | ".claude/.credentials.json" }>;
+
   control?: string;
 }
 /** Empty mount namespace: never bind /, /home, /run, host /tmp or a host tmux socket. */
@@ -28,7 +32,12 @@ export function sandboxArguments(config: WorkspaceSandboxConfig, command: string
   for (let i = 0; i < paths.length; i++) for (let j = i + 1; j < paths.length; j++) {
     if (contains(paths[i]!, paths[j]!) || contains(paths[j]!, paths[i]!)) throw new Error("Worker mounts must not overlap.");
   }
+  if (config.mountPath !== undefined && config.mountPath !== "/workspace") throw new Error("Invalid internal workspace mount.");
   if (!["read-only", "workspace-write"].includes(config.accessMode)) throw new Error("Invalid sandbox mode.");
+  const files = [...(config.providerBinary === undefined ? [] : [{ source: config.providerBinary.source, target: `/opt/mesh-bin/${config.providerBinary.name}` }]), ...(config.readOnlyFiles ?? []).map((file) => ({ source: file.source, target: `/home/worker/${file.target}` }))];
+  if (config.providerBinary !== undefined && !["claude", "codex"].includes(config.providerBinary.name)) throw new Error("Invalid isolated provider binary.");
+  if ((config.readOnlyFiles ?? []).some((file) => ![".codex/auth.json", ".claude/.credentials.json"].includes(file.target))) throw new Error("Invalid isolated provider auth target.");
+  for (const file of files) if (!isAbsolute(file.source) || resolve(file.source) !== file.source || realpathSync(file.source) !== file.source || !statSync(file.source).isFile()) throw new Error("Isolated runtime files must be canonical regular files.");
   const result = ["--unshare-all", "--die-with-parent", "--share-net", "--new-session", "--cap-drop", "ALL", "--clearenv",
     "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/var", "--dir", "/etc"];
   // Read-only runtime dependencies, deliberately excluding the host's home and socket trees.
@@ -37,13 +46,14 @@ export function sandboxArguments(config: WorkspaceSandboxConfig, command: string
   }
   result.push("--bind", config.temporary, "/tmp", "--bind", config.home, "/home/worker");
   if (config.control !== undefined) result.push("--bind", config.control, config.control);
+  for (const file of files) result.push("--ro-bind", file.source, file.target);
   result.push("--ro-bind", config.codeRoot, config.codeRoot,
-    config.accessMode === "workspace-write" ? "--bind" : "--ro-bind", config.repository, config.repository,
-    "--setenv", "HOME", "/home/worker", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
+    config.accessMode === "workspace-write" ? "--bind" : "--ro-bind", config.repository, config.mountPath ?? config.repository,
+    "--setenv", "HOME", "/home/worker", "--setenv", "PATH", "/opt/mesh-bin:/usr/local/bin:/usr/bin:/bin",
     "--setenv", "TMPDIR", "/tmp", "--setenv", "MESH_TMUX_SOCKET", "mesh-isolated",
     "--setenv", "MESH_STRICT_READY", "1", "--setenv", "MESH_PRESERVE_SESSION_POLICY", "1",
     "--setenv", "MESH_REPLACE_UNREADY_SESSION", "1", "--setenv", "AGENT_MESH_ROOT", config.codeRoot,
-    "--chdir", config.repository, "--", command, ...args);
+    "--chdir", config.mountPath ?? config.repository, "--", command, ...args);
   return result;
 }
 
@@ -55,10 +65,10 @@ export function assertSandboxMounts(config: WorkspaceSandboxConfig, mountinfo: s
     return { path: decode(fields[4]!), options: fields[5]!.split(","), fs: right?.split(" ")[0] };
   });
   if (mounts.find((m) => m.path === "/")?.fs !== "tmpfs" ||
-      !mounts.find((m) => m.path === config.repository)?.options.includes(config.accessMode === "workspace-write" ? "rw" : "ro")) {
+      !mounts.find((m) => m.path === (config.mountPath ?? config.repository))?.options.includes(config.accessMode === "workspace-write" ? "rw" : "ro")) {
     throw new Error("Isolated worker requires its verified mount namespace.");
   }
-  const writable = ["/home/worker", "/tmp", ...(config.control === undefined ? [] : [config.control]), ...(config.accessMode === "workspace-write" ? [config.repository] : [])];
+  const writable = ["/home/worker", "/tmp", ...(config.control === undefined ? [] : [config.control]), ...(config.accessMode === "workspace-write" ? [config.mountPath ?? config.repository] : [])];
   for (const mount of mounts) {
     if (!mount.options.includes("rw") || ["tmpfs", "proc", "devpts", "mqueue"].includes(mount.fs ?? "") || contains("/dev", mount.path)) continue;
     if (!writable.some((root) => contains(root, mount.path))) throw new Error(`Unexpected writable worker mount: ${mount.path}`);

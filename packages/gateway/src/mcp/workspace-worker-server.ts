@@ -37,10 +37,10 @@ export async function startIsolatedWorker(config: IsolatedWorkerConfig, provider
   const execute = async (task: MeshTaskRecord): Promise<Receipt> => {
     const base = { taskId: task.task_id, workerId: config.id, accessMode: config.accessMode };
     if (task.schema !== "agent-mesh.mcp-task.v1" || task.principal_id !== config.principalId || task.target_agent_id !== config.agentId ||
-        task.workspace_id !== config.workspaceId || task.access_mode !== config.accessMode || task.worker_id !== config.id ||
+        (task.workspace_path !== undefined && task.workspace_path !== config.repository) || task.workspace_id !== config.workspaceId || task.access_mode !== config.accessMode || task.worker_id !== config.id ||
         typeof task.message !== "string" || task.message.length > 100_000 || typeof task.task_id !== "string" ||
         typeof task.session_id !== "string" || !/^[0-9a-f-]{36}$/.test(task.session_id)) return { ...base, error: "workspace_write_denied: worker policy mismatch." };
-    const input = createHash("sha256").update(JSON.stringify([task.task_id, task.principal_id, task.target_agent_id, task.workspace_id, task.worker_id, task.access_mode, task.session_id, task.session_mode, task.message_id, task.context_id, task.message, task.idempotency_key])).digest("hex");
+    const input = createHash("sha256").update(JSON.stringify([task.task_id, task.principal_id, task.target_agent_id, task.workspace_id, task.workspace_path, task.worker_id, task.access_mode, task.session_id, task.session_mode, task.message_id, task.context_id, task.message, task.idempotency_key])).digest("hex");
     const prior = entries.get(task.task_id);
     if (prior !== undefined) {
       if (prior.input !== input) return { ...base, error: "Worker task idempotency conflict." };
@@ -52,7 +52,7 @@ export async function startIsolatedWorker(config: IsolatedWorkerConfig, provider
     let receipt: Receipt;
     try {
       const result = await provider.send({ sessionId: task.session_id, workspaceId: task.workspace_id,
-        message: task.message, messageId: task.message_id, contextId: task.context_id, taskId: task.task_id,
+        message: config.mountPath === undefined ? task.message : `The owner-selected destination is mounted at /workspace. Use /workspace as the working directory; host paths are not available.\n\n${task.message}`, messageId: task.message_id, contextId: task.context_id, taskId: task.task_id,
         correlationId: task.task_id, idempotencyKey: task.idempotency_key,
         ...(task.session_mode === "fresh" ? { sessionMode: "fresh" as const } : {}) });
       receipt = { ...base, sessionId: result.session_id ?? task.session_id,
@@ -90,7 +90,7 @@ async function main() {
     const provider = new ShellAgentSessionProvider({ agentId: config.agentId, agentType: config.provider,
       agentSessionPath: resolve(bin, "agent-session.sh"), agentSendPath: resolve(bin, "agent-send.sh"),
       agentNativeCallPath: resolve(bin, "agent-native-call.mjs"),
-      workspaceRoots: { [config.workspaceId]: [config.repository] }, freshSessionCwds: { [config.workspaceId]: config.repository },
+      workspaceRoots: { [config.workspaceId]: [config.mountPath ?? config.repository] }, freshSessionCwds: { [config.workspaceId]: config.mountPath ?? config.repository },
       ...(config.provider === "codex" ? { freshTaskSessions: true } : {}),
       isolatedAccessMode: config.accessMode, meshSocket: "mesh-isolated", timeoutSeconds: 240 });
     await startIsolatedWorker(config, provider);
@@ -100,7 +100,6 @@ async function main() {
   validateWorkerRoute(config);
   if (!["claude", "codex"].includes(config.provider)) throw new Error("Unknown worker provider.");
   canonicalDirectory(config.control);
-  canonicalDirectory(resolve(config.repository, ".git"));
   if (dirname(config.socketPath) !== config.control) throw new Error("Worker socket must be in the private control directory.");
   for (const path of [config.repository, config.codeRoot, config.home, config.temporary, config.control]) {
     if (contains("/usr", path) || contains(path, "/usr")) throw new Error("Worker data must be separate from runtime mounts.");
@@ -112,8 +111,9 @@ async function main() {
   // No shell and no inherited host environment, credentials, app-server or tmux sockets.
   const args = sandboxArguments(config, process.execPath, [fileURLToPath(import.meta.url), "--inside", Buffer.from(JSON.stringify(config)).toString("base64url")]);
   // Pin every approved source directory before namespace creation (avoid symlink/rename races).
-  const sources = [config.repository, config.codeRoot, config.home, config.temporary, config.control];
-  const descriptors = sources.map((path) => openSync(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW));
+  const directories = [config.repository, config.codeRoot, config.home, config.temporary, config.control];
+  const sources = [...directories, ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)];
+  const descriptors = sources.map((path) => openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (directories.includes(path) ? constants.O_DIRECTORY : 0)));
   for (let i = 0; i < sources.length; i++) {
     if (realpathSync(`/proc/self/fd/${descriptors[i]}`) !== sources[i]) throw new Error("Worker mount changed while pinning its directory.");
   }
@@ -126,8 +126,9 @@ async function main() {
   const child = spawn("/usr/bin/bwrap", args, { stdio: ["inherit", "inherit", "inherit", ...descriptors], env: {} });
   for (const fd of descriptors) closeSync(fd);
   child.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
-  child.on("exit", (code) => { process.exitCode = code ?? 1; });
+  child.on("exit", (code) => { process.exitCode = code ?? 1; if (process.connected) process.disconnect(); });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => child.kill(signal));
+  if (process.channel !== undefined) process.once("disconnect", () => child.kill("SIGTERM"));
 }
 if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => { console.error(error.message); process.exitCode = 1; });

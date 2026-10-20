@@ -167,6 +167,7 @@ export interface MeshTaskDispatchInput {
   /** "fresh": start a new session. Can't be combined with sessionId. */
   sessionMode?: "fresh";
   accessMode?: "read-only" | "workspace-write";
+  workspacePath?: string;
   workspaceId?: string;
   domainId?: string;
   contextId?: string;
@@ -413,10 +414,13 @@ export class MeshMcpFacade {
       throw new Error("Session access denied: principal, agent or workspace mismatch.");
     }
     if (binding?.worker_id !== undefined && this.options.workspaceWorkers === undefined) throw new Error("workspace_worker_unavailable: session worker configuration is missing.");
+    const workspacePath = input.workspacePath ?? binding?.workspace_path;
+    if (binding !== undefined && workspacePath !== binding.workspace_path) throw new Error("Session workspace path is immutable.");
     const accessMode = input.accessMode ?? binding?.access_mode ?? "read-only";
     if (binding !== undefined && accessMode !== (binding.access_mode ?? "read-only")) throw new Error("Session access mode is immutable.");
     const workerId = this.options.workspaceWorkers?.authorize({ principalId: this.options.principal.id,
-      agentId: target.id, workspaceId, accessMode, sessionMode: input.sessionMode, sessionId: input.sessionId, binding });
+      agentId: target.id, workspaceId, workspacePath, accessMode, sessionMode: input.sessionMode, sessionId: input.sessionId, binding });
+    if (workspacePath !== undefined && workerId === undefined) throw new Error("workspace_path_denied: no client-selected path worker grant.");
     if (accessMode === "workspace-write" && workerId === undefined) throw new Error("workspace_write_denied: no authorized isolated worker.");
     if (input.sessionMode === "fresh") {
       if (input.sessionId !== undefined) {
@@ -445,6 +449,7 @@ export class MeshMcpFacade {
     return {
       ...(input.contextId === undefined ? {} : { contextId: input.contextId }),
       accessMode,
+      ...(workspacePath === undefined ? {} : { workspacePath }),
       ...(workerId === undefined ? {} : { workerId }),
       principalId: this.options.principal.id,
       principalKind: this.options.principal.kind,
@@ -511,6 +516,7 @@ const taskDispatchInputSchema = z.object({
   session_mode: z.enum(["fresh"]).optional(),
   access_mode: z.enum(["read-only", "workspace-write"]).optional().describe("Defaults to read-only for new sessions. workspace-write requires an explicit owner grant and isolated worker. Existing sessions retain their original mode; explicit changes are rejected."),
   workspace_id: identifierSchema.optional(),
+  workspace_path: z.string().min(1).max(2048).optional().describe("Canonical absolute destination directory for an explicitly enabled client-selected path worker. Fixed for the lifetime of the session."),
   domain_id: identifierSchema.optional(),
   context_id: identifierSchema.optional(),
   message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
@@ -820,6 +826,7 @@ function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDisp
     sessionId: input.session_id,
     sessionMode: input.session_mode,
     accessMode: input.access_mode,
+    workspacePath: input.workspace_path,
     workspaceId: input.workspace_id,
     domainId: input.domain_id,
     contextId: input.context_id,
@@ -839,6 +846,7 @@ export function publicTask(task: MeshTaskRecord) {
     ...(task.session_mode === undefined ? {} : { session_mode: task.session_mode }),
     ...(task.session_provenance === undefined ? {} : { session_provenance: { ...task.session_provenance } }),
     access_mode: task.access_mode ?? "read-only",
+    ...(task.workspace_path === undefined ? {} : { workspace_path: task.workspace_path }),
     status: task.status,
     created_at: task.created_at,
     updated_at: task.updated_at,
