@@ -3,6 +3,11 @@ import type { MeshTaskArtifact, MeshTaskRecord, MeshTaskStoreLike } from "./mesh
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const EXECUTION_ERROR_CODES = new Set([
   "transport_failure",
+  "workspace_worker_unavailable",
+  "workspace_write_denied",
+  "worker_response_uncorrelated",
+  "worker_execution_failed",
+  "delivery_uncertain",
   "result_no_output",
   "result_uncorrelated",
   "result_parsing_failure",
@@ -18,7 +23,9 @@ export interface MeshTaskExecutionResult {
   artifacts?: readonly MeshTaskArtifact[];
 }
 
-export type MeshTaskExecutor = (task: MeshTaskRecord) => Promise<MeshTaskExecutionResult>;
+export interface MeshTaskExecutionHooks { bindSession(sessionId: string): Promise<void> }
+
+export type MeshTaskExecutor = (task: MeshTaskRecord, hooks: MeshTaskExecutionHooks) => Promise<MeshTaskExecutionResult>;
 
 export class MeshTaskCoordinator {
   private readonly store: MeshTaskStoreLike;
@@ -71,6 +78,10 @@ export class MeshTaskCoordinator {
     );
   }
 
+  async sessionBinding(sessionId: string): Promise<MeshTaskRecord | undefined> {
+    return (await this.store.list()).find((task) => task.session_id === sessionId);
+  }
+
   async resume(): Promise<void> {
     for (const task of await this.store.list()) {
       if (!TERMINAL.has(task.status)) this.schedule(task);
@@ -108,7 +119,13 @@ export class MeshTaskCoordinator {
     }
     task = await this.store.update({ ...task, status: "working" });
     try {
-      const execution = await this.execute(task);
+      const execution = await this.execute(task, { bindSession: async (sessionId) => {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(sessionId)) throw new Error("Invalid native session ID.");
+        const latest = await this.store.get(taskId);
+        if (latest === undefined || TERMINAL.has(latest.status) || latest.session_mode !== "fresh") return;
+        await this.store.update({ ...latest, session_id: sessionId,
+          ...(latest.session_provenance === undefined ? {} : { session_provenance: { ...latest.session_provenance, session_id: sessionId } }) });
+      } });
       const latest = await this.store.get(taskId);
       if (latest === undefined || latest.status === "cancelled") return;
       await this.store.update({

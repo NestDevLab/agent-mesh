@@ -1,3 +1,4 @@
+import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -63,6 +64,7 @@ interface RuntimeConfig {
   memoryRecall?: MemoryRecallConfig;
   tmuxIngress?: TmuxIngressConfig;
   agentSessions?: AgentSessionsConfig;
+  workspaceWorkers?: WorkspaceWorkerRoute[];
 }
 
 interface TmuxIngressConfig {
@@ -88,6 +90,7 @@ interface AgentSessionsConfig {
     /** Opt-in. Fresh sessions only ever start in these dirs. */
     fresh_session?: {
       workspace_cwd: Record<string, string>;
+      task_sessions?: boolean;
       /** Codex only; absent means read-only. */
       access_profiles?: Array<"read-only" | "full-access">;
       full_access_socket?: string;
@@ -137,9 +140,12 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       : { adapters: runtimeAdapters(config.tmuxIngress, sessionRegistry, stateDir) })
   });
   const bindings = config.bindings;
+  const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
   const taskCoordinator = new MeshTaskCoordinator({
     store: new MeshTaskStore({ stateDir }),
-    execute: (task) => executeMeshTask(gateway, task)
+    execute: (task, hooks) => task.worker_id === undefined
+      ? executeMeshTask(gateway, task, undefined, { bindSession: hooks.bindSession })
+      : workspaceWorkers === undefined ? Promise.reject(new Error("workspace_worker_unavailable")) : workspaceWorkers.execute(task, hooks)
   });
   await taskCoordinator.resume();
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
@@ -153,6 +159,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         capabilities
       })),
       taskCoordinator,
+      ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
@@ -176,6 +183,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         id, name, provider, capabilities
       })),
       taskCoordinator,
+      ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
@@ -351,6 +359,13 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
   validateMemoryRecall(parsed.memoryRecall);
   validateTmuxIngress(parsed.tmuxIngress, agents);
   validateAgentSessions(parsed.agentSessions, agents, contexts);
+  if (parsed.workspaceWorkers !== undefined) {
+    new WorkspaceWorkerRouter(parsed.workspaceWorkers);
+    for (const route of parsed.workspaceWorkers) {
+      if (!agents.some((agent) => agent.id === route.agentId && ["claude", "codex"].includes(agent.provider)) ||
+          !contexts.some((context) => context.id === route.workspaceId && context.type === "workspace")) throw new Error("Unknown workspace worker agent or workspace.");
+    }
+  }
   return {
     stateDir: parsed.stateDir,
     agents,
@@ -359,7 +374,8 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     ...(parsed.googleWorkspace === undefined ? {} : { googleWorkspace: parsed.googleWorkspace }),
     ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
     ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
-    ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions })
+    ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions }),
+    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers })
   };
 }
 
@@ -496,6 +512,8 @@ function validateFreshSession(provider: AgentSessionsConfig["providers"][number]
   ) {
     throw new Error(`Invalid agent sessions fresh_session at index ${index}.`);
   }
+  const taskSessions = provider.fresh_session?.task_sessions;
+  if (taskSessions !== undefined && (typeof taskSessions !== "boolean" || provider.agent_type !== "codex")) throw new Error(`Invalid fresh task_sessions at index ${index}.`);
   const profiles = provider.fresh_session?.access_profiles;
   if (profiles !== undefined && (
     provider.agent_type !== "codex" || !Array.isArray(profiles) || !profiles.includes("read-only") ||
@@ -538,6 +556,7 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     ...(config.agentManagedInboxRoot === undefined ? {} : { agentManagedInboxRoot: config.agentManagedInboxRoot }),
     workspaceRoots: provider.workspace_roots,
     ...(provider.fresh_session === undefined ? {} : { freshSessionCwds: provider.fresh_session.workspace_cwd }),
+    ...(provider.fresh_session?.task_sessions === undefined ? {} : { freshTaskSessions: provider.fresh_session.task_sessions }),
     ...(provider.fresh_session?.access_profiles === undefined ? {} : { createSessionProfiles: provider.fresh_session.access_profiles }),
     ...(provider.fresh_session?.full_access_socket === undefined ? {} : { fullAccessMeshSocket: provider.fresh_session.full_access_socket }),
     ...(config.meshSocket === undefined ? {} : { meshSocket: config.meshSocket }),

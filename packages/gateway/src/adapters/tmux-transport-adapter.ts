@@ -32,6 +32,8 @@ export interface TmuxSendResult {
     | "fresh_session_workspace_unauthorized"
     | "fresh_session_create_failed";
   result_error_code?: "result_no_output" | "result_uncorrelated" | "result_parsing_failure" | "result_timeout";
+  /** Provider-native session ID when it differs from the requested one (fresh Codex sessions). */
+  session_id?: string;
 }
 
 /**

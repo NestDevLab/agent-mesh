@@ -273,3 +273,19 @@ test("ChatGPT singleton compatibility wraps only JSON-RPC responses", async () =
   assert.equal(authError.status, 401);
   assert.deepEqual(await authError.json(), { error: "unauthorized" });
 });
+
+
+test("create_session advertisement follows effective fresh support for each provider", () => {
+  const base = options();
+  base.principal.allowedTools.push("mesh_call");
+  // Static declarations must never override a missing backend capability.
+  base.agents.forEach((agent) => agent.capabilities.push("create_session"));
+  for (const supported of ["agent.codex", "agent.claude", undefined]) {
+    const facade = new MeshMcpFacade({ ...base, sessionRegistry: {
+      freshSessionSupport: (agentId) => agentId === supported ? "supported" : "unsupported"
+    } });
+    for (const agent of facade.listAgents()) {
+      assert.equal(agent.capabilities.includes("create_session"), agent.id === supported);
+    }
+  }
+});

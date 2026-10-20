@@ -592,7 +592,13 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
     timeout "$LIMEN_TIMEOUT_SECONDS" "${DISPATCH[@]}"
     GOVERNED_CODE=$?
     set -e
-    if [[ "$GOVERNED_CODE" -eq 0 ]]; then exit 0; fi
+    if [[ "$GOVERNED_CODE" -eq 0 ]]; then
+        # The dispatcher also exits 0 after closing the lease of a child that
+        # exited 4/124 or lost its target, so success must be proven here.
+        mtmux has-session -t "$TARGET" 2>/dev/null && exit 0
+        echo "ERROR: governed launch reported success but target '$TARGET' does not exist; no session is available" >&2
+        exit 1
+    fi
     if [[ "$GOVERNED_CODE" -eq 75 ]]; then exit 75; fi
     # Any dispatcher failure may happen after the governed child created the
     # target. Retain that one session before classifying the error so callers

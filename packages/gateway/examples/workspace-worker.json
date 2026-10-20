@@ -1,0 +1,14 @@
+{
+  "id": "worker.example.codex.write",
+  "principalId": "principal.example",
+  "agentId": "agent.ingress.codex",
+  "workspaceId": "workspace.example.repo",
+  "accessMode": "workspace-write",
+  "socketPath": "/srv/mesh-control/example-codex-write/worker.sock",
+  "provider": "codex",
+  "repository": "/srv/workspaces/example-repo",
+  "codeRoot": "/opt/mesh-worker/release",
+  "home": "/srv/mesh-provider-state/example-codex-write",
+  "temporary": "/srv/mesh-tmp/example-codex-write",
+  "control": "/srv/mesh-control/example-codex-write"
+}
