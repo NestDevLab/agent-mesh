@@ -66,3 +66,15 @@ test("a selected directory with shell metacharacters is mounted at a fixed path 
   const result=spawnSync('/usr/bin/bwrap',args,{encoding:'utf8'});assert.equal(result.status,0,result.stderr);
   const {readFile}=await import("node:fs/promises");assert.equal(await readFile(join(destination,"probe"),'utf8'),'ok');
 });
+
+test("provider auth is an individual read-only file and its source home is not exposed",async(t)=>{
+  const {cfg,root,destination}=await fixture(t);
+  const {writeFile,readFile}=await import('node:fs/promises');
+  const {spawnSync}=await import('node:child_process');
+  const {sandboxArguments}=await import('../src/mcp/workspace-sandbox.ts');
+  const auth=join(root,'approved-auth.json');await writeFile(auth,'demo',{mode:0o600});
+  const home=join(root,'auth-home'),temporary=join(root,'auth-tmp');await mkdir(home,{mode:0o700});await mkdir(temporary,{mode:0o700});
+  const script=`const fs=require('fs');if(fs.readFileSync('/home/worker/.codex/auth.json','utf8')!=='demo')throw Error('missing auth');try{fs.writeFileSync('/home/worker/.codex/auth.json','changed');throw Error('auth writable')}catch(e){if(e.message==='auth writable')throw e;}if(fs.existsSync(${JSON.stringify(auth)}))throw Error('source exposed');`;
+  const args=sandboxArguments({repository:destination,codeRoot:cfg.codeRoot,home,temporary,accessMode:'workspace-write',readOnlyFiles:[{source:auth,target:'.codex/auth.json'}]},process.execPath,['-e',script]);
+  const result=spawnSync('/usr/bin/bwrap',args,{encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(await readFile(auth,'utf8'),'demo');
+});
