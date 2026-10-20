@@ -112,14 +112,19 @@ test("published MCP schemas expose access_mode on both task tools", async (t) =>
   const body = await response.text();
   const tools = JSON.parse(body).result.tools.filter((tool) => ["mesh_call", "mesh_submit"].includes(tool.name));
   assert.equal(tools.length, 2);
-  for (const tool of tools) assert.deepEqual(tool.inputSchema.properties.access_mode.enum, ["read-only", "workspace-write"]);
+  for (const tool of tools) {
+    assert.deepEqual(tool.inputSchema.properties.access_mode.enum, ["read-only", "workspace-write"]);
+    assert.equal(tool.inputSchema.properties.workspace_path.type, "string");
+    assert.ok(!tool.inputSchema.required.includes("access_mode"));
+    assert.ok(!tool.inputSchema.required.includes("workspace_path"));
+  }
 });
 
-for (const agentType of ["claude", "codex"]) test(`${agentType} fresh worker adapter uses scoped provider permissions and returns native IDs`, async () => {
+for (const agentType of ["claude", "codex"]) for (const mode of ["read-only", "workspace-write"]) test(`${agentType} ${mode} fresh and resumed worker adapter uses scoped provider permissions and returns native IDs`, async () => {
   const calls = [];
   let noWriter = false;
   const ok = (stdout = "") => ({ code: 0, stdout, stderr: "" });
-  const provider = new ShellAgentSessionProvider({ agentId: `agent.${agentType}`, agentType, agentSessionPath: "/bridge/session", agentSendPath: "/bridge/send", workspaceRoots: { "workspace.repo": ["/srv/repo"] }, freshSessionCwds: { "workspace.repo": "/srv/repo" }, freshTaskSessions: agentType === "codex", isolatedAccessMode: "workspace-write", run: async (cmd, args) => {
+  const provider = new ShellAgentSessionProvider({ agentId: `agent.${agentType}`, agentType, agentSessionPath: "/bridge/session", agentSendPath: "/bridge/send", workspaceRoots: { "workspace.repo": ["/srv/repo"] }, freshSessionCwds: { "workspace.repo": "/srv/repo" }, freshTaskSessions: agentType === "codex", isolatedAccessMode: mode, run: async (cmd, args) => {
     calls.push(args);
     if (cmd === "/bridge/send") return ok("done");
     const sub = args[2];
@@ -135,13 +140,18 @@ for (const agentType of ["claude", "codex"]) test(`${agentType} fresh worker ada
   const result = await provider.send({ sessionId, workspaceId: "workspace.repo", sessionMode: "fresh", message: "change", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "k" });
   assert.equal(result.ok, true, result.error);
   const launch = calls.find((args) => args[2] === "new");
-  if (agentType === "codex") { assert.equal(result.session_id, nativeId); assert.deepEqual(launch.slice(-4), ["--sandbox", "workspace-write", "--ask-for-approval", "never"]); }
-  else { assert.ok(launch.includes("acceptEdits")); assert.ok(launch.includes("Bash")); }
+  if (agentType === "codex") { assert.equal(result.session_id, nativeId); assert.deepEqual(launch.slice(-4), ["--sandbox", mode, "--ask-for-approval", "never"]); }
+  else {
+    assert.equal(launch[launch.indexOf("--permission-mode") + 1], mode === "workspace-write" ? "acceptEdits" : "default");
+    assert.ok(launch.includes("Bash"));
+    assert.equal(launch.includes("Write"), mode === "workspace-write");
+    assert.equal(launch.includes("Edit"), mode === "workspace-write");
+  }
   assert.ok(!launch.includes("danger-full-access"));
   noWriter = true;
   const resumed = await provider.send({ sessionId: agentType === "codex" ? nativeId : sessionId, workspaceId: "workspace.repo", message: "test", messageId: "m2", contextId: "c", correlationId: "t2", idempotencyKey: "k2" });
   assert.equal(resumed.ok, true, resumed.error);
-  assert.ok(calls.some((args) => args[2] === "resume"));
+  assert.ok(calls.some((args) => args[2] === "resume" && args[3] === (agentType === "codex" ? nativeId : sessionId)));
 });
 
 test("production worker launcher starts only in the pinned mount namespace and leaves gateway paths hidden", async (t) => {
