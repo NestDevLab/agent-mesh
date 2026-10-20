@@ -20,7 +20,7 @@ export interface WorkspaceSandboxConfig {
   accessMode: AccessMode;
   mountPath?: "/workspace";
   providerBinary?: { source: string; name: "claude" | "codex" };
-  readOnlyFiles?: Array<{ source: string; target: ".codex/auth.json" | ".claude/.credentials.json" }>;
+  readOnlyFiles?: Array<{ source: string; target: ".codex/auth.json" | ".claude/.credentials.json"; jsonKeys?: ["claudeAiOauth"] }>;
 
   control?: string;
 }
@@ -37,6 +37,7 @@ export function sandboxArguments(config: WorkspaceSandboxConfig, command: string
   const files = [...(config.providerBinary === undefined ? [] : [{ source: config.providerBinary.source, target: `/opt/mesh-bin/${config.providerBinary.name}` }]), ...(config.readOnlyFiles ?? []).map((file) => ({ source: file.source, target: `/home/worker/${file.target}` }))];
   if (config.providerBinary !== undefined && !["claude", "codex"].includes(config.providerBinary.name)) throw new Error("Invalid isolated provider binary.");
   if ((config.readOnlyFiles ?? []).some((file) => ![".codex/auth.json", ".claude/.credentials.json"].includes(file.target))) throw new Error("Invalid isolated provider auth target.");
+  if ((config.readOnlyFiles ?? []).some((file) => file.jsonKeys !== undefined && (file.target !== ".claude/.credentials.json" || JSON.stringify(file.jsonKeys) !== '["claudeAiOauth"]'))) throw new Error("Invalid provider authentication projection.");
   for (const file of files) if (!isAbsolute(file.source) || resolve(file.source) !== file.source || realpathSync(file.source) !== file.source || !statSync(file.source).isFile()) throw new Error("Isolated runtime files must be canonical regular files.");
   const result = ["--unshare-all", "--die-with-parent", "--share-net", "--new-session", "--cap-drop", "ALL", "--clearenv",
     "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/var", "--dir", "/etc"];

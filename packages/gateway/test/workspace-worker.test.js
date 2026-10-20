@@ -146,6 +146,9 @@ for (const agentType of ["claude", "codex"]) test(`${agentType} fresh worker ada
 
 test("production worker launcher starts only in the pinned mount namespace and leaves gateway paths hidden", async (t) => {
   const { config, base } = await fixture(t);
+  const auth = join(base, "provider-fixture.json");
+  await writeFile(auth, JSON.stringify({ claudeAiOauth: { accessToken: "demo" }, mcpOAuth: { unrelated: "exclude" } }), { mode: 0o600 });
+  config.readOnlyFiles = [{ source: auth, target: ".claude/.credentials.json", jsonKeys: ["claudeAiOauth"] }];
   const file = join(base, "worker.json"); await writeFile(file, JSON.stringify(config));
   const child = spawn(process.execPath, [join(config.codeRoot, "packages/gateway/dist/mcp/workspace-worker-server.js"), file], { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = ""; child.stderr.on("data", (chunk) => { stderr += chunk; });

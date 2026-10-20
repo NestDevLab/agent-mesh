@@ -174,7 +174,9 @@ Provider CLI binaries installed through host-home symlinks can be supplied as an
 `providerBinary: { "source": "/private/provider-binary", "name": "codex" }`; the launcher binds
 that regular file read-only at `/opt/mesh-bin/codex` (or `claude`). It does not expose the containing
 host home. Optional `readOnlyFiles` bind the existing approved provider authentication file directly
-to `.codex/auth.json` or `.claude/.credentials.json` under the private worker home. Source paths
+to `.codex/auth.json` or `.claude/.credentials.json` under the private worker home. For a mixed Claude credential store, set `jsonKeys: ["claudeAiOauth"]` on that binding. The trusted
+launcher projects only those provider fields into an anonymous memory file before Bubblewrap starts;
+MCP OAuth credentials are excluded, and the worker verifies the projected categories. Source paths
 must be canonical regular files and are pinned before mounting. No value is put in argv, logs or
 the broker protocol, and credentials are not copied into destination homes. Use a **non-secret**
 `homeTemplate` for onboarding/preferences only. Read-only auth may require the credential owner to

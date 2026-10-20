@@ -86,6 +86,11 @@ async function main() {
     const config = JSON.parse(Buffer.from(process.argv[3]!, "base64url").toString()) as IsolatedWorkerConfig;
     const mounts = await readFile("/proc/self/mountinfo", "utf8");
     assertSandboxMounts(config, mounts);
+    for (const file of config.readOnlyFiles ?? []) {
+      if (file.jsonKeys === undefined) continue;
+      const projected = JSON.parse(await readFile(resolve("/home/worker", file.target), "utf8")) as Record<string, unknown>;
+      if (JSON.stringify(Object.keys(projected).sort()) !== JSON.stringify([...file.jsonKeys].sort())) throw new Error("Unexpected credential categories in isolated provider binding.");
+    }
     const bin = resolve(config.codeRoot, "packages/tmux-bridge/bin");
     const provider = new ShellAgentSessionProvider({ agentId: config.agentId, agentType: config.provider,
       agentSessionPath: resolve(bin, "agent-session.sh"), agentSendPath: resolve(bin, "agent-send.sh"),
@@ -123,7 +128,26 @@ async function main() {
       if (index >= 0) { args[i] = args[i] === "--bind" ? "--bind-fd" : "--ro-bind-fd"; args[i + 1] = String(index + 3); }
     }
   }
-  const child = spawn("/usr/bin/bwrap", args, { stdio: ["inherit", "inherit", "inherit", ...descriptors], env: {} });
+  const projections = (config.readOnlyFiles ?? []).filter((file) => file.jsonKeys !== undefined).map((file) => ({ fd: sources.indexOf(file.source) + 3, keys: file.jsonKeys }));
+  const projectionScript = `import os,sys,json
+try:
+ spec=json.loads(sys.argv[1])
+ for item in spec['projections']:
+  fd=item['fd']
+  with os.fdopen(os.dup(fd),'r') as f: original=json.load(f)
+  selected={key:original[key] for key in item['keys']}
+  memory=os.memfd_create('mesh-provider-auth',0)
+  os.write(memory,json.dumps(selected).encode());os.lseek(memory,0,0)
+  os.dup2(memory,fd,inheritable=True);os.close(memory)
+  for index in range(len(spec['args'])-1):
+   if spec['args'][index]=='--ro-bind-fd' and spec['args'][index+1]==str(fd): spec['args'][index]='--ro-bind-data'
+ os.execve('/usr/bin/bwrap',['bwrap']+spec['args'],{})
+except Exception:
+ sys.stderr.write('Provider authentication projection failed.\\n');sys.exit(1)
+`;
+  const executable = projections.length === 0 ? "/usr/bin/bwrap" : "/usr/bin/python3";
+  const launchArgs = projections.length === 0 ? args : ["-c", projectionScript, JSON.stringify({ args, projections })];
+  const child = spawn(executable, launchArgs, { stdio: ["inherit", "inherit", "inherit", ...descriptors], env: {} });
   for (const fd of descriptors) closeSync(fd);
   child.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
   child.on("exit", (code) => { process.exitCode = code ?? 1; if (process.connected) process.disconnect(); });
