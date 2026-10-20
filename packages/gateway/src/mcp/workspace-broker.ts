@@ -119,7 +119,8 @@ export async function startWorkspaceBroker(config: WorkspaceBrokerConfig) {
     stopping = true;
     const closed = new Promise<void>((ok) => server.close(() => ok()));
     await Promise.all([...children.values()].map(({ child, socket }) => new Promise<void>((ok) => {
-      child.once("exit", () => { void unlink(socket).catch(() => undefined).finally(ok); }); child.kill("SIGTERM");
+      const timeout = setTimeout(() => child.kill("SIGKILL"), 5000);
+      child.once("exit", () => { clearTimeout(timeout); void unlink(socket).catch(() => undefined).finally(ok); }); child.kill("SIGTERM");
     })));
     await closed;
   };

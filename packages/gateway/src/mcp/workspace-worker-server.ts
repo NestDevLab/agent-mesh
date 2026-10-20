@@ -117,7 +117,7 @@ async function main() {
   const args = sandboxArguments(config, process.execPath, [fileURLToPath(import.meta.url), "--inside", Buffer.from(JSON.stringify(config)).toString("base64url")]);
   // Pin every approved source directory before namespace creation (avoid symlink/rename races).
   const directories = [config.repository, config.codeRoot, config.home, config.temporary, config.control];
-  const sources = [...directories, ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)];
+  const sources = [...directories, realpathSync(process.execPath), ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)];
   const descriptors = sources.map((path) => openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (directories.includes(path) ? constants.O_DIRECTORY : 0)));
   for (let i = 0; i < sources.length; i++) {
     if (realpathSync(`/proc/self/fd/${descriptors[i]}`) !== sources[i]) throw new Error("Worker mount changed while pinning its directory.");
@@ -149,7 +149,7 @@ except Exception:
   const launchArgs = projections.length === 0 ? args : ["-c", projectionScript, JSON.stringify({ args, projections })];
   const child = spawn(executable, launchArgs, { stdio: ["inherit", "inherit", "inherit", ...descriptors], env: {} });
   for (const fd of descriptors) closeSync(fd);
-  child.on("error", (error) => { console.error(error.message); process.exitCode = 1; });
+  child.on("error", (error) => { console.error(error.message); process.exitCode = 1; if (process.connected) process.disconnect(); });
   child.on("exit", (code) => { process.exitCode = code ?? 1; if (process.connected) process.disconnect(); });
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => child.kill(signal));
   if (process.channel !== undefined) process.once("disconnect", () => child.kill("SIGTERM"));

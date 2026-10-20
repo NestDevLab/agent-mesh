@@ -34,7 +34,7 @@ export function sandboxArguments(config: WorkspaceSandboxConfig, command: string
   }
   if (config.mountPath !== undefined && config.mountPath !== "/workspace") throw new Error("Invalid internal workspace mount.");
   if (!["read-only", "workspace-write"].includes(config.accessMode)) throw new Error("Invalid sandbox mode.");
-  const files = [...(config.providerBinary === undefined ? [] : [{ source: config.providerBinary.source, target: `/opt/mesh-bin/${config.providerBinary.name}` }]), ...(config.readOnlyFiles ?? []).map((file) => ({ source: file.source, target: `/home/worker/${file.target}` }))];
+  const files = [{ source: realpathSync(process.execPath), target: "/opt/mesh-bin/node" }, ...(config.providerBinary === undefined ? [] : [{ source: config.providerBinary.source, target: `/opt/mesh-bin/${config.providerBinary.name}` }]), ...(config.readOnlyFiles ?? []).map((file) => ({ source: file.source, target: `/home/worker/${file.target}` }))];
   if (config.providerBinary !== undefined && !["claude", "codex"].includes(config.providerBinary.name)) throw new Error("Invalid isolated provider binary.");
   if ((config.readOnlyFiles ?? []).some((file) => ![".codex/auth.json", ".claude/.credentials.json"].includes(file.target))) throw new Error("Invalid isolated provider auth target.");
   if ((config.readOnlyFiles ?? []).some((file) => file.jsonKeys !== undefined && (file.target !== ".claude/.credentials.json" || JSON.stringify(file.jsonKeys) !== '["claudeAiOauth"]'))) throw new Error("Invalid provider authentication projection.");
@@ -54,7 +54,7 @@ export function sandboxArguments(config: WorkspaceSandboxConfig, command: string
     "--setenv", "TMPDIR", "/tmp", "--setenv", "MESH_TMUX_SOCKET", "mesh-isolated",
     "--setenv", "MESH_STRICT_READY", "1", "--setenv", "MESH_PRESERVE_SESSION_POLICY", "1",
     "--setenv", "MESH_REPLACE_UNREADY_SESSION", "1", "--setenv", "AGENT_MESH_ROOT", config.codeRoot,
-    "--chdir", config.mountPath ?? config.repository, "--", command, ...args);
+    "--chdir", config.mountPath ?? config.repository, "--", command === process.execPath ? "/opt/mesh-bin/node" : command, ...args);
   return result;
 }
 
