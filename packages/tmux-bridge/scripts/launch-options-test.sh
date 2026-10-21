@@ -23,6 +23,7 @@ TMUX_WRAPPER="$WORKDIR/tmux"
 SUPPORTED_CONF="$AGENTS_DIR/launch-options-supported-$$.conf"
 UNSUPPORTED_CONF="$AGENTS_DIR/launch-options-unsupported-$$.conf"
 RESUME_CONF="$AGENTS_DIR/launch-options-resume-cwd-$$.conf"
+CODEX_RESUME_CONF="$AGENTS_DIR/launch-options-codex-resume-$$.conf"
 TARGETS=()
 
 cleanup() {
@@ -33,7 +34,7 @@ cleanup() {
     done
     tmux -L "$MESH_TMUX_SOCKET" kill-server 2>/dev/null || true
     rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$MESH_TMUX_SOCKET" 2>/dev/null || true
-    rm -f "$SUPPORTED_CONF" "$UNSUPPORTED_CONF" "$RESUME_CONF"
+    rm -f "$SUPPORTED_CONF" "$UNSUPPORTED_CONF" "$RESUME_CONF" "$CODEX_RESUME_CONF"
     rm -rf "$WORKDIR"
     exit "$status"
 }
@@ -93,6 +94,10 @@ export PATH="$WORKDIR:$PATH"
     [[ "$AGENT_NEW_CMD" == *"agents.max_concurrent_threads_per_session=2"* \
         && "$AGENT_RESUME_CMD" == *"agents.max_concurrent_threads_per_session=2"* ]] \
         || { echo "FAIL: governed Codex commands lack the static subagent cap" >&2; exit 1; }
+    [[ "${AGENT_RESUME_IN_SESSION_CWD:-false}" == "true" \
+        && "${AGENT_RESUME_CWD_ARGS[*]:-}" == "--cd {VALUE}" \
+        && " ${AGENT_RESUME_CWD_PASSTHRU_PATTERNS[*]:-} " == *" --cd "* ]] \
+        || { echo "FAIL: Codex resume does not pin the recorded session cwd" >&2; exit 1; }
 )
 
 (
@@ -312,6 +317,45 @@ if "$SESSION_BIN" --agent "launch-options-resume-cwd-$$" \
 fi
 ! tmux -L "$MESH_TMUX_SOCKET" has-session -t "$missing_target" 2>/dev/null \
     || { echo "FAIL: missing Claude session file created a target" >&2; exit 1; }
+
+# Codex resume must pass the recorded cwd as --cd so the directory prompt never
+# appears; an explicit raw --cd wins and is not duplicated.
+codex_resume_id="44444444-4444-4444-8444-444444444444"
+codex_resume_project="$WORKDIR/sessions/codex project"
+mkdir -p "$codex_resume_project"
+: > "$codex_resume_project/$codex_resume_id.jsonl"
+cat > "$CODEX_RESUME_CONF" <<CONF
+AGENT_BIN="$FAKE_CLI"
+AGENT_PROMPT_CHAR="❯"
+AGENT_WORKING_PATTERN="__never_working__"
+AGENT_IDLE_PATTERN="❯"
+AGENT_RESUME_CMD="$FAKE_CLI --resume {SESSION_ID}"
+AGENT_HAS_CWD_PICKER="false"
+AGENT_PICKER_PATTERN=""
+AGENT_SESSION_DIR="$WORKDIR/sessions"
+AGENT_SESSION_CWD_EXTRACTOR='dirname'
+AGENT_RESUME_IN_SESSION_CWD="true"
+AGENT_RESUME_CWD_ARGS=(--cd "{VALUE}")
+AGENT_RESUME_CWD_PASSTHRU_PATTERNS=(--cd "--cd=*" -C "-C?*")
+CONF
+: > "$LOG_FILE"
+codex_resume_target="launch-options-codex-resume-$$"
+"$SESSION_BIN" --agent "launch-options-codex-resume-$$" \
+    resume "$codex_resume_id" "$codex_resume_target" >/dev/null
+TARGETS+=("$codex_resume_target")
+assert_argv "--resume $codex_resume_id --cd $codex_resume_project "
+[[ "$(< "$FAKE_CLI_CWD_LOG")" == "$codex_resume_project" ]] \
+    || { echo "FAIL: resumed Codex did not start in its recorded cwd" >&2; exit 1; }
+raw_case=0
+for raw_cd in "--cd=$WORKDIR" "-C$WORKDIR"; do
+    : > "$LOG_FILE"
+    raw_case=$((raw_case + 1))
+    codex_raw_target="launch-options-codex-resume-raw-$raw_case-$$"
+    "$SESSION_BIN" --agent "launch-options-codex-resume-$$" \
+        resume "$codex_resume_id" "$codex_raw_target" -- "$raw_cd" >/dev/null
+    TARGETS+=("$codex_raw_target")
+    assert_argv "--resume $codex_resume_id $raw_cd "
+done
 
 # A later invocation must rebuild its launch options from scratch. This proves
 # the preceding raw flags cannot leak into a new spawn.

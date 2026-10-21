@@ -416,8 +416,11 @@ this by passing the resolved directory through the `{CWD}` placeholder in
 started with `new /path/to/project` is both rooted in that project **and**
 visible from the desktop. Verify with a `pwd` probe if in doubt.
 
-> Note: this `{CWD}` pinning applies to `new`. A `resume` in remote mode relies
-> on Codex restoring the session's own recorded cwd.
+> `resume` starts in the thread's recorded cwd and passes it as `--cd`, so
+> Codex never stops at its "Use session directory / Use current directory"
+> prompt. A raw `-- --cd <dir>` or preserved session policy supplies its own
+> `--cd` instead. A thread without an on-disk session file, or whose recorded cwd
+> no longer exists, is refused before any tmux target is created.
 
 ### Extra launch flags — never bypass the bridge
 
