@@ -201,6 +201,11 @@ _passthru_overrides_knob() {
                 patterns=("${AGENT_EFFORT_PASSTHRU_PATTERNS[@]}")
             fi
             ;;
+        resume-cwd)
+            if declare -p AGENT_RESUME_CWD_PASSTHRU_PATTERNS >/dev/null 2>&1; then
+                patterns=("${AGENT_RESUME_CWD_PASSTHRU_PATTERNS[@]}")
+            fi
+            ;;
         *) return 1 ;;
     esac
 
@@ -671,7 +676,16 @@ case "$cmd" in
         if [[ "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
             PRESERVED_OPTIONS="$(python3 "$SCRIPT_DIR/codex-resume-options.py" --session "$SESSION_ID" --root "$AGENT_SESSION_DIR")"
         fi
-        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$LAUNCH_OPTION_CMD$EXTRA_CMD${PRESERVED_OPTIONS:+ $PRESERVED_OPTIONS}"
+        # Preserved Codex options already carry the thread's own --cd.
+        RESUME_CWD_CMD=""
+        if [[ -n "$RESUME_CWD" && -z "$PRESERVED_OPTIONS" ]] \
+            && declare -p AGENT_RESUME_CWD_ARGS >/dev/null 2>&1 \
+            && ! _passthru_overrides_knob resume-cwd; then
+            for template in "${AGENT_RESUME_CWD_ARGS[@]}"; do
+                RESUME_CWD_CMD+=" $(printf '%q' "${template//\{VALUE\}/$RESUME_CWD}")"
+            done
+        fi
+        RESUME_CMD="${AGENT_RESUME_CMD//\{SESSION_ID\}/$SESSION_ID}$RESUME_CWD_CMD$LAUNCH_OPTION_CMD$EXTRA_CMD${PRESERVED_OPTIONS:+ $PRESERVED_OPTIONS}"
         if [[ "${AGENT_RESUME_IN_SESSION_CWD:-false}" == "true" ]]; then
             mtmux new-session -d -s "$TARGET" -c "$RESUME_CWD"
         else
