@@ -82,6 +82,16 @@ export class MeshTaskCoordinator {
     return (await this.store.list()).find((task) => task.session_id === sessionId);
   }
 
+  /** Include cancelled tasks whose executor has not returned, and queued executions. */
+  async nonterminalTaskCount(): Promise<number> {
+    const ids = new Set(this.active.keys());
+    for (const task of await this.store.list()) {
+      if (!TERMINAL.has(task.status)) ids.add(task.task_id);
+    }
+    for (const id of this.active.keys()) ids.add(id);
+    return ids.size;
+  }
+
   async resume(): Promise<void> {
     for (const task of await this.store.list()) {
       if (!TERMINAL.has(task.status)) this.schedule(task);

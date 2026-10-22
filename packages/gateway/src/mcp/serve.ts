@@ -1,3 +1,4 @@
+import { MaintenanceAdmission } from "./maintenance-admission.js";
 import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -147,7 +148,6 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ? executeMeshTask(gateway, task, undefined, { bindSession: hooks.bindSession })
       : workspaceWorkers === undefined ? Promise.reject(new Error("workspace_worker_unavailable")) : workspaceWorkers.execute(task, hooks)
   });
-  await taskCoordinator.resume();
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
   const meshHandler = requireCloudflareAccess(
     createMeshMcpHandler({
@@ -203,18 +203,24 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
     ));
   }
 
+  const admission = new MaintenanceAdmission(stateDir, () => taskCoordinator.nonterminalTaskCount());
+  await admission.start();
   const server = createServer((request, response) => {
-    void serveRequest(request, response, handlers, host, port);
+    admission.handle(request, response, () => serveRequest(request, response, handlers, host, port));
   });
-  await new Promise<void>((resolveListen, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      server.off("error", reject);
-      resolveListen();
+  try {
+    await taskCoordinator.resume();
+    await new Promise<void>((resolveListen, reject) => {
+      server.once("error", reject);
+      server.listen(port, host, () => {
+        server.off("error", reject);
+        resolveListen();
+      });
     });
-  });
+  } catch (error) { await admission.close(); throw error; }
   process.stdout.write(`MCP hub listening on http://${host}:${port} (${[...handlers.keys()].join(", ")})\n`);
   return async () => {
+    await admission.close();
     await Promise.all([...handlers.values()].map((handler) => handler.close()));
     await new Promise<void>((resolveClose, reject) =>
       server.close((error) => (error === undefined ? resolveClose() : reject(error)))
