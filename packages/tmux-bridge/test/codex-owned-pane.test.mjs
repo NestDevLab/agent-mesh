@@ -115,3 +115,32 @@ await import(${JSON.stringify(new URL("../bin/session-writer-status.mjs", import
   const inherited = spawnSync(process.execPath, args, { encoding: "utf8", env: { ...env, FIXTURE_INHERIT_LOCK: join(f.codexHome, "thread-writer-locks", id + ".lock") } });
   assert.equal(inherited.status, 4); assert.match(inherited.stderr, /incomplete or ambiguous/);
 });
+
+test("bounded readiness retries keep the original pane process identity", async t => {
+  const { waitForOwnedCodexThread } = await import("../bin/codex-owned-pane.mjs");
+  const f = await fixture(t); await unlink(join(f.procRoot, "12/fd/7"));
+  let clock = 0;
+  await assert.rejects(waitForOwnedCodexThread(f.options, { timeoutMs: 500, now: () => clock, wait: async ms => {
+    clock += ms;
+    const path = join(f.procRoot, "10/stat");
+    const original = await readFile(path, "utf8"); await writeFile(path, original.replace("12345", "12346"));
+  } }), error => error.proofStage === "pane.identity");
+});
+
+test("bounded readiness does not accept proof appearing after its monotonic deadline", async t => {
+  const { waitForOwnedCodexThread } = await import("../bin/codex-owned-pane.mjs");
+  const f = await fixture(t); await unlink(join(f.procRoot, "12/fd/7"));
+  let clock = 0, waits = 0;
+  await assert.rejects(waitForOwnedCodexThread(f.options, { timeoutMs: 10, intervalMs: 100, now: () => clock, wait: async ms => {
+    waits++; clock += ms; await f.lock(12);
+  } }));
+  assert.equal(waits, 1); assert.equal(clock, 10);
+});
+
+test("bounded readiness can observe a native lock appearing on the same pinned pane", async t => {
+  const { waitForOwnedCodexThread } = await import("../bin/codex-owned-pane.mjs");
+  const f = await fixture(t); await unlink(join(f.procRoot, "12/fd/7"));
+  let clock = 0;
+  const proof = await waitForOwnedCodexThread(f.options, { timeoutMs: 500, now: () => clock, wait: async ms => { clock += ms; await f.lock(12); } });
+  assert.equal(proof.sessionId, id);
+});

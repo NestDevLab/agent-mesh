@@ -194,6 +194,13 @@ if mesh_pane_approval_pending "$_pane_before"; then
 fi
 _require_idle_agent_tui || exit 6
 _require_empty_composer || exit 6
+if [[ "$AGENT_NAME" == codex && -n "$RESULT_TOKEN" ]]; then
+    PRE_SEND_OUTPUT="$(mtmux capture-pane -t "$TARGET" -p -S - 2>/dev/null)" || exit 5
+    if [[ "$PRE_SEND_OUTPUT" == *"$RESULT_BEGIN"* || "$PRE_SEND_OUTPUT" == *"$RESULT_END"* || "$PRE_SEND_OUTPUT" == *"$PROTOCOL_ANCHOR"* ]]; then
+        echo "UNCORRELATED-OUTPUT: current correlation already exists before send; prompt was not pasted" >&2
+        exit 66
+    fi
+fi
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
 trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
@@ -322,6 +329,12 @@ collector_stage="scrollback"
 trap 'collector_rc=$?; trap - ERR; echo "COLLECTOR-ERROR: stage=$collector_stage exit=$collector_rc" >&2; exit 67' ERR
 PROMPT_HEAD="$PROMPT_MATCH_HEAD"
 FULL_OUTPUT="$(mtmux capture-pane -t "$TARGET" -p -S - 2>/dev/null || true)"
+if [[ "$AGENT_NAME" == codex && -n "$RESULT_TOKEN" && "$FULL_OUTPUT" != *"$PROTOCOL_ANCHOR"* ]]; then
+    if RECOVERED="$(mesh_result_codex_anchorless "$RESULT_BEGIN" "$RESULT_END" <<<"$FULL_OUTPUT")"; then
+        printf '%s\n' "$RECOVERED"
+        exit 0
+    fi
+fi
 collector_stage="segment"
 SEGMENT="$(mesh_result_segment "$PROMPT_HEAD" "$AGENT_PROMPT_CHAR" "$RESULT_TOKEN" <<<"$FULL_OUTPUT")"
 
@@ -337,7 +350,7 @@ if [[ -n "$RESULT_TOKEN" ]]; then
     # response contributes a second pair; always keep the last complete pair.
     if [[ "$BEGIN_COUNT" -ge 2 ]]; then
         collector_stage="result_parse"
-        RESULT="$(awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
+        RESULT="$(mesh_result_awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
             index($0, begin) {
                 tail=substr($0, index($0, begin) + length(begin))
                 if (index(tail, end)) { candidate=substr(tail, 1, index(tail, end) - 1); collecting=0; next }

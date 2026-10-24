@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { appendFile, readFile, chmod } from "node:fs/promises";
-import { openSync, closeSync, constants, statSync, realpathSync } from "node:fs";
+import { appendFileSync, readFileSync, openSync, closeSync, constants, statSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { resolve, dirname } from "node:path";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { ShellAgentSessionProvider, type AgentSessionProvider } from "../adapters/agent-session-provider.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
 import { validateWorkerRoute, type WorkspaceWorkerRoute } from "./workspace-worker.js";
-import { canonicalDirectory, sandboxArguments, assertSandboxMounts, contains, type WorkspaceSandboxConfig } from "./workspace-sandbox.js";
+import { canonicalDirectory, providerCompanionFile, sandboxArguments, assertSandboxMounts, contains, type WorkspaceSandboxConfig } from "./workspace-sandbox.js";
 
 export interface IsolatedWorkerConfig extends WorkspaceWorkerRoute, WorkspaceSandboxConfig {
   provider: "claude" | "codex";
@@ -97,7 +97,9 @@ async function main() {
       agentNativeCallPath: resolve(bin, "agent-native-call.mjs"),
       workspaceRoots: { [config.workspaceId]: [config.mountPath ?? config.repository] }, freshSessionCwds: { [config.workspaceId]: config.mountPath ?? config.repository },
       ...(config.provider === "codex" ? { freshTaskSessions: true } : {}),
-      isolatedAccessMode: config.accessMode, meshSocket: "mesh-isolated", timeoutSeconds: 240 });
+      isolatedAccessMode: config.accessMode, meshSocket: "mesh-isolated", timeoutSeconds: 240,
+      onDiagnostic: (event) => appendFileSync(resolve(config.control, "provider-diagnostics.ndjson"),
+        `${JSON.stringify({ schema: "agent-mesh.provider-diagnostic.v1", ...event, at: new Date().toISOString() })}\n`, { mode: 0o600, flush: true }) });
     await startIsolatedWorker(config, provider);
     return;
   }
@@ -117,10 +119,14 @@ async function main() {
   const args = sandboxArguments(config, process.execPath, [fileURLToPath(import.meta.url), "--inside", Buffer.from(JSON.stringify(config)).toString("base64url")]);
   // Pin every approved source directory before namespace creation (avoid symlink/rename races).
   const directories = [config.repository, config.codeRoot, config.home, config.temporary, config.control];
-  const sources = [...directories, realpathSync(process.execPath), ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)];
+  const companion = providerCompanionFile(config);
+  const sources = [...directories, ...(companion === undefined ? [] : [companion.source]), realpathSync(process.execPath), ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)];
   const descriptors = sources.map((path) => openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | (directories.includes(path) ? constants.O_DIRECTORY : 0)));
   for (let i = 0; i < sources.length; i++) {
     if (realpathSync(`/proc/self/fd/${descriptors[i]}`) !== sources[i]) throw new Error("Worker mount changed while pinning its directory.");
+  }
+  if (companion !== undefined && createHash("sha256").update(readFileSync(descriptors[sources.indexOf(companion.source)]!)).digest("hex") !== config.providerCompanion!.sha256) {
+    throw new Error("Pinned provider companion identity mismatch.");
   }
   for (let i = 0; i < args.length - 2; i++) {
     if (args[i] === "--bind" || args[i] === "--ro-bind") {

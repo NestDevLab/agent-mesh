@@ -313,11 +313,11 @@ _tmux_target() {
 }
 
 _codex_trust_dialog_default() {
-    local output="$1" selected first_option_pattern='^[[:space:]]*[>❯›▸][[:space:]]*(1[.)]|[Yy]es|[Tt]rust|[Cc]ontinue)'
+    local output="$1" selected first_option_pattern='^[[:space:]]*(>|❯|›|▸)[[:space:]]*(1[.)]|[Yy]es|[Tt]rust|[Cc]ontinue)'
     [[ "$output" == *"Do you trust the contents of this directory?"* ]] || return 1
     # Codex opens this dialog with option 1 selected. Require capture-pane to
     # expose that selection before confirming; never guess at a hidden choice.
-    selected="$(printf '%s\n' "$output" | grep -E '^[[:space:]]*[>❯›▸][[:space:]]*(1[.)]|2[.)]|[Yy]es|[Nn]o|[Tt]rust|[Ee]xit)' | head -n 1 || true)"
+    selected="$(printf '%s\n' "$output" | grep -E '^[[:space:]]*(>|❯|›|▸)[[:space:]]*(1[.)]|2[.)]|[Yy]es|[Nn]o|[Tt]rust|[Ee]xit)' | head -n 1 || true)"
     [[ -n "$selected" ]] || return 1
     [[ "$selected" =~ $first_option_pattern ]]
 }
@@ -333,10 +333,10 @@ _claude_trust_dialog_selection() {
     _claude_trust_dialog_visible "$output" || return 1
     [[ "$output" == *"Enter to confirm"* && "$output" == *"Esc to cancel"* ]] || return 1
     option_count="$(printf '%s\n' "$output" \
-        | grep -Ec '^[[:space:]]*[>❯›▸]?[[:space:]]*(No, exit|No, continue without these permissions|Yes, I trust this folder)[[:space:]]*$' || true)"
+        | grep -Ec '^[[:space:]]*(>|❯|›|▸)?[[:space:]]*(No, exit|No, continue without these permissions|Yes, I trust this folder)[[:space:]]*$' || true)"
     [[ "$option_count" == "2" ]] || return 1
     selected="$(printf '%s\n' "$output" \
-        | grep -E '^[[:space:]]*[>❯›▸][[:space:]]*(No, exit|No, continue without these permissions|Yes, I trust this folder)[[:space:]]*$' \
+        | grep -E '^[[:space:]]*(>|❯|›|▸)[[:space:]]*(No, exit|No, continue without these permissions|Yes, I trust this folder)[[:space:]]*$' \
         | head -n 1 || true)"
     [[ -n "$selected" ]] || return 1
     if [[ "$selected" == *"Yes, I trust this folder"* ]]; then
@@ -948,7 +948,16 @@ case "$cmd" in
         for ((DEPTH=0; DEPTH<32; DEPTH++)); do
             if [[ "$CURRENT_PID" == "$PANE_PID" ]]; then OWNER_FOUND=true; break; fi
             [[ -r "$PROC_ROOT/$CURRENT_PID/status" ]] || break
-            CURRENT_PID="$(awk '/^PPid:/ { print $2; exit }' "$PROC_ROOT/$CURRENT_PID/status")"
+            NEXT_PID=""
+            PPID_FIELDS=0
+            while IFS=$' \t' read -r FIELD VALUE EXTRA; do
+                [[ "$FIELD" == "PPid:" ]] || continue
+                PPID_FIELDS=$((PPID_FIELDS + 1))
+                [[ "$VALUE" =~ ^[0-9]+$ && -z "$EXTRA" ]] || { NEXT_PID=""; break; }
+                NEXT_PID="$VALUE"
+            done < "$PROC_ROOT/$CURRENT_PID/status"
+            [[ "$PPID_FIELDS" == 1 ]] || NEXT_PID=""
+            CURRENT_PID="$NEXT_PID"
             [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] || break
         done
         [[ "$OWNER_FOUND" == true ]] \

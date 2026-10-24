@@ -12,6 +12,7 @@ import { selectWorkspacePath, type ClientPathPolicy } from "./workspace-path-pol
 
 export interface WorkspaceBrokerConfig extends WorkspaceWorkerRoute, ClientPathPolicy {
   providerBinary?: WorkspaceSandboxConfig["providerBinary"];
+  providerCompanion?: WorkspaceSandboxConfig["providerCompanion"];
   readOnlyFiles?: WorkspaceSandboxConfig["readOnlyFiles"];
   pathSelection: "client";
   provider: "claude" | "codex";
@@ -89,7 +90,7 @@ export async function startWorkspaceBroker(config: WorkspaceBrokerConfig) {
     let dispatched = false;
     try {
       if (stopping) throw new Error("Workspace broker is stopping.");
-      const destination = selectWorkspacePath(task.workspace_path, config, [config.codeRoot, config.stateRoot, config.homeTemplate, dirname(config.socketPath), ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)]);
+      const destination = selectWorkspacePath(task.workspace_path, config, [config.codeRoot, config.stateRoot, config.homeTemplate, dirname(config.socketPath), ...(config.providerBinary === undefined ? [] : [config.providerBinary.source]), ...(config.providerCompanion === undefined ? [] : [config.providerCompanion.source]), ...(config.readOnlyFiles ?? []).map((file) => file.source)]);
       const socket = await childFor(destination);
       dispatched = true;
       return await new Promise<unknown>((ok, fail) => {

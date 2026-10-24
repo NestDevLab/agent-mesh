@@ -227,3 +227,12 @@ for (const failure of [undefined, "ambiguous", "foreign pane", "wrong cwd", "tim
   if (failure) { assert.equal(result.error_code, "fresh_session_create_failed"); assert.equal(calls.filter(c => c.cmd === "/bridge/send").length, 0); assert.equal(calls.filter(c => c.args[2] === "kill").length, 1); }
   else { assert.equal(result.ok, true); assert.equal(result.session_id, nativeId); assert.notEqual(result.session_id, sessionId); assert.equal(calls.filter(c => c.cmd === "/bridge/send").length, 1); }
 });
+
+test("private provider diagnostics contain bounded command metadata without raw output", async () => {
+ const diagnostics=[];
+ const provider=new ShellAgentSessionProvider({agentId:"agent.codex",agentType:"codex",agentSessionPath:"/bridge/session",agentSendPath:"/bridge/send",workspaceRoots:{"workspace.repo":["/srv/repo"]},freshSessionCwds:{"workspace.repo":"/srv/repo"},freshTaskSessions:true,isolatedAccessMode:"read-only",onDiagnostic:event=>diagnostics.push(event),run:async(_command,args)=>args[2]==="new"?{code:0,stdout:args[4],stderr:""}:args[2]==="kill"?{code:0,stdout:"",stderr:""}:{code:4,stdout:"fixture stdout must not persist",stderr:"fixture detail must not persist [stage=inventory.exe,code=ENOENT]"}});
+ const output=await provider.send({sessionId,workspaceId:"workspace.repo",sessionMode:"fresh",message:"fixture",messageId:"m",contextId:"c",correlationId:"t",idempotencyKey:"k"});
+ assert.equal(output.error_code,"fresh_session_create_failed");
+ assert.deepEqual(diagnostics,[{stage:"target-session",exitCode:4,proofStage:"inventory.exe",proofCode:"ENOENT"}]);
+ assert.doesNotMatch(JSON.stringify(diagnostics),/fixture stdout|fixture detail/);
+});
