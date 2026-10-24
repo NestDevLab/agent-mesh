@@ -67,6 +67,13 @@ Provider permission modes are separate: Codex launches `--sandbox workspace-writ
 `--ask-for-approval never` inside the OS namespace; RO Codex uses `--sandbox read-only`. Claude uses
 `acceptEdits` and explicit development tools (Read/Edit/Write/Bash/Glob/Grep) in writable workers;
 RO uses default permissions with read/command tools. These flags cannot enlarge the outer mounts.
+For isolated Codex fresh tasks, the first turn may precede native DB/transcript persistence.
+The bridge resolves the native UUID only from a unique open thread-writer-lock descriptor held by
+one live Codex process inside the exact new unattended pane, with the trusted workspace cwd.
+It then applies the existing writer and target ownership checks before sending. Missing, ambiguous,
+foreign, or incomplete evidence fails closed. This path does not synthesize persistence or IDs;
+durable discovery/transcript APIs and public session creation keep their existing contracts.
+
 No new `danger-full-access` path is added. The pre-existing separately configured legacy
 `mesh_agent_session_create` full-access feature is unchanged and is not used by this protocol.
 

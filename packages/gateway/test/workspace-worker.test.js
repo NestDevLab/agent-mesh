@@ -204,3 +204,26 @@ test("legacy Codex native session ID binds before a transport failure is reporte
   assert.equal(bound, nativeId);
   assert.equal(delivery.details.correlation_id, request.task_id);
 });
+
+for (const failure of [undefined, "ambiguous", "foreign pane", "wrong cwd", "timeout"]) test(`isolated Codex first turn without DB/JSONL: ${failure ?? "owned native success"}`, async () => {
+  const calls = [];
+  const provider = new ShellAgentSessionProvider({ agentId: "agent.codex", agentType: "codex", agentSessionPath: "/bridge/session", agentSendPath: "/bridge/send", workspaceRoots: { "workspace.repo": ["/srv/repo"] }, freshSessionCwds: { "workspace.repo": "/srv/repo" }, freshTaskSessions: true, isolatedAccessMode: "workspace-write", run: async (cmd, args) => {
+    calls.push({ cmd, args });
+    const ok = stdout => ({ code: 0, stdout, stderr: "" });
+    if (cmd === "/bridge/send") return ok("correlated reply");
+    if (args[2] === "new") return ok(args[4]);
+    if (args[2] === "target-session") {
+      assert.deepEqual(args.slice(4), ["--owned-cwd", "/srv/repo"]);
+      return failure ? { code: failure === "timeout" ? 124 : 4, stdout: "", stderr: "owned proof unavailable" } : ok(nativeId);
+    }
+    if (args[2] === "writer-status") return ok(JSON.stringify({ agent: "codex", sessionId: nativeId, writers: [{ pid: 12, kind: "codex" }] }));
+    if (args[2] === "target-status") return ok(JSON.stringify({ target: args[3], pane_pid: 11, writer_pid: 12 }));
+    if (args[2] === "kill") return ok("");
+    if (args[2] === "inspect") return { code: 3, stdout: "", stderr: "no persisted JSONL" };
+    throw new Error("Unexpected bridge command");
+  } });
+  const result = await provider.send({ sessionId, workspaceId: "workspace.repo", sessionMode: "fresh", message: "first turn", messageId: "m", contextId: "c", correlationId: "task", idempotencyKey: "k" });
+  assert.equal(calls.some(c => c.args[2] === "inspect"), false);
+  if (failure) { assert.equal(result.error_code, "fresh_session_create_failed"); assert.equal(calls.filter(c => c.cmd === "/bridge/send").length, 0); assert.equal(calls.filter(c => c.args[2] === "kill").length, 1); }
+  else { assert.equal(result.ok, true); assert.equal(result.session_id, nativeId); assert.notEqual(result.session_id, sessionId); assert.equal(calls.filter(c => c.cmd === "/bridge/send").length, 1); }
+});

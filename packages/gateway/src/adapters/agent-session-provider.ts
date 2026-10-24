@@ -213,6 +213,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly workspaceRoots: Readonly<Record<string, readonly string[]>>;
   private readonly freshSessionCwds?: Readonly<Record<string, string>>;
   private readonly createSessionProfiles: readonly SessionAccessProfile[];
+  private readonly freshTaskSessions: boolean;
   private readonly isolatedAccessMode?: "read-only" | "workspace-write";
   private readonly scanLimit: number;
   private readonly meshSocket?: string;
@@ -227,6 +228,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
 
   constructor(options: ShellAgentSessionProviderOptions) {
     this.isolatedAccessMode = options.isolatedAccessMode;
+    this.freshTaskSessions = options.freshTaskSessions === true;
     this.agentId = options.agentId;
     this.provider = options.agentType;
     this.agentSessionPath = options.agentSessionPath;
@@ -374,11 +376,13 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   async create(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
-    return (await this.launchCodex(input)).session;
+    const launched = await this.launchCodex(input);
+    if (launched.session === undefined) throw new Error("Created Codex session has no durable summary.");
+    return launched.session;
   }
 
   /** Create a Codex session, then bind its native ID to this exact new tmux pane. */
-  private async launchCodex(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<{ session: AgentSessionSummary; target: string }> {
+  private async launchCodex(input: { workspaceId: string; accessProfile: SessionAccessProfile }, isolatedFreshTask = false): Promise<{ session?: AgentSessionSummary; sessionId: string; target: string }> {
     if (this.provider !== "codex" || this.freshSessionCwds === undefined) throw new Error("Codex session creation is not configured.");
     const cwd = this.freshSessionCwds[input.workspaceId];
     if (cwd === undefined) throw new Error("Session creation is not configured for this workspace.");
@@ -402,7 +406,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       throw new Error("Codex session creation returned an unexpected target.");
     }
     try {
-      const resolved = await this.command(["--agent", "codex", "target-session", target], true, socket);
+      const resolved = await this.command(["--agent", "codex", "target-session", target, ...(isolatedFreshTask ? ["--owned-cwd", cwd] : [])], true, socket);
       const sessionId = resolved.stdout.trim();
       if (resolved.code !== 0 || !SESSION_UUID.test(sessionId)) throw new Error("Codex session ID was not uniquely resolved.");
       const writerStatus = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, socket);
@@ -413,9 +417,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       const targetStatus = await this.command(["--agent", "codex", "target-status", target, "--writer-pid", String(writer.pid), "--json"], true, socket);
       if (targetStatus.code !== 0) throw new Error(safeProcessError("Codex target ownership failed", targetStatus));
       parseOwnedTarget(targetStatus.stdout, target, writer.pid);
+      // Isolated first turns can own a native writer before Codex persists any transcript/DB row.
+      if (isolatedFreshTask) return { sessionId, target };
       const session = await this.get({ workspaceId: input.workspaceId, sessionId });
       if (session === undefined) throw new Error("Created Codex session is outside the authorized workspace.");
-      return { session, target };
+      return { session, sessionId, target };
     } catch (error) {
       await this.command(["--agent", "codex", "kill", target], true, socket);
       throw error;
@@ -543,14 +549,14 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     const failed = (error: string): TmuxSendResult => ({ ok: false, error_code: "fresh_session_create_failed", error });
     if (this.provider === "codex") {
       // Codex mints its own thread ID, so the task's pre-minted ID is only a placeholder.
-      let launched: { session: AgentSessionSummary; target: string };
+      let launched: { sessionId: string; target: string };
       try {
-        launched = await this.launchCodex({ workspaceId: input.workspaceId, accessProfile: "read-only" });
+        launched = await this.launchCodex({ workspaceId: input.workspaceId, accessProfile: "read-only" }, this.freshTaskSessions && this.isolatedAccessMode !== undefined);
       } catch (error) {
         return failed(error instanceof Error ? error.message : String(error));
       }
       const result = await this.sender.send(this.tmuxSendInput(input, launched.target));
-      return { ...result, session_id: launched.session.session_id };
+      return { ...result, session_id: launched.sessionId };
     }
     if (!SESSION_UUID.test(input.sessionId)) return failed("Fresh session id must be a lowercase UUID.");
     const target = `mesh-claude-${input.sessionId}`;
