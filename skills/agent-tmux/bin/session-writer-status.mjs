@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { discoverOwnedCodexThread } from "./codex-owned-pane.mjs";
+import { waitForOwnedCodexThread } from "./codex-owned-pane.mjs";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 
 const procRoot = process.env.AGENT_WRITER_PROC_ROOT || "/proc";
@@ -43,9 +43,13 @@ const agent = required(values.agent, "--agent");
 if (values["owned-pane-pid"] !== undefined) {
   if (agent !== "codex" || values.session !== undefined || !values.json || !/^\d+$/.test(values["owned-pane-pid"])) fail("invalid owned pane discovery arguments", 2);
   try {
-    const proof = discoverOwnedCodexThread({ panePid: Number(values["owned-pane-pid"]), cwd: required(values.cwd, "--cwd"), procRoot, codexHome: process.env.CODEX_HOME || `${process.env.HOME || ""}/.codex` });
+    const proof = await waitForOwnedCodexThread({ panePid: Number(values["owned-pane-pid"]), cwd: required(values.cwd, "--cwd"), procRoot, codexHome: process.env.CODEX_HOME || `${process.env.HOME || ""}/.codex` });
     console.log(JSON.stringify(proof));
-  } catch { fail("owned Codex thread proof is incomplete or ambiguous", 4); }
+  } catch (error) {
+    const stage = /^[a-z_.-]{1,64}$/.test(error.proofStage ?? "") ? error.proofStage : "proof";
+    const code = /^[A-Z_]{1,32}$/.test(error.proofCode ?? "") ? error.proofCode : "DENIED";
+    fail(`owned Codex thread proof is incomplete or ambiguous [stage=${stage},code=${code}]`, 4);
+  }
   process.exit(0);
 }
 if (values.cwd !== undefined) fail("--cwd requires --owned-pane-pid", 2);

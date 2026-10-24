@@ -1,5 +1,6 @@
-import { realpathSync, statSync } from "node:fs";
-import { isAbsolute, resolve, relative } from "node:path";
+import { createHash } from "node:crypto";
+import { realpathSync, statSync, readFileSync } from "node:fs";
+import { isAbsolute, resolve, relative, dirname, basename } from "node:path";
 import type { AccessMode } from "./workspace-worker.js";
 
 export function canonicalDirectory(path: string): string {
@@ -20,10 +21,24 @@ export interface WorkspaceSandboxConfig {
   accessMode: AccessMode;
   mountPath?: "/workspace";
   providerBinary?: { source: string; name: "claude" | "codex" };
+  providerCompanion?: { source: string; name: "codex-code-mode-host"; sha256: string };
   readOnlyFiles?: Array<{ source: string; target: ".codex/auth.json" | ".claude/.credentials.json"; jsonKeys?: ["claudeAiOauth"] }>;
 
   control?: string;
 }
+/** One explicitly approved executable companion; never discover host siblings. */
+export function providerCompanionFile(config: WorkspaceSandboxConfig): { source: string; target: string } | undefined {
+  const file = config.providerCompanion;
+  if (file === undefined) return undefined;
+  if (config.providerBinary?.name !== "codex" || file.name !== "codex-code-mode-host" ||
+      typeof file.source !== "string" || !isAbsolute(file.source) || resolve(file.source) !== file.source ||
+      realpathSync(file.source) !== file.source || dirname(file.source) !== dirname(config.providerBinary.source) || basename(file.source) !== file.name || !/^[a-f0-9]{64}$/.test(file.sha256)) throw new Error("Invalid explicit provider companion.");
+  const info = statSync(file.source);
+  if (!info.isFile() || info.uid !== process.getuid?.() || (info.mode & 0o022) !== 0 || (info.mode & 0o111) === 0 ||
+      createHash("sha256").update(readFileSync(file.source)).digest("hex") !== file.sha256) throw new Error("Provider companion executable identity mismatch.");
+  return { source: file.source, target: "/opt/mesh-bin/codex-code-mode-host" };
+}
+
 /** Empty mount namespace: never bind /, /home, /run, host /tmp or a host tmux socket. */
 export function sandboxArguments(config: WorkspaceSandboxConfig, command: string, args: readonly string[]): string[] {
   for (const value of [config.repository, config.codeRoot, config.home, config.temporary]) canonicalDirectory(value);
@@ -34,7 +49,8 @@ export function sandboxArguments(config: WorkspaceSandboxConfig, command: string
   }
   if (config.mountPath !== undefined && config.mountPath !== "/workspace") throw new Error("Invalid internal workspace mount.");
   if (!["read-only", "workspace-write"].includes(config.accessMode)) throw new Error("Invalid sandbox mode.");
-  const files = [{ source: realpathSync(process.execPath), target: "/opt/mesh-bin/node" }, ...(config.providerBinary === undefined ? [] : [{ source: config.providerBinary.source, target: `/opt/mesh-bin/${config.providerBinary.name}` }]), ...(config.readOnlyFiles ?? []).map((file) => ({ source: file.source, target: `/home/worker/${file.target}` }))];
+  const companion = providerCompanionFile(config);
+  const files = [...(companion === undefined ? [] : [companion]), { source: realpathSync(process.execPath), target: "/opt/mesh-bin/node" }, ...(config.providerBinary === undefined ? [] : [{ source: config.providerBinary.source, target: `/opt/mesh-bin/${config.providerBinary.name}` }]), ...(config.readOnlyFiles ?? []).map((file) => ({ source: file.source, target: `/home/worker/${file.target}` }))];
   if (config.providerBinary !== undefined && !["claude", "codex"].includes(config.providerBinary.name)) throw new Error("Invalid isolated provider binary.");
   if ((config.readOnlyFiles ?? []).some((file) => ![".codex/auth.json", ".claude/.credentials.json"].includes(file.target))) throw new Error("Invalid isolated provider auth target.");
   if ((config.readOnlyFiles ?? []).some((file) => file.jsonKeys !== undefined && (file.target !== ".claude/.credentials.json" || JSON.stringify(file.jsonKeys) !== '["claudeAiOauth"]'))) throw new Error("Invalid provider authentication projection.");

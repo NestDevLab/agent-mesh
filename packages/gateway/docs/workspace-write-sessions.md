@@ -190,6 +190,19 @@ the broker protocol, and credentials are not copied into destination homes. Use 
 refresh its approved binding if a provider insists on rewriting that file; do not widen mounts or
 copy personal credentials to work around a refresh error.
 
+Codex packages that require a code-mode execution host must declare an explicit optional
+`providerCompanion` object with `name: "codex-code-mode-host"`, its canonical source, and its
+SHA-256 digest. Only the owner-owned, executable, non-group/world-writable regular sibling of the
+approved Codex binary is accepted. It is mounted read-only at the fixed isolated binary location;
+the launcher rechecks its digest through the pinned descriptor. No host sibling is discovered
+implicitly and no additional directory is exposed.
+
+Provider command failures append bounded stage/exit/proof metadata to the private worker control
+file `provider-diagnostics.ndjson`. Raw stdout, stderr, prompts, authentication and pane contents
+are never written by this diagnostic callback. Public task errors retain their existing codes.
+Native-thread startup observations retry for a bounded monotonic interval against one pinned pane
+process identity, without excluding incomplete writer evidence or switching targets.
+
 Each worker has separate home/temp/control state. Clean broker shutdown terminates only its own
 children, waits for exit and then removes their socket. IPC disconnect also terminates workers
 when their broker disappears. After a crash, an existing socket requires owner inspection; it is

@@ -177,6 +177,14 @@ interface BridgeSearchResponse {
   next_cursor: number | null;
 }
 
+export interface ProviderDiagnostic {
+  stage: string;
+  exitCode: number;
+  proofStage?: string;
+  proofCode?: string;
+  missingExecutable?: "awk" | "tmux" | "node" | "python3";
+}
+
 export interface ShellAgentSessionProviderOptions {
   agentId: string;
   agentType: "codex" | "claude";
@@ -198,6 +206,8 @@ export interface ShellAgentSessionProviderOptions {
   timeoutSeconds?: number;
   scanLimit?: number;
   run?: ShellRun;
+  /** Private bounded metadata only; never raw stdout/stderr or credentials. */
+  onDiagnostic?: (event: ProviderDiagnostic) => void;
 }
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -222,6 +232,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly agentManagedInboxRoot?: string;
   private readonly timeoutSeconds: number;
   private readonly run: ShellRun;
+  private readonly onDiagnostic?: (event: ProviderDiagnostic) => void;
   private readonly sender: ShellTmuxSender;
   private readonly sendQueues = new Map<string, Promise<void>>();
   private readonly ownedClaudeTargets = new Map<string, { target: string; writerPid: number; panePid: number }>();
@@ -268,6 +279,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     this.agentManagedInboxRoot = options.agentManagedInboxRoot;
     this.timeoutSeconds = options.timeoutSeconds ?? 120;
     this.run = options.run ?? defaultRun;
+    this.onDiagnostic = options.onDiagnostic;
     this.sender = new ShellTmuxSender({
       agentSendPath: options.agentSendPath,
       agentType: options.agentType,
@@ -406,7 +418,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       throw new Error("Codex session creation returned an unexpected target.");
     }
     try {
-      const resolved = await this.command(["--agent", "codex", "target-session", target, ...(isolatedFreshTask ? ["--owned-cwd", cwd] : [])], true, socket);
+      const resolved = await this.command(["--agent", "codex", "target-session", target, ...(isolatedFreshTask ? ["--owned-cwd", cwd] : [])], true, socket, isolatedFreshTask ? 4_000 : 45_000);
       const sessionId = resolved.stdout.trim();
       if (resolved.code !== 0 || !SESSION_UUID.test(sessionId)) throw new Error("Codex session ID was not uniquely resolved.");
       const writerStatus = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, socket);
@@ -649,7 +661,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     };
   }
 
-  private async command(args: readonly string[], allowFailure = false, socket = this.meshSocket) {
+  private async command(args: readonly string[], allowFailure = false, socket = this.meshSocket, timeoutMs = 45_000) {
     const env = { ...processEnv };
     if (socket !== undefined) env.MESH_TMUX_SOCKET = socket;
     if (args[2] === "new") env.MESH_STRICT_READY = "1";
@@ -662,8 +674,16 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       env,
       // A cold resume waits up to 30 seconds for the provider TUI to become
       // ready; keep the host ceiling above that bridge-owned bound.
-      timeoutMs: 45_000
+      timeoutMs
     });
+    if (response.code !== 0 && this.onDiagnostic !== undefined) {
+      const stage = ["new", "target-session", "writer-status", "target-status", "inspect", "resume", "kill"].includes(args[2] ?? "") ? args[2]! : "session-command";
+      const proof = /\[stage=([a-z_.-]{1,64}),code=([A-Z_]{1,32})\]/.exec(response.stderr);
+      const missing = /\b(awk|tmux|node|python3): (?:command not found|No such file or directory)/.exec(response.stderr);
+      this.onDiagnostic({ stage, exitCode: response.code,
+        ...(missing === null ? {} : { missingExecutable: missing[1] as ProviderDiagnostic["missingExecutable"] }),
+        ...(proof === null ? {} : { proofStage: proof[1], proofCode: proof[2] }) });
+    }
     if (!allowFailure && response.code !== 0) {
       throw new Error(safeProcessError("Agent session command failed", response));
     }
