@@ -903,8 +903,21 @@ case "$cmd" in
 
     target-session)
         TARGET="${1:-}"
-        [[ "$AGENT_NAME" == "codex" && "$TARGET" =~ ^[a-z0-9-]+$ && $# -eq 1 ]] \
+        [[ "$AGENT_NAME" == "codex" && "$TARGET" =~ ^[a-z0-9-]+$ ]] \
             || { echo "ERROR: target-session requires a safe Codex target" >&2; exit 2; }
+        if [[ $# -eq 3 && "$2" == "--owned-cwd" && "$3" =~ ^/[A-Za-z0-9_./-]+$ ]]; then
+            OWNED_CWD="$3"
+            PANES="$(mtmux list-panes -s -t "$TARGET" -F '#{session_name}|#{pane_pid}|#{pane_current_command}|#{pane_dead}|#{session_attached}')" \
+                || { echo "ERROR: owned Codex target is unavailable" >&2; exit 4; }
+            [[ "$PANES" != *$'\n'* ]] || { echo "ERROR: owned Codex target has multiple panes" >&2; exit 4; }
+            IFS='|' read -r ACTUAL_TARGET PANE_PID PANE_COMMAND PANE_DEAD ATTACHED <<< "$PANES"
+            [[ "$ACTUAL_TARGET" == "$TARGET" && "$PANE_PID" =~ ^[1-9][0-9]*$ && "$PANE_COMMAND" == codex && "$PANE_DEAD" == 0 && "$ATTACHED" == 0 ]] \
+                || { echo "ERROR: owned Codex target is not unattended and live" >&2; exit 4; }
+            OWNED_PROOF="$(node "$SCRIPT_DIR/session-writer-status.mjs" --agent codex --owned-pane-pid "$PANE_PID" --cwd "$OWNED_CWD" --json)" || exit 4
+            node -e 'const p=JSON.parse(process.argv[1]); if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(p.sessionId)) process.exit(4); console.log(p.sessionId)' "$OWNED_PROOF"
+            exit
+        fi
+        [[ $# -eq 1 ]] || { echo "ERROR: invalid target-session arguments" >&2; exit 2; }
         mtmux has-session -t "$TARGET" 2>/dev/null \
             || { echo "ERROR: target not found" >&2; exit 3; }
         THREAD_ID="$(mesh_launch_record_reconcile codex "$TARGET")"
