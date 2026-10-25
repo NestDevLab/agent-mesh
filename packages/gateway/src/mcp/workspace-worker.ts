@@ -22,7 +22,7 @@ export interface WorkspaceWorkerRoute {
 
 export function validateWorkerRoute(route: WorkspaceWorkerRoute): void {
   if (!route || [route.id, route.principalId, route.agentId, route.workspaceId].some((v) => typeof v !== "string" || !/^[A-Za-z0-9_.:-]{1,160}$/.test(v)) ||
-      (route.pathSelection !== undefined && route.pathSelection !== "client") || !["read-only", "workspace-write"].includes(route.accessMode) || typeof route.socketPath !== "string" || !route.socketPath.startsWith("/") || route.socketPath.includes("..")) {
+      (route.pathSelection !== undefined && route.pathSelection !== "client") || !["read-only", "workspace-write"].includes(route.accessMode) || typeof route.socketPath !== "string" || !isAbsolute(route.socketPath) || resolve(route.socketPath) !== route.socketPath || route.socketPath.includes("..") || route.socketPath.includes("\0") || Buffer.byteLength(route.socketPath, "utf8") > 107) {
     throw new Error("Invalid explicit workspace worker route.");
   }
 }

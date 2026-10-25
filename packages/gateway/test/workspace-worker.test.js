@@ -6,7 +6,7 @@ import { resolve, join } from "node:path";
 import { spawnSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import "./ts-extension-resolver.mjs";
-const { WorkspaceWorkerRouter } = await import("../src/mcp/workspace-worker.ts");
+const { WorkspaceWorkerRouter, validateWorkerRoute } = await import("../src/mcp/workspace-worker.ts");
 const { sandboxArguments, canonicalDirectory } = await import("../src/mcp/workspace-sandbox.ts");
 const { startIsolatedWorker } = await import("../src/mcp/workspace-worker-server.ts");
 const { MeshTaskStore } = await import("../src/mcp/mesh-task-store.ts");
@@ -235,4 +235,14 @@ test("private provider diagnostics contain bounded command metadata without raw 
  assert.equal(output.error_code,"fresh_session_create_failed");
  assert.deepEqual(diagnostics,[{stage:"target-session",exitCode:4,proofStage:"inventory.exe",proofCode:"ENOENT"}]);
  assert.doesNotMatch(JSON.stringify(diagnostics),/fixture stdout|fixture detail/);
+});
+
+test("worker routes bound canonical Unix socket addresses in UTF-8 bytes", () => {
+  for (const socketPath of ["/" + "s".repeat(106), "/" + "é".repeat(53)]) {
+    assert.equal(Buffer.byteLength(socketPath), 107);
+    assert.doesNotThrow(() => validateWorkerRoute({ ...route, socketPath }));
+  }
+  for (const socketPath of ["/" + "s".repeat(107), "/" + "é".repeat(53) + "s", "/tmp/../s", "/tmp//s", "/tmp/s\0other", "relative.sock"]) {
+    assert.throws(() => validateWorkerRoute({ ...route, socketPath }), /Invalid explicit/);
+  }
 });

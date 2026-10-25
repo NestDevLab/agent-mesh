@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, rm, symlink, readdir } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, rm, symlink, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import "./ts-extension-resolver.mjs";
@@ -77,4 +78,42 @@ test("provider auth is an individual read-only file and its source home is not e
   const script=`const fs=require('fs');if(fs.readFileSync('/home/worker/.codex/auth.json','utf8')!=='demo')throw Error('missing auth');try{fs.writeFileSync('/home/worker/.codex/auth.json','changed');throw Error('auth writable')}catch(e){if(e.message==='auth writable')throw e;}if(fs.existsSync(${JSON.stringify(auth)}))throw Error('source exposed');`;
   const args=sandboxArguments({repository:destination,codeRoot:cfg.codeRoot,home,temporary,accessMode:'workspace-write',readOnlyFiles:[{source:auth,target:'.codex/auth.json'}]},process.execPath,['-e',script]);
   const result=spawnSync('/usr/bin/bwrap',args,{encoding:'utf8'});assert.equal(result.status,0,result.stderr);assert.equal(await readFile(auth,'utf8'),'demo');
+});
+
+for (const provider of ["codex", "claude"]) test(`${provider} broker starts a real isolated worker with a deep state root`, async t => {
+  const { cfg, destination, root } = await fixture(t);
+  cfg.provider = provider;
+  cfg.stateRoot = join(root, "s".repeat(60 - Buffer.byteLength(root) - 1));
+  await mkdir(cfg.stateRoot, { mode: 0o700 });
+  assert.equal(Buffer.byteLength(cfg.stateRoot), 60);
+  const broker = await startWorkspaceBroker(cfg); t.after(() => broker.close());
+  const task = { schema: "agent-mesh.mcp-task.v1", task_id: "deep-task", message_id: "m", context_id: "c", principal_id: cfg.principalId, target_agent_id: cfg.agentId, workspace_id: cfg.workspaceId, workspace_path: destination, access_mode: cfg.accessMode, worker_id: cfg.id, session_id: "11111111-1111-4111-8111-111111111111", message: "test", labels: [], idempotency_key: "deep" };
+  // An unowned resume reaches the real worker policy; no provider is invoked.
+  await assert.rejects(new WorkspaceWorkerRouter([cfg]).execute(task, { bindSession: async () => {} }), /Session is not owned/);
+  const [digest] = await readdir(cfg.stateRoot);
+  const child = JSON.parse(await readFile(join(cfg.stateRoot, digest, "worker.json"), "utf8"));
+  assert.equal(child.socketPath, join(cfg.stateRoot, digest, "control/s"));
+  assert.equal(Buffer.byteLength(child.socketPath), 103);
+  assert.equal(child.repository, destination);
+});
+
+test("broker refuses an overlong derived socket before creating child state", async t => {
+  const { cfg, destination, root } = await fixture(t);
+  cfg.stateRoot = join(root, "s".repeat(65 - Buffer.byteLength(root) - 1));
+  await mkdir(cfg.stateRoot, { mode: 0o700 });
+  const broker = await startWorkspaceBroker(cfg); t.after(() => broker.close());
+  const task = { schema: "agent-mesh.mcp-task.v1", task_id: "long-task", principal_id: cfg.principalId, target_agent_id: cfg.agentId, workspace_id: cfg.workspaceId, workspace_path: destination, access_mode: cfg.accessMode, worker_id: cfg.id };
+  await assert.rejects(new WorkspaceWorkerRouter([cfg]).execute(task, { bindSession: async () => {} }), /workspace_worker_unavailable/);
+  assert.deepEqual(await readdir(cfg.stateRoot), []);
+});
+
+for (const legacy of [false, true]) test(`broker refuses an existing ${legacy ? "legacy" : "compact"} endpoint without overwriting`, async t => {
+  const { cfg, destination } = await fixture(t);
+  const digest = createHash("sha256").update(JSON.stringify([cfg.id, cfg.principalId, cfg.agentId, cfg.workspaceId, cfg.accessMode, destination])).digest("hex").slice(0, 32);
+  const control = join(cfg.stateRoot, digest, "control"); await mkdir(control, { recursive: true, mode: 0o700 });
+  const socket = join(control, legacy ? "worker.sock" : "s"); await writeFile(socket, "retained endpoint", { mode: 0o600 });
+  const broker = await startWorkspaceBroker(cfg); t.after(() => broker.close());
+  const task = { schema: "agent-mesh.mcp-task.v1", task_id: "existing-task", principal_id: cfg.principalId, target_agent_id: cfg.agentId, workspace_id: cfg.workspaceId, workspace_path: destination, access_mode: cfg.accessMode, worker_id: cfg.id };
+  await assert.rejects(new WorkspaceWorkerRouter([cfg]).execute(task, { bindSession: async () => {} }), /workspace_worker_unavailable/);
+  assert.equal(await readFile(socket, "utf8"), "retained endpoint");
 });
