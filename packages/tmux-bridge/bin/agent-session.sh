@@ -1015,13 +1015,12 @@ case "$cmd" in
             fi
         done < <(mtmux list-panes -s -t "$TARGET" -F '#{pane_id} #{pane_pid}')
         VERIFY_ARGS=(--timeout "${MESH_RELEASE_TIMEOUT_SECONDS:-10}")
-        QUIESCE_ARGS=(--settle "${MESH_RELEASE_SETTLE_SECONDS:-2}")
+        QUIESCE_ARGS=(--settle "${MESH_RELEASE_SETTLE_SECONDS:-2}" "${SCAN_ARGS[@]}")
         if [[ ${#SCAN_ARGS[@]} -gt 0 ]]; then
             SCAN_JSON="$(python3 "$SCRIPT_DIR/codex-thread-guard.py" pane-scan "${SCAN_ARGS[@]}")"
             while read -r FIELD VALUE; do
                 if [[ "$FIELD" == pid ]]; then
                     VERIFY_ARGS+=(--pid "$VALUE")
-                    QUIESCE_ARGS+=(--target-pid "$VALUE")
                 elif [[ "$FIELD" == thread && "$AGENT_NAME" == codex && "$VALUE" != "$RELEASE_SESSION" ]]; then
                     VERIFY_ARGS+=(--session "$VALUE")
                     QUIESCE_ARGS+=(--session "$VALUE")
@@ -1078,7 +1077,7 @@ case "$cmd" in
         if [[ "$AGENT_NAME" == codex ]]; then
             SERVED_ARGS=()
             for ((i = 0; i < ${#QUIESCE_ARGS[@]}; i++)); do
-                if [[ "${QUIESCE_ARGS[$i]}" == --session || "${QUIESCE_ARGS[$i]}" == --target-pid ]]; then
+                if [[ "${QUIESCE_ARGS[$i]}" == --session || "${QUIESCE_ARGS[$i]}" == --pane-pid ]]; then
                     SERVED_ARGS+=("${QUIESCE_ARGS[$i]}" "${QUIESCE_ARGS[$((i + 1))]}")
                 fi
             done
@@ -1095,6 +1094,13 @@ case "$cmd" in
             if _release_pending_input; then _release_refuse "the pane has an approval prompt or queued input"; fi
         elif _release_busy; then
             _release_refuse "target became busy while input was blocked"
+        fi
+        # processes started since the first scan must also be waited for
+        if [[ ${#SCAN_ARGS[@]} -gt 0 ]]; then
+            while read -r VALUE; do
+                VERIFY_ARGS+=(--pid "$VALUE")
+            done < <(python3 "$SCRIPT_DIR/codex-thread-guard.py" pane-scan "${SCAN_ARGS[@]}" \
+                | python3 -c 'import json,sys; [print(p) for p in json.load(sys.stdin)["pids"]]')
         fi
         mtmux kill-session -t "$TARGET"
         rm -f "$(mesh_pending_title_file "$TARGET")"

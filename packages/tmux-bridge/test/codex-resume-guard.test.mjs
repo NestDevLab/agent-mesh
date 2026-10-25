@@ -147,21 +147,32 @@ function rolloutPath(f) {
 }
 
 // The holder takes the writer lock like a CLI does; with onInput it records a
-// turn for every line typed into the pane, so blocked input is observable.
-async function holdLock(f, target, { banner = "", argv = [], onInput = false } = {}) {
+// turn for every line typed into the pane, so blocked input is observable. Its
+// script file is named app-server when it must look like `codex app-server`.
+const HOLDER = [
+  "import json,sys,time",
+  "h=open(sys.argv[1],'a')",
+  "print(sys.argv[2], flush=True)",
+  "if sys.argv[3]=='1':",
+  "    for line in sys.stdin:",
+  "        open(sys.argv[4],'a').write(json.dumps({'type':'event_msg','payload':{'type':'task_started'}})+'\\n')",
+  "time.sleep(60)",
+].join("\n");
+
+async function holderScript(f, server) {
+  const dir = join(f.home, server ? "server-bin" : "cli-bin");
+  await mkdir(dir, { recursive: true });
+  const name = server ? "app-server" : "holder.py";
+  await writeFile(join(dir, name), HOLDER + "\n");
+  return { dir, name };
+}
+
+async function holdLock(f, target, { banner = "", server = false, onInput = false } = {}) {
   const lock = join(f.codex, "thread-writer-locks", `${f.id}.lock`);
   await mkdir(dirname(lock), { recursive: true });
-  const script = [
-    "import json,sys,time",
-    "h=open(sys.argv[1],'a')",
-    "print(sys.argv[2], flush=True)",
-    "if sys.argv[3]=='1':",
-    "    for line in sys.stdin:",
-    "        open(sys.argv[4],'a').write(json.dumps({'type':'event_msg','payload':{'type':'task_started'}})+'\\n')",
-    "time.sleep(60)",
-  ].join("\n");
-  const holder = `exec -a codex python3 -c "$0" ${lock} '${banner}' ${onInput ? 1 : 0} ${rolloutPath(f)} ${argv.join(" ")}`;
-  assert.notEqual(tmux("new-session", "-d", "-s", target, "bash", "-c", holder, script), null);
+  const { dir, name } = await holderScript(f, server);
+  const holder = `cd ${dir} && exec -a codex python3 ${name} ${lock} '${banner}' ${onInput ? 1 : 0} ${rolloutPath(f)}`;
+  assert.notEqual(tmux("new-session", "-d", "-s", target, "bash", "-c", holder), null);
   for (let i = 0; i < 50; i++) {
     const status = await run(f, ["--agent", "codex", "writer-status", f.id, "--json"]);
     if (status.code === 0 && JSON.parse(status.stdout).writers.length === 1) return;
@@ -217,7 +228,7 @@ test("release refuses before any kill unless the turn is proven complete", async
     ["partial last line", ["task_started", "task_complete"], { tail: '{"type":"event_msg"' }, {}, /complete, readable rollout/],
     ["no rollout", null, {}, {}, /complete, readable rollout/],
     ["busy pane", ["task_started", "task_complete"], {}, { banner: "Working (esc to interrupt)" }, /busy/],
-    ["app-server writer inside the target", ["task_started", "task_complete"], {}, { argv: ["app-server"] }, /can't be quiesced/],
+    ["app-server writer inside the target", ["task_started", "task_complete"], {}, { server: true }, /can't be quiesced/],
   ];
   for (const [index, [name, events, rollout, holder, expected]] of cases.entries()) {
     const f = await fixture(`7600000${index}-0000-4000-8000-000000000006`);
@@ -282,7 +293,7 @@ test("a TUI client of an app-server-served thread is released while its turn run
     await writeTurn(f, ["task_started"]);
     const server = `mesh-resume-guard-server-${index}-${process.pid}`;
     const client = `mesh-resume-guard-client-${index}-${process.pid}`;
-    await holdLock(f, server, { argv: ["app-server"] });
+    await holdLock(f, server, { server: true });
     assert.notEqual(tmux("new-session", "-d", "-s", client, "bash", "-c", `printf '%b\\n' '${banner}'; exec sleep 60`), null);
     const result = await run(f, ["--agent", "codex", "release", client, f.id], SETTLE);
     assert.equal(result.code, code, `${name}: ${result.stderr}`);
@@ -294,6 +305,56 @@ test("a TUI client of an app-server-served thread is released while its turn run
     tmux("kill-session", "-t", client);
     tmux("kill-session", "-t", server);
   }
+});
+
+test("writer role comes from the Codex subcommand, not from prompt text", async () => {
+  const cases = [
+    [["/opt/codex/codex", "resume", "SESSION", "app-server"], "cli"],
+    [["/opt/codex/codex", "exec", "app-server"], "cli"],
+    [["/opt/codex/codex", "--unknown-flag", "app-server"], "cli"],
+    [["/opt/codex/codex", "-c", "features.x=true", "app-server", "--listen", "unix://"], "app-server"],
+    [["/opt/codex/codex", "--config=features.x=true", "app-server"], "app-server"],
+    [["node", "/opt/pkg/.bin/codex", "app-server", "--listen", "stdio://"], "app-server"],
+  ];
+  for (const [index, [argv, role]] of cases.entries()) {
+    const f = await fixture(`7b00000${index}-0000-4000-8000-00000000000b`);
+    const procRoot = await fakeWriter(f, argv.map((a) => a === "SESSION" ? f.id : a));
+    const status = await run(f, ["--agent", "codex", "writer-status", f.id, "--json"], { AGENT_WRITER_PROC_ROOT: procRoot });
+    assert.equal(JSON.parse(status.stdout).writers[0].role, role, argv.join(" "));
+  }
+});
+
+test("a writer spawned inside the target after the pane scan is never treated as external", async () => {
+  const guard = join(packageRoot, "bin", "codex-thread-guard.py");
+  const f = await fixture("7c000000-0000-4000-8000-00000000000c");
+  await writeTurn(f, ["task_started"]);
+  const lock = join(f.codex, "thread-writer-locks", `${f.id}.lock`);
+  await mkdir(dirname(lock), { recursive: true });
+  const target = `mesh-resume-guard-late-${process.pid}`;
+  // the pane starts a child `codex app-server` lookalike only once release has blocked input
+  const { dir } = await holderScript(f, true);
+  const pane = `until [ "$(tmux -L ${socket} display-message -p -t ${target} '#{pane_input_off}')" = 1 ]; do sleep 0.02; done; (cd ${dir} && exec -a codex python3 app-server ${lock} late 0 ${rolloutPath(f)}) & wait`;
+  assert.notEqual(tmux("new-session", "-d", "-s", target, "bash", "-c", pane), null);
+  const panePid = tmux("display-message", "-p", "-t", target, "#{pane_pid}").trim();
+
+  const released = await run(f, ["--agent", "codex", "release", target, f.id], SETTLE);
+  assert.equal(released.code, 4, released.stderr);
+  assert.notEqual(tmux("has-session", "-t", target), null, "target was killed");
+  let writer;
+  for (let i = 0; i < 50 && !writer; i++) {
+    const status = await run(f, ["--agent", "codex", "writer-status", f.id, "--json"]);
+    writer = JSON.parse(status.stdout).writers[0];
+    if (!writer) await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.equal(writer?.role, "app-server", "fixture child never took the lock");
+
+  // with only the pane root known, the late child must count as inside the target
+  const env = { ...process.env, HOME: f.home, CODEX_HOME: f.codex };
+  let served = 0;
+  try { execFileSync("python3", [guard, "served", "--session", f.id, "--pane-pid", panePid], { env, stdio: "ignore" }); }
+  catch (error) { served = error.status; }
+  assert.equal(served, 1);
+  tmux("kill-session", "-t", target);
 });
 
 test("release of a Codex target with no known thread asks for the session id", async () => {

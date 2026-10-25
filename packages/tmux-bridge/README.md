@@ -260,7 +260,7 @@ release then proves from the whole rollout that the thread stays idle for
 then kills the target and verifies its processes and CLI writer are gone. Anything
 unproven refuses before any kill. The
 gateway sends to a Desktop-listed thread through the native Codex queue. Writer status
-reports each Codex writer's `role` (`app-server` or `cli`). For an active Codex session, `agent-native-call.mjs` uses Codex's
+reports each Codex writer's `role`: `app-server` only when the parsed subcommand is `app-server`, otherwise `cli`. `release` re-reads the writers after blocking input and counts one as external only when its live process ancestry doesn't reach a target pane. For an active Codex session, `agent-native-call.mjs` uses Codex's
 native queue and waits for the uniquely marked turn in the transcript. Claude
 ownership combines the documented `claude agents --json` inventory with process
 verification, including Desktop owners whose argv has no `--resume` flag. An

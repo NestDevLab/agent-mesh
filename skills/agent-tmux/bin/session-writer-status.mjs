@@ -142,10 +142,33 @@ function detectCodexWriters(id) {
       continue;
     }
     if (ownsLock) {
-      writers.push({ pid: Number(entry.name), kind: "codex", role: argv.includes("app-server") ? "app-server" : "cli" });
+      writers.push({ pid: Number(entry.name), kind: "codex", role: codexRole(argv) });
     }
   }
   return writers.sort((left, right) => left.pid - right.pid);
+}
+
+// Only a proven `codex [global options] app-server` is an app-server; any
+// unrecognised option before the subcommand makes the role "cli".
+function codexRole(argv) {
+  const CODEX_VALUE_OPTIONS = new Set([
+    "-c", "--config", "-m", "--model", "-p", "--profile", "-C", "--cd", "-s", "--sandbox",
+    "-a", "--ask-for-approval", "-i", "--image", "--remote", "--enable", "--disable", "--local-provider",
+  ]);
+  const CODEX_FLAG_OPTIONS = new Set([
+    "--oss", "--search", "--full-auto", "--dangerously-bypass-approvals-and-sandbox", "--no-alt-screen",
+  ]);
+  const start = argv.findIndex((value) => basename(value) === "codex");
+  for (let i = start + 1; i < argv.length; i++) {
+    const token = argv[i];
+    if (token === "--") return "cli";
+    if (CODEX_VALUE_OPTIONS.has(token)) { i++; continue; }
+    if (token.startsWith("--") && token.includes("=") && CODEX_VALUE_OPTIONS.has(token.split("=", 1)[0])) continue;
+    if (CODEX_FLAG_OPTIONS.has(token)) continue;
+    if (token.startsWith("-")) return "cli";
+    return token === "app-server" ? "app-server" : "cli";
+  }
+  return "cli";
 }
 
 function detectMonitorInboxWatchers(inbox) {

@@ -211,7 +211,20 @@ def turn_state(session: str) -> tuple[str, tuple | None]:
     return state, (stat.st_size, stat.st_mtime_ns, stat.st_ino)
 
 
-def outside_writers(session: str, owned: set[int]) -> str | None:
+def in_target(pid: int, roots: set[int]) -> bool | None:
+    """Whether pid descends from a target pane, from its live ancestry; None when unprovable."""
+    seen = 0
+    while pid > 1 and seen < 64:
+        if pid in roots:
+            return True
+        parent = parent_pid(pid)
+        if parent is None:
+            return None
+        pid, seen = parent, seen + 1
+    return False if pid == 1 or pid == 0 else None
+
+
+def outside_writers(session: str, roots: set[int]) -> str | None:
     """Why turns could reach the thread outside the target, or None when only the target writes."""
     try:
         current = writers(session)
@@ -220,26 +233,32 @@ def outside_writers(session: str, owned: set[int]) -> str | None:
     for writer in current:
         if writer.get("role") == "app-server":
             return f"it is served by a Codex app-server (pid {writer['pid']}), which can start turns outside tmux"
-        if writer["pid"] not in owned:
+        inside = in_target(writer["pid"], roots)
+        if inside is None:
+            return f"the ancestry of writer pid {writer['pid']} can't be traced"
+        if not inside:
             return f"another process (pid {writer['pid']}) writes it"
     return None
 
 
 def served(args: argparse.Namespace) -> int:
-    """Exit 0 only when every thread is written solely by a Codex app-server outside the target."""
-    owned = set(args.target_pid)
+    """Exit 0 only when every current writer is a proven app-server outside the target panes."""
+    roots = set(args.pane_pid)
     for session in args.session:
         try:
             current = writers(session)
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
             return 1
-        if not current or any(w.get("role") != "app-server" or w["pid"] in owned for w in current):
+        if not current:
             return 1
+        for writer in current:
+            if writer.get("role") != "app-server" or in_target(writer["pid"], roots) is not False:
+                return 1
     return 0
 
 
 def quiesce(args: argparse.Namespace) -> int:
-    owned = set(args.target_pid)
+    owned = set(args.pane_pid)
 
     def snapshot() -> dict | None:
         result = {}
@@ -322,11 +341,11 @@ def main() -> int:
     verify.add_argument("--timeout", type=float, default=10)
     hold = sub.add_parser("quiesce")
     hold.add_argument("--session", action="append", required=True)
-    hold.add_argument("--target-pid", type=int, action="append", default=[])
+    hold.add_argument("--pane-pid", type=int, action="append", required=True)
     hold.add_argument("--settle", type=float, default=2)
     serve = sub.add_parser("served")
     serve.add_argument("--session", action="append", required=True)
-    serve.add_argument("--target-pid", type=int, action="append", default=[])
+    serve.add_argument("--pane-pid", type=int, action="append", required=True)
     args = parser.parse_args()
     sessions = getattr(args, "session", None) or []
     for value in [sessions] if isinstance(sessions, str) else sessions:
