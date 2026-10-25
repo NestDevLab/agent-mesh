@@ -211,6 +211,8 @@ export interface ShellAgentSessionProviderOptions {
 }
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// agent-session.sh resume exit code for an idle thread listed in Codex Desktop
+const DESKTOP_VISIBLE_EXIT = 6;
 
 /** Host-owned bridge over the existing agent-session.sh and agent-send.sh contract. */
 export class ShellAgentSessionProvider implements AgentSessionProvider {
@@ -474,27 +476,8 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
           this.ownedClaudeTargets.delete(queueKey);
         }
       }
-      if (this.agentNativeCallPath !== undefined) {
-        if (input.correlationId === undefined) {
-          return { ok: false, error: "A correlation ID is required for an active Codex session call." };
-        }
-        const nativeArgs = [
-          this.agentNativeCallPath,
-          "--agent", this.provider,
-          "--session", input.sessionId,
-          "--correlation-id", input.correlationId,
-          "--timeout", String(this.timeoutSeconds),
-          "--message", input.message
-        ];
-        if (this.provider === "claude" && this.agentManagedInboxRoot !== undefined) {
-          nativeArgs.push("--managed-inbox-root", this.agentManagedInboxRoot);
-        }
-        const result = await this.run(process.execPath, nativeArgs, {
-          env: { ...processEnv },
-          timeoutMs: (this.timeoutSeconds + 20) * 1000
-        });
-        return nativeCallResult(result);
-      }
+      const native = await this.nativeSessionCall(input);
+      if (native !== undefined) return native;
       return {
         ok: false,
         ...(this.provider === "claude" ? { error_code: "active_external_writer" as const } : {}),
@@ -504,11 +487,14 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       };
     }
 
-    // gateway callers address an exact session, so they opt out of the bridge's Desktop-thread guard
-    const resumeArgs = this.provider === "codex"
-      ? ["--agent", "codex", "resume", input.sessionId, "--allow-desktop-thread"]
-      : ["--agent", this.provider, "resume", input.sessionId];
-    const resumed = await this.command(resumeArgs, true);
+    const resumed = await this.command(["--agent", this.provider, "resume", input.sessionId], true);
+    if (resumed.code === DESKTOP_VISIBLE_EXIT && this.provider === "codex") {
+      // a tmux resume would lock Codex Desktop out of this thread, so queue the turn natively
+      return await this.nativeSessionCall(input) ?? {
+        ok: false,
+        error: "Codex session is visible in Codex Desktop; no native queue transport is configured."
+      };
+    }
     if (resumed.code !== 0) {
       return {
         ok: false,
@@ -545,6 +531,29 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     return this.provider === "claude"
       ? this.sendToOwnedClaudeTarget(input, tmuxTarget)
       : this.sender.send(this.tmuxSendInput(input, tmuxTarget));
+  }
+
+  private async nativeSessionCall(input: AgentSessionSendInput): Promise<TmuxSendResult | undefined> {
+    if (this.agentNativeCallPath === undefined) return undefined;
+    if (input.correlationId === undefined) {
+      return { ok: false, error: "A correlation ID is required for an active Codex session call." };
+    }
+    const nativeArgs = [
+      this.agentNativeCallPath,
+      "--agent", this.provider,
+      "--session", input.sessionId,
+      "--correlation-id", input.correlationId,
+      "--timeout", String(this.timeoutSeconds),
+      "--message", input.message
+    ];
+    if (this.provider === "claude" && this.agentManagedInboxRoot !== undefined) {
+      nativeArgs.push("--managed-inbox-root", this.agentManagedInboxRoot);
+    }
+    const result = await this.run(process.execPath, nativeArgs, {
+      env: { ...processEnv },
+      timeoutMs: (this.timeoutSeconds + 20) * 1000
+    });
+    return nativeCallResult(result);
   }
 
   /** Launches via the bridge's `new`, checks we own the writer, then sends the first turn. Never falls back to another session. */

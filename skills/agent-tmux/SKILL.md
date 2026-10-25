@@ -126,7 +126,8 @@ TARGET=$($BIN/agent-spawn.sh --agent codex \
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
 # Release a resumed target right after use: kills it and verifies its processes
-# and CLI writer are gone, so Codex Desktop can drive the thread again.
+# and CLI writer are gone, so Codex Desktop can drive the thread again. It refuses
+# (exit 4, nothing killed) while the pane is busy or the thread's turn is open.
 $BIN/agent-session.sh --agent codex release "$TARGET" <SESSION_ID>
 
 # List configured agents + live sessions:

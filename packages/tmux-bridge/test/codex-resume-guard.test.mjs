@@ -139,20 +139,32 @@ test("a CLI-only thread outside Desktop resumes past the guard", async () => {
   assert.doesNotMatch(result.stderr, /Codex Desktop/);
 });
 
-test("release kills the target and proves its CLI writer is gone", async () => {
-  const f = await fixture("75000000-0000-4000-8000-000000000005");
+async function holdLock(f, target, banner = "") {
   const lock = join(f.codex, "thread-writer-locks", `${f.id}.lock`);
   await mkdir(dirname(lock), { recursive: true });
-  const target = `mesh-resume-guard-release-${process.pid}`;
-  const holder = `exec -a codex python3 -c 'import sys,time; h=open(sys.argv[1],"a"); time.sleep(60)' ${lock}`;
+  const holder = `exec -a codex python3 -c 'import sys,time; h=open(sys.argv[1],"a"); print(sys.argv[2], flush=True); time.sleep(60)' ${lock} '${banner}'`;
   assert.notEqual(tmux("new-session", "-d", "-s", target, "bash", "-c", holder), null);
-  let held = false;
-  for (let i = 0; i < 50 && !held; i++) {
+  for (let i = 0; i < 50; i++) {
     const status = await run(f, ["--agent", "codex", "writer-status", f.id, "--json"]);
-    held = status.code === 0 && JSON.parse(status.stdout).writers.length === 1;
-    if (!held) await new Promise((r) => setTimeout(r, 100));
+    if (status.code === 0 && JSON.parse(status.stdout).writers.length === 1) return;
+    await new Promise((r) => setTimeout(r, 100));
   }
-  assert.ok(held, "fixture writer never took the lock");
+  assert.fail("fixture writer never took the lock");
+}
+
+async function writeTurn(f, events) {
+  const dir = join(f.codex, "sessions", "2026", "01", "01");
+  await mkdir(dir, { recursive: true });
+  const lines = [{ type: "session_meta", payload: { id: f.id, cwd: f.home } },
+    ...events.map((type) => ({ type: "event_msg", payload: { type } }))];
+  await writeFile(join(dir, `rollout-2026-01-01T00-00-00-${f.id}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+}
+
+test("release kills an idle target and proves its CLI writer is gone", async () => {
+  const f = await fixture("75000000-0000-4000-8000-000000000005");
+  await writeTurn(f, ["task_started", "task_complete"]);
+  const target = `mesh-resume-guard-release-${process.pid}`;
+  await holdLock(f, target);
 
   const released = await run(f, ["--agent", "codex", "release", target]);
   assert.equal(released.code, 0, released.stderr);
@@ -162,4 +174,34 @@ test("release kills the target and proves its CLI writer is gone", async () => {
 
   const missing = await run(f, ["--agent", "codex", "release", target]);
   assert.equal(missing.code, 3);
+});
+
+test("release refuses before any kill while a turn may be running", async () => {
+  const cases = [
+    ["open turn in the rollout", ["task_started"], "", /turn in progress/],
+    ["busy pane", ["task_started", "task_complete"], "Working (esc to interrupt)", /is busy/],
+    ["no readable rollout", null, "", /no single readable rollout/],
+  ];
+  for (const [index, [name, events, banner, expected]] of cases.entries()) {
+    const f = await fixture(`7600000${index}-0000-4000-8000-000000000006`);
+    if (events) await writeTurn(f, events);
+    const target = `mesh-resume-guard-busy-${index}-${process.pid}`;
+    await holdLock(f, target, banner);
+    const refused = await run(f, ["--agent", "codex", "release", target]);
+    assert.equal(refused.code, 4, `${name}: ${refused.stderr}`);
+    assert.match(refused.stderr, expected, name);
+    assert.notEqual(tmux("has-session", "-t", target), null, `${name}: target was killed`);
+    tmux("kill-session", "-t", target);
+  }
+});
+
+test("release of a Codex target with no known thread asks for the session id", async () => {
+  const f = await fixture("77000000-0000-4000-8000-000000000007");
+  const target = `mesh-resume-guard-unknown-${process.pid}`;
+  assert.notEqual(tmux("new-session", "-d", "-s", target, "sleep", "60"), null);
+  const refused = await run(f, ["--agent", "codex", "release", target]);
+  assert.equal(refused.code, 4, refused.stderr);
+  assert.match(refused.stderr, /pass its SESSION_ID/);
+  assert.notEqual(tmux("has-session", "-t", target), null);
+  tmux("kill-session", "-t", target);
 });

@@ -1024,6 +1024,27 @@ case "$cmd" in
         if [[ -n "$RELEASE_SESSION" && "$AGENT_NAME" == codex ]]; then
             VERIFY_ARGS+=(--session "$RELEASE_SESSION")
         fi
+        # Fail closed: a release must never cut a turn short.
+        while read -r PANE_ID; do
+            PANE_OUT="$(mtmux capture-pane -p -t "$PANE_ID" 2>/dev/null)" \
+                || { echo "ERROR: cannot read pane $PANE_ID of '$TARGET'; not released" >&2; exit 4; }
+            if [[ -n "${AGENT_WORKING_PATTERN:-}" ]] && grep -qE "$AGENT_WORKING_PATTERN" <<<"$PANE_OUT" \
+                || mesh_pane_approval_pending "$PANE_OUT"; then
+                echo "ERROR: target '$TARGET' is busy; not released. Retry once the turn ends." >&2
+                exit 4
+            fi
+        done < <(mtmux list-panes -s -t "$TARGET" -F '#{pane_id}')
+        if [[ "$AGENT_NAME" == codex ]]; then
+            TURN_ARGS=()
+            for ((i = 0; i < ${#VERIFY_ARGS[@]}; i++)); do
+                if [[ "${VERIFY_ARGS[$i]}" == --session ]]; then
+                    TURN_ARGS+=(--session "${VERIFY_ARGS[$((i + 1))]}")
+                fi
+            done
+            [[ ${#TURN_ARGS[@]} -gt 0 ]] \
+                || { echo "ERROR: cannot tell which Codex thread '$TARGET' runs; pass its SESSION_ID" >&2; exit 4; }
+            python3 "$SCRIPT_DIR/codex-thread-guard.py" turn-check "${TURN_ARGS[@]}" || exit $?
+        fi
         rm -f "$(mesh_pending_title_file "$TARGET")"
         mtmux kill-session -t "$TARGET"
         python3 "$SCRIPT_DIR/codex-thread-guard.py" release-verify "${VERIFY_ARGS[@]}" || exit $?

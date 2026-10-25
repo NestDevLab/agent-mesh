@@ -128,7 +128,7 @@ test("targeted send resumes the exact session then preserves task correlation", 
   });
   assert.deepEqual(result, { ok: true, reply: "provider result" });
   const resume = calls.find((call) => call.command.endsWith("agent-session.sh") && call.args.includes("resume"));
-  assert.deepEqual(resume.args, ["--agent", "codex", "resume", "session-new", "--allow-desktop-thread"]);
+  assert.deepEqual(resume.args, ["--agent", "codex", "resume", "session-new"]);
   assert.equal(resume.options.env.MESH_TMUX_SOCKET, "mesh-session-test");
   assert.equal(resume.options.env.MESH_REPLACE_UNREADY_SESSION, "1");
   assert.equal(resume.options.env.MESH_STRICT_READY, "1");
@@ -171,6 +171,50 @@ test("active Codex sessions use the native queue collector without a second writ
   assert.ok(calls.some((call) => call.command === process.execPath && call.args.includes("task-native")));
   assert.equal(calls.some((call) => call.args.includes("resume")), false);
   assert.equal(calls.some((call) => call.command.endsWith("agent-send.sh")), false);
+});
+
+test("Desktop-visible Codex sessions use the native queue instead of a tmux resume", async () => {
+  for (const native of [true, false]) {
+    const { instance, calls } = provider({
+      ...(native ? { agentNativeCallPath: "/bridge/agent-native-call.mjs" } : {}),
+      run: async (command, args) => {
+        calls.push({ command, args: [...args] });
+        if (command.endsWith("agent-session.sh") && args.includes("inspect")) {
+          return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+        }
+        if (command.endsWith("agent-session.sh") && args.includes("writer-status")) {
+          return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [] }), stderr: "" };
+        }
+        if (command.endsWith("agent-session.sh") && args.includes("resume")) {
+          return { code: 6, stdout: "", stderr: "ERROR: visible in Codex Desktop and idle" };
+        }
+        if (command === process.execPath && args[0] === "/bridge/agent-native-call.mjs") {
+          return { code: 0, stdout: "native result\n", stderr: "" };
+        }
+        throw new Error(`Unexpected command: ${command} ${args.join(" ")}`);
+      }
+    });
+    const result = await instance.send({
+      sessionId: "session-new",
+      workspaceId: "workspace.allowed",
+      message: "Return a result.",
+      messageId: "message-desktop",
+      contextId: "context-desktop",
+      taskId: "task-desktop",
+      correlationId: "task-desktop",
+      idempotencyKey: "idem-desktop"
+    });
+    const resume = calls.find((call) => call.args.includes("resume"));
+    assert.equal(resume.args.includes("--allow-desktop-thread"), false);
+    assert.equal(calls.some((call) => call.command.endsWith("agent-send.sh")), false);
+    if (native) {
+      assert.deepEqual(result, { ok: true, reply: "native result" });
+      assert.ok(calls.some((call) => call.command === process.execPath && call.args.includes("task-desktop")));
+    } else {
+      assert.equal(result.ok, false);
+      assert.match(result.error, /visible in Codex Desktop/);
+    }
+  }
 });
 
 test("active Codex result collection failures remain delivered with typed result errors", async () => {

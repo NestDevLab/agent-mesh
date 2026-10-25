@@ -251,7 +251,9 @@ and Claude. For Codex it also refuses archived threads (naming `codex unarchive`
 threads a Codex app-server already serves (use `codex queue`), and idle threads
 listed in Codex Desktop unless `--allow-desktop-thread` is passed; release such a
 target with `agent-session.sh --agent codex release <TMUX_NAME> [SESSION_ID]`, which
-kills it and verifies that its processes and CLI writer are gone. Writer status
+kills it and verifies that its processes and CLI writer are gone; it refuses
+before killing anything while the pane is busy or the thread's turn is open. The
+gateway sends to a Desktop-listed thread through the native Codex queue. Writer status
 reports each Codex writer's `role` (`app-server` or `cli`). For an active Codex session, `agent-native-call.mjs` uses Codex's
 native queue and waits for the uniquely marked turn in the transcript. Claude
 ownership combines the documented `claude agents --json` inventory with process

@@ -177,6 +177,50 @@ def pane_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+TURN_END = {"task_complete", "turn_aborted"}
+TAIL_BYTES = 4 * 1024 * 1024
+
+
+def turn_state(session: str) -> str:
+    """'idle', 'active', or 'unknown' from the rollout tail; unknown never counts as idle."""
+    files = [p for p in rollout_files(codex_home() / "sessions", session, True) if p.name.endswith(".jsonl")]
+    if len(files) != 1:
+        return "unknown"
+    try:
+        with files[0].open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - TAIL_BYTES))
+            lines = handle.read().decode("utf-8", errors="replace").splitlines()
+    except OSError:
+        return "unknown"
+    if size > TAIL_BYTES:
+        lines = lines[1:]
+    state = "idle"
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        kind = (record.get("payload") or {}).get("type") if record.get("type") == "event_msg" else None
+        if kind == "task_started":
+            state = "active"
+        elif kind in TURN_END:
+            state = "idle"
+    return state
+
+
+def turn_check(args: argparse.Namespace) -> int:
+    status = 0
+    for session in args.session:
+        state = turn_state(session)
+        if state != "idle":
+            reason = "has a turn in progress" if state == "active" else "has no single readable rollout"
+            print(f"ERROR: Codex thread '{session}' {reason}; refusing to release before the turn ends",
+                  file=sys.stderr)
+            status = EXIT_WRITER
+    return status
+
+
 def alive(pid: int) -> bool:
     return (proc_root() / str(pid)).is_dir()
 
@@ -225,12 +269,16 @@ def main() -> int:
     verify.add_argument("--pid", type=int, action="append", default=[])
     verify.add_argument("--session", action="append", default=[])
     verify.add_argument("--timeout", type=float, default=10)
+    turns = sub.add_parser("turn-check")
+    turns.add_argument("--session", action="append", required=True)
     args = parser.parse_args()
     sessions = getattr(args, "session", None) or []
     for value in [sessions] if isinstance(sessions, str) else sessions:
         if not SAFE_ID.fullmatch(value):
             parser.error("--session contains unsafe characters")
-    return {"resume-check": resume_check, "pane-scan": pane_scan, "release-verify": release_verify}[args.command](args)
+    commands = {"resume-check": resume_check, "pane-scan": pane_scan, "release-verify": release_verify,
+                "turn-check": turn_check}
+    return commands[args.command](args)
 
 
 if __name__ == "__main__":
