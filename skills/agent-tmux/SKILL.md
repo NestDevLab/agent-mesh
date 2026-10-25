@@ -125,6 +125,10 @@ TARGET=$($BIN/agent-spawn.sh --agent codex \
 # Resume an on-disk session by ID:
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
+# Release a resumed target right after use: kills it and verifies its processes
+# and CLI writer are gone, so Codex Desktop can drive the thread again.
+$BIN/agent-session.sh --agent codex release "$TARGET" <SESSION_ID>
+
 # List configured agents + live sessions:
 $BIN/agent-session.sh --agent codex list
 $BIN/agent-session.sh --agent codex list --json --limit 25
@@ -524,6 +528,21 @@ mobile over the remote-control tunnel. No env var to remember.
 
 For already-created sessions only, DB rename is a fallback with a Desktop restart
 caveat; see `docs/codex-session-titles.md`.
+
+### Codex threads that belong to Desktop
+
+A tmux CLI attached to a thread keeps Codex Desktop from driving it until the
+tmux session ends. `resume` checks before creating any tmux state:
+
+| Thread state | `resume` result | Do instead |
+| --- | --- | --- |
+| Archived | exit 3, names `codex unarchive <id>` | unarchive, then re-check writers |
+| Loaded by a Codex app-server (`writer-status` role `app-server`) | exit 4 | `codex queue --thread <id> --message <text>` |
+| Idle, but listed in Desktop (Desktop source, pinned, or filed) | exit 6 | `codex queue`; or `--allow-desktop-thread`, then `release` right after use |
+
+`AGENT_DESKTOP_THREAD_SOURCES` in `codex.conf` sets which thread sources count as
+Desktop-listed. If the Codex state database can't be read, `resume` warns and
+continues; the writer check still applies.
 
 ## Cross-agent delegation
 

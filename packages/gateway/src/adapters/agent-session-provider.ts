@@ -504,7 +504,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       };
     }
 
-    const resumed = await this.command(["--agent", this.provider, "resume", input.sessionId], true);
+    // gateway callers address an exact session, so they opt out of the bridge's Desktop-thread guard
+    const resumeArgs = this.provider === "codex"
+      ? ["--agent", "codex", "resume", input.sessionId, "--allow-desktop-thread"]
+      : ["--agent", this.provider, "resume", input.sessionId];
+    const resumed = await this.command(resumeArgs, true);
     if (resumed.code !== 0) {
       return {
         ok: false,

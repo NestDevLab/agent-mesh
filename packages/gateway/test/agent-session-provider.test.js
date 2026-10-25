@@ -128,7 +128,7 @@ test("targeted send resumes the exact session then preserves task correlation", 
   });
   assert.deepEqual(result, { ok: true, reply: "provider result" });
   const resume = calls.find((call) => call.command.endsWith("agent-session.sh") && call.args.includes("resume"));
-  assert.deepEqual(resume.args, ["--agent", "codex", "resume", "session-new"]);
+  assert.deepEqual(resume.args, ["--agent", "codex", "resume", "session-new", "--allow-desktop-thread"]);
   assert.equal(resume.options.env.MESH_TMUX_SOCKET, "mesh-session-test");
   assert.equal(resume.options.env.MESH_REPLACE_UNREADY_SESSION, "1");
   assert.equal(resume.options.env.MESH_STRICT_READY, "1");

@@ -247,7 +247,12 @@ whose names do not contain a supported UUID shape are returned as
 aborts the sweep before the event log changes.
 
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
-and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's
+and Claude. For Codex it also refuses archived threads (naming `codex unarchive`),
+threads a Codex app-server already serves (use `codex queue`), and idle threads
+listed in Codex Desktop unless `--allow-desktop-thread` is passed; release such a
+target with `agent-session.sh --agent codex release <TMUX_NAME> [SESSION_ID]`, which
+kills it and verifies that its processes and CLI writer are gone. Writer status
+reports each Codex writer's `role` (`app-server` or `cli`). For an active Codex session, `agent-native-call.mjs` uses Codex's
 native queue and waits for the uniquely marked turn in the transcript. Claude
 ownership combines the documented `claude agents --json` inventory with process
 verification, including Desktop owners whose argv has no `--resume` flag. An

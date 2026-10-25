@@ -141,7 +141,9 @@ function detectCodexWriters(id) {
     } catch {
       continue;
     }
-    if (ownsLock) writers.push({ pid: Number(entry.name), kind: "codex" });
+    if (ownsLock) {
+      writers.push({ pid: Number(entry.name), kind: "codex", role: argv.includes("app-server") ? "app-server" : "cli" });
+    }
   }
   return writers.sort((left, right) => left.pid - right.pid);
 }

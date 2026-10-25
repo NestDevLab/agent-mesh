@@ -86,7 +86,7 @@ test("Codex writer status identifies the process that owns the thread lock", asy
   assert.deepEqual(JSON.parse(status.stdout), {
     agent: "codex",
     sessionId: id,
-    writers: [{ pid: 4242, kind: "codex" }]
+    writers: [{ pid: 4242, kind: "codex", role: "app-server" }]
   });
 
   const occupied = await runWriter(home, ["--agent", "codex", "--session", id, "--require-free"], {
