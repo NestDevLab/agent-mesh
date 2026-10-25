@@ -178,47 +178,83 @@ def pane_scan(args: argparse.Namespace) -> int:
 
 
 TURN_END = {"task_complete", "turn_aborted"}
-TAIL_BYTES = 4 * 1024 * 1024
 
 
-def turn_state(session: str) -> str:
-    """'idle', 'active', or 'unknown' from the rollout tail; unknown never counts as idle."""
+def turn_state(session: str) -> tuple[str, tuple | None]:
+    """('idle'|'active'|'unknown', file fingerprint) from a full parse; only a proven idle counts."""
     files = [p for p in rollout_files(codex_home() / "sessions", session, True) if p.name.endswith(".jsonl")]
     if len(files) != 1:
-        return "unknown"
-    try:
-        with files[0].open("rb") as handle:
-            size = handle.seek(0, os.SEEK_END)
-            handle.seek(max(0, size - TAIL_BYTES))
-            lines = handle.read().decode("utf-8", errors="replace").splitlines()
-    except OSError:
-        return "unknown"
-    if size > TAIL_BYTES:
-        lines = lines[1:]
+        return "unknown", None
     state = "idle"
-    for line in lines:
-        try:
-            record = json.loads(line)
-        except ValueError:
-            continue
-        kind = (record.get("payload") or {}).get("type") if record.get("type") == "event_msg" else None
-        if kind == "task_started":
-            state = "active"
-        elif kind in TURN_END:
-            state = "idle"
-    return state
+    try:
+        stat = files[0].stat()
+        with files[0].open("rb") as handle:
+            for raw in handle:
+                if not raw.endswith(b"\n"):
+                    return "unknown", None
+                if not raw.strip():
+                    continue
+                try:
+                    record = json.loads(raw)
+                except ValueError:
+                    return "unknown", None
+                if not isinstance(record, dict):
+                    return "unknown", None
+                payload = record.get("payload")
+                kind = payload.get("type") if record.get("type") == "event_msg" and isinstance(payload, dict) else None
+                if kind == "task_started":
+                    state = "active"
+                elif kind in TURN_END:
+                    state = "idle"
+    except OSError:
+        return "unknown", None
+    return state, (stat.st_size, stat.st_mtime_ns, stat.st_ino)
 
 
-def turn_check(args: argparse.Namespace) -> int:
-    status = 0
-    for session in args.session:
-        state = turn_state(session)
-        if state != "idle":
-            reason = "has a turn in progress" if state == "active" else "has no single readable rollout"
-            print(f"ERROR: Codex thread '{session}' {reason}; refusing to release before the turn ends",
-                  file=sys.stderr)
-            status = EXIT_WRITER
-    return status
+def outside_writers(session: str, owned: set[int]) -> str | None:
+    """Why turns could reach the thread outside the target, or None when only the target writes."""
+    try:
+        current = writers(session)
+    except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError) as error:
+        return f"cannot inspect writers ({error})"
+    for writer in current:
+        if writer.get("role") == "app-server":
+            return f"it is served by a Codex app-server (pid {writer['pid']}), which can start turns outside tmux"
+        if writer["pid"] not in owned:
+            return f"another process (pid {writer['pid']}) writes it"
+    return None
+
+
+def quiesce(args: argparse.Namespace) -> int:
+    owned = set(args.target_pid)
+
+    def snapshot() -> dict | None:
+        result = {}
+        for session in args.session:
+            state, fingerprint = turn_state(session)
+            if state != "idle":
+                reason = "has a turn in progress" if state == "active" else "has no complete, readable rollout"
+                print(f"ERROR: Codex thread '{session}' {reason}; not released", file=sys.stderr)
+                return None
+            outside = outside_writers(session, owned)
+            if outside:
+                print(f"ERROR: Codex thread '{session}' can't be quiesced: {outside}; not released",
+                      file=sys.stderr)
+                return None
+            result[session] = fingerprint
+        return result
+
+    before = snapshot()
+    if before is None:
+        return EXIT_WRITER
+    time.sleep(args.settle)
+    after = snapshot()
+    if after is None:
+        return EXIT_WRITER
+    if after != before:
+        print("ERROR: a rollout changed while target input was blocked; not released", file=sys.stderr)
+        return EXIT_WRITER
+    return 0
 
 
 def alive(pid: int) -> bool:
@@ -269,15 +305,17 @@ def main() -> int:
     verify.add_argument("--pid", type=int, action="append", default=[])
     verify.add_argument("--session", action="append", default=[])
     verify.add_argument("--timeout", type=float, default=10)
-    turns = sub.add_parser("turn-check")
-    turns.add_argument("--session", action="append", required=True)
+    hold = sub.add_parser("quiesce")
+    hold.add_argument("--session", action="append", required=True)
+    hold.add_argument("--target-pid", type=int, action="append", default=[])
+    hold.add_argument("--settle", type=float, default=2)
     args = parser.parse_args()
     sessions = getattr(args, "session", None) or []
     for value in [sessions] if isinstance(sessions, str) else sessions:
         if not SAFE_ID.fullmatch(value):
             parser.error("--session contains unsafe characters")
     commands = {"resume-check": resume_check, "pane-scan": pane_scan, "release-verify": release_verify,
-                "turn-check": turn_check}
+                "quiesce": quiesce}
     return commands[args.command](args)
 
 

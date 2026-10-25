@@ -251,8 +251,10 @@ and Claude. For Codex it also refuses archived threads (naming `codex unarchive`
 threads a Codex app-server already serves (use `codex queue`), and idle threads
 listed in Codex Desktop unless `--allow-desktop-thread` is passed; release such a
 target with `agent-session.sh --agent codex release <TMUX_NAME> [SESSION_ID]`, which
-kills it and verifies that its processes and CLI writer are gone; it refuses
-before killing anything while the pane is busy or the thread's turn is open. The
+blocks pane input, proves from the whole rollout that the thread stays idle for
+`MESH_RELEASE_SETTLE_SECONDS` (default 2) with no writer outside the target, then
+kills it and verifies that its processes and CLI writer are gone. A busy pane, an
+open, corrupt or unreadable turn, or an app-server writer refuses before any kill. The
 gateway sends to a Desktop-listed thread through the native Codex queue. Writer status
 reports each Codex writer's `role` (`app-server` or `cli`). For an active Codex session, `agent-native-call.mjs` uses Codex's
 native queue and waits for the uniquely marked turn in the transcript. Claude

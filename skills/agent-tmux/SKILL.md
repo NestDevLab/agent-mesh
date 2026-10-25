@@ -125,9 +125,11 @@ TARGET=$($BIN/agent-spawn.sh --agent codex \
 # Resume an on-disk session by ID:
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
-# Release a resumed target right after use: kills it and verifies its processes
-# and CLI writer are gone, so Codex Desktop can drive the thread again. It refuses
-# (exit 4, nothing killed) while the pane is busy or the thread's turn is open.
+# Release a resumed target right after use. It blocks pane input, proves the
+# thread stays idle with no writer outside the target, kills it and verifies its
+# CLI writer is gone. Anything unproven refuses (exit 4, nothing killed, input
+# restored): a busy pane, an open or unreadable turn, or an app-server writer,
+# which can start turns outside tmux.
 $BIN/agent-session.sh --agent codex release "$TARGET" <SESSION_ID>
 
 # List configured agents + live sessions:
