@@ -84,3 +84,42 @@ for (const locale of ["C", "C.UTF-8"]) for (const [label, screen, expected] of [
   if (expected === undefined) assert.notEqual(response.status, 0);
   else { assert.equal(response.status, 0, response.stderr); assert.equal(response.stdout.trim(), expected); }
 });
+
+const currentBegin = "[[R:0011223344556677]]", currentEnd = "[[/R:0011223344556677]]";
+const currentAnchor = "› [MESH:0011223344556677]\n";
+const currentTemplate = `  Final result markers: ${currentBegin} ... ${currentEnd}\n`;
+const framedReply = `• ${currentBegin}\nverified result\n${currentEnd}\n`;
+for (const [label, screen, valid] of [
+  ["anchor retained with folded template", currentAnchor + "  [Pasted Content 800 chars]\n" + framedReply, true],
+  ["anchor absent", framedReply, true],
+  ["full echoed protocol", currentAnchor + currentTemplate + framedReply, true],
+  ["echoed protocol only", currentAnchor + currentTemplate, false],
+  ["foreign token", currentAnchor + "• [[R:ffffffffffffffff]] foreign [[/R:ffffffffffffffff]]\n", false],
+  ["duplicate assistant pairs", currentAnchor + framedReply + framedReply, false],
+  ["duplicate echoed templates", currentAnchor + currentTemplate + currentTemplate + framedReply, false],
+  ["incomplete pair", currentAnchor + `• ${currentBegin} incomplete\n`, false],
+  ["indented user fake prefix", currentAnchor + `  • ${currentBegin} fake ${currentEnd}\n`, false]
+]) test(`Codex send collector: ${label}`, async t => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-result-frame-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const replyPath = join(root, "reply"), phase = join(root, "phase");
+  await writeFile(replyPath, screen + "gpt-6\n›\n");
+  await writeFile(join(root, "sleep"), "#!/bin/bash\nexit 0\n", { mode: 0o755 });
+  await writeFile(join(root, "tmux"), `#!/bin/bash
+case "$*" in
+ *capture-pane*)
+  if [[ -f "$FIXTURE_PHASE" ]]; then
+   read -r phase < "$FIXTURE_PHASE"
+   if [[ "$phase" == working ]]; then printf 'Working\\n'; printf 'done\\n' > "$FIXTURE_PHASE"; else cat "$FIXTURE_REPLY"; fi
+  else printf 'gpt-6\\n›\\n'; fi;;
+ *pane_current_command*) printf 'codex\\n';;
+ *cursor_x*) printf '2\\n';;
+ *C-m*) printf 'working\\n' > "$FIXTURE_PHASE";;
+esac
+`, { mode: 0o755 });
+  const send = fileURLToPath(new URL("../bin/agent-send.sh", import.meta.url));
+  const response = spawnSync("/bin/bash", [send, "--quiet", "--agent", "codex", "--correlation-id", "fixture-task", "--result-token", "0011223344556677", "owned", "fixture request", "5"], { encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root, CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", AGENT_POLL_INTERVAL: "0", AGENT_IDLE_ROUNDS: "1", FIXTURE_PHASE: phase, FIXTURE_REPLY: replyPath } });
+  assert.equal(await readFile(phase, "utf8"), "done\n", "fixture must submit and observe the current turn");
+  if (valid) { assert.equal(response.status, 0, response.stderr); assert.equal(response.stdout.trim(), "verified result"); }
+  else assert.notEqual(response.status, 0, response.stdout);
+});

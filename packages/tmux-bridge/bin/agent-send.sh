@@ -329,7 +329,7 @@ collector_stage="scrollback"
 trap 'collector_rc=$?; trap - ERR; echo "COLLECTOR-ERROR: stage=$collector_stage exit=$collector_rc" >&2; exit 67' ERR
 PROMPT_HEAD="$PROMPT_MATCH_HEAD"
 FULL_OUTPUT="$(mtmux capture-pane -t "$TARGET" -p -S - 2>/dev/null || true)"
-if [[ "$AGENT_NAME" == codex && -n "$RESULT_TOKEN" && "$FULL_OUTPUT" != *"$PROTOCOL_ANCHOR"* ]]; then
+if [[ "$AGENT_NAME" == codex && -n "$RESULT_TOKEN" ]]; then
     if RECOVERED="$(mesh_result_codex_anchorless "$RESULT_BEGIN" "$RESULT_END" <<<"$FULL_OUTPUT")"; then
         printf '%s\n' "$RECOVERED"
         exit 0
@@ -348,7 +348,9 @@ if [[ -n "$RESULT_TOKEN" ]]; then
     fi
     # One pair is the protocol template echoed in the prompt. A correlated
     # response contributes a second pair; always keep the last complete pair.
-    if [[ "$BEGIN_COUNT" -ge 2 ]]; then
+    # Codex requires the strict assistant frame above; marker counts alone
+    # cannot distinguish an echoed template from duplicate assistant replies.
+    if [[ "$AGENT_NAME" != codex && "$BEGIN_COUNT" -ge 2 ]]; then
         collector_stage="result_parse"
         RESULT="$(mesh_result_awk -v begin="$RESULT_BEGIN" -v end="$RESULT_END" '
             index($0, begin) {
