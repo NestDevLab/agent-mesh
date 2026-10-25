@@ -125,11 +125,12 @@ TARGET=$($BIN/agent-spawn.sh --agent codex \
 # Resume an on-disk session by ID:
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 
-# Release a resumed target right after use. It blocks pane input, proves the
-# thread stays idle with no writer outside the target, kills it and verifies its
-# CLI writer is gone. Anything unproven refuses (exit 4, nothing killed, input
-# restored): a busy pane, an open or unreadable turn, or an app-server writer,
-# which can start turns outside tmux.
+# Release a resumed target right after use. It blocks pane input first. When
+# only a Codex app-server writes the thread, the turn runs there, so the TUI
+# client closes even mid-turn ("turn continues in app-server"), unless the pane
+# shows an approval prompt or queued input. A standalone CLI writer must stay
+# provably idle (whole rollout, no outside writer) through a short hold.
+# Anything unproven refuses: exit 4, nothing killed, input restored.
 $BIN/agent-session.sh --agent codex release "$TARGET" <SESSION_ID>
 
 # List configured agents + live sessions:

@@ -225,6 +225,19 @@ def outside_writers(session: str, owned: set[int]) -> str | None:
     return None
 
 
+def served(args: argparse.Namespace) -> int:
+    """Exit 0 only when every thread is written solely by a Codex app-server outside the target."""
+    owned = set(args.target_pid)
+    for session in args.session:
+        try:
+            current = writers(session)
+        except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError):
+            return 1
+        if not current or any(w.get("role") != "app-server" or w["pid"] in owned for w in current):
+            return 1
+    return 0
+
+
 def quiesce(args: argparse.Namespace) -> int:
     owned = set(args.target_pid)
 
@@ -286,7 +299,9 @@ def release_verify(args: argparse.Namespace) -> int:
                   + ", ".join(str(w["pid"]) for w in cli) + ")", file=sys.stderr)
             status = EXIT_WRITER
         elif current:
-            print(f"thread {session}: loaded by the Codex app-server; Desktop can drive it")
+            state, _ = turn_state(session)
+            note = "; turn continues in app-server" if state == "active" else ""
+            print(f"thread {session}: loaded by the Codex app-server; Desktop can drive it{note}")
         else:
             print(f"thread {session}: no writer")
     return status
@@ -309,12 +324,16 @@ def main() -> int:
     hold.add_argument("--session", action="append", required=True)
     hold.add_argument("--target-pid", type=int, action="append", default=[])
     hold.add_argument("--settle", type=float, default=2)
+    serve = sub.add_parser("served")
+    serve.add_argument("--session", action="append", required=True)
+    serve.add_argument("--target-pid", type=int, action="append", default=[])
     args = parser.parse_args()
     sessions = getattr(args, "session", None) or []
     for value in [sessions] if isinstance(sessions, str) else sessions:
         if not SAFE_ID.fullmatch(value):
             parser.error("--session contains unsafe characters")
     commands = {"resume-check": resume_check, "pane-scan": pane_scan, "release-verify": release_verify,
+                "served": served,
                 "quiesce": quiesce}
     return commands[args.command](args)
 

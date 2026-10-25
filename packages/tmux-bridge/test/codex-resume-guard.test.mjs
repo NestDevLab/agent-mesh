@@ -217,7 +217,7 @@ test("release refuses before any kill unless the turn is proven complete", async
     ["partial last line", ["task_started", "task_complete"], { tail: '{"type":"event_msg"' }, {}, /complete, readable rollout/],
     ["no rollout", null, {}, {}, /complete, readable rollout/],
     ["busy pane", ["task_started", "task_complete"], {}, { banner: "Working (esc to interrupt)" }, /busy/],
-    ["app-server writer", ["task_started", "task_complete"], {}, { argv: ["app-server"] }, /can't be quiesced/],
+    ["app-server writer inside the target", ["task_started", "task_complete"], {}, { argv: ["app-server"] }, /can't be quiesced/],
   ];
   for (const [index, [name, events, rollout, holder, expected]] of cases.entries()) {
     const f = await fixture(`7600000${index}-0000-4000-8000-000000000006`);
@@ -256,14 +256,44 @@ test("a turn that starts outside tmux during the hold aborts the release", async
   await writeTurn(f, ["task_started", "task_complete"]);
   const target = `mesh-resume-guard-gap-file-${process.pid}`;
   await holdLock(f, target);
-  const pending = runAsync(f, ["--agent", "codex", "release", target], { MESH_RELEASE_SETTLE_SECONDS: "1.5" });
+  const pending = runAsync(f, ["--agent", "codex", "release", target], { MESH_RELEASE_SETTLE_SECONDS: "2" });
   await waitInputOff(target);
+  // land the turn after the first idle proof, inside the hold
+  await new Promise((r) => setTimeout(r, 800));
   await appendFile(rolloutPath(f), JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }) + "\n");
+  const started = Date.now();
   const refused = await pending;
   assert.equal(refused.code, 4, refused.stderr);
+  assert.match(refused.stderr, /turn in progress|rollout changed/);
+  assert.ok(Date.now() - started > 300, "release refused before the hold ended");
   assert.notEqual(tmux("has-session", "-t", target), null);
   assert.equal(tmux("display-message", "-p", "-t", target, "#{pane_input_off}")?.trim(), "0");
   tmux("kill-session", "-t", target);
+});
+
+test("a TUI client of an app-server-served thread is released while its turn runs", async () => {
+  const cases = [
+    ["active turn", "", 0, /turn continues in app-server/],
+    ["approval prompt", "Allow command?\nPress enter to confirm", 4, /approval prompt or queued input/],
+    ["queued follow-up", "Queued follow-up inputs\n  next step", 4, /approval prompt or queued input/],
+  ];
+  for (const [index, [name, banner, code, expected]] of cases.entries()) {
+    const f = await fixture(`7a00000${index}-0000-4000-8000-00000000000a`);
+    await writeTurn(f, ["task_started"]);
+    const server = `mesh-resume-guard-server-${index}-${process.pid}`;
+    const client = `mesh-resume-guard-client-${index}-${process.pid}`;
+    await holdLock(f, server, { argv: ["app-server"] });
+    assert.notEqual(tmux("new-session", "-d", "-s", client, "bash", "-c", `printf '%b\\n' '${banner}'; exec sleep 60`), null);
+    const result = await run(f, ["--agent", "codex", "release", client, f.id], SETTLE);
+    assert.equal(result.code, code, `${name}: ${result.stderr}`);
+    const out = code === 0 ? result.stdout : result.stderr;
+    assert.match(out, expected, name);
+    assert.equal(tmux("has-session", "-t", client) === null, code === 0, `${name}: client state`);
+    assert.notEqual(tmux("has-session", "-t", server), null, `${name}: app-server fixture was touched`);
+    if (code !== 0) assert.equal(tmux("display-message", "-p", "-t", client, "#{pane_input_off}")?.trim(), "0");
+    tmux("kill-session", "-t", client);
+    tmux("kill-session", "-t", server);
+  }
 });
 
 test("release of a Codex target with no known thread asks for the session id", async () => {
