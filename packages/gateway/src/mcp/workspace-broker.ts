@@ -50,8 +50,16 @@ export async function startWorkspaceBroker(config: WorkspaceBrokerConfig) {
     const cached = children.get(digest);
     if (cached !== undefined) { await cached.ready; return cached.socket; }
     const root = resolve(config.stateRoot, digest);
+    // Linux sockaddr_un reserves one byte for NUL; reject before creating state.
+    const socket = resolve(root, "control/s");
+    validateWorkerRoute({ ...config, socketPath: socket });
     await mkdir(root, { recursive: true, mode: 0o700 }); privateDirectory(root);
     for (const name of ["home", "tmp", "control"]) { await mkdir(resolve(root, name), { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; }); privateDirectory(resolve(root, name)); }
+    // Do not create a second writer beside a retained endpoint from an older build.
+    for (const endpoint of [socket, resolve(root, "control/worker.sock")]) {
+      try { await lstat(endpoint); throw new Error("Existing worker socket requires owner inspection; it is not reused."); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    }
     const marker = resolve(root, "home-ready");
     try { await readFile(marker); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -59,9 +67,6 @@ export async function startWorkspaceBroker(config: WorkspaceBrokerConfig) {
       for (const name of await readdir(config.homeTemplate)) await cp(resolve(config.homeTemplate, name), resolve(root, "home", name), { recursive: true, force: false, errorOnExist: true });
       const { writeFile } = await import("node:fs/promises"); await writeFile(marker, "ready\n", { mode: 0o600, flag: "wx" });
     }
-    const socket = resolve(root, "control/worker.sock");
-    try { await lstat(socket); throw new Error("Existing worker socket requires owner inspection; it is not reused."); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     // A persisted socket is never removed merely because a connection failed.
     // A clean broker shutdown removes it only after its own child has exited.
     const childConfig = { ...config, socketPath: socket, repository: destination, mountPath: "/workspace", home: resolve(root, "home"), temporary: resolve(root, "tmp"), control: resolve(root, "control") };

@@ -209,3 +209,11 @@ when their broker disappears. After a crash, an existing socket requires owner i
 never silently adopted, replaced or removed. Cancelling a task is not process termination. Stop the
 specific broker to revoke in-flight workers. Durable task audit remains in the protected gateway
 journal, independently of the chosen directory and worker recovery files.
+
+Internal broker children keep their socket at `control/s` inside the existing
+private destination state directory. The destination digest and session bindings
+are unchanged. Explicit and derived socket addresses must be normalized absolute
+paths of at most 107 UTF-8 bytes (including separators, excluding the terminating
+NUL). An overlong derived address fails before creating child state; there is no
+alternate directory or transport fallback. Retained compact or legacy
+`control/worker.sock` endpoints require owner inspection before another launch.
