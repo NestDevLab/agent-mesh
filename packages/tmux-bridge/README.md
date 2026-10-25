@@ -247,7 +247,20 @@ whose names do not contain a supported UUID shape are returned as
 aborts the sweep before the event log changes.
 
 `agent-session.sh ... resume` refuses to start a second writer for both Codex
-and Claude. For an active Codex session, `agent-native-call.mjs` uses Codex's
+and Claude. For Codex it also refuses archived threads (naming `codex unarchive`),
+threads a Codex app-server already serves (use `codex queue`), and idle threads
+listed in Codex Desktop unless `--allow-desktop-thread` is passed; release such a
+target with `agent-session.sh --agent codex release <TMUX_NAME> [SESSION_ID]`, which
+blocks pane input first. If only a Codex app-server writes the thread, the turn
+runs in the app-server and survives the client, so the TUI is closed even
+mid-turn unless the pane shows an approval prompt or queued input
+(`AGENT_PENDING_INPUT_PATTERN`). A standalone CLI writer runs the turn itself:
+release then proves from the whole rollout that the thread stays idle for
+`MESH_RELEASE_SETTLE_SECONDS` (default 2) with no writer outside the target. It
+then kills the target and verifies its processes and CLI writer are gone. Anything
+unproven refuses before any kill. The
+gateway sends to a Desktop-listed thread through the native Codex queue. Writer status
+reports each Codex writer's `role`: `app-server` only when the parsed subcommand is `app-server`, otherwise `cli`. `release` re-reads the writers after blocking input and counts one as external only when its live process ancestry doesn't reach a target pane. For an active Codex session, `agent-native-call.mjs` uses Codex's
 native queue and waits for the uniquely marked turn in the transcript. Claude
 ownership combines the documented `claude agents --json` inventory with process
 verification, including Desktop owners whose argv has no `--resume` flag. An

@@ -2,7 +2,7 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] [--allow-desktop-thread] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
 #   agent-session.sh --agent <NAME> list [--json] [--limit <COUNT>]
@@ -14,6 +14,7 @@
 #   agent-session.sh --agent codex target-session <TMUX_NAME>
 #   agent-session.sh --agent codex socket-status <CWD>
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
+#   agent-session.sh --agent <NAME> release <TMUX_NAME> [SESSION_ID]
 #
 # --agent defaults to "codex". Config files: ../agents/<name>.conf
 # Prints the tmux target name on stdout so callers can pipe into agent-send.sh.
@@ -58,6 +59,7 @@ SESSION_PROFILE=""
 LIMEN_CONFIG=""
 FORCE_CAPACITY="false"
 GOVERNED_CHILD="false"
+ALLOW_DESKTOP_THREAD="false"
 ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
@@ -99,6 +101,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --governed-child)
             GOVERNED_CHILD="true"
+            shift
+            ;;
+        --allow-desktop-thread)
+            ALLOW_DESKTOP_THREAD="true"
             shift
             ;;
         --approval-policy)
@@ -447,6 +453,16 @@ _require_resumed_ready() {
     return 124
 }
 
+# Codex only: archived threads, threads an app-server already serves, and idle
+# Desktop-visible threads must not get a tmux CLI attached to them.
+_codex_resume_guard() {
+    local session_id="$1" target="$2"
+    [[ "$AGENT_NAME" == "codex" ]] || return 0
+    local guard=(python3 "$SCRIPT_DIR/codex-thread-guard.py" resume-check --session "$session_id" --target "$target")
+    [[ "$ALLOW_DESKTOP_THREAD" == "true" ]] && guard+=(--allow-desktop-thread)
+    AGENT_DESKTOP_THREAD_SOURCES="${AGENT_DESKTOP_THREAD_SOURCES:-vscode}" "${guard[@]}"
+}
+
 _print_attach_hint() {
     echo "ATTACH: tmux -L mesh attach -t $TARGET" >&2
 }
@@ -570,6 +586,11 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
         echo "$TARGET"
         exit 0
     fi
+    # Checked here too: a refusal inside the governed child is lost behind the dispatcher.
+    if [[ "$cmd" == "resume" ]]; then
+        _codex_resume_guard "$SESSION_ID" "$TARGET" || exit $?
+        export MESH_RESUME_GUARDED="$SESSION_ID"
+    fi
     LIMEN_TIMEOUT_SECONDS="${LIMEN_ROUTE_TIMEOUT_SECONDS:-5}"
     [[ "$LIMEN_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
         || { echo "ERROR: LIMEN_ROUTE_TIMEOUT_SECONDS must be a positive integer" >&2; exit 1; }
@@ -582,6 +603,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
     CHILD=("$0" --governed-child --agent "$AGENT_NAME")
     [[ -n "$SESSION_TITLE" ]] && CHILD+=(--title "$SESSION_TITLE")
     [[ -n "$SESSION_APPROVAL_POLICY" ]] && CHILD+=(--approval-policy "$SESSION_APPROVAL_POLICY")
+    [[ "$ALLOW_DESKTOP_THREAD" == "true" ]] && CHILD+=(--allow-desktop-thread)
     CHILD+=("${CHILD_SESSION_ARGS[@]}")
     [[ ${#PASSTHRU[@]} -gt 0 ]] && CHILD+=(-- "${PASSTHRU[@]}")
     AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PROCESS_PATTERN:-^$AGENT_NAME$}"
@@ -655,6 +677,9 @@ case "$cmd" in
             mtmux kill-session -t "$TARGET"
         fi
 
+        if [[ "$GOVERNED_CHILD" != "true" || "${MESH_RESUME_GUARDED:-}" != "$SESSION_ID" ]]; then
+            _codex_resume_guard "$SESSION_ID" "$TARGET" || exit $?
+        fi
         if [[ "${AGENT_REQUIRE_FREE_SESSION_WRITER:-false}" == "true" ]]; then
             node "$SCRIPT_DIR/session-writer-status.mjs" \
                 --agent "$AGENT_NAME" --session "$SESSION_ID" --require-free
@@ -970,6 +995,117 @@ case "$cmd" in
         [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_NAME required" >&2; exit 1; }
         rm -f "$(mesh_pending_title_file "$TARGET")"
         mtmux kill-session -t "$TARGET" && echo "Killed $TARGET"
+        ;;
+
+    release)
+        TARGET="${1:-}"
+        RELEASE_SESSION="${2:-}"
+        [[ "$TARGET" =~ ^[A-Za-z0-9_.-]+$ && $# -le 2 ]] \
+            || { echo "ERROR: release requires <TMUX_NAME> [SESSION_ID]" >&2; exit 1; }
+        [[ -z "$RELEASE_SESSION" || "$RELEASE_SESSION" =~ ^[A-Za-z0-9_-]+$ ]] \
+            || { echo "ERROR: SESSION_ID contains unsafe characters" >&2; exit 1; }
+        mtmux has-session -t "$TARGET" 2>/dev/null \
+            || { echo "ERROR: target '$TARGET' not found" >&2; exit 3; }
+        SCAN_ARGS=()
+        PANE_IDS=()
+        while read -r PANE_ID PANE_PID; do
+            PANE_IDS+=("$PANE_ID")
+            if [[ "$PANE_PID" =~ ^[1-9][0-9]*$ ]]; then
+                SCAN_ARGS+=(--pane-pid "$PANE_PID")
+            fi
+        done < <(mtmux list-panes -s -t "$TARGET" -F '#{pane_id} #{pane_pid}')
+        VERIFY_ARGS=(--timeout "${MESH_RELEASE_TIMEOUT_SECONDS:-10}")
+        QUIESCE_ARGS=(--settle "${MESH_RELEASE_SETTLE_SECONDS:-2}" "${SCAN_ARGS[@]}")
+        if [[ ${#SCAN_ARGS[@]} -gt 0 ]]; then
+            SCAN_JSON="$(python3 "$SCRIPT_DIR/codex-thread-guard.py" pane-scan "${SCAN_ARGS[@]}")"
+            while read -r FIELD VALUE; do
+                if [[ "$FIELD" == pid ]]; then
+                    VERIFY_ARGS+=(--pid "$VALUE")
+                elif [[ "$FIELD" == thread && "$AGENT_NAME" == codex && "$VALUE" != "$RELEASE_SESSION" ]]; then
+                    VERIFY_ARGS+=(--session "$VALUE")
+                    QUIESCE_ARGS+=(--session "$VALUE")
+                fi
+            done < <(python3 -c 'import json,sys; d=json.load(sys.stdin); [print("pid",p) for p in d["pids"]]; [print("thread",t) for t in d["threads"]]' <<<"$SCAN_JSON")
+        fi
+        if [[ -n "$RELEASE_SESSION" && "$AGENT_NAME" == codex ]]; then
+            VERIFY_ARGS+=(--session "$RELEASE_SESSION")
+            QUIESCE_ARGS+=(--session "$RELEASE_SESSION")
+        fi
+        if [[ "$AGENT_NAME" == codex && " ${QUIESCE_ARGS[*]} " != *" --session "* ]]; then
+            echo "ERROR: cannot tell which Codex thread '$TARGET' runs; pass its SESSION_ID" >&2
+            exit 4
+        fi
+        # Fail closed and never cut a turn short: block pane input, then either
+        # prove the thread stays idle with no writer outside the target, or, when
+        # only a Codex app-server writes it (the turn runs there, not in this
+        # client), require no approval prompt or queued input in the pane.
+        _release_refuse() {
+            local pane
+            for pane in "${PANE_IDS[@]}"; do mtmux select-pane -e -t "$pane" 2>/dev/null || true; done
+            echo "ERROR: $1; '$TARGET' not released" >&2
+            exit 4
+        }
+        _release_busy() {
+            local pane out
+            for pane in "${PANE_IDS[@]}"; do
+                out="$(mtmux capture-pane -p -t "$pane" 2>/dev/null)" || return 0
+                if [[ -n "${AGENT_WORKING_PATTERN:-}" ]] && grep -qE "$AGENT_WORKING_PATTERN" <<<"$out" \
+                    || mesh_pane_approval_pending "$out"; then
+                    return 0
+                fi
+            done
+            return 1
+        }
+        _release_pending_input() {
+            local pane out
+            for pane in "${PANE_IDS[@]}"; do
+                out="$(mtmux capture-pane -p -t "$pane" 2>/dev/null)" || return 0
+                if mesh_pane_approval_pending "$out" \
+                    || { [[ -n "${AGENT_PENDING_INPUT_PATTERN:-}" ]] && grep -qE "$AGENT_PENDING_INPUT_PATTERN" <<<"$out"; }; then
+                    return 0
+                fi
+            done
+            return 1
+        }
+        if _release_pending_input; then _release_refuse "the pane has an approval prompt or queued input"; fi
+        for PANE_ID in "${PANE_IDS[@]}"; do
+            mtmux select-pane -d -t "$PANE_ID" 2>/dev/null || _release_refuse "cannot block input to pane $PANE_ID"
+            [[ "$(mtmux display-message -p -t "$PANE_ID" '#{pane_input_off}')" == 1 ]] \
+                || _release_refuse "input to pane $PANE_ID is still open"
+        done
+        SERVED=false
+        if [[ "$AGENT_NAME" == codex ]]; then
+            SERVED_ARGS=()
+            for ((i = 0; i < ${#QUIESCE_ARGS[@]}; i++)); do
+                if [[ "${QUIESCE_ARGS[$i]}" == --session || "${QUIESCE_ARGS[$i]}" == --pane-pid ]]; then
+                    SERVED_ARGS+=("${QUIESCE_ARGS[$i]}" "${QUIESCE_ARGS[$((i + 1))]}")
+                fi
+            done
+            if python3 "$SCRIPT_DIR/codex-thread-guard.py" served "${SERVED_ARGS[@]}"; then
+                SERVED=true
+            else
+                python3 "$SCRIPT_DIR/codex-thread-guard.py" quiesce "${QUIESCE_ARGS[@]}" \
+                    || _release_refuse "the thread could not be proven idle"
+            fi
+        else
+            sleep "${MESH_RELEASE_SETTLE_SECONDS:-2}"
+        fi
+        if [[ "$SERVED" == true ]]; then
+            if _release_pending_input; then _release_refuse "the pane has an approval prompt or queued input"; fi
+        elif _release_busy; then
+            _release_refuse "target became busy while input was blocked"
+        fi
+        # processes started since the first scan must also be waited for
+        if [[ ${#SCAN_ARGS[@]} -gt 0 ]]; then
+            while read -r VALUE; do
+                VERIFY_ARGS+=(--pid "$VALUE")
+            done < <(python3 "$SCRIPT_DIR/codex-thread-guard.py" pane-scan "${SCAN_ARGS[@]}" \
+                | python3 -c 'import json,sys; [print(p) for p in json.load(sys.stdin)["pids"]]')
+        fi
+        mtmux kill-session -t "$TARGET"
+        rm -f "$(mesh_pending_title_file "$TARGET")"
+        python3 "$SCRIPT_DIR/codex-thread-guard.py" release-verify "${VERIFY_ARGS[@]}" || exit $?
+        echo "Released $TARGET"
         ;;
 
     *)
