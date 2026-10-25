@@ -39,8 +39,9 @@ mesh_result_marker_count() {
     '
 }
 
-# Codex may redraw away the request anchor. Only a unique, assistant-framed
-# current-token pair can recover that correlated result; never recover plain text.
+# Codex may retain the anchor while folding the echoed protocol template.
+# Require one assistant-framed current-token pair, with at most one exact template
+# before it; never infer a result from plain text or repeated candidate pairs.
 mesh_result_codex_anchorless() {
     local begin="$1" end="$2"
     mesh_result_awk -v begin="$begin" -v end="$end" '
@@ -48,6 +49,11 @@ mesh_result_codex_anchorless() {
             n=0; while ((at=index(line, marker)) > 0) { n++; line=substr(line, at+length(marker)) } return n
         }
         {
+            line=$0; sub(/^[ \t]+/, "", line)
+            if (!started && line == "Final result markers: " begin " ... " end) {
+                templates++; if (templates>1) invalid=1
+                next
+            }
             begins+=occurrences($0,begin); ends+=occurrences($0,end)
             if (!started && index($0,begin)) {
                 if (index($0,"• " begin) != 1) invalid=1
