@@ -298,7 +298,7 @@ Q7 exposes the consumer's event vocabulary, projected from the graph stream:
 | Feed event | Graph source |
 |---|---|
 | `session.created` | first `node.upserted` for a new `<agent>:<runtimeUuid>` |
-| `launch.resolved` / `launch.failed` | resolution or failure of a W2 launch; `{launchId, session?}`, delivered **only** to the creating principal, for every outcome including a merge |
+| `launch.resolved` / `launch.failed` / `launch.uncertain` | outcome of a W2 launch; `{launchId, session?}`, delivered **only** to the creating principal, for every outcome including a merge |
 | `session.state_changed` | `node.upserted` that changes `status` or `attention.state` |
 | `session.renewed` | `session.renewed` (old id, new id) |
 | `session.ended` | `status: closed` or archived surface |
@@ -341,25 +341,42 @@ Rules, all checked under the calling principal:
 **Operation journal.** The existing idempotency store keeps only key, hash and time, so it cannot
 replay a result. Writes therefore go through a gateway operation journal (append-only NDJSON in the
 gateway state directory, like the task store). A record holds `operationId`, principal, tool,
-`idempotencyKey`, input hash, `launchId` (W2, allocated before launch), state and result.
+`idempotencyKey`, input hash, the minimal validated payload needed for recovery (session or link
+id, ref, role; for W2 also target id, cwd and `launchId`, never the prompt), state and result. The
+graph event and the audit record of an operation both carry its `operationId`.
+
+States: `reserved` → (W2: `launching` → `launched`) → `applied` → `done`, or `failed` /
+`uncertain`.
 
 1. **Reserve.** Under the journal lock, the first call for `(principal, idempotencyKey)` writes
    `reserved`. A repeat with another input hash fails with a conflict; a repeat while in progress
-   returns `{state: in-progress, operationId, launchId}`; a repeat after completion returns the
-   stored result.
-2. **Apply.** W2 passes the preallocated `launchId` to the launch (3.1), then records `launched`.
-   Both writes append the graph event carrying `operationId`, then record `applied`.
-3. **Audit.** The audit record carries `operationId` and the graph event id, then the operation
-   records `done` with its result.
+   returns `{state, operationId, launchId}`; a repeat after a terminal state returns the stored
+   result.
+2. **Launch (W2).** Record `launching` with the launch binding (agent, target id, cwd, `launchId`,
+   and the tmux target name, derived from `launchId`) **before** starting anything. Then start the
+   harness with `MESH_LAUNCH_ID` set (3.1) and record `launched`.
+3. **Apply.** Append the graph event (W1 link change, W2 pending link), then record `applied`.
+4. **Audit.** Append the audit record, then record `done` with the result.
 
-On gateway start, recovery walks unfinished operations:
+Recovery on gateway start is keyed by `operationId`, never by assumption:
 
-- `reserved` with a launch record for its `launchId` moves to `launched`; with none, it moves to
-  `failed` and appends a `launch.failed` graph event for the feed; a retry with a new key is safe.
-- `launched` without its pending link opens it (idempotent on `launchId`).
-- `applied` without an audit record appends it (idempotent on `operationId`).
+- For every non-terminal operation, look up its graph event and audit record by `operationId`.
+  Whatever exists moves the state forward (graph event → `applied`, audit record → audit done),
+  and the result is rebuilt from the graph event.
+- `applied` without an audit record appends it; then `done`.
+- W2 at `launched` (or later) without its pending link opens it from the journal payload
+  (idempotent on `launchId`).
+- W2 at `launching` with no launch record: check the bound tmux target, a harness process
+  carrying that `MESH_LAUNCH_ID`, and a transcript reporting it, and wait out a quiescence window
+  (default 2 minutes) for a starting child. Any live or ambiguous evidence → `uncertain`. Only
+  when all evidence is provably absent → `failed`.
+- `failed` appends a `launch.failed` graph event, and the client may retry with a new key.
+  `uncertain` appends `launch.uncertain`, is never retried automatically, and needs an operator to
+  resolve it (adopt the found session or mark it failed).
+- W1 (no launch) at `reserved` with no graph event never applied anything → `failed`, safe to retry.
 
-No step launches twice, and every graph change from a UI write can be traced to its audit record.
+No step launches twice, an uncertain launch never authorizes a second one, and every graph change
+from a UI write can be traced to its audit record.
 - `mesh_agent_session_create` supports only Codex today; W2 for Claude needs the same launch path
   with launch-id preallocation (3.1).
 
