@@ -10,6 +10,7 @@
 #   agent-session.sh --agent <NAME> transcript <SESSION_ID> [--json] [--cursor <OFFSET>] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
+#   agent-session.sh --agent <codex|claude> goal set|get|clear <SESSION_ID> [--objective TEXT] [--token-budget N] [--json]
 #   agent-session.sh --agent claude target-status <TMUX_NAME> --writer-pid <PID> --json
 #   agent-session.sh --agent codex target-session <TMUX_NAME>
 #   agent-session.sh --agent codex socket-status <CWD>
@@ -656,6 +657,10 @@ if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then
 fi
 
 case "$cmd" in
+    goal)
+        exec node "$SCRIPT_DIR/agent-goal.mjs" --agent "$AGENT_NAME" "$@"
+        ;;
+
     resume)
         SESSION_ID="${1:-}"
         TMUX_NAME="${2:-}"
