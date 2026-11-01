@@ -395,6 +395,28 @@ For large prompts, `agent-send.sh` waits for bracketed-paste rendering to settle
 before submitting, then confirms the submit with a real working/done marker
 instead of treating any pane repaint as success.
 
+## Session goals
+
+```bash
+agent-session.sh --agent codex goal set SESSION_ID --objective "All checks pass" --token-budget 10000 --json
+agent-session.sh --agent codex goal get SESSION_ID --json
+agent-session.sh --agent codex goal clear SESSION_ID
+agent-session.sh --agent claude goal set SESSION_ID --objective "All checks pass"
+agent-session.sh --agent claude goal clear SESSION_ID
+```
+
+Codex connects to the existing app-server through `codex app-server proxy`, using
+the remote socket discovery described below (or `CODEX_REMOTE_SOCK`); it never
+starts a server. It resumes the thread before calling `thread/goal/set|get|clear`.
+Set requires a nonempty objective; an optional token budget must be a positive
+safe integer. Claude supports set and clear only, without a token budget, and
+refuses live writers or unknown ownership. Its stopped-session `claude -p
+--resume` invocation runs `/goal <objective>` or `/goal clear`; setting a goal
+starts work immediately, as described in the [Claude goal documentation](https://code.claude.com/docs/en/goal).
+Claude results report process completion, not verified persistent goal state.
+Both providers time out after 30 seconds (`AGENT_GOAL_TIMEOUT_MS`, maximum
+600000); timeout exits 124 with an unknown outcome, so inspect before retrying.
+
 ## Codex Desktop visibility (remote mode)
 
 Bridge Codex sessions show up **inside Codex Desktop automatically** whenever the
