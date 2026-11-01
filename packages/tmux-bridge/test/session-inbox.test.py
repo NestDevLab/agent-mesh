@@ -98,7 +98,7 @@ class SessionInboxTest(unittest.TestCase):
     def test_one_shot_print_skips_watcher_activation(self):
         env = {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}
         for flags in (['-p', 'hello'], ['--print', '--resume', 'abc', '/goal x'], ['-p', '--', '--sdk-url'],
-                      ['-p', '--system-prompt', '--sdk-url'], ['--model', 'x', '-p', 'hi']):
+                      ['-p', '--system-prompt', '--sdk-url'], ['--model', 'x', '-p', 'hi'], ['-cp', 'hello']):
             result = self.hook(owner=self.fake_owner(*flags), extra_env=env)
             self.assertEqual(result.stdout, '')
         self.assertFalse(self.root.exists())
@@ -111,7 +111,9 @@ class SessionInboxTest(unittest.TestCase):
                  ([], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
                  (['--', '-p'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
                  (['--system-prompt', '-p'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
-                 (['--add-dir', 'a', 'b', '--print', '--sdk-url=x'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}))
+                 (['--add-dir', 'a', 'b', '--print', '--sdk-url=x'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
+                 (['-n', '-p'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
+                 (['-np'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}))
         for flags, env in cases:
             context = json.loads(self.hook(owner=self.fake_owner(*flags), extra_env=env).stdout)
             self.assertIn('run_in_background=true', context['hookSpecificOutput']['additionalContext'])

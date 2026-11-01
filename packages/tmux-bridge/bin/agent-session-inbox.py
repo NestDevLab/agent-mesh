@@ -185,6 +185,16 @@ def claude_options(args):
             break
         if not arg.startswith('-') or arg == '-':
             continue
+        if not arg.startswith('--') and len(arg) > 2:
+            for j, flag in enumerate(arg[1:], 1):
+                name, rest = '-' + flag, arg[j + 1:]
+                if name in CLAUDE_VALUE_OPTIONS or name in CLAUDE_OPTIONAL_VALUE_OPTIONS:
+                    if not rest and i < len(args) and (name in CLAUDE_VALUE_OPTIONS or not args[i].startswith('-')):
+                        i += 1
+                    options[name] = rest
+                    break
+                options[name] = ''
+            continue
         name, sep, value = arg.partition('=')
         if sep:
             options[name] = value
