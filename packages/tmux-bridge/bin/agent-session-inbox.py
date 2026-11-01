@@ -161,6 +161,49 @@ def watcher_active(inbox):
         os.close(fd)
 
 
+CLAUDE_VALUE_OPTIONS = {
+    '--agent', '--agents', '--append-system-prompt', '--append-system-prompt-file', '--autocompact',
+    '--debug-file', '--effort', '--environment', '--fallback-model', '--input-format', '--json-schema',
+    '--max-budget-usd', '--max-turns', '--model', '--name', '-n', '--output-format', '--permission-mode',
+    '--permission-prompts', '--plugin-dir', '--plugin-url', '--sdk-url', '--session-id', '--setting-sources',
+    '--settings', '--system-prompt', '--system-prompt-file',
+}
+CLAUDE_VARIADIC_OPTIONS = {
+    '--add-dir', '--allowedTools', '--allowed-tools', '--betas', '--disallowedTools', '--disallowed-tools',
+    '--file', '--mcp-config', '--tools',
+}
+CLAUDE_OPTIONAL_VALUE_OPTIONS = {'--cloud', '--debug', '-d', '--from-pr', '--resume', '-r'}
+
+
+def claude_options(args):
+    """Option names and values from a claude argv, skipping option values and positionals (commander rules)."""
+    options, i = {}, 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == '--':
+            break
+        if not arg.startswith('-') or arg == '-':
+            continue
+        name, sep, value = arg.partition('=')
+        if sep:
+            options[name] = value
+        elif name in CLAUDE_VALUE_OPTIONS:
+            options[name] = args[i] if i < len(args) else ''
+            i += 1
+        elif name in CLAUDE_VARIADIC_OPTIONS:
+            while i < len(args) and not args[i].startswith('-'):
+                i += 1
+            options[name] = ''
+        elif name in CLAUDE_OPTIONAL_VALUE_OPTIONS:
+            if i < len(args) and not args[i].startswith('-'):
+                i += 1
+            options[name] = ''
+        else:
+            options[name] = ''
+    return options
+
+
 def one_shot_print(pid):
     """A watcher would keep claude -p alive; Remote Control and stream-json runs are long-lived."""
     if os.environ.get('CLAUDE_CODE_ENVIRONMENT_KIND') == 'bridge':
@@ -169,14 +212,10 @@ def one_shot_print(pid):
         args = [a.decode(errors='replace') for a in (Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')[1:]]
     except OSError:
         return False
-    if '--' in args:
-        args = args[:args.index('--')]
-    if not any(a in {'-p', '--print'} for a in args):
+    options = claude_options(args)
+    if '-p' not in options and '--print' not in options:
         return False
-    if any(a == '--sdk-url' or a.startswith('--sdk-url=') for a in args):
-        return False
-    pairs = zip(args, args[1:] + [''])
-    return not any(a == '--input-format=stream-json' or (a == '--input-format' and b == 'stream-json') for a, b in pairs)
+    return '--sdk-url' not in options and options.get('--input-format') != 'stream-json'
 
 
 def hook(args):
