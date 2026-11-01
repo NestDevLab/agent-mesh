@@ -366,14 +366,19 @@ Recovery on gateway start is keyed by `operationId`, never by assumption:
 - `applied` without an audit record appends it; then `done`.
 - W2 at `launched` (or later) without its pending link opens it from the journal payload
   (idempotent on `launchId`).
+- W2 at `reserved` never started anything (`launching` is recorded before any start) →
+  `failed`.
+- W2 at `launching` with a launch record for its `launchId` → `launched`, then the next rules.
 - W2 at `launching` with no launch record: check the bound tmux target, a harness process
   carrying that `MESH_LAUNCH_ID`, and a transcript reporting it, and wait out a quiescence window
   (default 2 minutes) for a starting child. Any live or ambiguous evidence → `uncertain`. Only
   when all evidence is provably absent → `failed`.
-- `failed` appends a `launch.failed` graph event, and the client may retry with a new key.
-  `uncertain` appends `launch.uncertain`, is never retried automatically, and needs an operator to
+- A failed W2 appends a `launch.failed` graph event, and the client may retry with a new key.
+  `uncertain` (W2 only) appends `launch.uncertain`, is never retried automatically, and needs an operator to
   resolve it (adopt the found session or mark it failed).
-- W1 (no launch) at `reserved` with no graph event never applied anything → `failed`, safe to retry.
+- W1 (no launch) at `reserved` with no graph event never applied anything → `failed`. W1 emits no
+  feed event on failure: the stored result answers the caller's retry with the same key, and a new
+  key is safe.
 
 No step launches twice, an uncertain launch never authorizes a second one, and every graph change
 from a UI write can be traced to its audit record.
