@@ -127,9 +127,11 @@ while it works.
 
 **Store selection** is one shared function, used by every reader and writer: `mesh-graph`, the
 registry projection, `agent-follow.py` (which today reads `graph/graph.json` directly) and any
-configured `graphPath`. It picks `plexus/` when `graph/MOVED` exists, else `graph/`. Writers rerun
-the selection **after** acquiring the lock, so a writer that queued on the `graph/` lock during
-migration moves on to `plexus/` instead of writing the old store. An explicit `--state`,
+configured `graphPath`. It picks `plexus/` when `graph/MOVED` exists, else `graph/`. Locks stay
+per directory, so writers loop: select a store, acquire **that store's** lock, then select again.
+If the answer changed (a writer queued on the `graph/` lock while `migrate` ran), it releases that
+lock and starts over on `plexus/`. Nothing is loaded, numbered or written until the selection is
+stable under the lock of the selected store. An explicit `--state`,
 `MESH_GRAPH_STATE` or `graphPath` that points at a moved `graph/` is refused for writes and warned
 for reads.
 
