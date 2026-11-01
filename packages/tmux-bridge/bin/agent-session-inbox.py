@@ -161,6 +161,22 @@ def watcher_active(inbox):
         os.close(fd)
 
 
+def one_shot_print(pid):
+    """A watcher would keep claude -p alive; Remote Control and stream-json runs are long-lived."""
+    if os.environ.get('CLAUDE_CODE_ENVIRONMENT_KIND') == 'bridge':
+        return False
+    try:
+        args = [a.decode(errors='replace') for a in (Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')[1:]]
+    except OSError:
+        return False
+    if not any(a in {'-p', '--print'} for a in args):
+        return False
+    if any(a == '--sdk-url' or a.startswith('--sdk-url=') for a in args):
+        return False
+    pairs = zip(args, args[1:] + [''])
+    return not any(a == '--input-format=stream-json' or (a == '--input-format' and b == 'stream-json') for a, b in pairs)
+
+
 def hook(args):
     payload = json.load(sys.stdin)
     if not isinstance(payload, dict):
@@ -169,6 +185,8 @@ def hook(args):
     if event not in {'SessionStart', 'UserPromptSubmit'}:
         return
     owner = owner_identity(args)
+    if one_shot_print(owner['pid']):
+        return
     session = payload.get('session_id', '')
     inbox = mailbox_path(args.root, session)
     active = watcher_active(inbox)

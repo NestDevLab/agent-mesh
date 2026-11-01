@@ -90,6 +90,28 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(inbox.read_text(), 'retained\n')
         self.assertEqual(inbox.stat().st_mode & 0o777, 0o600)
 
+    def fake_owner(self, *args):
+        proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)', *args])
+        self.processes.append(proc)
+        return proc.pid
+
+    def test_one_shot_print_skips_watcher_activation(self):
+        env = {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}
+        for flags in (['-p', 'hello'], ['--print', '--resume', 'abc', '/goal x']):
+            result = self.hook(owner=self.fake_owner(*flags), extra_env=env)
+            self.assertEqual(result.stdout, '')
+        self.assertFalse(self.root.exists())
+
+    def test_long_lived_print_sessions_keep_watcher_activation(self):
+        cases = ((['--print', '--sdk-url', 'https://example.invalid'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
+                 (['-p', '--input-format', 'stream-json'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
+                 (['--print', '--input-format=stream-json'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
+                 (['-p', 'hello'], {'CLAUDE_CODE_ENVIRONMENT_KIND': 'bridge'}),
+                 ([], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}))
+        for flags, env in cases:
+            context = json.loads(self.hook(owner=self.fake_owner(*flags), extra_env=env).stdout)
+            self.assertIn('run_in_background=true', context['hookSpecificOutput']['additionalContext'])
+
     def test_codex_and_automation_disabled_without_side_effects(self):
         self.assertEqual(self.hook(agent='codex').stdout, '')
         self.assertEqual(self.hook(extra_env={'AGENT_MESH_INBOX_DISABLED': '1'}).stdout, '')
