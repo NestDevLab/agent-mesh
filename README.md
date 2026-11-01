@@ -69,6 +69,10 @@ Repository mode remains supported by setting `AGENT_MESH_ROOT` and using
 - Every bounded live run should carry an explicit run or orchestration id.
 - Keep generated output, runtime state, session transcripts, and private raw logs out of the repo.
 
+## Design
+
+- `docs/design/plexus.md`: Plexus, the proposed n:m graph between agent sessions and work ledgers.
+
 ## Consolidation notes
 
 See:
