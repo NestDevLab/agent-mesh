@@ -118,11 +118,22 @@ seq-aware write (seq-aware writers refuse an unmigrated store):
    `pending:<nodeId>` links.
 3. Append a `store.migrated` marker. Rerunning is a no-op once the marker exists.
 4. Write the migrated store to `$XDG_STATE_HOME/agent-mesh/plexus/` (`events.jsonl`, `graph.json`,
-   `checkpoint.json`, `snapshot.json`) and leave `graph/` untouched as the rollback copy.
+   `checkpoint.json`, `snapshot.json`), then write `graph/MOVED` naming it, and leave the rest of
+   `graph/` untouched as the rollback copy.
 
-After migration `mesh-graph` uses `plexus/` when it exists and `graph/` otherwise; `--state` and
-`MESH_GRAPH_STATE` still override both. Binaries that only know `graph/` would keep writing the old
-store, so the new version must replace them everywhere in one rollout before `migrate` runs.
+`migrate` holds the `graph/` lock from step 1 until `MOVED` exists, so no write lands in between.
+
+**Store selection** is one shared function, used by every reader and writer: `mesh-graph`, the
+registry projection, `agent-follow.py` (which today reads `graph/graph.json` directly) and any
+configured `graphPath`. It picks `plexus/` when `graph/MOVED` exists, else `graph/`. Writers rerun
+the selection **after** acquiring the lock, so a writer that queued on the `graph/` lock during
+migration moves on to `plexus/` instead of writing the old store. An explicit `--state`,
+`MESH_GRAPH_STATE` or `graphPath` that points at a moved `graph/` is refused for writes and warned
+for reads.
+
+Rollout order: replace every binary and reader with the selection-aware version (through
+Agentwheel), stop writers that run under an explicit old path, then run `migrate`. Rollback deletes
+`graph/MOVED`; `plexus/` stays for inspection.
 
 `link.touched` is coalesced (at most one per link per 10 minutes) to keep the stream small.
 
@@ -352,8 +363,9 @@ Each batch is independently shippable and keeps the existing registry contract.
    tool semantics, and the consumer's API server calls it as an MCP client. A REST mirror can be
    added later as a thin adapter over the same handlers if an MCP client proves costly; it is not
    part of v1.
-2. **Persistence and retention.** In the existing graph state directory of the host running the
-   bridge: `events.jsonl` canonical, `graph.json` projection, `snapshot.json` after compaction.
+2. **Persistence and retention.** In `$XDG_STATE_HOME/agent-mesh/plexus/` on the host running the
+   bridge, migrated from today's `graph/` directory, which stays as the rollback copy:
+   `events.jsonl` canonical, `graph.json` projection, `snapshot.json` after compaction.
    Ended links and edges stay in the projection as history; compaction folds them into the
    snapshot and keeps them for 90 days by default (configurable), then drops them. Open links and
    edges are never compacted away.
