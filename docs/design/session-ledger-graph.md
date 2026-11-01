@@ -62,7 +62,7 @@ New first-class record replacing the bare string in `node.refs`:
 | `since` / `until` | ISO times; `until = null` means open |
 | `source` | who asserted it: `bridge-launch`, `hook`, `ledger-write`, `reconciler`, `operator`, `ui:<principal>`, `legacy-node-refs` |
 | `lastActivityAt` | latest **ref-specific** evidence (ledger write, explicit touch, launch with that ref); never session-wide activity |
-| `evidence` | optional short pointer (launch id, ledger log line ref), no content |
+| `evidence` | deduplicated list of short pointers (launch id, ledger log line ref), no content |
 
 One open link per `(session, ref, role)`. Ending a link sets `until`; the record stays as history,
 and reopening creates a new link. When a pending identity resolves, its links are rewritten to the
