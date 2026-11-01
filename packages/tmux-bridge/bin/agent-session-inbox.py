@@ -161,6 +161,73 @@ def watcher_active(inbox):
         os.close(fd)
 
 
+CLAUDE_VALUE_OPTIONS = {
+    '--agent', '--agents', '--append-system-prompt', '--append-system-prompt-file', '--autocompact',
+    '--debug-file', '--effort', '--environment', '--fallback-model', '--input-format', '--json-schema',
+    '--max-budget-usd', '--max-turns', '--model', '--name', '-n', '--output-format', '--permission-mode',
+    '--permission-prompts', '--plugin-dir', '--plugin-url', '--sdk-url', '--session-id', '--setting-sources',
+    '--settings', '--system-prompt', '--system-prompt-file',
+}
+CLAUDE_VARIADIC_OPTIONS = {
+    '--add-dir', '--allowedTools', '--allowed-tools', '--betas', '--disallowedTools', '--disallowed-tools',
+    '--file', '--mcp-config', '--tools',
+}
+CLAUDE_OPTIONAL_VALUE_OPTIONS = {'--cloud', '--debug', '-d', '--from-pr', '--resume', '-r'}
+
+
+def claude_options(args):
+    """Option names and values from a claude argv, skipping option values and positionals (commander rules)."""
+    options, i = {}, 0
+    while i < len(args):
+        arg = args[i]
+        i += 1
+        if arg == '--':
+            break
+        if not arg.startswith('-') or arg == '-':
+            continue
+        if not arg.startswith('--') and len(arg) > 2:
+            for j, flag in enumerate(arg[1:], 1):
+                name, rest = '-' + flag, arg[j + 1:]
+                if name in CLAUDE_VALUE_OPTIONS or name in CLAUDE_OPTIONAL_VALUE_OPTIONS:
+                    if not rest and i < len(args) and (name in CLAUDE_VALUE_OPTIONS or not args[i].startswith('-')):
+                        i += 1
+                    options[name] = rest
+                    break
+                options[name] = ''
+            continue
+        name, sep, value = arg.partition('=')
+        if sep:
+            options[name] = value
+        elif name in CLAUDE_VALUE_OPTIONS:
+            options[name] = args[i] if i < len(args) else ''
+            i += 1
+        elif name in CLAUDE_VARIADIC_OPTIONS:
+            while i < len(args) and not args[i].startswith('-'):
+                i += 1
+            options[name] = ''
+        elif name in CLAUDE_OPTIONAL_VALUE_OPTIONS:
+            if i < len(args) and not args[i].startswith('-'):
+                i += 1
+            options[name] = ''
+        else:
+            options[name] = ''
+    return options
+
+
+def one_shot_print(pid):
+    """A watcher would keep claude -p alive; Remote Control and stream-json runs are long-lived."""
+    if os.environ.get('CLAUDE_CODE_ENVIRONMENT_KIND') == 'bridge':
+        return False
+    try:
+        args = [a.decode(errors='replace') for a in (Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')[1:]]
+    except OSError:
+        return False
+    options = claude_options(args)
+    if '-p' not in options and '--print' not in options:
+        return False
+    return '--sdk-url' not in options and options.get('--input-format') != 'stream-json'
+
+
 def hook(args):
     payload = json.load(sys.stdin)
     if not isinstance(payload, dict):
@@ -169,6 +236,8 @@ def hook(args):
     if event not in {'SessionStart', 'UserPromptSubmit'}:
         return
     owner = owner_identity(args)
+    if one_shot_print(owner['pid']):
+        return
     session = payload.get('session_id', '')
     inbox = mailbox_path(args.root, session)
     active = watcher_active(inbox)
