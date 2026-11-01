@@ -1,19 +1,20 @@
-# Session-ledger graph
+# Plexus
 
-Status: design, not implemented. Scope: agent-mesh keeps an n:m graph between agent sessions
+Status: design, not implemented. Plexus is agent-mesh's n:m graph between agent sessions
 (Claude, Codex, later harnesses) and work ledgers, answers "which ledgers does this session touch"
 and "which sessions are its neighbours", and serves that read-only to a UI that builds projects and
 discussion groups on top. Every session stays resumable with its harness's native command, with or
 without that UI.
 
-The graph extends the existing session graph (`packages/tmux-bridge/bin/mesh-graph.mjs`, documented
-in `packages/tmux-bridge/docs/session-registry.md`). No parallel store.
+Plexus extends the existing session graph (`packages/tmux-bridge/bin/mesh-graph.mjs`, documented in
+`packages/tmux-bridge/docs/session-registry.md`): same event-sourced store, same CLI, no parallel
+store. Only its state directory and gateway tools take the Plexus name.
 
 ## 1. What exists today
 
 | Piece | Where | Relevant facts |
 |---|---|---|
-| Session graph | `mesh-graph.mjs`, state `$XDG_STATE_HOME/agent-mesh/graph/` | Canonical `events.jsonl` (append-only, fsynced), projection `graph.json`, byte-cursor `checkpoint.json`, `snapshot.json` after `compact`, mkdir lock. Events: `node.upserted` (full node), `edge.added`, `node.purged`. Event ids are UUIDs; **no sequence number**. |
+| Session graph | `mesh-graph.mjs`, state `$XDG_STATE_HOME/agent-mesh/graph/` (becomes `plexus/`, section 2) | Canonical `events.jsonl` (append-only, fsynced), projection `graph.json`, byte-cursor `checkpoint.json`, `snapshot.json` after `compact`, mkdir lock. Events: `node.upserted` (full node), `edge.added`, `node.purged`. Event ids are UUIDs; **no sequence number**. |
 | Node | same | `id` (`node-<uuid>`), `agent`, `runtimeUuid` (native id), `cwd`, `title`, `summary`, `status`, `class`, `origin`, `domains`, `primaryDomains`, `domainPredecessors`, `attention`, `surface`, `tmuxTarget`, `tmuxObservation`, `launches[]`, `resumable`, `resumabilityReasons`, `refs[]`. Several nodes may share one native id. |
 | Ledger refs | `node.refs`, `mesh-graph ref add\|remove` | Opaque `scheme:id` strings (`OPAQUE_REF`), never resolved. Already n:m, but with no role, time, source or activity. |
 | Edges | `EDGE_TYPES` | `spawned-by`, `delegates-to`, `linked`, `watches`. Stored `from` = parent/delegator, `to` = child (the name reads the other way). Edges can be added but never ended. |
@@ -116,6 +117,12 @@ seq-aware write (seq-aware writers refuse an unmigrated store):
    group with `role: works-on`, `source: legacy-node-refs`. Nodes without `runtimeUuid` get
    `pending:<nodeId>` links.
 3. Append a `store.migrated` marker. Rerunning is a no-op once the marker exists.
+4. Write the migrated store to `$XDG_STATE_HOME/agent-mesh/plexus/` (`events.jsonl`, `graph.json`,
+   `checkpoint.json`, `snapshot.json`) and leave `graph/` untouched as the rollback copy.
+
+After migration `mesh-graph` uses `plexus/` when it exists and `graph/` otherwise; `--state` and
+`MESH_GRAPH_STATE` still override both. Binaries that only know `graph/` would keep writing the old
+store, so the new version must replace them everywhere in one rollout before `migrate` runs.
 
 `link.touched` is coalesced (at most one per link per 10 minutes) to keep the stream small.
 
@@ -207,7 +214,7 @@ carries the per-ref breakdown so the UI can explain why two sessions are close.
 
 ### Transport
 
-The gateway gains `mesh_graph_*` MCP tools with the same principal checks as `mesh_agent_session_*`.
+The gateway gains `mesh_plexus_*` MCP tools with the same principal checks as `mesh_agent_session_*`.
 The UI's server calls them over the gateway's existing MCP-over-HTTP endpoint; no new listener.
 Locally, `mesh-graph query <name> --json` returns the identical payloads for scripts and tests.
 
@@ -236,13 +243,13 @@ Each tool answers one query of the consumer spec (Q1-Q7) and keeps its semantics
 
 | Spec | Tool | Input | Output |
 |---|---|---|---|
-| Q1 | `mesh_graph_ledger_sessions` | `ref`, `descendantRefs[]?`, `roles?`, `history?` | sessions linked to the ref, with link records |
-| Q2 | `mesh_graph_session_ledgers` | `session`, `history?` | links of the session with ref, role, since/until, cached title |
-| Q3 | `mesh_graph_neighbours` | `session`, `depth 1-2`, `edgeKinds?` | scored neighbours with breakdown |
-| Q4 | `mesh_graph_subgraph` | `refs[]` and/or `sessions[]`, `depth` | nodes and edges for a project or discussion-group view |
-| Q5 | `mesh_graph_resume` | `session` | resume info (below) |
-| Q6 | `mesh_graph_search` | `harness?`, `state?`, `text?`, `cursor` | session picker |
-| Q7 | `mesh_graph_changes` | `sinceCursor`, `refs?`, `limit` | ordered events with `seq` and `eventId` |
+| Q1 | `mesh_plexus_ledger_sessions` | `ref`, `descendantRefs[]?`, `roles?`, `history?` | sessions linked to the ref, with link records |
+| Q2 | `mesh_plexus_session_ledgers` | `session`, `history?` | links of the session with ref, role, since/until, cached title |
+| Q3 | `mesh_plexus_neighbours` | `session`, `depth 1-2`, `edgeKinds?` | scored neighbours with breakdown |
+| Q4 | `mesh_plexus_subgraph` | `refs[]` and/or `sessions[]`, `depth` | nodes and edges for a project or discussion-group view |
+| Q5 | `mesh_plexus_resume` | `session` | resume info (below) |
+| Q6 | `mesh_plexus_search` | `harness?`, `state?`, `text?`, `cursor` | session picker |
+| Q7 | `mesh_plexus_changes` | `sinceCursor`, `refs?`, `limit` | ordered events with `seq` and `eventId` |
 
 Opaque refs have no parent/child notion, so the spec's `includeDescendants` becomes
 `descendantRefs[]`: the caller passes the descendants it knows (the ledger owns its tree), and mesh
@@ -333,7 +340,7 @@ The consumer's needs spec was the input; the code changes it as follows.
 2. Feeders: launch-id preallocation, bridge `--ref` with pending launch links, hook touch (Claude `SessionStart`, new Codex
    artifact), `link open|close|touch` CLI, fix resume parentage.
 3. Reconciler lineage and archived sessions.
-4. `mesh-graph query` and gateway `mesh_graph_*` tools with principal scoping and redaction.
+4. `mesh-graph query` and gateway `mesh_plexus_*` tools with principal scoping and redaction.
 5. Ledger adapters, outside this repo.
 
 Each batch is independently shippable and keeps the existing registry contract.
