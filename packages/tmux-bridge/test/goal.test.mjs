@@ -15,6 +15,12 @@ async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "mesh-goal-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   await mkdir(join(root, "proc"));
+  const sessionCwd = join(root, "session project-with-hyphens");
+  const project = join(root, ".claude", "projects", "encoded-project");
+  const transcript = join(project, `${session}.jsonl`);
+  await mkdir(sessionCwd);
+  await mkdir(project, { recursive: true });
+  await writeFile(transcript, `${JSON.stringify({ type: "user", cwd: sessionCwd })}\n`);
   const executable = async (name, body) => {
     const path = join(root, name);
     await writeFile(path, `#!${process.execPath}\n${body}\n`);
@@ -36,6 +42,7 @@ if (args[0] === 'agents') {
   console.log(process.env.CLAUDE_INVENTORY || '[]');
 } else {
   fs.writeFileSync(process.env.GOAL_ARGS, JSON.stringify(args));
+  fs.writeFileSync(process.env.GOAL_CWD, process.cwd());
   if (process.env.GOAL_HANG) setInterval(() => {}, 1000);
   else { console.log(process.env.GOAL_OUTPUT || 'Goal command completed'); process.exit(Number(process.env.GOAL_EXIT || 0)); }
 }
@@ -43,13 +50,15 @@ if (args[0] === 'agents') {
   const env = {
     ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root,
     CODEX_HOME: join(root, ".codex"), CODEX_BIN: join(root, "codex"), CLAUDE_BIN: join(root, "claude"),
+    CLAUDE_CONFIG_DIR: join(root, ".claude"), CLAUDE_SESSION_ROOT: "",
     CODEX_REMOTE_SOCK: join(root, "server.sock"), CODEX_NO_REMOTE: "",
     AGENT_WRITER_PROC_ROOT: join(root, "proc"), GOAL_ARGS: join(root, "args.json"),
+    GOAL_CWD: join(root, "cwd.txt"),
     MESH_GRAPH_DISABLE: "1", AGENT_GOAL_TIMEOUT_MS: "3000",
   };
   const run = (agent, action, args = [], extra = {}) => new Promise((resolve) => {
     execFile("bash", [bridge, "--agent", agent, "goal", action, session, ...args],
-      { env: { ...env, ...extra }, timeout: 10000 }, (error, stdout, stderr) => {
+      { cwd: root, env: { ...env, ...extra }, timeout: 10000 }, (error, stdout, stderr) => {
         resolve({ code: error?.code || 0, stdout, stderr });
       });
   });
@@ -57,7 +66,7 @@ if (args[0] === 'agents') {
     await mkdir(join(root, "proc", pid));
     await writeFile(join(root, "proc", pid, "cmdline"), `${argv.join("\0")}\0`);
   };
-  return { root, env, run, writer };
+  return { root, env, run, writer, sessionCwd, transcript };
 }
 
 for (const action of ["set", "get", "clear"]) {
@@ -164,16 +173,46 @@ test("Claude refuses unknown ownership, unsupported get and token budget", async
 });
 
 for (const action of ["set", "clear"]) {
-  test(`Claude stopped-session ${action} uses the exact slash command`, async (t) => {
+  test(`Claude stopped-session ${action} uses the session cwd instead of the caller cwd`, async (t) => {
     const f = await fixture(t);
     const objective = 'Tests pass; preserve "quoted" text and $HOME';
     const response = await f.run("claude", action, ["--json", ...(action === "set" ? ["--objective", objective] : [])]);
     assert.equal(response.code, 0, response.stderr);
+    assert.notEqual(f.root, f.sessionCwd);
+    assert.equal(await readFile(f.env.GOAL_CWD, "utf8"), f.sessionCwd);
     assert.deepEqual(JSON.parse(await readFile(f.env.GOAL_ARGS, "utf8")), ["-p", "--resume", session, action === "set" ? `/goal ${objective}` : "/goal clear"]);
     assert.equal(JSON.parse(response.stdout).status, "run_completed");
     assert.equal(JSON.parse(response.stdout).goalStateVerified, false);
   });
 }
+
+test("Claude refuses unresolved or invalid session cwd without resuming", async (t) => {
+  for (const scenario of ["missing transcript", "missing cwd", "relative cwd", "missing directory", "file cwd", "malformed transcript", "ambiguous transcript"]) {
+    await t.test(scenario, async (t) => {
+      const f = await fixture(t);
+      if (scenario === "missing transcript") await rm(f.transcript);
+      if (scenario === "missing cwd") await writeFile(f.transcript, '{}\n');
+      if (scenario === "relative cwd") await writeFile(f.transcript, '{"cwd":"relative"}\n');
+      if (scenario === "missing directory") await rm(f.sessionCwd, { recursive: true });
+      if (scenario === "file cwd") {
+        await rm(f.sessionCwd, { recursive: true });
+        await writeFile(f.sessionCwd, "not a directory");
+      }
+      if (scenario === "malformed transcript") await writeFile(f.transcript, 'invalid json\n');
+      if (scenario === "ambiguous transcript") {
+        const other = join(f.root, ".claude", "projects", "other-project");
+        await mkdir(other);
+        await writeFile(join(other, `${session}.jsonl`), await readFile(f.transcript));
+      }
+      for (const action of ["set", "clear"]) {
+        const response = await f.run("claude", action, action === "set" ? ["--objective", "Ship it"] : []);
+        assert.notEqual(response.code, 0);
+        assert.match(response.stderr, /cannot resolve Claude session .* cwd:.*refusing goal run/);
+        await assert.rejects(readFile(f.env.GOAL_ARGS), { code: "ENOENT" });
+      }
+    });
+  }
+});
 
 test("Claude timeout and provider rejection do not report success", async (t) => {
   const f = await fixture(t);

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
@@ -123,12 +125,52 @@ async function codexGoal(action, threadId, objective, budget, timeout) {
   }
 }
 
+async function claudeSessionCwd(sessionId) {
+  try {
+    const root = process.env.CLAUDE_SESSION_ROOT
+      || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+    const transcripts = [];
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const path = join(root, entry.name, `${sessionId}.jsonl`);
+      try {
+        if ((await stat(path)).isFile()) transcripts.push(path);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+    if (transcripts.length !== 1) throw new Error("expected exactly one session transcript");
+    const input = createReadStream(transcripts[0]);
+    const lines = createInterface({ input, crlfDelay: Infinity });
+    let cwd;
+    try {
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        const record = JSON.parse(line);
+        if (record && Object.hasOwn(record, "cwd")) {
+          cwd = record.cwd;
+          break;
+        }
+      }
+    } finally {
+      lines.close();
+      input.destroy();
+    }
+    if (typeof cwd !== "string" || !isAbsolute(cwd)) throw new Error("transcript has no absolute cwd");
+    if (!(await stat(cwd)).isDirectory()) throw new Error("cwd is not a directory");
+    return await realpath(cwd);
+  } catch (error) {
+    throw new Error(`cannot resolve Claude session ${sessionId} cwd: ${error.message}; refusing goal run`);
+  }
+}
+
 async function claudeGoal(action, sessionId, objective, budget, timeout) {
   if (action === "get") throw new Error("get is unsupported for claude; inspect /goal in the owning session");
   if (budget !== undefined) throw new Error("--token-budget is unsupported for claude");
   if (action === "set" && /^(clear|stop|off|reset|none|cancel)$/i.test(objective.trim())) {
     throw new Error("objective is a Claude /goal clear alias; use goal clear explicitly");
   }
+  const cwd = await claudeSessionCwd(sessionId);
   const ownership = inspectClaudeSessionOwnership(sessionId);
   if (ownership.state !== "free") {
     throw new Error(ownership.state === "owned"
@@ -137,7 +179,7 @@ async function claudeGoal(action, sessionId, objective, budget, timeout) {
   }
   const args = ["-p", "--resume", sessionId, action === "clear" ? "/goal clear" : `/goal ${objective}`];
   return await new Promise((resolve, reject) => {
-    const child = spawn(process.env.CLAUDE_BIN || "claude", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.env.CLAUDE_BIN || "claude", args, { cwd, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     let stderr = "";
     const timer = setTimeout(() => {
