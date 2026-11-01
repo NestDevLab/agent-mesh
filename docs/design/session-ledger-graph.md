@@ -67,7 +67,10 @@ New first-class record replacing the bare string in `node.refs`:
 One open link per `(session, ref, role)`. Ending a link sets `until`; the record stays as history,
 and reopening creates a new link. When a pending identity resolves, its links are rewritten to the
 session id by one `link.resolved` event; if resolution stays ambiguous the links stay pending and
-are reported, never guessed.
+are reported, never guessed. If the session already holds an open link with the same `(ref, role)`,
+resolution merges into it: the earlier `since`, the later `lastActivityAt` and the union of
+`evidence` survive, and the pending link closes with `mergedInto: <link id>`. Pending links are
+internal: queries and the feed never show them.
 
 `node.refs` becomes a derived compatibility projection (refs of the session's open links, written to
 every node of that session), so the registry, follower and renderers keep working unchanged. The
@@ -125,10 +128,15 @@ Every feeder writes through `mesh-graph` under its lock; none edits state files.
 `agent-session.sh new|resume` already writes a launch record and registers the node. Add
 `--ref <ref> [--role <role>]` (and `MESH_LEDGER_REFS` for callers that only pass env). A resume knows
 the native id and opens the link at once. A new session does not: registration has no runtime UUID
-yet, so the refs go into the `launch.started` record and open `pending:<launchId>` links. They
-resolve when launch reconciliation records `launch.thread_resolved` (Codex, existing) or when the
-Claude `SessionStart` hook reports a session whose environment carries that launch id (new, see
-3.2). Unresolved or ambiguous launches stay pending and are listed by `sweep`. Delegating callers
+yet, so the links open as `pending:<launchId>`.
+
+This needs the launch id before the harness starts. Today the bridge starts the harness first and
+the recorder generates the id itself, so the bridge must instead allocate the id, pass it to the
+recorder (`--launch-id`) and export it as `MESH_LAUNCH_ID` into the harness environment. Resolution
+then comes from launch reconciliation (`launch.thread_resolved`, Codex, existing) or from the Claude
+`SessionStart` hook reporting that launch id (3.2). Registration and hook evidence are idempotent
+on the launch id, so either may arrive first; whichever completes the pair resolves. Unresolved or
+ambiguous launches stay pending and are listed by `sweep`. Delegating callers
 (including the gateway `mesh_agent_session_create`) pass the ledger they were
 started for.
 
@@ -205,11 +213,14 @@ Locally, `mesh-graph query <name> --json` returns the identical payloads for scr
 
 ### Scope
 
-Graph nodes carry no principal today. A session is visible to a principal only when all of the
-existing gateway checks pass: its `agent` is in `allowedAgentIds`, its cwd resolves inside one of the
-principal's `allowedWorkspaceIds` roots (as `mesh_agent_session_*` does), and its `domains` meet
-`allowedDomainIds` when that list is set. Domain alone never grants access, since several workspaces
-can share a domain.
+Graph nodes carry no principal today, and graph `agent` values (`codex`, `claude`) are harness types,
+not gateway agent ids. Visibility reuses the configured mapping that `mesh_agent_session_*` already
+uses: each gateway agent target has a provider type and workspace roots. A session is visible to a
+principal when some target in its `allowedAgentIds` has the session's harness as provider and a
+root, in one of its `allowedWorkspaceIds`, that contains the session cwd; and, when
+`allowedDomainIds` is set, the session's `domains` meet it. The response attributes the session to
+that target id. A session no target maps is visible to nobody. Domain alone never grants access,
+since several workspaces can share a domain.
 
 The same filter applies to every query, every traversal hop, every ref in a score breakdown and
 every feed event. An out-of-scope neighbour is returned **redacted**, never dropped, so the graph
@@ -249,7 +260,7 @@ Q7 exposes the consumer's event vocabulary, projected from the graph stream:
 | `session.state_changed` | `node.upserted` that changes `status` or `attention.state` |
 | `session.renewed` | `session.renewed` (old id, new id) |
 | `session.ended` | `status: closed` or archived surface |
-| `edge.added` / `edge.ended` | `link.opened` / `link.closed` (session to ledger, `kind` = role) and `edge.added` / `edge.ended` (session to session) |
+| `edge.added` / `edge.ended` | `link.opened` / `link.closed` (session to ledger, `kind` = role), `edge.added` / `edge.ended` (session to session); `link.resolved` emits `edge.added` for the resolved link, or nothing when it merged into an open one |
 | `resume.changed` | change of `resumable`, `resumabilityReasons` or writer state |
 
 `link.touched` stays internal. One graph event can yield several feed events (a node upsert can
@@ -319,7 +330,7 @@ The consumer's needs spec was the input; the code changes it as follows.
 1. Events: `seq`, `link.*`, `edge.ended`, `session.renewed`; `node.refs` as derived projection;
    `migrate`; agent validation; registry and follower ignore ended edges. Tests on replay,
    interrupted compaction, migration rerun and legacy `ref` commands.
-2. Feeders: bridge `--ref` with pending launch links, hook touch (Claude `SessionStart`, new Codex
+2. Feeders: launch-id preallocation, bridge `--ref` with pending launch links, hook touch (Claude `SessionStart`, new Codex
    artifact), `link open|close|touch` CLI, fix resume parentage.
 3. Reconciler lineage and archived sessions.
 4. `mesh-graph query` and gateway `mesh_graph_*` tools with principal scoping and redaction.
