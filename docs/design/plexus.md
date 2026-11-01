@@ -121,7 +121,9 @@ seq-aware write (seq-aware writers refuse an unmigrated store):
    `checkpoint.json`, `snapshot.json`), then write `graph/MOVED` naming it, and leave the rest of
    `graph/` untouched as the rollback copy.
 
-`migrate` holds the `graph/` lock from step 1 until `MOVED` exists, so no write lands in between.
+`migrate` holds the `graph/` lock from step 1 until `MOVED` exists, so no write lands in between. Today a
+lock older than 60 s counts as stale and gets broken, so `migrate` must refresh the lock's mtime
+while it works.
 
 **Store selection** is one shared function, used by every reader and writer: `mesh-graph`, the
 registry projection, `agent-follow.py` (which today reads `graph/graph.json` directly) and any
@@ -133,7 +135,8 @@ for reads.
 
 Rollout order: replace every binary and reader with the selection-aware version (through
 Agentwheel), stop writers that run under an explicit old path, then run `migrate`. Rollback deletes
-`graph/MOVED`; `plexus/` stays for inspection.
+`graph/MOVED`; `plexus/` stays for inspection, and events written there after migration are not
+carried back.
 
 `link.touched` is coalesced (at most one per link per 10 minutes) to keep the stream small.
 
