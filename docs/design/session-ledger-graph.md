@@ -185,45 +185,72 @@ and summaries are private: they never leave through an unscoped call.
 
 ### Queries
 
-| Tool | Input | Output |
-|---|---|---|
-| `mesh_graph_ledgers` | `session?`, `scheme?`, `cursor` | refs with open-link counts, cached title, last activity |
-| `mesh_graph_ledger_sessions` | `ref`, `roles?`, `history?` | sessions linked to the ref, with link records |
-| `mesh_graph_session` | `session` | session summary, links, lineage edges, resume contract |
-| `mesh_graph_neighbours` | `session`, `depth 1-2`, `kinds?` | scored neighbours with breakdown |
-| `mesh_graph_subgraph` | `refs[]` and/or `sessions[]`, `depth` | nodes and edges for a project or discussion-group view |
-| `mesh_graph_search` | `agent?`, `status?`, `text?`, `cursor` | session picker |
-| `mesh_graph_changes` | `since` (seq), `refs?`, `limit` | ordered events with `seq` and `eventId` |
-| `mesh_graph_resume` | `session` | resume contract (below) |
+Each tool answers one query of the consumer spec (Q1-Q7) and keeps its semantics.
 
-Pagination uses opaque cursors. `changes` is pull-based; a gap in `seq` (or a cursor older than the
-compaction snapshot) answers `reset: true`, and the client re-reads with `subgraph`. Events carry
-ids and refs, never transcript content.
+| Spec | Tool | Input | Output |
+|---|---|---|---|
+| Q1 | `mesh_graph_ledger_sessions` | `ref`, `includeDescendants?`, `roles?`, `history?` | sessions linked to the ref, with link records |
+| Q2 | `mesh_graph_session_ledgers` | `session`, `history?` | links of the session with ref, role, since/until, cached title |
+| Q3 | `mesh_graph_neighbours` | `session`, `depth 1-2`, `edgeKinds?` | scored neighbours with breakdown |
+| Q4 | `mesh_graph_subgraph` | `refs[]` and/or `sessions[]`, `depth` | nodes and edges for a project or discussion-group view |
+| Q5 | `mesh_graph_resume` | `session` | resume info (below) |
+| Q6 | `mesh_graph_search` | `harness?`, `state?`, `owner?`, `text?`, `cursor` | session picker |
+| Q7 | `mesh_graph_changes` | `sinceCursor`, `refs?`, `limit` | ordered events with `seq` and `eventId` |
 
-### Resume contract
+`includeDescendants` needs a parent/child notion that opaque refs do not have: the caller passes the
+descendant refs it knows (the ledger owns its tree), and mesh unions them. Default queries return
+only open links and non-ended edges; `history: true` adds ended ones. Pagination uses opaque cursors,
+never offsets.
+
+### Change feed
+
+Q7 exposes the consumer's event vocabulary, projected from the graph stream:
+
+| Feed event | Graph source |
+|---|---|
+| `session.created` | first `node.upserted` for a new `<agent>:<runtimeUuid>` |
+| `session.state_changed` | `node.upserted` that changes `status` or `attention.state` |
+| `session.renewed` | `session.renewed` (old id, new id) |
+| `session.ended` | `status: closed` or archived surface |
+| `edge.added` / `edge.ended` | `link.opened` / `link.closed` (session to ledger, `kind` = role) and `edge.added` / `edge.ended` (session to session) |
+| `resume.changed` | change of `resumable`, `resumabilityReasons` or writer state |
+
+`link.touched` stays internal. `eventId` is the graph event id, so replay from an old cursor yields
+the same ids. A gap in `seq`, or a cursor older than the compaction snapshot, answers `reset: true`
+and the client re-reads with Q4. Pull is required; push is not in v1. Events carry ids and refs,
+never transcript content.
+
+### Resume info (Q5)
+
+Same shape as the consumer spec, with `argv` added:
 
 ```json
 {
-  "session": "claude:<uuid>",
-  "resumable": false,
-  "reasons": ["occupied"],
-  "writer": { "state": "owned", "kind": "claude-desktop", "since": "<iso>" },
+  "sessionId": "claude:<uuid>", "harness": "claude", "nativeId": "<uuid>",
+  "host": "<host label>", "workspace": "<cwd>",
+  "resumable": false, "reason": "occupied", "reasons": ["occupied"],
+  "writer": { "state": "occupied", "process": "claude-desktop", "since": "<iso>" },
   "commands": [
-    { "label": "Claude Code CLI", "argv": ["claude", "--resume", "<uuid>"], "cwd": "<cwd>" }
+    { "label": "Claude Code CLI", "command": "claude --resume <uuid>",
+      "argv": ["claude", "--resume", "<uuid>"], "cwd": "<cwd>" }
   ],
-  "hints": [],
-  "successor": null
+  "deepLinks": [], "hints": [], "successor": null
 }
 ```
 
 - Commands are native and work without agent-mesh or the UI: `claude --resume <uuid>` run in the
-  session cwd; `codex resume <uuid> --cd <cwd>`. Returned as `argv` plus `cwd`, never a shell string.
-- `reasons` reuses `resumabilityReasons` (`missing-runtime-uuid`, `missing-cwd`,
-  `missing-transcript`) plus `archived`, `occupied`, `desktop-owned`, `superseded`.
-- Occupied or Desktop-owned sessions return the command for reference but `resumable: false`; the
-  supported path is the existing queue/inbox handoff, never a second writer.
+  session cwd; `codex resume <uuid> --cd <cwd>`. `command` is for display; launchers use `argv` and
+  `cwd`, never a shell string.
+- `writer.state` maps the existing writer probe: `owned` → `occupied`, `free` → `free`, `unknown`
+  stays `unknown`.
+- `resumable: false` always has `reason` (the first of `reasons`). `reasons` reuses
+  `resumabilityReasons` (`missing-runtime-uuid`, `missing-cwd`, `missing-transcript`) plus
+  `archived`, `occupied`, `desktop-owned`, `superseded`, `host-offline`, `harness-missing`.
+- Occupied or Desktop-owned sessions keep the command for reference; the supported path is the
+  existing queue/inbox handoff, never a second writer.
 - Archived Codex sessions return `hints: ["codex unarchive <uuid>"]`.
-- `successor` points along `succeeds`/`session.renewed`; the UI offers the successor.
+- `successor` follows `succeeds`/`session.renewed`; the UI offers the successor.
+- `host` is a configured label, never a hostname or address.
 - No credentials, tokens, environment values or socket paths.
 
 ## 6. Deviations from the consumer spec
@@ -236,9 +263,9 @@ The consumer's needs spec was the input; the code changes it as follows.
 | Ledger refs like `flow:<space>/work-item/<guid>` | Any `OPAQUE_REF`; spaces are part of the id | Existing validation already accepts that shape; mesh stays schema-free. |
 | Link kinds `works-on`, `discusses`, `reviews`, `coordinates` | Same plus `owns`, `observes`, `mentioned` | Needed for neighbour weighting and for the weak reconciler evidence. |
 | Edge kinds `spawned`, `renewed-as`, `handoff` | `spawned-by`, `succeeds`, `forked-from`; handoff = `delegates-to` or `succeeds` | Reuses existing types and their stored direction. |
-| `host` on sessions, offline state | Not modelled yet | The graph is per host today; multi-host is open question 3. |
+| `host` on sessions, offline state | `host` is the graph's configured label; offline hosts keep their sessions (section 8) | The graph is per host today. |
 | Writes W1-W3 (link/unlink, create session, Flow projection) | Out of this read-only API; W1 maps to `link open/close` with `source: ui:<principal>`, W2 to `mesh_agent_session_create --ref` | Writes need their own authorization design. |
-| HTTP API | MCP tools over the existing HTTP endpoint | The gateway exposes no REST surface; one auth path. |
+| HTTP API with tool semantics | MCP tools over the existing HTTP endpoint (section 8) | The gateway exposes no REST surface; one auth path. |
 | Agentwheel launch/resume hooks as a feeder | Agentwheel only distributes hook artifacts; launches come from the bridge and the harness itself | Verified in Agentwheel's runtime code. |
 
 ## 7. Implementation batches
@@ -253,12 +280,25 @@ The consumer's needs spec was the input; the code changes it as follows.
 
 Each batch is independently shippable and keeps the existing registry contract.
 
-## 8. Open questions for the UI consumer
+## 8. Answers to the consumer's open questions
+
+1. **Transport.** MCP tools over the gateway's existing HTTP endpoint (streamable HTTP, JSON
+   response mode), behind the same access proxy and principal model. That is HTTP with the same
+   tool semantics, and the consumer's API server calls it as an MCP client. A REST mirror can be
+   added later as a thin adapter over the same handlers if an MCP client proves costly; it is not
+   part of v1.
+2. **Persistence and retention.** In the existing graph state directory of the host running the
+   bridge: `events.jsonl` canonical, `graph.json` projection, `snapshot.json` after compaction.
+   Ended links and edges stay in the projection as history; compaction folds them into the
+   snapshot and keeps them for 90 days by default (configurable), then drops them. Open links and
+   edges are never compacted away.
+3. **Offline devices.** Sessions stay in the graph. Their resume info answers `resumable: false`,
+   `reason: host-offline`, and their links still count for Q1-Q4. Each host keeps its own graph
+   today; federating several hosts through the gateway is follow-up work.
+
+## 9. Open questions for the UI consumer
 
 1. Is domain-based visibility enough, or does the UI need per-space principals on links?
-2. Retention of ended links and edges: keep forever, or compact after N days?
-3. Multi-host: one graph per host federated by the gateway, or a single shared graph?
-4. Are `owns` and per-role weights what the UI wants to show, or a simpler shared/not-shared view?
-5. Discussion groups: a ledger ref of their own scheme, or a UI-side grouping over refs?
-6. Is pull-only `changes` acceptable for v1, with push left for later?
-7. Should the UI write links (W1) in v1, and under which principal?
+2. Are `owns` and per-role weights what the UI wants to show, or a simpler shared/not-shared view?
+3. Discussion groups: a ledger ref of their own scheme, or a UI-side grouping over refs?
+4. Should the UI write links (W1) in v1, and under which principal?
