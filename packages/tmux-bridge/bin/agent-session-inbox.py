@@ -169,6 +169,8 @@ def one_shot_print(pid):
         args = [a.decode(errors='replace') for a in (Path('/proc') / str(pid) / 'cmdline').read_bytes().split(b'\0')[1:]]
     except OSError:
         return False
+    if '--' in args:
+        args = args[:args.index('--')]
     if not any(a in {'-p', '--print'} for a in args):
         return False
     if any(a == '--sdk-url' or a.startswith('--sdk-url=') for a in args):
