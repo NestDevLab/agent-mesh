@@ -122,8 +122,14 @@ def field(document: Any, dotted: str) -> Any:
 
 
 def same(actual: Any, want: Any) -> bool:
-    # JSON types must match too: 0 is not false and null is not a missing field.
-    return actual is not MISSING and type(actual) is type(want) and actual == want
+    # JSON types must match at every level: 0 is not false and null is not a missing field.
+    if actual is MISSING or type(actual) is not type(want):
+        return False
+    if isinstance(want, dict):
+        return actual.keys() == want.keys() and all(same(actual[key], want[key]) for key in want)
+    if isinstance(want, list):
+        return len(actual) == len(want) and all(same(a, w) for a, w in zip(actual, want))
+    return actual == want
 
 
 def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -131,6 +137,10 @@ def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
     max_age = timedelta(hours=float(job["maxAgeHours"]))
     result: dict[str, Any] = {"schema": CHECK_SCHEMA, "job": name, "checkedAt": iso(now),
                               "maxAgeHours": job["maxAgeHours"]}
+    if job.get("paused"):
+        # A deliberately paused job is reported once as paused, not as missed every check.
+        result["status"] = "paused"
+        return result
     last: datetime | None = None
     if job.get("path"):
         matches = [Path(p) for p in glob.glob(os.path.expanduser(job["path"])) if Path(p).is_file()]
@@ -191,6 +201,8 @@ def load_watch_list(path: Path) -> list[dict[str, Any]]:
             problem = "maxAgeHours must be a positive number"
         elif "path" in job and (not isinstance(job["path"], str) or not job["path"]):
             problem = "path must be a non-empty string"
+        elif "paused" in job and not isinstance(job["paused"], bool):
+            problem = "paused must be true or false"
         elif "expect" in job and (not isinstance(job["expect"], dict) or "path" not in job):
             problem = "expect must be an object and needs path"
         if problem:
@@ -208,9 +220,9 @@ def check(args: argparse.Namespace) -> int:
     healthy = True
     for job in jobs:
         result = check_job(job, now)
-        if result["status"] != "ok":
+        if result["status"] not in ("ok", "paused"):
             healthy = False
-        elif args.alerts_only:
+        elif args.alerts_only and result["status"] == "ok":
             continue
         print(json.dumps(result, sort_keys=True))
     return 0 if healthy else 2

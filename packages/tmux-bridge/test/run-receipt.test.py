@@ -129,7 +129,9 @@ class RunReceiptTest(unittest.TestCase):
         report = self.root / "out.json"
         job = {"name": "out", "maxAgeHours": 26, "path": str(report)}
         cases = (("not json", {"status": None}), ('{"enabled": 0}', {"enabled": False}),
-                 ("{}", {"status": None}), ('{"count": "1"}', {"count": 1}))
+                 ("{}", {"status": None}), ('{"count": "1"}', {"count": 1}),
+                 ('{"s": {"enabled": 0}}', {"s": {"enabled": False}}), ('{"flags": [0]}', {"flags": [False]}),
+                 ('{"s": {"a": 1, "b": 2}}', {"s": {"a": 1}}))
         for body, expect in cases:
             with self.subTest(body=body):
                 report.write_text(body)
@@ -140,6 +142,11 @@ class RunReceiptTest(unittest.TestCase):
         os.utime(report, (epoch("2026-11-02T11:00:00Z"),) * 2)
         code, [result] = self.check(dict(job, expect={"status": None, "enabled": False}))
         self.assertEqual((code, result["status"]), (0, "ok"))
+
+    def test_paused_job_is_reported_without_failing(self):
+        code, [result] = self.check({"name": "nightly-audit", "maxAgeHours": 26, "paused": True},
+                                    extra=("--alerts-only",))
+        self.assertEqual((code, result["status"]), (0, "paused"))
 
     def test_alerts_only_hides_healthy_jobs(self):
         self.run_main("record", "--job", "daily", "--outcome", "noop", "--ended-at", "2026-11-02T11:00:00Z")
