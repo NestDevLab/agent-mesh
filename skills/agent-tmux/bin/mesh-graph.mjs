@@ -179,7 +179,7 @@ function addNode(statePath, options) {
       const refEvents = [];
       if (graph.migrated) {
         delete changes.refs;
-        if (options.refs !== undefined) refEvents.push(...plexus.refDiffEvents(graph, plexus.linkSubject({ ...existing, ...changes }), parseRefs(options.refs), event, sourceOption(options)));
+        if (options.refs !== undefined) refEvents.push(...plexus.refDiffEvents(graph, [plexus.linkSubject({ ...existing, ...changes }), `pending:${existing.id}`], parseRefs(options.refs), event, sourceOption(options)));
       }
       if (Object.keys(changes).length === 0) return { graph, events: refEvents, result: { node: existing, changed: refEvents.length > 0 } };
       const node = { ...existing, ...changes, updatedAt: now() };
@@ -903,6 +903,7 @@ function mutate(statePath, operation, options = {}) {
     const result = operation(graph);
     const events = result.events || (result.event ? [result.event] : []);
     if (graph.migrated) {
+      if (graph.unnumbered) throw new Error("store has events without seq after migration (written by an older mesh-graph); update every mesh-graph binary, then run 'mesh-graph migrate --apply'");
       events.push(...pendingResolutions(graph, events));
       let seq = graph.lastSeq || 0;
       for (const item of events) Object.assign(item, { seq: ++seq, host: plexus.hostLabel() });
@@ -948,6 +949,8 @@ function readCheckpoint(statePath) {
   const cursor = checkpoint.cursor;
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
+      // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
+      !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1039,13 +1042,14 @@ function deriveGraph(events, base = null) {
   const state = { links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
+  let unnumbered = base?.unnumbered === true;
   let generatedAt = base?.generatedAt || "1970-01-01T00:00:00.000Z";
   for (const item of events) {
     if (Number.isSafeInteger(item.seq)) {
       // An interrupted compaction can leave already-snapshotted events in the stream.
       if (item.seq <= baseSeq) continue;
       lastSeq = Math.max(lastSeq, item.seq);
-    }
+    } else if (state.migrated) unnumbered = true;
     generatedAt = item.at || generatedAt;
     if (plexus.PLEXUS_EVENTS.has(item.type)) {
       plexus.applyPlexusEvent(state, item);
@@ -1080,6 +1084,7 @@ function deriveGraph(events, base = null) {
     renewals: state.renewals,
     migrated: state.migrated,
     lastSeq,
+    ...(unnumbered ? { unnumbered: true } : {}),
   };
 }
 
@@ -1480,6 +1485,17 @@ function migrateStore(statePath, options) {
     const snapshot = readSnapshot(statePath);
     const events = tailEvents([...readEvents(statePath)], snapshot?.lastEventId);
     const graph = deriveGraph(events, snapshot?.graph);
+    if (graph.migrated && graph.unnumbered) {
+      let seq = graph.lastSeq;
+      const renumbered = events.map((item) => (Number.isSafeInteger(item.seq) ? item : { ...item, seq: ++seq, host: plexus.hostLabel() }));
+      const report = { migration: options.apply ? "renumbered" : "dry-run", events: seq - graph.lastSeq, links: 0, lastSeq: seq };
+      if (!options.apply) return report;
+      writeAtomic(join(statePath, "events.jsonl"), renumbered.map((item) => JSON.stringify(item)).join("\n") + "\n");
+      const derived = deriveGraph(renumbered, snapshot?.graph);
+      writeProjection(statePath, derived);
+      writeCheckpoint(statePath, derived);
+      return { ...report, changed: true };
+    }
     if (graph.migrated) return { migration: "already-migrated", changed: false };
     if (events.some((item) => item.seq !== undefined)) throw new Error("store has numbered events but no store.migrated marker; refusing to renumber");
     let seq = snapshot?.graph?.lastSeq || 0;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -98,7 +98,7 @@ test("pending links resolve when the node learns its runtime UUID, merging into 
   }
 });
 
-test("Oikuma acceptance: links, neighbours with redaction, renewal and resume info", async () => {
+test("consumer acceptance: links, neighbours with redaction, renewal and resume info", async () => {
   const state = await mkdtemp(join(tmpdir(), "plexus-"));
   const stubDir = await mkdtemp(join(tmpdir(), "plexus-writer-"));
   try {
@@ -192,6 +192,50 @@ test("Q7 replays from an old cursor with identical event ids and resets past the
     const reset = await query(state, "changes", { sinceCursor: start });
     assert.equal(reset.reset, true);
     assert.equal((await query(state, "ledger-sessions", { ref: item, history: true })).sessions.length, 2);
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("a write from an older binary is detected, never silently drops links, and migrate renumbers it", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const graph = await ok(state, ["show", "--json"]);
+    const node = graph.nodes.find((item) => item.runtimeUuid === CODEX);
+    const legacy = { schema: "agent-mesh.session-graph-event.v1", id: "event-legacy-writer", at: new Date().toISOString(), type: "node.upserted", node: { ...node, summary: "old binary" } };
+    await appendFile(join(state, "events.jsonl"), `${JSON.stringify(legacy)}\n`);
+    const { graph: _graph, ...checkpoint } = JSON.parse(await readFile(join(state, "checkpoint.json"), "utf8"));
+    const size = (await stat(join(state, "events.jsonl"))).size;
+    const legacyGraph = { schema: graph.schema, generatedAt: graph.generatedAt, nodes: graph.nodes, edges: graph.edges };
+    await writeFile(join(state, "checkpoint.json"), JSON.stringify({ ...checkpoint, graph: legacyGraph, cursor: { ...checkpoint.cursor, offset: size } }));
+
+    const q1 = await query(state, "ledger-sessions", { ref: "flow:space-a/work-item/1" });
+    assert.equal(q1.sessions.length, 1, "links survive a checkpoint written without Plexus state");
+    const refused = await run(state, ["link", "open", "--agent", "codex", "--runtime-uuid", CODEX, "--ref", "flow:space-a/work-item/1", "--json"]);
+    assert.notEqual(refused.code, 0);
+    assert.match(refused.stderr, /without seq after migration/);
+    assert.equal((await ok(state, ["migrate", "--apply"])).migration, "renumbered");
+    await ok(state, ["link", "open", "--agent", "codex", "--runtime-uuid", CODEX, "--ref", "flow:space-a/work-item/1"]);
+    const lines = (await readFile(join(state, "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(lines.map((item) => item.seq), lines.map((_, index) => index + 1));
+  } finally {
+    await rm(state, { recursive: true, force: true });
+  }
+});
+
+test("Q7 resets a cursor ahead of the stream; scope roots compare normalized paths", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const ahead = Buffer.from(JSON.stringify({ v: 1, kind: "changes", host: "test-host", seq: 999 })).toString("base64url");
+    assert.equal((await query(state, "changes", { sinceCursor: ahead })).reset, true);
+
+    await ok(state, ["add", "--agent", "codex", "--tmux-target", "t-escape", "--cwd", "/work/space-a/../space-b/app", "--runtime-uuid", RENEWED, "--json"]);
+    const search = await query(state, "search", { scope: { ...scopeA, targets: [{ id: "a", harness: "codex", roots: ["/work/space-a/"] }] } });
+    assert.deepEqual(search.sessions.map((session) => session.sessionId), [`codex:${CODEX}`]);
   } finally {
     await rm(state, { recursive: true, force: true });
   }

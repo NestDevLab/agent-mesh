@@ -5,6 +5,7 @@
  */
 
 import { createHmac, randomUUID } from "node:crypto";
+import { posix } from "node:path";
 
 export const LINK_ROLES = new Set(["owns", "works-on", "reviews", "coordinates", "discusses", "observes", "mentioned"]);
 export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operator|legacy-node-refs|ui:[A-Za-z0-9._:-]{1,128}|hook:[a-z-]{1,32})$/;
@@ -127,8 +128,10 @@ export function projectNodeRefs(nodes, links) {
 }
 
 /** Link events that move a subject's open refs to `desired`, the legacy `--refs` / `ref add|remove` contract. */
-export function refDiffEvents(graph, subject, desired, makeEvent, source = "operator") {
-  const open = graph.links.filter((link) => link.session === subject && link.until === null);
+export function refDiffEvents(graph, subjects, desired, makeEvent, source = "operator") {
+  const list = Array.isArray(subjects) ? subjects : [subjects];
+  const subject = list[0];
+  const open = graph.links.filter((link) => list.includes(link.session) && link.until === null);
   const events = [];
   for (const ref of desired) {
     if (open.some((link) => link.ref === ref)) continue;
@@ -196,8 +199,11 @@ export function makeScope(scope) {
   const prefixes = Array.isArray(scope.refPrefixes) ? scope.refPrefixes.filter((item) => typeof item === "string" && item) : [];
   const targets = Array.isArray(scope.targets) ? scope.targets : [];
   if (typeof scope.handleKey !== "string" || scope.handleKey.length < 16) throw new Error("scope.handleKey must be at least 16 characters");
-  const within = (cwd, root) => typeof cwd === "string" && typeof root === "string" && root &&
-    (cwd === root || cwd.startsWith(root.endsWith("/") ? root : `${root}/`));
+  const clean = (path) => typeof path === "string" && path.startsWith("/") ? posix.resolve(path) : null;
+  const within = (cwd, root) => {
+    const [left, right] = [clean(cwd), clean(root)];
+    return left !== null && right !== null && (left === right || left.startsWith(right === "/" ? "/" : `${right}/`));
+  };
   return {
     scoped: true,
     refVisible: (ref) => prefixes.some((prefix) => ref.startsWith(prefix)),
@@ -368,11 +374,11 @@ export function neighbours(graph, input = {}, scope = null, config = {}) {
   }
   const result = [...found].map(([other, item]) => {
     const session = sessionView(ctx.view, ctx.sessions.get(other), other);
+    if (session.redacted) return session;
     const base = { ...session, depth: item.depth, score: round(item.score) };
-    if (session.redacted) return base;
     return { ...base, breakdown: { refs: item.refs, edges: item.edges }, ...(item.via ? { via: item.via } : {}) };
   });
-  result.sort((a, b) => b.score - a.score || String(a.sessionId || a.handle).localeCompare(String(b.sessionId || b.handle)));
+  result.sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || String(a.sessionId || a.handle).localeCompare(String(b.sessionId || b.handle)));
   return { session: id, depth, neighbours: result };
 }
 
@@ -387,12 +393,17 @@ export function subgraph(graph, input = {}, scope = null) {
     if (!scope || visible(ctx.view, ctx.sessions.get(id))) seeds.add(id);
   }
   const included = new Set(seeds);
+  const redacted = new Map();
   let frontier = [...seeds];
   for (let hop = 0; hop < depth; hop++) {
     const next = [];
     for (const id of frontier) {
       if (scope && !visible(ctx.view, ctx.sessions.get(id))) continue;
       for (const item of neighbours(graph, { session: id, depth: 1 }, scope).neighbours) {
+        if (item.redacted) {
+          redacted.set(item.handle, item);
+          continue;
+        }
         const other = item.sessionId;
         if (!other || included.has(other)) continue;
         included.add(other);
@@ -406,7 +417,7 @@ export function subgraph(graph, input = {}, scope = null) {
   const ledgers = [...new Set([...refs, ...links.map((link) => link.ref)])].sort();
   const edges = lineageEdges(graph, false).filter((edge) => shownSessions.includes(edge.from) && shownSessions.includes(edge.to));
   return {
-    sessions: shownSessions.map((id) => sessionView(ctx.view, ctx.sessions.get(id), id)),
+    sessions: [...shownSessions.map((id) => sessionView(ctx.view, ctx.sessions.get(id), id)), ...[...redacted.values()].sort((a, b) => a.handle.localeCompare(b.handle))],
     ledgers: ledgers.map((ref) => ({ ref, ...(links.find((link) => link.ref === ref && link.title)?.title ? { title: links.find((link) => link.ref === ref && link.title).title } : {}) })),
     links: links.map(linkView),
     edges: edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, type: edge.type })),
@@ -504,7 +515,7 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
     const cursor = decodeCursor(input.sinceCursor, "changes");
     if (cursor.host !== host) throw new Error("cursor belongs to another host");
     if (!Number.isSafeInteger(cursor.seq) || cursor.seq < 0) throw new Error("invalid cursor");
-    if (cursor.seq < watermark) return { reset: true, events: [], cursor: encodeCursor({ kind: "changes", host, seq: lastSeq }) };
+    if (cursor.seq < watermark || cursor.seq > lastSeq) return { reset: true, events: [], cursor: encodeCursor({ kind: "changes", host, seq: lastSeq }) };
     since = cursor.seq;
   }
   const view = makeScope(scope);
@@ -550,6 +561,7 @@ function applyReplay(state, item, emitted) {
   }
   if (item.type === "node.purged") {
     state.nodes.delete(item.id);
+    for (const [id, edge] of state.edges) if (edge.from === item.id || edge.to === item.id) state.edges.delete(id);
     return;
   }
   if (item.type === "edge.added") {
