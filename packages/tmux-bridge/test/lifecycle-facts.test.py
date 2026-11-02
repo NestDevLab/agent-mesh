@@ -103,6 +103,21 @@ class LifecycleFacts(unittest.TestCase):
             watch.consume(agent='codex', session_id=ID, state=state, output_format='jsonl', inbox=None)
         self.assertEqual(json.loads(output.getvalue())['source_event_id'], events[0]['source_event_id'])
 
+    def test_claude_turn_and_explicit_thread_final_stay_distinct(self):
+        ordinary = {"type": "assistant", "message": {"stop_reason": "end_turn", "content": [{"type": "text", "text": "turn answer"}]}}
+        final = {"type": "result", "subtype": "success", "result": "thread finished"}
+        facts = watch.empty_facts('claude', ID, self.path)
+        watch.update_facts(facts, 'claude', ID, ordinary)
+        self.assertEqual(facts['last_completion'], 'turn')
+        watch.update_facts(facts, 'claude', ID, final)
+        self.assertEqual(facts['last_completion'], 'thread')
+        self.assertEqual(facts['last_assistant'], 'thread finished')
+        events = list(watch.events_for('claude', final, ID))
+        out, _ = follow.derive('claude:' + ID, {'mode': 'observe'}, events, {})
+        self.assertEqual(out[0]['completion'], 'thread')
+        watch.update_facts(facts, 'claude', ID, {'type': 'assistant', 'isApiErrorMessage': True, 'message': {'content': 'capacity'}})
+        self.assertEqual(facts['last_error']['message'], 'capacity')
+
     def test_archived_metadata_only_session_is_observed(self):
         with patch.object(watch, 'codex_metadata', return_value={ID: {'archived': True, 'name': 'archived', 'metadata_updated_at_ns': 0}}), patch.object(watch, 'transcript_candidates', return_value=[]), patch.object(watch, 'bridge_parents', return_value={}):
             facts, _ = watch.discover_transcripts('codex')

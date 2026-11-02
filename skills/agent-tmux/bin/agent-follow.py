@@ -259,7 +259,8 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
             else:
                 body, line_kind = str(reply), "REPLY"
             if (mode != "child" or line_kind != "REPLY") and (mode != "observe" or not observe_questions_only or line_kind == "ERROR"):
-                out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected})
+                out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected,
+                            **({"completion": event["completion"]} if event.get("completion") else {})})
             pending.pop("last_reply", None)
             pending["active"] = False
     return out, pending

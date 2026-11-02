@@ -51,51 +51,9 @@ def resolve_transcript(agent: str, session_id: str) -> Path | None:
 
 
 def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
-    """Read objective transcript facts without creating a cursor or waking a session."""
-    cwd = ""
-    title = ""
-    last_assistant = ""
-    assistant_turns = 0
-    first_timestamp = None
-    for raw_line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            record = json.loads(raw_line)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        first_timestamp = first_timestamp or record.get("timestamp")
-        if agent == "codex":
-            payload = record.get("payload") or {}
-            if record.get("type") == "session_meta":
-                cwd = str(payload.get("cwd") or cwd)
-            elif record.get("type") == "turn_context":
-                cwd = str(payload.get("cwd") or cwd)
-            for item in codex_events(record, session_id):
-                if item["kind"] == "human_message" and not title:
-                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
-                elif item["kind"] == "agent_message":
-                    assistant_turns += 1
-                    last_assistant = str(item["body"])
-        else:
-            cwd = str(record.get("cwd") or cwd)
-            for item in claude_events(record, session_id):
-                if item["kind"] == "human_message" and not title:
-                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
-                elif item["kind"] == "agent_message":
-                    assistant_turns += 1
-                    last_assistant = str(item["body"])
-    return {
-        "agent": agent,
-        "runtime_uuid": session_id,
-        "path": str(transcript),
-        "cwd": cwd,
-        "title": title,
-        "last_assistant": last_assistant,
-        "assistant_turns": assistant_turns,
-        "updated_at": transcript.stat().st_mtime_ns,
-        "createdAt": transcript_created_at(agent, transcript, first_timestamp),
-    }
+    """Read the same normalized facts as cached discovery, without persisting state."""
+    facts = read_appended_facts(agent, session_id, transcript, None)
+    return {key: value for key, value in facts.items() if not key.startswith("_")}
 
 
 def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
@@ -719,6 +677,21 @@ def claude_events(
     inbox: Path | None = None,
 ) -> Iterable[dict[str, Any]]:
     record_type = record.get("type")
+    if record_type == "result":
+        reply = clipped(record.get("result"))
+        failed = record.get("is_error") or str(record.get("subtype") or "").startswith("error")
+        if failed or reply:
+            yield event(timestamp=record.get("timestamp"), agent="claude", session_id=session_id,
+                        kind="turn_complete", completion="thread",
+                        outcome="error" if failed else "replied", reply=reply,
+                        error={"message": reply or "thread failed", "code": str(record.get("subtype") or "error")} if failed else None)
+        return
+    if record.get("isApiErrorMessage") or record.get("error"):
+        failure = record.get("error")
+        message = str(failure.get("message") or "") if isinstance(failure, dict) else str(failure or "")
+        yield event(timestamp=record.get("timestamp"), agent="claude", session_id=session_id,
+                    kind="turn_complete", outcome="error", error={"message": clipped(message or message_text((record.get("message") or {}).get("content")) or "session error"), "code": "session_error"})
+        return
     if record_type == "attachment":
         attachment = record.get("attachment") or {}
         if attachment.get("type") != "queued_command" or attachment.get("commandMode") != "task-notification":
