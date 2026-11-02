@@ -185,13 +185,16 @@ def noise(prompt: str, config: dict[str, Any]) -> bool:
 
 def read_records(agent: str, ref: str, path: Path, cursor: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Read complete JSONL records without loading an entire transcript."""
-    size = path.stat().st_size
+    stat = path.stat()
+    size = stat.st_size
     offset = int(cursor.get("offset", 0))
     pending = dict(cursor.get("pending") or {})
     if cursor.get("path") != str(path) or offset > size:
         offset, pending = 0, {}
     events: list[dict[str, Any]] = []
     with path.open("rb") as handle:
+        if not watch.cursor_matches(handle, cursor, stat):
+            offset, pending = 0, {}
         handle.seek(offset)
         while handle.tell() < size:
             line = handle.readline(size - handle.tell())
@@ -204,7 +207,8 @@ def read_records(agent: str, ref: str, path: Path, cursor: dict[str, Any]) -> tu
                 continue
             if isinstance(record, dict):
                 events.extend(watch.events_for(agent, record, ref.split(":", 1)[1]))
-    return events, {"path": str(path), "offset": offset, "pending": pending}
+        stamp = watch.cursor_stamp(handle, offset, stat)
+    return events, {"path": str(path), "offset": offset, "pending": pending, "stamp": stamp}
 
 
 def one_line(seq: int, ref: str, selection: dict[str, str], kind: str, body: str, stamp: Any) -> str:
@@ -228,7 +232,10 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
     for event in events:
         kind = event.get("kind")
         event_id = str(event.get("source_event_id") or "")
-        if kind == "human_message":
+        if kind == "turn_started":
+            pending["active"] = True
+            pending.pop("stalled", None)
+        elif kind == "human_message":
             pending["last_human"] = str(event.get("body") or "")
             pending.pop("last_reply", None)
             pending["active"] = True
@@ -252,7 +259,8 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
             else:
                 body, line_kind = str(reply), "REPLY"
             if (mode != "child" or line_kind != "REPLY") and (mode != "observe" or not observe_questions_only or line_kind == "ERROR"):
-                out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected})
+                out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected,
+                            **({"completion": event["completion"]} if event.get("completion") else {})})
             pending.pop("last_reply", None)
             pending["active"] = False
     return out, pending
