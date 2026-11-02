@@ -372,8 +372,19 @@ class SessionInboxTest(unittest.TestCase):
                    '--session', SESSION, '--require-single',
                    '--require-monitor-inbox', str(self.root / (SESSION + '.jsonl'))]
         env = {**os.environ, 'AGENT_WRITER_PROC_ROOT': str(child.parent), 'CLAUDE_BIN': str(provider)}
+        supervisor = json.loads((self.root / (SESSION + '.watch.lock')).read_text())['supervisor']['pid']
+        supervisor_status = Path(self.temp.name) / 'proc' / str(supervisor) / 'status'
+        supervisor_status.parent.mkdir(parents=True)
+        # The supervisor is a descendant of the current session child: ready.
+        supervisor_status.write_text('Name:\tpython3\nPPid:\t999999\n')
         result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 0, result.stderr)
+        # Same remote-control parent, but the watcher belongs to a replaced or sibling child: not ready.
+        supervisor_status.write_text('Name:\tpython3\nPPid:\t999998\n')
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 4, result.stderr)
+        # A different parent never owns the inbox.
+        supervisor_status.write_text('Name:\tpython3\nPPid:\t999999\n')
         (child / 'status').write_text('Name:\tclaude\nPPid:\t1\n')
         result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 4, result.stderr)
