@@ -33,6 +33,7 @@ ROOT_ENV = {
 }
 MAX_BODY = 4096
 MAX_REASONING = 300
+CURSOR_ANCHOR_BYTES = 256
 # Codex mints v7 UUIDs, Claude v4. Don't pin the version nibble.
 SESSION_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 
@@ -142,6 +143,11 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["first_real_prompt"] = first_real_prompt(body)
             facts["pending_question"] = False
             facts["turn_active"] = True
+            facts["last_error"] = None
+        elif kind == "turn_started":
+            facts["turn_active"] = True
+            facts["last_error"] = None
+            facts["last_turn_id"] = item.get("turn_id")
         elif kind == "agent_message":
             body = str(item.get("body") or "")
             if body != facts.get("_last_agent_body"):
@@ -161,7 +167,15 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
             facts["pending_question"] = True
         elif kind == "turn_complete":
             facts["turn_active"] = False
-        if kind in {"human_message", "agent_message", "tool", "question", "turn_complete"}:
+            facts["last_outcome"] = item.get("outcome")
+            facts["last_error"] = item.get("error")
+            facts["last_turn_id"] = item.get("turn_id")
+            facts["last_complete_at"] = timestamp
+            facts["last_completion"] = item.get("completion", "turn")
+            if item.get("reply"):
+                facts["last_assistant"] = str(item["reply"])
+                facts["last_final_at"] = timestamp
+        if kind in {"human_message", "agent_message", "tool", "question", "turn_started", "turn_complete"}:
             facts["last_event_kind"] = kind
 
 
@@ -172,6 +186,8 @@ def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]
         "mutating_tool_calls": 0, "last_human_at": None, "last_final_at": None,
         "last_event_kind": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
         "createdAt": None, "origin": "human", "parent": None,
+        "last_outcome": None, "last_error": None, "last_turn_id": None,
+        "last_complete_at": None, "last_completion": None,
     }
 
 
@@ -183,14 +199,36 @@ def transcript_created_at(agent: str, transcript: Path, first_timestamp: Any = N
     return str(first_timestamp) if isinstance(first_timestamp, str) and first_timestamp else None
 
 
+def cursor_stamp(handle: Any, offset: int, stat: Any) -> dict[str, Any]:
+    """Bound a cursor to its file and a small prefix/tail anchor, without rescanning."""
+    position = handle.tell()
+    handle.seek(0)
+    prefix = handle.read(min(offset, CURSOR_ANCHOR_BYTES))
+    handle.seek(max(0, offset - CURSOR_ANCHOR_BYTES))
+    anchor = handle.read(min(offset, CURSOR_ANCHOR_BYTES))
+    handle.seek(position)
+    return {"dev": stat.st_dev, "ino": stat.st_ino,
+            "prefix": hashlib.sha256(prefix).hexdigest(), "anchor": hashlib.sha256(anchor).hexdigest()}
+
+
+def cursor_matches(handle: Any, cursor: dict[str, Any], stat: Any) -> bool:
+    offset = cursor.get("offset", 0)
+    if not isinstance(offset, int) or offset < 0 or offset > stat.st_size:
+        return False
+    stamp = cursor.get("stamp")
+    # Old cursors remain readable. Their first read upgrades them in place.
+    return not stamp or stamp == cursor_stamp(handle, offset, stat)
+
+
 def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None) -> dict[str, Any]:
     stat = transcript.stat()
     reusable = (prior is not None and prior.get("path") == str(transcript)
                 and isinstance(prior.get("offset"), int) and prior["offset"] <= stat.st_size
                 and (prior["offset"] < stat.st_size or prior.get("mtime_ns") == stat.st_mtime_ns))
-    facts = dict(prior) if reusable else empty_facts(agent, session_id, transcript)
-    offset = int(facts.get("offset", 0))
     with transcript.open("rb") as handle:
+        reusable = reusable and cursor_matches(handle, prior, stat)
+        facts = dict(prior) if reusable else empty_facts(agent, session_id, transcript)
+        offset = int(facts.get("offset", 0))
         handle.seek(offset)
         while handle.tell() < stat.st_size:
             line = handle.readline(stat.st_size - handle.tell())
@@ -205,6 +243,7 @@ def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: di
                 if not facts.get("createdAt"):
                     facts["createdAt"] = transcript_created_at(agent, transcript, record.get("timestamp"))
                 update_facts(facts, agent, session_id, record)
+        facts["stamp"] = cursor_stamp(handle, offset, stat)
     facts.update(offset=offset, mtime_ns=stat.st_mtime_ns, size=stat.st_size, updated_at=stat.st_mtime_ns)
     facts["title"] = facts.get("title") or facts["first_real_prompt"]
     return facts
@@ -331,7 +370,7 @@ def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[li
     if agent == "codex":
         present = {item["runtime_uuid"] for item in facts}
         for session_id, entry in metadata.items():
-            if session_id in present or entry["archived"] or not re.fullmatch(SESSION_UUID, session_id, re.I):
+            if session_id in present or not re.fullmatch(SESSION_UUID, session_id, re.I):
                 continue
             item = empty_facts(agent, session_id, Path(""))
             item.update(entry)
@@ -497,6 +536,7 @@ def event(
     outcome: str | None = None,
     reply: str | None = None,
     error: dict[str, str] | None = None,
+    completion: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": "agent-mesh.event.v2",
@@ -511,6 +551,7 @@ def event(
         **({"outcome": outcome} if outcome else {}),
         **({"reply": reply} if reply is not None else {}),
         **({"error": error} if error else {}),
+        **({"completion": completion} if completion else {}),
     }
 
 
@@ -560,6 +601,17 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             body = clipped(payload.get("text"), MAX_REASONING)
             if body:
                 yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="reasoning", body=body)
+        elif payload_type == "task_started":
+            yield event(timestamp=timestamp, agent="codex", session_id=session_id,
+                        kind="turn_started", turn_id=str(payload.get("turn_id") or "") or None)
+        elif payload_type in {"error", "turn_aborted"}:
+            failure = payload.get("error")
+            failure = failure if isinstance(failure, dict) else {}
+            yield event(timestamp=timestamp, agent="codex", session_id=session_id,
+                        kind="turn_complete", turn_id=str(payload.get("turn_id") or "") or None,
+                        outcome="error", completion="task", error={
+                            "message": clipped(failure.get("message") or payload.get("message") or payload.get("reason") or payload_type),
+                            "code": str(failure.get("codex_error_info") or payload.get("codex_error_info") or payload_type)})
         elif payload_type == "task_complete":
             reply = payload.get("last_agent_message")
             failure = payload.get("error")
@@ -572,7 +624,8 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             yield event(
                 timestamp=timestamp, agent="codex", session_id=session_id,
                 kind="turn_complete", turn_id=str(payload.get("turn_id") or "") or None,
-                outcome=outcome, reply=reply if isinstance(reply, str) else None, error=error,
+                outcome=outcome, reply=clipped(reply) if isinstance(reply, str) else None, error=error,
+                completion="task",
             )
         return
 
@@ -801,18 +854,18 @@ def consume(
 ) -> tuple[int, bool]:
     path = Path(str(state["path"]))
     try:
-        size = path.stat().st_size
+        stat = path.stat()
+        size = stat.st_size
     except OSError:
         return 0, False
 
     offset = int(state.get("offset", 0))
-    if size < offset:
-        offset = 0
-        state["offset"] = 0
-    if size <= offset:
-        return 0, offset != int(state.get("offset", 0))
-
     with path.open("rb") as handle:
+        if not cursor_matches(handle, state, stat):
+            offset = 0
+        if size <= offset:
+            state["stamp"] = cursor_stamp(handle, offset, stat)
+            return 0, True
         handle.seek(offset)
         chunk = handle.read(size - offset)
 
@@ -821,6 +874,8 @@ def consume(
         return 0, False
 
     state["offset"] = offset + newline + 1
+    with path.open("rb") as handle:
+        state["stamp"] = cursor_stamp(handle, state["offset"], stat)
     count = 0
     for raw_line in chunk[: newline + 1].decode("utf-8", "replace").splitlines():
         try:

@@ -68,6 +68,7 @@ scripts/launch-options-test.sh
 scripts/mesh-cli-smoke.sh
 scripts/session-writer-test.sh
 scripts/session-watch-test.sh
+python3 test/lifecycle-facts.test.py
 scripts/session-link-test.sh
 scripts/desktop-session-link-test.sh
 

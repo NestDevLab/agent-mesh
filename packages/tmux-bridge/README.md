@@ -553,3 +553,16 @@ runs immediately after `new-session`. Regression test:
 | Remote visibility | auto-detected Codex app-server | explicit `--remote-control` opt-in |
 | Approval-dialog detection | footer "Press enter to confirm" | not wired yet |
 | `--approval-policy` | `-a/--ask-for-approval` | unsupported (hard error) |
+
+### Lifecycle facts
+
+`agent-watch --discover --cache <file>` keeps append-only transcript facts for
+registry sweeps. Facts include the latest task outcome, error, turn identity and
+completion kind. Commentary does not become a completed task. Archived sessions
+without a transcript remain visible as metadata-only records.
+
+Watch, discovery and follow cursors share file identity plus bounded prefix and
+cursor anchors. Replacement, truncation and anchored rewrites reset parsing;
+partial final records wait for a newline. Stable source event IDs let the durable
+follow outbox deduplicate replay after a reset. These guards sample boundaries;
+they do not claim to detect arbitrary edits in an unsampled middle region.
