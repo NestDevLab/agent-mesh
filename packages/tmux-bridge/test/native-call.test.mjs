@@ -264,3 +264,29 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
 }
 
 }
+
+
+test("explicit native resume requests daemon activation without claiming execution", async () => {
+  for (const resume of [false, true]) {
+    const value = await fixture("success");
+    const log = join(value.root, "queue-args.json");
+    await writeFile(value.codex, `#!/usr/bin/env node
+import {writeFile} from 'node:fs/promises';
+await writeFile(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)));
+console.error('synthetic resume diagnostic');
+`);
+    await chmod(value.codex, 0o755);
+    const result = await exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
+      "--correlation-id", "resume-fixture", "--delivery-only", ...(resume ? ["--resume"] : []), "--message", "Continue"],
+      {env: {...process.env, CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
+    const args = JSON.parse(await readFile(log, "utf8"));
+    const ack = JSON.parse(result.stdout);
+    assert.equal(args.includes("--resume"), resume);
+    assert.equal(args.filter(arg => arg === "queue").length, 1);
+    assert.equal(args[args.indexOf("--message") + 1], "Continue");
+    assert.equal(ack.status, "queued");
+    assert.equal(ack.resumeRequested, resume ? true : undefined);
+    assert.equal(ack.resumeVerified, resume ? false : undefined);
+    assert.equal(ack.resumeDiagnostic, resume ? true : undefined);
+  }
+});

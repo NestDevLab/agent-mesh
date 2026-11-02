@@ -104,7 +104,11 @@ Guard exit 3 blocks; exit 4 permits native queue only with exclusively known
 app-server writers; exit 6 permits native queue with known free/app-server
 ownership. A concurrent CLI writer blocks queueing. No desktop override is used.
 The engine calls `agent-native-call.mjs --delivery-only` and validates its
-correlated queue acknowledgement. `queued` proves transport acceptance only.
+correlated queue acknowledgement. It requests the native CLI `queue --resume`
+so an inactive daemon thread is reopened after enqueueing. The default native-call
+API remains queue-only unless explicitly passed `--resume`. The CLI may accept a
+queue even when daemon activation fails; receipts retain resume-request and
+diagnostic flags, never execution proof. `queued` proves transport acceptance only.
 
 A Claude candidate remains a handoff proposal unless the host enables the
 `developer` profile and an explicit Limen policy. Supported handoff creates a
