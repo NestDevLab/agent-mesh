@@ -338,8 +338,11 @@ def finish_ack(state, epoch, config):
     staged = state['staged']
     candidate = staged['candidate']
     delivered = staged.get('deliveredAt', epoch)
+    report = follow.read_json(Path(staged['path']), None)
+    if not isinstance(report, dict) or not isinstance(report.get('decisions'), list):
+        raise ValueError('missing immutable staged decision report')
     for key in ('decisions', 'nativeDecisions'):
-        cards = [card for card in staged.get('cards', []) if card['id'] in candidate.get(key, {})]
+        cards = [card for card in report['decisions'] if card['id'] in candidate.get(key, {})]
         _, acknowledged_metadata = decisions.select_due(cards, state.get(key, {}), stamp(delivered),
             config.get('timezone', 'UTC'), next_morning_hour=config.get('nextMorningHour', 9),
             interval_days=config.get('intervalDays', 2))
@@ -370,7 +373,7 @@ def stage(root, state, config, epoch, immediate, cards, summary, candidate, inte
     if cards and config.get('decisionDestination'):
         items[0]['decisionDestination'] = config['decisionDestination']
     state['staged'] = {'path': str(path), 'items': items, 'keys': [waker.item_key(item) for item in items],
-                       'createdAt': epoch, 'includesSummary': bool(summary), 'candidate': candidate, 'cards': cards,
+                       'createdAt': epoch, 'includesSummary': bool(summary), 'candidate': candidate,
                        'ledgerCommit': intent}
     save(root / 'state.json', state)
     if commit_cursor(intent):
