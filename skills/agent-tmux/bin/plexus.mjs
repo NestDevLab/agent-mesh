@@ -556,7 +556,7 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
       if (!admitted(feed, view, sessions, state, refsFilter, scope)) continue;
       const subject = counts.get(feed.type) > 1 ? `:${feed.subject}` : "";
       const { subject: _subject, lastKnown: _lastKnown, ...payload } = feed;
-      output.push({ eventId: `${item.id}:${feed.type}${subject}`, seq: item.seq, at: item.at, host, ...payload });
+      output.push({ eventId: `${item.id}${item.type === "node.purged" ? `:${item.seq}` : ""}:${feed.type}${subject}`, seq: item.seq, at: item.at, host, ...payload });
     }
   }
   return { reset: false, events: output, cursor: encodeCursor({ kind: "changes", host, seq: scanned }) };

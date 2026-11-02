@@ -288,3 +288,22 @@ test("a metadata move out of scope still invalidates the previously visible iden
     assert.ok(feed.events.every(item => !('lastKnown' in item) && !('cwd' in item)));
   } finally { await rm(state, { recursive: true, force: true }); }
 });
+
+test("removing one alias invalidates the identity; only the final alias emits removed", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-alias-invalidation-"));
+  try {
+    await seed(state);
+    const alias = await ok(state, ["add", "--agent", "codex", "--tmux-target", "alias-codex", "--cwd", "/work/space-a/app", "--runtime-uuid", CODEX]);
+    await ok(state, ["migrate", "--apply"]);
+    const aliases = (await ok(state, ["show", "--json"])).nodes.filter(node => node.runtimeUuid === CODEX);
+    assert.equal(aliases.length, 2);
+    const start = (await query(state, "changes", {})).cursor;
+    await ok(state, ["purge", "--id", aliases[0].id]);
+    const first = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.deepEqual(first.events.map(item => item.type), ["session.updated"]);
+    await ok(state, ["purge", "--id", aliases[1].id]);
+    const last = await query(state, "changes", { sinceCursor: first.cursor, scope: scopeA });
+    assert.deepEqual(last.events.map(item => item.type), ["session.removed"]);
+    assert.notEqual(first.events[0].eventId, last.events[0].eventId);
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
