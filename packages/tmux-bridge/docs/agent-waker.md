@@ -17,3 +17,11 @@ agent-waker.py run --job daily --session <UUID> --managed-inbox-root <ROOT> -- <
 - Errors, an unusable producer report, or an unreadable state file wake the session once per
   distinct error set; nothing is dropped silently.
 - Overlapping runs are skipped through a lock next to the state file.
+
+Use `run --delivery-only` for notification jobs. The native call still validates the managed
+inbox, single writer and watcher before appending and syncing the record, then returns zero
+without asking the recipient to produce result markers. This proves queuing only. Result
+collection remains the default. Successful delivery saves `lastDelivery.itemKeys` (the
+SHA-256 of sorted-key JSON, UTF-8 with ensure_ascii=False, first 16 hex digits),
+`correlationId` and `at` in the waker state so a producer can retain its checkpoint until
+transport acknowledgement. Refused delivery keeps pending items and the previous acknowledgement.

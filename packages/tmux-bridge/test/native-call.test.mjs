@@ -187,7 +187,8 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
 });
 
 for (const writerKind of ["desktop", "cli"]) {
-test(`managed Claude ${writerKind} background inbox returns a correlated visible result`, async (t) => {
+for (const deliveryOnly of [false, true]) {
+test(`managed Claude ${writerKind} inbox ${deliveryOnly ? "acknowledges delivery without a result" : "returns a correlated result"}`, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mesh-native-claude-managed-"));
   const procRoot = join(root, "proc");
   const ownerPid = 8552;
@@ -218,6 +219,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     "--agent", "claude", "--session", sessionId,
     "--correlation-id", correlationId, "--timeout", "5", "--message", "Visible request",
     "--managed-inbox-root", inboxRoot,
+    ...(deliveryOnly ? ["--delivery-only"] : []),
   ], { env: {
     ...process.env,
     CLAUDE_BIN: claude,
@@ -239,7 +241,14 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     if (delivered.includes("agent-mesh.monitor-inbox.v1")) break;
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 20));
   }
+  delivered = await readFile(inbox, "utf8");
   assert.match(delivered, /agent-mesh\.monitor-inbox\.v1/, stderr);
+  if (deliveryOnly) {
+    assert.equal(await completed, 0, stderr);
+    assert.equal(JSON.parse(stdout).status, "queued");
+    assert.equal(JSON.parse(delivered).prompt, "Visible request");
+    return;
+  }
   await appendFile(transcript, [
     { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
     { type: "assistant", message: { stop_reason: "end_turn", content: [] } },
@@ -251,5 +260,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
   assert.equal(code, 0, stderr);
   assert.equal(stdout, "CLAUDE_MANAGED_OK\n");
 });
+
+}
 
 }
