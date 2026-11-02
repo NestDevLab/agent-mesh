@@ -581,5 +581,13 @@ leaves the cursor unchanged. Each consumer owns its cursor; failed or partial
 pages do not advance it. Mesh stores no item content. `producer --filter
 status=waiting,waitingOn.who=human` emits the existing waker report format.
 
-Plexus link synchronization is a separate subsequent command; this change only
-introduces read access and the per-consumer cursor contract.
+`mesh-ledger sync --scheme work` consumes only the `plexus` cursor and reconciles
+links through the existing graph lock/event stream. It requires an already
+migrated graph; it never migrates one. Only `ledger-write` links are touched or
+closed. Missing `sessions` is unknown, while `sessions: []` explicitly removes
+that adapter's assertions. Terminal items close its assertions regardless of
+session hints. Prefixes must resolve uniquely; an unresolved page makes no graph
+writes and does not advance its cursor. `linkSessions: false` disables sync.
+
+The lower-level operation is `mesh-graph ledger sync --input <json|->`, with an
+`items` array. Both entry points use the same Plexus links, not a separate store.

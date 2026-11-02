@@ -679,3 +679,46 @@ function minTime(left, right) {
 function round(value) {
   return Math.round(value * 1e6) / 1e6;
 }
+
+/** Plan a ledger-owned link reconciliation; the graph lock owns application. */
+export function ledgerSyncEvents(graph, items, at = new Date().toISOString()) {
+  if (!Array.isArray(items) || items.length > 200) throw new Error('ledger sync requires at most 200 items');
+  const sessions = [...sessionIndex(graph).keys()];
+  const events = [], unresolved = [], refs = new Set();
+  for (const item of items) {
+    if (!item || typeof item.ref !== 'string' || !/^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(item.ref) || refs.has(item.ref)) throw new Error('invalid or duplicate ledger ref');
+    refs.add(item.ref);
+    if (typeof item.title !== 'string' || item.title.length > 512 || /[\r\n]/.test(item.title) || !['open', 'active', 'waiting', 'blocked', 'done', 'cancelled', 'deleted'].includes(item.status)) throw new Error('invalid ledger item');
+    const terminal = ['done', 'cancelled', 'deleted'].includes(item.status);
+    const desired = new Map();
+    if (!terminal) {
+      // Omission is not evidence of removal; only a present sessions array asserts links.
+      if (item.sessions === undefined) continue;
+      if (!Array.isArray(item.sessions) || item.sessions.length > 200) throw new Error('invalid ledger sessions');
+      for (const row of item.sessions) {
+        if (!row || typeof row.session !== 'string') throw new Error('invalid ledger session');
+        const role = row.role === undefined ? 'works-on' : row.role;
+        if (!LINK_ROLES.has(role)) throw new Error('invalid ledger session role');
+        const match = /^(?:(codex|claude):)?([0-9a-f-]{8,36})$/i.exec(row.session);
+        if (!match) throw new Error('invalid ledger session prefix');
+        const prefix = match[2].toLowerCase();
+        const matches = sessions.filter(id => (!match[1] || id.startsWith(match[1].toLowerCase() + ':')) && id.split(':')[1].startsWith(prefix));
+        if (matches.length !== 1) { unresolved.push({ ref: item.ref, session: row.session, reason: matches.length ? 'ambiguous' : 'not-found' }); continue; }
+        desired.set(matches[0] + '/' + role, { session: matches[0], role });
+      }
+    }
+    const open = (graph.links || []).filter(link => link.ref === item.ref && link.until === null);
+    for (const link of open) {
+      if (link.source !== 'ledger-write') continue;
+      if (!desired.has(link.session + '/' + link.role)) events.push({ type: 'link.closed', linkId: link.id, closedBy: 'ledger-write' });
+      else if (!link.lastActivityAt || Date.parse(at) - Date.parse(link.lastActivityAt) >= TOUCH_COALESCE_MS) events.push({ type: 'link.touched', linkId: link.id, evidence: item.updatedAt ? [item.ref + '@' + item.updatedAt] : [] });
+    }
+    for (const value of desired.values()) {
+      // The existing unique link may belong to an operator or bridge; do not adopt it.
+      if (open.some(link => link.session === value.session && link.role === value.role)) continue;
+      events.push({ type: 'link.opened', link: newLink({ ...value, ref: item.ref, source: 'ledger-write', title: item.title, at }) });
+    }
+  }
+  // An unresolved identity cannot justify closing any link or advancing this page.
+  return { events: unresolved.length ? [] : events, unresolved };
+}
