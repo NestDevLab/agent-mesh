@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import uuid
 
 BIN = Path(__file__).resolve().parent
 UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
@@ -75,13 +76,15 @@ def command(config, key, default):
     return config.get(key, default)
 
 
-def run(argv, payload=None):
+def run(argv, payload=None, *, raw=False):
     """Single bounded invocation; no retries and no raw diagnostics in reports."""
     try:
         result = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
                                 text=True, capture_output=True, timeout=120)
         if len(result.stdout) > 16 * 1024 * 1024:
             raise LifecycleError('helper output exceeds limit')
+        if raw:
+            return result.returncode, result.stdout.strip()
         try:
             data = json.loads(result.stdout) if result.stdout.strip() else None
         except ValueError:
@@ -106,7 +109,7 @@ def mesh(config, operation, payload=None, full=False):
 def query(config, name, payload):
     code, data = run([*command(config, 'meshCommand', ['node', str(BIN / 'mesh-graph.mjs')]),
                       'query', name, '--input', json.dumps(payload), '--json'])
-    if code or not isinstance(data, dict):
+    if code or not isinstance(data, dict) or data.get('errors'):
         raise LifecycleError('Mesh query failed')
     return data
 
@@ -186,7 +189,7 @@ def classify(row, config, at):
     attention_state = attention.get('state', '') if isinstance(attention, dict) else str(attention)
     if row.get('origin') == 'subagent' or row.get('class') == 'ephemeral' or 'noise' in str(row.get('reasons', [])).lower() or attention_state == 'noise':
         return finish('keep-noise', 'subagent or explicit noise classification')
-    if ref == config.get('selfRef') or row.get('class') == 'orchestrator' or any(value in config.get('permanentRefs', []) or any(value.startswith(prefix) for prefix in config.get('permanentPrefixes', [])) for value in refs) or matching(config.get('permanentPatterns', []), text):
+    if ref == config.get('selfRef') or row.get('class') == 'orchestrator' or any(value in config.get('permanentRefs', []) or any(value.startswith(prefix) for prefix in config.get('permanentPrefixes', [])) for value in refs) or matching([r'\b(?:director|coordinator)\b', *config.get('permanentPatterns', [])], text):
         return finish('approval-compaction', 'permanent or coordinator session protected')
     if any(value in config.get('excludeRefs', []) for value in refs) or matching(config.get('excludePatterns', []), text):
         return finish('approval-excluded', 'policy exclusion remains visible')
@@ -208,15 +211,18 @@ def classify(row, config, at):
     if not isinstance(path, str) or not Path(path).is_absolute() or not Path(path).is_file() or not isinstance(cwd, str) or not Path(cwd).is_dir() or life.get('metadataOnly') is True:
         result['sourceGaps'].append('local cwd or native history unavailable')
         return finish('keep-source-gap', 'local work sources unavailable')
+    if 'pendingQuestion' not in life:
+        result['sourceGaps'].append('pending human question fact unavailable')
+        return finish('keep-source-gap', 'cannot exclude a human decision')
     stalled = attention_state.startswith('stalled') or (life.get('turnActive') is True and row.get('status') in ('quiet', 'blocked')) or life.get('outcome') in ('error', 'interrupted')
     complete = life.get('completion') == 'task' and life.get('turnActive') is False
     continuing = complete and matching(config.get('continuationPatterns', []), text)
     if stalled or continuing:
         if row.get('harness') == 'claude':
-            return finish('handoff-candidate', 'safe Codex child handoff requires a supported ownership hook')
+            return finish('handoff-candidate', 'Codex child handoff uses governed launcher and new-target ownership proof')
         if row.get('harness') != 'codex':
             return finish('keep-source-gap', 'operative runtime unsupported')
-        if row.get('resumable') is False and set(row.get('reasons', [])) - {'occupied', 'desktop-owned'}:
+        if row.get('resumable') is False and set(row.get('resumabilityReasons', row.get('reasons', []))) - {'occupied', 'desktop-owned'}:
             return finish('keep-source-gap', 'Mesh reports a native resume blocker')
         return finish('resume-candidate', 'stalled native work' if stalled else 'explicit continuation policy')
     if complete and project in config.get('archiveProjects', []):
@@ -233,7 +239,8 @@ def build_plan(inventory, config):
     projects = dict(Counter(entry['project'] or 'unmapped' for entry in entries))
     selected = []
     if inventory['complete']:
-        selected = [entry for entry in entries if entry['classification'] == 'resume-candidate'][:config.get('maxResumes', 0)]
+        selected = [entry for entry in entries if entry['classification'] == 'resume-candidate' or
+                    entry['classification'] == 'handoff-candidate' and config.get('handoffProfile') == 'developer' and config.get('limenConfig')][:config.get('maxResumes', 0)]
     gaps = list(inventory['errors'])
     if inventory['linkCoverage'] is not True:
         gaps.append('ledger link coverage incomplete; archive eligibility not proven')
@@ -243,7 +250,7 @@ def build_plan(inventory, config):
               'configHash': digest(config), 'inventoryHash': digest(inventory), 'complete': inventory['complete'],
               'entries': entries, 'counts': counts, 'projectCounts': projects,
               'approvals': [entry for entry in entries if entry['classification'].startswith('approval-') or entry['classification'] in ('archive-candidate', 'handoff-candidate')],
-              'sourceGaps': gaps, 'actions': [{'kind': 'resume', **entry} for entry in selected]}
+              'sourceGaps': gaps, 'actions': [{'kind': 'handoff' if entry['classification'] == 'handoff-candidate' else 'resume', **entry} for entry in selected]}
     result['digest'] = digest(result)
     return result
 
@@ -286,9 +293,18 @@ def append(path, value):
 @contextmanager
 def locked(run_dir, consumer):
     private_directory(run_dir)
-    descriptor = os.open(run_dir.parent / ('.' + consumer + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    lock_root = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'agent-mesh/lifecycle-locks'
+    private_directory(lock_root)
+    descriptor = os.open(lock_root / (consumer + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        scope = str(run_dir.parent.resolve())
+        saved = os.read(descriptor, 8192).decode().strip()
+        if saved and saved != scope:
+            raise LifecycleError('consumer receipt root changed; explicit migration required')
+        if not saved:
+            os.write(descriptor, scope.encode())
+            os.fsync(descriptor)
         yield
     except BlockingIOError:
         raise LifecycleError('another consumer apply holds the lock') from None
@@ -298,6 +314,9 @@ def locked(run_dir, consumer):
 
 def attempted(run_dir, consumer):
     result = set()
+    for sibling in run_dir.parent.iterdir():
+        if sibling.is_dir() and (sibling / 'plan.json').exists() and not (sibling / 'actions.jsonl').is_file():
+            raise LifecycleError('persisted run has missing action receipts; deduplication unavailable')
     for path in run_dir.parent.glob('*/actions.jsonl'):
         try:
             with path.open() as stream:
@@ -313,7 +332,9 @@ def attempted(run_dir, consumer):
 def resume_safe(config, session):
     info = query(config, 'resume', {'session': session})
     reasons = set(info.get('reasons', []))
-    if info.get('sessionId') != session or info.get('harness') != 'codex' or info.get('successor') or reasons - {'occupied', 'desktop-owned'} or info.get('writer', {}).get('state') not in ('free', 'occupied'):
+    if info.get('resumable') is False and not reasons:
+        raise LifecycleError('native resumability is unproven')
+    if info.get('sessionId') != session or type(info.get('resumable')) is not bool or info.get('harness') != 'codex' or info.get('successor') or reasons - {'occupied', 'desktop-owned'} or info.get('writer', {}).get('state') not in ('free', 'occupied'):
         raise LifecycleError('native resume query blocks queueing')
     native = info.get('nativeId')
     if not isinstance(native, str) or not UUID.fullmatch(native):
@@ -324,7 +345,7 @@ def resume_safe(config, session):
         raise LifecycleError('native thread guard blocks queueing')
     status, writers = run([*command(config, 'writerCommand', ['node', str(BIN / 'session-writer-status.mjs')]),
                            '--agent', 'codex', '--session', native, '--json'])
-    if status or not isinstance(writers, dict) or not isinstance(writers.get('writers'), list):
+    if status or not isinstance(writers, dict) or writers.get('sessionId') != native or writers.get('agent') != 'codex' or not isinstance(writers.get('writers'), list):
         raise LifecycleError('writer status unknown')
     current = writers['writers']
     if any(not isinstance(writer, dict) or writer.get('role') != 'app-server' for writer in current):
@@ -334,6 +355,49 @@ def resume_safe(config, session):
     return native
 
 
+def handoff(config, original, base, run_dir):
+    """Create exactly one unique, owned Codex child; never resume/stop Claude."""
+    if config.get('handoffProfile') != 'developer' or not isinstance(config.get('limenConfig'), str):
+        raise LifecycleError('governed handoff profile or policy unavailable')
+    info = query(config, 'resume', {'session': original['sessionId']})
+    if info.get('sessionId') != original['sessionId'] or info.get('successor') or set(info.get('reasons', [])) - {'occupied', 'desktop-owned'} or info.get('writer', {}).get('state') not in ('free', 'occupied'):
+        raise LifecycleError('original handoff source is not safely observable')
+    launcher = command(config, 'sessionCommand', ['bash', str(BIN / 'agent-session.sh')])
+    target = 'lifecycle-' + uuid.uuid4().hex
+    # A missing target is exit 3. Any existing or unresolved target blocks launch.
+    code, _ = run([*launcher, '--agent', 'codex', 'target-session', target], raw=True)
+    if code != 3:
+        raise LifecycleError('new handoff target is not proven absent')
+    correlation = 'lifecycle-' + base['fingerprint'][:32]
+    append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'target': target, 'correlationId': correlation})
+    code, created = run([*launcher, '--agent', 'codex', '--profile', 'developer', '--limen-config', config['limenConfig'],
+                         'new', original['cwd'], target], raw=True)
+    if code or not isinstance(created, str) or created.splitlines()[-1:] != [target]:
+        raise LifecycleError('governed Codex child launch failed; do not retry')
+    append(run_dir / 'actions.jsonl', {**base, 'phase': 'child-created', 'target': target})
+    code, native = run([*launcher, '--agent', 'codex', 'target-session', target, '--owned-cwd', original['cwd']], raw=True)
+    if code or not isinstance(native, str) or not UUID.fullmatch(native):
+        raise LifecycleError('new child ownership or native identity unavailable')
+    append(run_dir / 'actions.jsonl', {**base, 'phase': 'child-identified', 'target': target, 'childNativeId': native,
+                                      'childSession': 'codex:' + native, 'originalSession': original['sessionId']})
+    token = hashlib.sha256(correlation.encode()).hexdigest()[:16]
+    prompt = ('Original source session: ' + original['sessionId'] + '. Use the native Mesh context and linked sources '
+              'to recover that original request before acting. ' + PROMPT)
+    # This helper owns its pane/approval/composer checks. The owned-cwd proof
+    # above permits only this newly created unattended single-pane child.
+    code, _ = run([*command(config, 'sendCommand', ['bash', str(BIN / 'agent-send.sh')]), '--quiet', '--agent', 'codex',
+                    '--correlation-id', correlation, '--result-token', token, target, prompt, '5'], raw=True)
+    if code not in (0, 4, 65, 124):
+        raise LifecycleError('guarded child prompt delivery failed; do not retry')
+    lineage = query(config, 'subgraph', {'sessions': [original['sessionId'], 'codex:' + native], 'depth': 1})
+    # Native bridge hooks may expose parentage. Do not invent lineage edges.
+    append(run_dir / 'actions.jsonl', {**base, 'phase': 'lineage-observed', 'target': target,
+                                      'childSession': 'codex:' + native, 'edges': lineage.get('edges', [])})
+    return {**base, 'phase': 'acknowledgement', 'status': 'submitted', 'target': target,
+            'childNativeId': native, 'childSession': 'codex:' + native, 'originalSession': original['sessionId'],
+            'correlationId': correlation}
+
+
 def apply_plan(plan, inventory, config, run_dir):
     expected = plan.get('digest')
     if expected != digest({key: value for key, value in plan.items() if key != 'digest'}) or plan.get('configHash') != digest(config) or plan.get('inventoryHash') != digest(inventory):
@@ -341,14 +405,19 @@ def apply_plan(plan, inventory, config, run_dir):
     if not plan.get('complete') or not inventory.get('complete'):
         raise LifecycleError('source errors block apply')
     actions = plan.get('actions', [])
-    if len(actions) > min(config.get('maxResumes', 0), 3) or any(action.get('kind') != 'resume' for action in actions):
+    if len(actions) > min(config.get('maxResumes', 0), 3) or any(action.get('kind') not in ('resume', 'handoff') for action in actions):
         raise LifecycleError('unsupported action or resume limit exceeded')
     outcomes = []
     with locked(run_dir, plan['consumer']):
         seen = attempted(run_dir, plan['consumer'])
-        originals = {row['sessionId']: row for row in inventory['sessions']}
+        # Refresh official native facts; an old persisted plan cannot authorize
+        # queueing after a new question, completion, archive or observation.
+        fresh = collect(config)
+        if not fresh['complete']:
+            raise LifecycleError('fresh native source errors block apply')
+        originals = {row['sessionId']: row for row in fresh['sessions']}
         for action in actions:
-            base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': 'resume',
+            base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': action['kind'],
                     'fingerprint': action['fingerprint'], 'planDigest': expected}
             if action['fingerprint'] in seen:
                 outcome = {**base, 'phase': 'deduplicated', 'status': 'not-retried'}
@@ -357,7 +426,8 @@ def apply_plan(plan, inventory, config, run_dir):
                 continue
             try:
                 original = originals.get(action['session'])
-                if original is None or fingerprint(original) != action['fingerprint'] or classify(original, config, now())['classification'] != 'resume-candidate':
+                classification = 'handoff-candidate' if action['kind'] == 'handoff' else 'resume-candidate'
+                if original is None or fingerprint(original) != action['fingerprint'] or classify(original, config, now())['classification'] != classification:
                     raise LifecycleError('persisted observation is no longer eligible')
                 window = config.get('resumeWindowCommand')
                 if not window:
@@ -365,15 +435,18 @@ def apply_plan(plan, inventory, config, run_dir):
                 code, guard = run(window, {'session': action['session'], 'planDigest': expected, 'at': now(), 'timezone': config.get('timezone', 'UTC')})
                 if code or not isinstance(guard, dict) or guard.get('allow') is not True:
                     raise LifecycleError('resume window guard blocks queueing')
-                native = resume_safe(config, action['session'])
-                correlation = 'lifecycle-' + action['fingerprint'][:32]
-                append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
-                seen.add(action['fingerprint'])
-                code, acknowledgement = run([*command(config, 'nativeCallCommand', ['node', str(BIN / 'agent-native-call.mjs')]),
-                    '--agent', 'codex', '--session', native, '--delivery-only', '--correlation-id', correlation, '--message', PROMPT])
-                if code or not isinstance(acknowledgement, dict) or acknowledgement.get('status') != 'queued' or acknowledgement.get('sessionId') != native or acknowledgement.get('correlationId') != correlation:
-                    raise LifecycleError('native queue failed or acknowledgement invalid')
-                outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation}
+                if action['kind'] == 'handoff':
+                    outcome = handoff(config, original, base, run_dir)
+                else:
+                    native = resume_safe(config, action['session'])
+                    correlation = 'lifecycle-' + action['fingerprint'][:32]
+                    append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
+                    seen.add(action['fingerprint'])
+                    code, acknowledgement = run([*command(config, 'nativeCallCommand', ['node', str(BIN / 'agent-native-call.mjs')]),
+                        '--agent', 'codex', '--session', native, '--delivery-only', '--correlation-id', correlation, '--message', PROMPT])
+                    if code or not isinstance(acknowledgement, dict) or acknowledgement.get('status') != 'queued' or acknowledgement.get('sessionId') != native or acknowledgement.get('correlationId') != correlation:
+                        raise LifecycleError('native queue failed or acknowledgement invalid')
+                    outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation}
             except LifecycleError as error:
                 outcome = {**base, 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
                 append(run_dir / 'actions.jsonl', outcome)
@@ -419,7 +492,7 @@ def main():
             if not args.apply:
                 raise LifecycleError('apply requires explicit --apply')
             outcomes = apply_plan(plan, inventory, config, args.run_dir)
-            outcome = 'blocked' if any(entry['phase'] == 'failure' for entry in outcomes) else 'acted' if any(entry['status'] == 'queued' for entry in outcomes) else 'noop'
+            outcome = 'blocked' if any(entry['phase'] == 'failure' for entry in outcomes) else 'acted' if any(entry['status'] in ('queued', 'submitted') for entry in outcomes) else 'noop'
             write(args.run_dir / 'report.md', report(inventory, plan, outcomes))
         else:
             if (args.run_dir / 'plan.json').exists():
@@ -431,10 +504,10 @@ def main():
             append(args.run_dir / 'actions.jsonl', {'at': now(), 'consumer': plan['consumer'], 'phase': 'planned', 'planDigest': plan['digest']})
             write(args.run_dir / 'report.md', report(inventory, plan))
             outcome = 'noop' if inventory['complete'] else 'blocked'
-        print(json.dumps({'status': outcome, 'runDir': str(args.run_dir), 'planDigest': plan['digest']}))
+        result = {'status': outcome, 'runDir': str(args.run_dir), 'planDigest': plan['digest']}
     except (LifecycleError, OSError, ValueError, KeyError, TypeError) as error:
         failure, outcome = str(error), 'failed'
-        print(json.dumps({'status': outcome, 'error': failure}))
+        result = {'status': outcome, 'error': failure}
     if 'config' in locals():
         try:
             code, _ = run([*command(config, 'runReceiptCommand', [sys.executable, str(BIN / 'agent-run-receipt.py')]),
@@ -444,6 +517,9 @@ def main():
                 failure = 'run receipt helper failed'
         except LifecycleError:
             failure = 'run receipt helper unavailable'
+    if failure:
+        result.update(status='failed', error=failure)
+    print(json.dumps(result))
     return 1 if failure or outcome in ('failed', 'blocked') else 0
 
 
