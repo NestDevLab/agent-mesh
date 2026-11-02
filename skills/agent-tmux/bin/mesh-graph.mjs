@@ -88,6 +88,7 @@ const { values, positionals } = parseArgs({
     json: { type: "boolean", default: false },
     tree: { type: "boolean", default: false },
     compact: { type: "boolean", default: false },
+    full: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
   allowPositionals: true,
@@ -308,8 +309,8 @@ function inspectTranscript(agent, runtimeUuid) {
   return { ...facts, updatedAt: new Date(Number(facts.updated_at) / 1_000_000).toISOString() };
 }
 
-function inspectTranscripts(agent, statePath) {
-  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--report-skipped", "--cache", join(statePath, `facts-${agent}.json`), "--format", "jsonl"]);
+function inspectTranscripts(agent, statePath, options = {}) {
+  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--report-skipped", "--cache", join(statePath, `facts-${agent}.json`), "--format", "jsonl", ...(options.full ? ["--full"] : [])]);
   if (result.error) throw new Error(`could not discover transcripts: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`transcript discovery failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
   let report;
@@ -334,14 +335,15 @@ function inspectTranscripts(agent, statePath) {
 function discoverNodes(statePath, options) {
   const agent = requiredAdoptAgent(options.agent);
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const { facts, skipped } = inspectTranscripts(agent, statePath);
+  const { facts, skipped } = inspectTranscripts(agent, statePath, options);
   return mutate(statePath, (graph) => {
     const events = [], nodes = [];
     for (const fact of facts) {
-      const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
+      const existing = graph.nodes.find((node) => node.agent === agent && String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: factCreatedAt(fact, now()) };
       Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: factClass(fact, existing?.class), surface: factSurface(fact), origin: fact.origin || existing?.origin || "human" });
+      node.lifecycle = factLifecycle(fact);
       node.attention = factAttention(fact, node.refs || [], now());
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!existing || ["active", "quiet"].includes(existing.status)) node.status = observedStatus;
@@ -366,7 +368,7 @@ function sweepNodes(statePath, options) {
   optionalPositiveInteger(options["open-window-days"], "--open-window-days");
   const agents = options.agent === undefined ? ["codex", "claude"] : [requiredAdoptAgent(options.agent)];
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent, statePath) }));
+  const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent, statePath, options) }));
   const transcriptFacts = transcriptReports.flatMap(({ agent, facts }) => facts.map((fact) => ({ ...fact, agent })));
   const skippedTranscripts = transcriptReports.flatMap(({ agent, skipped }) => skipped.map((item) => ({ agent, ...item })));
   const tmuxSessions = inspectTmuxSessions();
@@ -377,7 +379,7 @@ function sweepNodes(statePath, options) {
     const original = new Map(graph.nodes.map((node) => [node.id, node]));
 
     for (const fact of transcriptFacts) {
-      let node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
+      let node = desired.find((item) => item.agent === fact.agent && String(item.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       if (!node) {
         node = {
@@ -391,6 +393,7 @@ function sweepNodes(statePath, options) {
         lastSeenAt: fact.updatedAt, class: factClass(fact, node.class),
         surface: factSurface(fact), origin: fact.origin || node.origin || "human",
       });
+      node.lifecycle = factLifecycle(fact);
       node.attention = factAttention(fact, node.refs || [], observedAt);
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!original.has(node.id) || (!node.tmuxTarget && ["active", "quiet"].includes(node.status))) node.status = observedStatus;
@@ -401,7 +404,7 @@ function sweepNodes(statePath, options) {
     for (const session of tmuxSessions) {
       liveTargets.add(session.tmuxTarget);
       let node = desired.find((item) => item.tmuxTarget === session.tmuxTarget);
-      if (!node && session.runtimeUuid) node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
+      if (!node && session.runtimeUuid) node = desired.find((item) => item.agent === session.agent && String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
       if (!node) {
         node = {
           id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "quiet",
@@ -621,6 +624,19 @@ function factSurface(fact) {
   return { sidebar: fact.entrypoint === "claude-desktop" ? "desktop" : "cli", hostId: fact.hostSessionId || null, archived: null };
 }
 
+function factLifecycle(fact) {
+  return {
+    path: fact.path || null, metadataOnly: fact.metadata_only === true,
+    historyComplete: fact.history_complete === true,
+    lastSpeaker: fact.last_speaker || null, lastEventKind: fact.last_event_kind || null,
+    turnActive: fact.turn_active === true, turnId: fact.last_turn_id || null,
+    outcome: fact.last_outcome || null, completion: fact.last_completion || null,
+    completedAt: fact.last_complete_at || null, question: fact.last_question || null,
+    pendingQuestion: fact.pending_question === true, error: fact.last_error || null,
+    detail: String(fact.last_error?.message || fact.last_assistant || "").slice(0, 4096),
+  };
+}
+
 function factAttention(fact, refs, observedAt) {
   const age = Math.max(0, Date.parse(observedAt) - Date.parse(fact.updatedAt));
   const status = String(fact.status || "");
@@ -630,11 +646,13 @@ function factAttention(fact, refs, observedAt) {
   else if (active && age >= 30 * 60_000) { state = "stalled-hung"; evidence = ["active-writer", "stale-transcript"]; }
   else if (status === "waiting" || fact.waitingFor === "input needed" || fact.pending_question) {
     state = "waiting-user"; since = fact.last_final_at || fact.updatedAt; evidence = ["pending-question"];
-  } else if (Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
+  } else if (fact.last_error) {
+    state = "stalled-error"; since = fact.last_complete_at || fact.updatedAt; evidence = ["runtime-error"];
+  } else if (fact.history_complete === true && Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
     state = "never-started"; evidence = ["no-human-turns"];
-  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && Number(fact.mutating_tool_calls) === 0) {
+  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && fact.history_complete === true && Number(fact.mutating_tool_calls) === 0) {
     state = "finished"; evidence = ["completed-turn", "unlinked-read-only"];
-  } else if (["human_message", "tool"].includes(fact.last_event_kind) && age >= 2 * 60 * 60_000) {
+  } else if (["human_message", "tool", "turn_started"].includes(fact.last_event_kind) && age >= 2 * 60 * 60_000) {
     state = "stalled-abandoned"; evidence = ["unfinished-turn", "idle-writer"];
   }
   return { state, since, evidence };

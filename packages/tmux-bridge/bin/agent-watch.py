@@ -34,6 +34,7 @@ ROOT_ENV = {
 MAX_BODY = 4096
 MAX_REASONING = 300
 CURSOR_ANCHOR_BYTES = 256
+DISCOVERY_BOOTSTRAP_BYTES = 262144
 # Codex mints v7 UUIDs, Claude v4. Don't pin the version nibble.
 SESSION_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 
@@ -52,7 +53,7 @@ def resolve_transcript(agent: str, session_id: str) -> Path | None:
 
 def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
     """Read the same normalized facts as cached discovery, without persisting state."""
-    facts = read_appended_facts(agent, session_id, transcript, None)
+    facts = read_appended_facts(agent, session_id, transcript, None, full=True)
     return {key: value for key, value in facts.items() if not key.startswith("_")}
 
 
@@ -94,6 +95,8 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
             body = str(item.get("body") or "")
             if body == facts.get("_last_human_body"):
                 continue
+            facts["last_speaker"] = "user"
+            facts["last_question"] = None
             facts["_last_human_body"] = body
             facts["human_turns"] += 1
             facts["last_human_at"] = timestamp
@@ -108,6 +111,7 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
             facts["last_turn_id"] = item.get("turn_id")
         elif kind == "agent_message":
             body = str(item.get("body") or "")
+            facts["last_speaker"] = "assistant"
             if body != facts.get("_last_agent_body"):
                 facts["assistant_turns"] += 1
             facts["_last_agent_body"] = body
@@ -123,6 +127,7 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["pending_question"] = True
         elif kind == "question":
             facts["pending_question"] = True
+            facts["last_question"] = str(item.get("body") or "")
         elif kind == "turn_complete":
             facts["turn_active"] = False
             facts["last_outcome"] = item.get("outcome")
@@ -133,6 +138,8 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
             if item.get("reply"):
                 facts["last_assistant"] = str(item["reply"])
                 facts["last_final_at"] = timestamp
+                facts["last_speaker"] = "assistant"
+                facts["pending_question"] = str(item["reply"]).rstrip().endswith("?")
         if kind in {"human_message", "agent_message", "tool", "question", "turn_started", "turn_complete"}:
             facts["last_event_kind"] = kind
 
@@ -146,6 +153,7 @@ def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]
         "createdAt": None, "origin": "human", "parent": None,
         "last_outcome": None, "last_error": None, "last_turn_id": None,
         "last_complete_at": None, "last_completion": None,
+        "last_speaker": None, "last_question": None,
     }
 
 
@@ -178,16 +186,21 @@ def cursor_matches(handle: Any, cursor: dict[str, Any], stat: Any) -> bool:
     return not stamp or stamp == cursor_stamp(handle, offset, stat)
 
 
-def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None) -> dict[str, Any]:
+def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None, *, full: bool = False) -> dict[str, Any]:
     stat = transcript.stat()
-    reusable = (prior is not None and prior.get("path") == str(transcript)
+    reusable = (not full and prior is not None and prior.get("path") == str(transcript)
                 and isinstance(prior.get("offset"), int) and prior["offset"] <= stat.st_size
                 and (prior["offset"] < stat.st_size or prior.get("mtime_ns") == stat.st_mtime_ns))
     with transcript.open("rb") as handle:
         reusable = reusable and cursor_matches(handle, prior, stat)
         facts = dict(prior) if reusable else empty_facts(agent, session_id, transcript)
-        offset = int(facts.get("offset", 0))
+        offset = int(facts.get("offset", 0)) if reusable else (0 if full else max(0, stat.st_size - DISCOVERY_BOOTSTRAP_BYTES))
+        facts["history_complete"] = facts.get("history_complete", True) if reusable else offset == 0
         handle.seek(offset)
+        if not reusable and offset:
+            # The first bounded record is incomplete; never interpret its suffix.
+            handle.readline(stat.st_size - handle.tell())
+            offset = handle.tell()
         while handle.tell() < stat.st_size:
             line = handle.readline(stat.st_size - handle.tell())
             if not line.endswith(b"\n"):
@@ -198,7 +211,7 @@ def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: di
             except ValueError:
                 continue
             if isinstance(record, dict):
-                if not facts.get("createdAt"):
+                if not facts.get("createdAt") and facts["history_complete"]:
                     facts["createdAt"] = transcript_created_at(agent, transcript, record.get("timestamp"))
                 update_facts(facts, agent, session_id, record)
         facts["stamp"] = cursor_stamp(handle, offset, stat)
@@ -308,7 +321,7 @@ def session_origin(agent: str, item: dict[str, Any], parent: str | None) -> str:
     return "human"
 
 
-def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+def discover_transcripts(agent: str, cache_path: Path | None = None, *, full: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     root = session_root(agent)
     cached = load_state(cache_path) if cache_path else {}
     entries = cached.get(agent, {}) if cached.get("version") == 1 else {}
@@ -316,14 +329,19 @@ def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[li
     parents = bridge_parents()
     facts = []
     for session_id, path in transcript_candidates(agent):
-        item = read_appended_facts(agent, session_id, path, entries.get(session_id)) if cache_path else transcript_facts(agent, session_id, path)
+        prior = entries.get(session_id) if cache_path else None
+        if prior:
+            # Migrate old mixed caches: native metadata is refreshed separately.
+            metadata_keys = {"name", "source", "thread_source", "archived", "pinned", "metadata_updated_at_ns", "created_at_ms", "status", "waitingFor", "hostSessionId", "entrypoint", "kind", "startedAt", "updatedAt", "live_writer", "parent", "origin"}
+            prior = {key: value for key, value in prior.items() if key not in metadata_keys}
+        item = read_appended_facts(agent, session_id, path, prior, full=full)
+        if cache_path:
+            entries[session_id] = dict(item)
         item.update(metadata.get(session_id, {}))
         item["parent"] = parents.get(session_id)
         item["origin"] = session_origin(agent, item, item["parent"])
         if item.get("name"):
             item["title"] = str(item["name"])
-        if cache_path:
-            entries[session_id] = item
         facts.append({key: value for key, value in item.items() if not key.startswith("_")})
     if agent == "codex":
         present = {item["runtime_uuid"] for item in facts}
@@ -891,6 +909,7 @@ def main() -> int:
     mode.add_argument("--transcript", action="store_true", help="read a bounded page of visible user and assistant turns")
     mode.add_argument("--search", metavar="QUERY", help="search visible turns across persisted transcripts")
     parser.add_argument("--report-skipped", action="store_true", help="with --discover, report transcript files skipped for an unrecognized session id")
+    parser.add_argument("--full", action="store_true", help="with --discover, explicitly rebuild full transcript history instead of bounded bootstrap and appended bytes")
     parser.add_argument("--cache", type=Path, help="with --discover, retain incremental transcript facts in this file")
     args = parser.parse_args()
 
@@ -900,6 +919,8 @@ def main() -> int:
         parser.error("session_id cannot be combined with --discover or --search")
     if args.report_skipped and not args.discover:
         parser.error("--report-skipped requires --discover")
+    if args.full and not args.discover:
+        parser.error("--full requires --discover")
     if args.cache and not args.discover:
         parser.error("--cache requires --discover")
     if args.session_id is not None and not valid_session_id(args.session_id):
@@ -920,7 +941,7 @@ def main() -> int:
         parser.error(f"inbox does not exist: {args.inbox}")
 
     if args.discover:
-        facts, skipped = discover_transcripts(args.agent, args.cache)
+        facts, skipped = discover_transcripts(args.agent, args.cache, full=args.full)
         report: Any = {"transcripts": facts, "skipped": skipped} if args.report_skipped else facts
         print(json.dumps(report, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0
