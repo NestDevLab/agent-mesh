@@ -57,6 +57,8 @@ def adapters():
             raise ProtocolError('adapter command must be a nonempty argv array')
         if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 120000:
             raise ProtocolError('invalid adapter timeout')
+        if 'linkSessions' in entry and not isinstance(entry['linkSessions'], bool):
+            raise ProtocolError('linkSessions must be boolean')
         result[scheme] = {**entry, 'timeoutMs': timeout}
     return result
 

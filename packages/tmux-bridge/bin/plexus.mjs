@@ -667,7 +667,7 @@ export function ledgerSyncEvents(graph, items, at = new Date().toISOString()) {
       if (!Array.isArray(item.sessions) || item.sessions.length > 200) throw new Error('invalid ledger sessions');
       for (const row of item.sessions) {
         if (!row || typeof row.session !== 'string') throw new Error('invalid ledger session');
-        const role = row.role || 'works-on';
+        const role = row.role === undefined ? 'works-on' : row.role;
         if (!LINK_ROLES.has(role)) throw new Error('invalid ledger session role');
         const match = /^(?:(codex|claude):)?([0-9a-f-]{8,36})$/i.exec(row.session);
         if (!match) throw new Error('invalid ledger session prefix');
