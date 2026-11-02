@@ -101,9 +101,11 @@ def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None) -> int:
+def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False) -> int:
     command = ["node", str(BIN / "agent-native-call.mjs"), "--agent", agent, "--session", session,
                "--correlation-id", correlation, "--timeout", "5", "--message", message]
+    if delivery_only:
+        command += ["--delivery-only"]
     if inbox_root:
         command += ["--managed-inbox-root", inbox_root]
     return subprocess.run(command, text=True, capture_output=True).returncode
@@ -143,11 +145,13 @@ def run(args: argparse.Namespace) -> int:
             return 0
         correlation = f"waker-{args.job}-{int(time.time())}"
         code = deliver(args.agent, args.session, correlation, compose(args.job, state["pending"], wake_errors),
-                       args.managed_inbox_root)
+                       args.managed_inbox_root, args.delivery_only)
         if code not in QUEUED:
             record(args.job, "blocked", args.session, f"delivery refused rc={code}")
             print(json.dumps({**summary, "outcome": "blocked", "deliveryExit": code}))
             return 3
+        state["lastDelivery"] = {"correlationId": correlation, "at": time.time(),
+                                 "itemKeys": [entry["key"] for entry in state["pending"]]}
         state["pending"] = []
         if signature:
             state["errorSignature"] = signature
@@ -165,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--agent", default="claude", choices=("claude", "codex"))
     runner.add_argument("--session", required=True, help="owning session UUID")
     runner.add_argument("--managed-inbox-root", help="required for Claude sessions")
+    runner.add_argument("--delivery-only", action="store_true", help="acknowledge the native queue, without waiting for a result")
     runner.add_argument("--state", help="defaults to $XDG_STATE_HOME/agent-waker/<job>.json")
     runner.add_argument("--producer-timeout", type=int, default=280)
     runner.add_argument("producer", nargs=argparse.REMAINDER, help="-- command that prints the JSON report")

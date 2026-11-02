@@ -16,6 +16,7 @@ const { values } = parseArgs({
     session: { type: "string" },
     "correlation-id": { type: "string" },
     timeout: { type: "string", default: "120" },
+    "delivery-only": { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
@@ -54,7 +55,7 @@ const resultToken = createHash("sha256").update(correlationId).digest("hex").sli
 const anchor = `[MESH:${resultToken}]`;
 const resultBegin = `[[R:${resultToken}]]`;
 const resultEnd = `[[/R:${resultToken}]]`;
-const protocolMessage = `${anchor} Use the result protocol shown on the next line.\n` +
+const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
   `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
 
 if (agent === "codex") {
@@ -74,6 +75,12 @@ if (agent === "codex") {
     meshId: correlationId,
     prompt: protocolMessage,
   });
+}
+
+// Queue acknowledgement is transport proof, never proof that the turn ran.
+if (values["delivery-only"]) {
+  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId }));
+  process.exit(0);
 }
 
 const deadline = Date.now() + timeoutSeconds * 1000;

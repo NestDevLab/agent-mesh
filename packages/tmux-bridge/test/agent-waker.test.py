@@ -34,7 +34,7 @@ class AgentWakerTest(unittest.TestCase):
         deliver.start()
         self.addCleanup(deliver.stop)
 
-    def fake_deliver(self, agent, session, correlation, message, inbox_root):
+    def fake_deliver(self, agent, session, correlation, message, inbox_root, delivery_only=False):
         self.sent.append(message)
         return self.delivery_exit
 
@@ -62,6 +62,7 @@ class AgentWakerTest(unittest.TestCase):
         self.assertEqual((code, result["outcome"], len(self.sent)), (0, "acted", 1))
         self.assertIn('"id": "m1"', self.sent[0])
         self.assertEqual(json.loads(self.state.read_text())["pending"], [])
+        self.assertTrue(json.loads(self.state.read_text())["lastDelivery"]["itemKeys"])
         self.tick({"new": [], "errors": []})
         self.assertEqual(len(self.sent), 1)
         self.assertEqual(self.receipts(), ["acted", "noop"])
