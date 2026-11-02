@@ -93,7 +93,7 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
         timestamp = item.get("timestamp")
         if kind == "human_message":
             body = str(item.get("body") or "")
-            if body == facts.get("_last_human_body"):
+            if body == facts.get("_last_human_body") and (agent != "claude" or facts.get("turn_active") is True):
                 continue
             facts["last_speaker"] = "user"
             facts["last_question"] = None
@@ -106,6 +106,7 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
             facts["turn_active"] = True
             facts["last_error"] = None
         elif kind == "turn_started":
+            facts.pop("_last_human_body", None)
             facts["turn_active"] = True
             facts["last_error"] = None
             facts["last_turn_id"] = item.get("turn_id")
@@ -142,6 +143,7 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["pending_question"] = str(item["reply"]).rstrip().endswith("?")
         if kind in {"human_message", "agent_message", "tool", "question", "turn_started", "turn_complete"}:
             facts["last_event_kind"] = kind
+            facts["last_event_id"] = item.get("source_event_id")
 
 
 def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
@@ -149,7 +151,7 @@ def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]
         "agent": agent, "runtime_uuid": session_id, "path": str(transcript), "cwd": "", "title": "",
         "last_assistant": "", "assistant_turns": 0, "human_turns": 0,
         "mutating_tool_calls": 0, "last_human_at": None, "last_final_at": None,
-        "last_event_kind": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
+        "last_event_kind": None, "last_event_id": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
         "createdAt": None, "origin": "human", "parent": None,
         "last_outcome": None, "last_error": None, "last_turn_id": None,
         "last_complete_at": None, "last_completion": None,
@@ -542,10 +544,10 @@ def question_text(value: Any) -> str:
         questions = value.get("questions")
         if isinstance(questions, list):
             return clipped("\n".join(
-                str(item.get("question") or item.get("header") or "")
+                str(item.get("question") or item.get("title") or item.get("header") or "")
                 for item in questions if isinstance(item, dict)
             ))
-        return clipped(value.get("question") or value.get("prompt") or "")
+        return clipped(value.get("question") or value.get("title") or value.get("prompt") or "")
     return ""
 
 

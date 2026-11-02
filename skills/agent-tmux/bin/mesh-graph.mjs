@@ -630,6 +630,7 @@ function factLifecycle(fact) {
     historyComplete: fact.history_complete === true,
     lastSpeaker: fact.last_speaker || null, lastEventKind: fact.last_event_kind || null,
     turnActive: fact.turn_active === true, turnId: fact.last_turn_id || null,
+    lastEventId: fact.last_event_id || null, lastHumanAt: fact.last_human_at || null,
     outcome: fact.last_outcome || null, completion: fact.last_completion || null,
     completedAt: fact.last_complete_at || null, question: fact.last_question || null,
     pendingQuestion: fact.pending_question === true, error: fact.last_error || null,
