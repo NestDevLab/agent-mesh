@@ -498,10 +498,12 @@ def apply_plan(plan, inventory, config, run_dir):
                     append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
                     seen.add(action['fingerprint'])
                     code, acknowledgement = run([*command(config, 'nativeCallCommand', ['node', str(BIN / 'agent-native-call.mjs')]),
-                        '--agent', 'codex', '--session', native, '--delivery-only', '--correlation-id', correlation, '--message', PROMPT])
+                        '--agent', 'codex', '--session', native, '--delivery-only', '--resume', '--correlation-id', correlation, '--message', PROMPT])
                     if code or not isinstance(acknowledgement, dict) or acknowledgement.get('status') != 'queued' or acknowledgement.get('sessionId') != native or acknowledgement.get('correlationId') != correlation:
                         raise LifecycleError('native queue failed or acknowledgement invalid')
-                    outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation}
+                    outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation,
+                               'resumeRequested': True, 'resumeVerified': False,
+                               'resumeDiagnostic': acknowledgement.get('resumeDiagnostic', False)}
             except LifecycleError as error:
                 outcome = {**base, 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
                 append(run_dir / 'actions.jsonl', outcome)

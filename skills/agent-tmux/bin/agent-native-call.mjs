@@ -17,6 +17,7 @@ const { values } = parseArgs({
     "correlation-id": { type: "string" },
     timeout: { type: "string", default: "120" },
     "delivery-only": { type: "boolean", default: false },
+    resume: { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
@@ -25,7 +26,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)]");
   process.exit(0);
 }
 
@@ -35,6 +36,7 @@ const correlationId = required(values["correlation-id"], "--correlation-id");
 const message = required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
+if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
   fail("--session must be a complete UUID", 2);
@@ -58,9 +60,10 @@ const resultEnd = `[[/R:${resultToken}]]`;
 const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
   `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
 
+let resumeDiagnostic = false;
 if (agent === "codex") {
   const queued = await run(process.env.CODEX_BIN || "codex", [
-    "queue", "--thread", sessionId, "--message", protocolMessage
+    "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
   ], (timeoutSeconds + 15) * 1000);
   if (queued.code !== 0) {
     if (codexSessionIsNotDirectlyWritable(queued)) {
@@ -68,6 +71,7 @@ if (agent === "codex") {
     }
     fail(safeError("Codex native queue failed", queued), 1);
   }
+  resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
 } else {
   await appendManagedInbox(claudeInbox, {
     schema: "agent-mesh.monitor-inbox.v1",
@@ -79,7 +83,8 @@ if (agent === "codex") {
 
 // Queue acknowledgement is transport proof, never proof that the turn ran.
 if (values["delivery-only"]) {
-  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId }));
+  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId,
+    ...(values.resume ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
   process.exit(0);
 }
 

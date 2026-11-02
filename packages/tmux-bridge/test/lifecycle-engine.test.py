@@ -139,6 +139,9 @@ class LifecycleEngine(unittest.TestCase):
         self.assertEqual([row['phase'] for row in records], ['attempt', 'acknowledgement'])
         native_call = next(call[0] for call in self.calls if isinstance(call[0], list) and call[0][0] == 'native')
         self.assertIn('--delivery-only', native_call)
+        self.assertIn('--resume', native_call)
+        self.assertTrue(result[0]['resumeRequested'])
+        self.assertFalse(result[0]['resumeVerified'])
 
     def test_only_exclusive_app_server_guard_exception_is_allowed(self):
         self.guard_code = 4
