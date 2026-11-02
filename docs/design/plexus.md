@@ -2,8 +2,9 @@
 
 Status: design, not implemented. Plexus is agent-mesh's n:m graph between agent sessions
 (Claude, Codex, later harnesses) and work ledgers, answers "which ledgers does this session touch"
-and "which sessions are its neighbours", and serves that read-only to a UI that builds projects and
-discussion groups on top. Every session stays resumable with its harness's native command, with or
+and "which sessions are its neighbours", and serves that to a UI that builds projects and
+discussion groups on top. The UI reads the graph and makes two kinds of write: attaching sessions to
+ledgers, and starting a session for a ledger. Every session stays resumable with its harness's native command, with or
 without that UI.
 
 Plexus extends the existing session graph (`packages/tmux-bridge/bin/mesh-graph.mjs`, documented in
@@ -34,7 +35,10 @@ reachable only through opaque refs such as `management:MGT-0239`, which is the r
 
 ### Session
 
-A session is a **native identity** `<agent>:<runtimeUuid>` (the registry key). Graph nodes stay the
+A session is a **native identity** `<agent>:<runtimeUuid>` (the registry key). Every node, link
+and event also carries `host`, the configured label of the Plexus it lives in. Batch 5
+(federation) builds on that label; it still has to define duplicate native ids across hosts,
+routing queries and writes to a host, and a multi-host cursor. Graph nodes stay the
 observation records; one session groups one or more nodes exactly as `registryProjection` does
 today. Consumers store the session id, never a node id.
 
@@ -70,8 +74,11 @@ and reopening creates a new link. When a pending identity resolves, its links ar
 session id by one `link.resolved` event; if resolution stays ambiguous the links stay pending and
 are reported, never guessed. If the session already holds an open link with the same `(ref, role)`,
 resolution merges into it: the earlier `since`, the later `lastActivityAt` and the union of
-`evidence` survive, and the pending link closes with `mergedInto: <link id>`. Pending links are
-internal: queries and the feed never show them.
+`evidence` survive, and the pending link closes with `mergedInto: <link id>`. Links record
+`createdBy` (the principal, for UI writes) and keep it after resolution. A pending link is shown only
+to the principal bound to its W2 operation (Writes, below), and only while the ref is still in that
+principal's scope, as `{launchId, pending: true, ref, role}` in Q1 and Q2, so the UI can show
+"starting". Every other pending link stays internal.
 
 `node.refs` becomes a derived compatibility projection (refs of the session's open links, written to
 every node of that session), so the registry, follower and renderers keep working unchanged. The
@@ -226,7 +233,7 @@ Depth-2 score is the maximum, over paths `a → m → b`, of `score(a, m) · sco
 the query asks for history. Weights and half-life are config, not code constants, and every result
 carries the per-ref breakdown so the UI can explain why two sessions are close.
 
-## 5. Read-only API
+## 5. API
 
 ### Transport
 
@@ -236,7 +243,18 @@ Locally, `mesh-graph query <name> --json` returns the identical payloads for scr
 
 ### Scope
 
-Graph nodes carry no principal today, and graph `agent` values (`codex`, `claude`) are harness types,
+**Spaces.** A UI Space maps to exactly one gateway principal, configured with that Space's allowed
+agent targets, workspaces, domains and ref namespaces. The UI calls Plexus as the principal of the
+Space being viewed and filters per user inside the Space; Plexus has no per-user or per-session owner
+in v1.
+
+**Refs.** Each principal declares `allowedRefPrefixes` (for example `flow:<spaceId>/`,
+`chat:<spaceId>/`). A ref outside them is invisible to that principal everywhere: in links of a
+visible session, in Q1-Q4 results, in counts, in score breakdowns and in the feed. A neighbour
+reachable only through a hidden ref is not a neighbour for that principal; counting it would leak
+the hidden ref. A principal with no prefixes sees no refs.
+
+**Sessions.** Graph nodes carry no principal today, and graph `agent` values (`codex`, `claude`) are harness types,
 not gateway agent ids. Visibility reuses the configured mapping that `mesh_agent_session_*` already
 uses: each gateway agent target has a provider type and workspace roots. A session is visible to a
 principal when some target in its `allowedAgentIds` has the session's harness as provider and a
@@ -245,7 +263,7 @@ root, in one of its `allowedWorkspaceIds`, that contains the session cwd; and, w
 that target id. A session no target maps is visible to nobody. Domain alone never grants access,
 since several workspaces can share a domain.
 
-The same filter applies to every query, every traversal hop, every ref in a score breakdown and
+The session and ref filters apply together to every query, every traversal hop, every ref in a score breakdown and
 every feed event. An out-of-scope neighbour is returned **redacted**, never dropped, so the graph
 shape stays honest: `{handle, harness, redacted: true}`, where `handle` is an HMAC of the session id
 keyed per principal. It is stable for that principal and reveals neither the native id nor links
@@ -259,8 +277,8 @@ Each tool answers one query of the consumer spec (Q1-Q7) and keeps its semantics
 
 | Spec | Tool | Input | Output |
 |---|---|---|---|
-| Q1 | `mesh_plexus_ledger_sessions` | `ref`, `descendantRefs[]?`, `roles?`, `history?` | sessions linked to the ref, with link records |
-| Q2 | `mesh_plexus_session_ledgers` | `session`, `history?` | links of the session with ref, role, since/until, cached title |
+| Q1 | `mesh_plexus_ledger_sessions` | `ref` or `launchId`, `descendantRefs[]?`, `roles?`, `history?` | sessions linked to the ref (and the caller's pending launches), with link records |
+| Q2 | `mesh_plexus_session_ledgers` | `session` or `launchId`, `history?` | links of the session with ref, role, since/until, cached title |
 | Q3 | `mesh_plexus_neighbours` | `session`, `depth 1-2`, `edgeKinds?` | scored neighbours with breakdown |
 | Q4 | `mesh_plexus_subgraph` | `refs[]` and/or `sessions[]`, `depth` | nodes and edges for a project or discussion-group view |
 | Q5 | `mesh_plexus_resume` | `session` | resume info (below) |
@@ -269,7 +287,7 @@ Each tool answers one query of the consumer spec (Q1-Q7) and keeps its semantics
 
 Opaque refs have no parent/child notion, so the spec's `includeDescendants` becomes
 `descendantRefs[]`: the caller passes the descendants it knows (the ledger owns its tree), and mesh
-unions them. The spec's `owner` filter is dropped until sessions have an owner principal (section 9). Default queries return
+unions them. The spec's `owner` filter is dropped until sessions have an owner principal. Default queries return
 only open links and non-ended edges; `history: true` adds ended ones. Pagination uses opaque cursors,
 never offsets.
 
@@ -280,6 +298,7 @@ Q7 exposes the consumer's event vocabulary, projected from the graph stream:
 | Feed event | Graph source |
 |---|---|
 | `session.created` | first `node.upserted` for a new `<agent>:<runtimeUuid>` |
+| `launch.resolved` / `launch.failed` / `launch.uncertain` | outcome of a W2 launch; `{launchId, session?}`, delivered **only** to the creating principal, for every outcome including a merge |
 | `session.state_changed` | `node.upserted` that changes `status` or `attention.state` |
 | `session.renewed` | `session.renewed` (old id, new id) |
 | `session.ended` | `status: closed` or archived surface |
@@ -290,11 +309,81 @@ Q7 exposes the consumer's event vocabulary, projected from the graph stream:
 change state and resumability at once), so a feed `eventId` is `<graphEventId>:<feedType>`, with
 `:<subject>` added when the type repeats; replay from an old cursor yields the same ids.
 
-The cursor is the `seq` of the last **scanned** graph event, not of the last emitted one. Internal
+The cursor is opaque and versioned; v1 encodes `{host, seq}`, where `seq` is the last **scanned**
+graph event, not the last emitted one. Clients never parse it, so batch 5 can replace it with
+per-host positions. Internal
 events, `refs` filters and authorization filters skip numbers on purpose, so a gap is never a loss
 signal. Loss happens only when the cursor is older than the retention watermark (`snapshot.lastSeq`):
 then the answer is `reset: true` and the client re-reads with Q4. Pull is required; push is not in v1. Events carry ids and refs,
 never transcript content.
+
+### Writes (v1)
+
+| Spec | Tool | Input | Effect |
+|---|---|---|---|
+| W1 | `mesh_plexus_link_open` | `session`, `ref`, `role`, `idempotencyKey` | opens a link with `source: ui:<principal>` |
+| W1 | `mesh_plexus_link_close` | `linkId`, `idempotencyKey` | closes the link; records `closedBy: ui:<principal>` |
+| W2 | `mesh_agent_session_create` | existing input plus `ref`, `role`, `idempotencyKey` (required with `ref`) | starts the session and opens a `pending:<launchId>` link; returns `operationId`, `launchId` |
+| W3 | none | | the ledger calls `mesh_plexus_link_open` when it sets a run's session id (3.3) |
+
+Rules, all checked under the calling principal:
+
+- **W1:** the session must be visible (Scope) and the ref inside `allowedRefPrefixes`; `link_close`
+  also requires the link's ref to be in scope. Otherwise the call fails without revealing whether
+  the target exists.
+- **W2** has no session to check yet, so it authorizes the launch itself before anything starts:
+  tool allowed, target in `allowedAgentIds`, cwd inside an `allowedWorkspaceIds` root, cwd domains
+  meeting `allowedDomainIds` when set, ref inside `allowedRefPrefixes`, valid role. Today creation
+  checks only target, workspace and access profile; the domain, ref and role checks are new.
+- `role` is one of the link roles; `mentioned` is reserved for the reconciler.
+- A write never triggers an AI turn; only an explicit, addressed invocation does.
+
+**Operation journal.** The existing idempotency store keeps only key, hash and time, so it cannot
+replay a result. Writes therefore go through a gateway operation journal (append-only NDJSON in the
+gateway state directory, like the task store). A record holds `operationId`, principal, tool,
+`idempotencyKey`, input hash, the minimal validated payload needed for recovery (session or link
+id, ref, role; for W2 also target id, cwd and `launchId`, never the prompt), state and result. The
+graph event and the audit record of an operation both carry its `operationId`.
+
+States: `reserved` → (W2: `launching` → `launched`) → `applied` → `done`, or `failed` /
+`uncertain`.
+
+1. **Reserve.** Under the journal lock, the first call for `(principal, idempotencyKey)` writes
+   `reserved`. A repeat with another input hash fails with a conflict; a repeat while in progress
+   returns `{state, operationId, launchId}`; a repeat after a terminal state returns the stored
+   result.
+2. **Launch (W2).** Record `launching` with the launch binding (agent, target id, cwd, `launchId`,
+   and the tmux target name, derived from `launchId`) **before** starting anything. Then start the
+   harness with `MESH_LAUNCH_ID` set (3.1) and record `launched`.
+3. **Apply.** Append the graph event (W1 link change, W2 pending link), then record `applied`.
+4. **Audit.** Append the audit record, then record `done` with the result.
+
+Recovery on gateway start is keyed by `operationId`, never by assumption:
+
+- For every non-terminal operation, look up its graph event and audit record by `operationId`.
+  Whatever exists moves the state forward (graph event → `applied`, audit record → audit done),
+  and the result is rebuilt from the graph event.
+- `applied` without an audit record appends it; then `done`.
+- W2 at `launched` (or later) without its pending link opens it from the journal payload
+  (idempotent on `launchId`).
+- W2 at `reserved` never started anything (`launching` is recorded before any start) →
+  `failed`.
+- W2 at `launching` with a launch record for its `launchId` → `launched`, then the next rules.
+- W2 at `launching` with no launch record: check the bound tmux target, a harness process
+  carrying that `MESH_LAUNCH_ID`, and a transcript reporting it, and wait out a quiescence window
+  (default 2 minutes) for a starting child. Any live or ambiguous evidence → `uncertain`. Only
+  when all evidence is provably absent → `failed`.
+- A failed W2 appends a `launch.failed` graph event, and the client may retry with a new key.
+  `uncertain` (W2 only) appends `launch.uncertain`, is never retried automatically, and needs an operator to
+  resolve it (adopt the found session or mark it failed).
+- W1 (no launch) at `reserved` with no graph event never applied anything → `failed`. W1 emits no
+  feed event on failure: the stored result answers the caller's retry with the same key, and a new
+  key is safe.
+
+No step launches twice, an uncertain launch never authorizes a second one, and every graph change
+from a UI write can be traced to its audit record.
+- `mesh_agent_session_create` supports only Codex today; W2 for Claude needs the same launch path
+  with launch-id preallocation (3.1).
 
 ### Resume info (Q5)
 
@@ -343,8 +432,8 @@ The consumer's needs spec was the input; the code changes it as follows.
 | Ledger refs like `<scheme>:<namespace>/work-item/<id>` | Any `OPAQUE_REF`; the namespace is part of the id (no whitespace allowed) | Existing validation already accepts that shape; mesh stays schema-free. |
 | Link kinds `works-on`, `discusses`, `reviews`, `coordinates` | Same plus `owns`, `observes`, `mentioned` | Needed for neighbour weighting and for the weak reconciler evidence. |
 | Edge kinds `spawned`, `renewed-as`, `handoff` | `spawned-by`, `succeeds`, `forked-from`; handoff = `delegates-to` or `succeeds` | Reuses existing types and their stored direction. |
-| `host` on sessions, offline state | `host` is the graph's configured label; offline hosts keep their sessions (section 8) | The graph is per host today. |
-| Writes W1-W3 (link/unlink, create session, run projection) | Out of this read-only API; W1 maps to `link open/close` with `source: ui:<principal>`, W2 to `mesh_agent_session_create --ref` | Writes need their own authorization design. |
+| `host` on sessions, offline state | `host` label on every node, link and event, opaque versioned cursor; offline hosts keep their sessions (section 8) | One graph per host in v1; federation is batch 5. |
+| Writes W1-W3 (link/unlink, create session, run projection) | W1 and W2 in v1 (section 5, Writes); W3 is the ledger calling W1 | Same principal and scope rules as reads. |
 | HTTP API with tool semantics | MCP tools over the existing HTTP endpoint (section 8) | The gateway exposes no REST surface; one auth path. |
 | Agentwheel launch/resume hooks as a feeder | Agentwheel only distributes hook artifacts; launches come from the bridge and the harness itself | Verified in Agentwheel's runtime code. |
 
@@ -356,8 +445,14 @@ The consumer's needs spec was the input; the code changes it as follows.
 2. Feeders: launch-id preallocation, bridge `--ref` with pending launch links, hook touch (Claude `SessionStart`, new Codex
    artifact), `link open|close|touch` CLI, fix resume parentage.
 3. Reconciler lineage and archived sessions.
-4. `mesh-graph query` and gateway `mesh_plexus_*` tools with principal scoping and redaction.
-5. Ledger adapters, outside this repo.
+4. `mesh-graph query` and gateway `mesh_plexus_*` read tools with Space principals, ref prefixes and
+   redaction.
+4b. Writes: operation journal with recovery, `mesh_plexus_link_open|close`, and
+   `ref`/`role`/`idempotencyKey` plus `launchId` on `mesh_agent_session_create`, pre-launch
+   authorization, creator-scoped `launch.*` feed events.
+5. Federation: one Plexus per host, merged through the gateway using the `host` labels and per-host
+   cursors.
+6. Ledger adapters, outside this repo.
 
 Each batch is independently shippable and keeps the existing registry contract.
 
@@ -375,13 +470,18 @@ Each batch is independently shippable and keeps the existing registry contract.
    snapshot and keeps them for 90 days by default (configurable), then drops them. Open links and
    edges are never compacted away.
 3. **Offline devices.** Sessions stay in the graph. Their resume info answers `resumable: false`,
-   `reason: host-offline`, and their links still count for Q1-Q4. Each host keeps its own graph
-   today; federating several hosts through the gateway is follow-up work.
+   `reason: host-offline`, and their links still count for Q1-Q4. In v1 each host keeps its own
+   graph, so sessions on other devices are not visible until federation (batch 5).
 
-## 9. Open questions for the UI consumer
+## 9. Consumer decisions
 
-1. Is workspace/agent/domain visibility enough, or does the UI need per-space principals and an
-   owner on sessions (which would bring back Q6's `owner` filter)?
-2. Are `owns` and per-role weights what the UI wants to show, or a simpler shared/not-shared view?
-3. Discussion groups: a ledger ref of their own scheme, or a UI-side grouping over refs?
-4. Should the UI write links (W1) in v1, and under which principal?
+Answers from the consumer's review of v1:
+
+1. **Visibility.** One gateway principal per Space, with that Space's workspaces, domains and ref
+   prefixes, is enough for v1. The UI filters per user inside the Space. A session owner and the Q6
+   `owner` filter can wait.
+2. **Roles and weights.** The UI shows roles as labels. Weights stay server-side for ranking, and the
+   per-ref breakdown is shown only on demand.
+3. **Discussion groups.** Each is a ledger ref of its own scheme (for example
+   `chat:<spaceId>/conversation/<id>`), with members linked as `discusses`.
+4. **Writes.** W1 and W2 are in v1, under the gateway principal of the Space.
