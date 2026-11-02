@@ -223,6 +223,99 @@ class LifecycleBeat(unittest.TestCase):
         with patch.object(beat.follow, 'outbox', side_effect=checked):
             self.assertTrue(beat.producer(self.config, self.state, epoch=100)['new'])
 
+    def formal_question(self, answered=False):
+        event = {'source_event_id': 'formal-question', 'kind': 'question', 'body': 'Choose a source',
+                 'timestamp': '2026-03-28T12:00:00Z'}
+        events = [event]
+        if answered:
+            events.append({'source_event_id': 'answer', 'kind': 'human_message', 'body': 'Use A'})
+        _, pending = beat.follow.derive(REF, {'mode': 'observe'}, events, {})
+        beat.save(beat.follow.cursor_path(self.follow_root, REF), {'pending': pending})
+        self.outbox([self.row(kind='QUESTION', body=event['body'], event_id='formal-question')])
+
+    def test_formal_question_is_immediate_open_source_decision(self):
+        self.formal_question()
+        config = {**self.config, 'decisionDestination': 'Example decision owner'}
+        source = ({REF: {'title': 'Synthetic native thread', 'domains': ['Example']}}, {}, {}, 'graph')
+        with patch.object(beat.follow, 'session_source', return_value=source):
+            result = beat.producer(config, self.state, epoch=1774699200)
+        report = self.report(result)
+        self.assertEqual(len(report['decisions']), 1)
+        card = report['decisions'][0]
+        self.assertEqual(card['question'], 'Choose a source')
+        self.assertTrue(card['sourceGap'])
+        self.assertNotIn('joseph_sentence', card)
+        self.assertEqual(card['options'][0]['action']['kind'], 'open-source')
+        self.assertEqual(report['decisionDestination'], 'Example decision owner')
+        self.assertEqual(result['new'][0]['decisionDestination'], report['decisionDestination'])
+
+    def test_formal_question_already_answered_in_batch_is_quiet(self):
+        self.formal_question(answered=True)
+        with patch.object(beat.follow, 'session_source', side_effect=AssertionError('metadata not needed')):
+            self.assertEqual(beat.producer(self.config, self.state, epoch=100)['new'], [])
+
+    def test_failed_tick_keeps_uncertain_question_sequence(self):
+        self.formal_question()
+        self.tick.side_effect = RuntimeError('synthetic source failure')
+        first = beat.producer(self.config, self.state, epoch=100)
+        self.assertEqual(beat.read_state(self.state / 'state.json')['seq'], 0)
+        self.acknowledge()
+        self.tick.side_effect = None
+        with patch.object(beat.follow, 'session_source', return_value=({}, {}, {}, None)):
+            result = beat.producer(self.config, self.state, epoch=101)
+        self.assertEqual(len(self.report(result)['decisions']), 1)
+        self.assertNotEqual(first['new'], result['new'])
+
+    def test_recommended_sentence_alias_is_verbatim(self):
+        exact = '  Exact source decision sentence.  '
+        card = beat.card_for(item(resumeCondition=exact), {})
+        self.assertEqual(card['joseph_sentence'], exact)
+        self.assertEqual(card['options'][0]['action']['value'], exact)
+
+    def test_excluded_or_self_events_questions_and_interviews_are_quiet(self):
+        self.formal_question()
+        self.outbox([self.row(2, kind='ERROR', body='Excluded failure')])
+        config = {**self.config, 'excludeRefs': [REF, item()['ref']]}
+        with patch.object(beat.follow, 'session_source', side_effect=AssertionError('excluded ref metadata read')):
+            self.assertEqual(beat.producer(config, self.state, epoch=100)['new'], [])
+        self.assertEqual(beat.events_since([self.row(kind='ERROR')], beat.initial(), {'selfRef': REF})[0], [])
+        output = self.root / 'excluded-interview.json'
+        inventory = {'sessions': [{'sessionId': REF, 'nativeId': REF.split(':')[1], 'harness': 'codex',
+                                  'lifecycle': {'pendingQuestion': True, 'question': 'Choose'}}]}
+        with patch.object(beat, 'fetch_changes', return_value=([item()], None, [], True)):
+            result = beat.interview(config, self.root / 'interview-state', output, inventory)
+        self.assertEqual(result['decisions'], 0)
+        self.assertEqual(json.loads(output.read_text())['errors'], [])
+
+    def test_ack_after_cursor_conflict_retains_pending_intent_until_success(self):
+        intent = {'key': 'work:lifecycle-beat', 'before': 'before', 'cursor': 'candidate'}
+        with patch.object(beat, 'fetch_changes', return_value=([item()], intent, [], True)), patch.object(beat, 'commit_cursor', return_value=False):
+            first = beat.producer(self.config, self.state, epoch=1774699200)
+        self.acknowledge()
+        with patch.object(beat, 'commit_cursor', return_value=False):
+            pending = beat.producer(self.config, self.state, epoch=1774699201)
+        self.assertEqual(first['new'], pending['new'])
+        state = beat.read_state(self.state / 'state.json')
+        self.assertEqual(state['staged']['ledgerCommit'], intent)
+        self.assertEqual(state['decisions'], {})
+        with patch.object(beat, 'commit_cursor', return_value=True):
+            self.assertEqual(beat.producer(self.config, self.state, epoch=1774699202)['new'], [])
+        state = beat.read_state(self.state / 'state.json')
+        self.assertIsNone(state['staged'])
+        self.assertTrue(state['decisions'])
+
+    def test_fixed_source_fault_reawakens_after_recovery(self):
+        self.tick.side_effect = RuntimeError('synthetic source failure')
+        first = beat.producer(self.config, self.state, epoch=100)
+        self.acknowledge()
+        self.assertEqual(beat.producer(self.config, self.state, epoch=101)['new'], [])
+        self.tick.side_effect = None
+        self.assertEqual(beat.producer(self.config, self.state, epoch=102)['new'], [])
+        self.tick.side_effect = RuntimeError('synthetic source failure')
+        second = beat.producer(self.config, self.state, epoch=103)
+        self.assertTrue(second['new'])
+        self.assertNotEqual(first['new'], second['new'])
+
     def test_no_adapter_is_quiet_and_no_raw_source_reader_exists(self):
         self.assertEqual(beat.producer(self.config, self.state, epoch=100), {'new': [], 'errors': []})
         source = (BIN / 'agent-lifecycle-beat.py').read_text()

@@ -40,7 +40,7 @@ def stamp(epoch):
 
 def initial():
     return {'version': 1, 'seq': 0, 'ordinary': {}, 'seen': [], 'humanRefs': [], 'decisions': {},
-            'jobHashes': {}, 'ordinaryHashes': {}, 'lastSummaryAt': None, 'staged': None}
+            'nativeDecisions': {}, 'activeFaults': [], 'jobHashes': {}, 'ordinaryHashes': {}, 'lastSummaryAt': None, 'staged': None}
 
 
 def private(root):
@@ -66,9 +66,14 @@ def read_state(path):
     return state
 
 
-def events_since(rows, state):
+def excluded(ref, config):
+    return config.get("selfRef") is not None and ref == config["selfRef"] or ref in config.get("excludeRefs", [])
+
+
+def events_since(rows, state, config=None):
     """Return immediate facts, latest ordinary details, sequence and dedup hashes."""
-    ordinary = dict(state['ordinary'])
+    config = config or {}
+    ordinary = {ref: value for ref, value in state['ordinary'].items() if not excluded(ref, config)}
     seen = set(state['seen'])
     ordinary_hashes = dict(state.get('ordinaryHashes', {}))
     immediate = []
@@ -78,6 +83,8 @@ def events_since(rows, state):
             continue
         seq = max(seq, row['seq'])
         kind, ref = row.get('kind'), row.get('ref')
+        if excluded(ref, config):
+            continue
         detail = flat(row.get('body'))
         completion, turn = row.get('completion'), row.get('turn_id')
         item = {'ref': ref, 'kind': kind, 'detail': detail}
@@ -188,6 +195,8 @@ def human(item):
 
 
 def card_for(item, config):
+    if excluded(item.get('ref'), config):
+        return None
     domain = item.get('domain')
     project = config.get('projectMap', {}).get(domain, domain)
     card = decisions.make_decision(item, project=project, where=config.get('whereByRef', {}).get(item['ref']),
@@ -196,6 +205,9 @@ def card_for(item, config):
     if card is not None:
         wait = item.get('waitingOn') or {}
         card.update(urgency=wait.get('urgency', 'normal'), due=wait.get('due'))
+        action = card['options'][0]['action']
+        if action['kind'] == 'source-sentence':
+            card['joseph_sentence'] = action['value']
     return card
 
 
@@ -205,14 +217,15 @@ def card_order(card):
 
 def decision_delta(config, state, epoch, full=False, consumer='lifecycle-beat', describe_all=False):
     items, intent, errors, enabled = fetch_changes(config, consumer, full)
-    membership = set(state['humanRefs'])
+    membership = {ref for ref in state['humanRefs'] if not excluded(ref, config)}
     for item in items:
-        if human(item):
+        if human(item) and not excluded(item['ref'], config):
             membership.add(item['ref'])
         else:
             membership.discard(item['ref'])
     due = membership if describe_all else set(decisions.due_ids(state['decisions'], stamp(epoch)))
     due -= {item['ref'] for item in items}
+    due = {ref for ref in due if not excluded(ref, config)}
     if enabled and due:
         described, missing, faults = describe_refs(config, due)
         items.extend(described)
@@ -220,7 +233,7 @@ def decision_delta(config, state, epoch, full=False, consumer='lifecycle-beat', 
         errors.extend(faults)
     cards, closed = [], set(state['humanRefs']) - membership
     for item in items:
-        if not human(item):
+        if not human(item) or excluded(item['ref'], config):
             membership.discard(item['ref'])
             closed.add(item['ref'])
             continue
@@ -237,9 +250,62 @@ def decision_delta(config, state, epoch, full=False, consumer='lifecycle-beat', 
     return (sorted(cards if describe_all else emitted, key=card_order), candidate, sorted(membership), intent, errors)
 
 
+def native_decision_delta(config, state, epoch, follower_root, rows, tick_ok):
+    """Use only formal follow QUESTION rows and official pending cursor facts.
+
+    Caller owns the follow lock. No native inventory refresh occurs here.
+    """
+    previous = state.get('nativeDecisions', {})
+    if not tick_ok:
+        return [], previous, []
+    questions = {row['ref']: row for row in rows if row['seq'] > state['seq'] and row.get('kind') == 'QUESTION' and not excluded(row.get('ref'), config)}
+    refs = set(questions) | set(decisions.due_ids(previous, stamp(epoch)))
+    closed = {ref for ref in previous if excluded(ref, config)}
+    if not refs:
+        return [], decisions.forget_closed(previous, closed), []
+    active = []
+    for ref in sorted(refs):
+        if excluded(ref, config):
+            closed.add(ref)
+            continue
+        cursor = follow.read_json(follow.cursor_path(follower_root, ref), {})
+        pending = cursor.get('pending') or {}
+        if pending.get('question_active') is not True:
+            closed.add(ref)
+            continue
+        event = questions.get(ref)
+        if event and pending.get('question_event_id') != event.get('event_id'):
+            # Only the latest currently active formal question may be emitted.
+            continue
+        active.append((ref, pending))
+    if not active:
+        return [], decisions.forget_closed(previous, closed), []
+    sources, rejected, _, _ = follow.session_source(config.get('followConfig', {}))
+    cards, errors = [], []
+    for ref, pending in active:
+        if ref in rejected:
+            closed.add(ref)
+            continue
+        source = sources.get(ref, {})
+        harness, native = ref.split(':', 1)
+        row = {'sessionId': ref, 'harness': harness, 'nativeId': native,
+               'title': source.get('title') or 'Native tool question',
+               'domains': source.get('domains') or [],
+               'lastSeenAt': pending.get('question_timestamp') or stamp(epoch),
+               'lifecycle': {'pendingQuestion': True, 'question': pending.get('question_body')}}
+        current, gaps = native_questions({'sessions': [row]}, config)
+        cards.extend(current)
+        errors.extend(gaps)
+    emitted, metadata = decisions.select_due(cards, previous, stamp(epoch), config.get('timezone', 'UTC'),
+        next_morning_hour=config.get('nextMorningHour', 9), interval_days=config.get('intervalDays', 2), closed_refs=closed)
+    return emitted, metadata, errors
+
+
 def job_failures(config, state, epoch):
     events, hashes = [], {}
     for job in config.get('jobs', []):
+        if excluded(job.get('name'), config):
+            continue
         result = receipts.check_job(job, datetime.fromtimestamp(epoch, timezone.utc))
         key = str(result['job'])
         # Age/check/last-run timestamps do not create a new semantic failure.
@@ -262,8 +328,9 @@ def acknowledged(staged, config):
 def finish_ack(state, epoch):
     staged = state['staged']
     candidate = staged['candidate']
-    for key in ('decisions', 'humanRefs', 'jobHashes', 'seen'):
-        state[key] = candidate[key]
+    for key in ('decisions', 'humanRefs', 'jobHashes', 'seen', 'nativeDecisions', 'activeFaults'):
+        if key in candidate:
+            state[key] = candidate[key]
     if staged['includesSummary']:
         state['ordinary'] = {}
         state['lastSummaryAt'] = epoch
@@ -276,11 +343,15 @@ def stage(root, state, config, epoch, immediate, cards, summary, candidate, inte
     path = (reports / (str(int(epoch * 1000)) + '-' + uuid.uuid4().hex + '.json')).resolve()
     report = {'schema': 'agent-mesh.lifecycle-beat-report.v1', 'at': stamp(epoch), 'immediate': immediate,
               'decisions': cards, 'summary': summary, 'errors': errors,
-              'humanWaitCount': len(candidate['humanRefs']), 'delivery': 'staged; execution unverified'}
+              'humanWaitCount': len(candidate['humanRefs']) + len(candidate.get('nativeDecisions', {})), 'delivery': 'staged; execution unverified'}
+    if cards and config.get('decisionDestination'):
+        report['decisionDestination'] = config['decisionDestination']
     save(path, report)
     # Report location comes first: the waker's compact line may be truncated.
     items = [{'report': str(path), 'kind': 'lifecycle-beat', 'immediate': len(immediate),
               'decisions': len(cards), 'summary': len(summary), 'errors': len(errors)}]
+    if cards and config.get('decisionDestination'):
+        items[0]['decisionDestination'] = config['decisionDestination']
     state['staged'] = {'path': str(path), 'items': items, 'keys': [waker.item_key(item) for item in items],
                        'createdAt': epoch, 'includesSummary': bool(summary), 'candidate': candidate,
                        'ledgerCommit': intent}
@@ -310,24 +381,36 @@ def producer(config, root, full=False, epoch=None):
             staged = state['staged']
             if staged.get('ledgerCommit') and commit_cursor(staged['ledgerCommit']):
                 staged['ledgerCommit'] = None
+                staged.pop('commitError', None)
                 save(root / 'state.json', state)
-            if not acknowledged(staged, config):
+            if staged.get('ledgerCommit') or not acknowledged(staged, config):
                 return {'new': staged['items'], 'errors': [{'source': 'ledger', 'error': 'native ledger cursor conflict'}] if staged.get('commitError') else []}
             finish_ack(state, epoch)
             save(root / 'state.json', state)
         with follow.locked(follower_root / 'state.lock'):
             rows, _ = follow.outbox(follower_root)
-        immediate, ordinary, seq, seen, ordinary_hashes = events_since(rows, state)
+            if tick_error:
+                # Keep the uncertain QUESTION and all later sequence numbers for
+                # the next successful observer tick, never discard a human ask.
+                uncertain = next((row['seq'] for row in rows if row['seq'] > state['seq'] and row.get('kind') == 'QUESTION' and not excluded(row.get('ref'), config)), None)
+                if uncertain is not None:
+                    rows = [row for row in rows if row['seq'] < uncertain]
+            native_cards, native_metadata, native_errors = native_decision_delta(config, state, epoch, follower_root, rows, tick_error is None)
+        immediate, ordinary, seq, seen, ordinary_hashes = events_since(rows, state, config)
         errors = [tick_error] if tick_error else []
         cards, metadata, refs, intent, ledger_errors = decision_delta(config, state, epoch, full)
         errors.extend(ledger_errors)
+        errors.extend(native_errors)
+        cards = sorted([*cards, *native_cards], key=card_order)
         jobs, job_hashes = job_failures(config, state, epoch)
         immediate.extend(jobs)
         # Fixed source failures wake once per semantic condition, not timestamp.
+        active_faults = sorted({hash_value(error) for error in errors})
+        new_faults = set(active_faults) - set(state.get('activeFaults', []))
         for error in errors:
             key = hash_value(error)
-            if key not in seen:
-                seen.append(key)
+            if key in new_faults:
+                new_faults.discard(key)
                 immediate.append({'ref': error['source'], 'kind': 'BEAT', 'detail': error['error']})
         state.update(seq=seq, ordinary=ordinary, ordinaryHashes=ordinary_hashes)
         summary_due = bool(ordinary) and (state['lastSummaryAt'] is None or epoch - state['lastSummaryAt'] >= config.get('summarySeconds', 1800))
@@ -336,15 +419,18 @@ def producer(config, root, full=False, epoch=None):
             state['lastSummaryAt'] = epoch
             summary_due = False
         summary = [ordinary[ref] for ref in sorted(ordinary)] if summary_due else []
-        candidate = {'decisions': metadata, 'humanRefs': refs, 'jobHashes': job_hashes, 'seen': seen[-4096:]}
+        candidate = {'decisions': metadata, 'humanRefs': refs, 'jobHashes': job_hashes, 'seen': seen[-4096:], 'nativeDecisions': native_metadata, 'activeFaults': active_faults}
         if immediate or cards or summary:
             return stage(root, state, config, epoch, immediate, cards, summary, candidate, intent, errors)
         state.update(candidate)
         save(root / 'state.json', state)
         if not commit_cursor(intent):
-            # No cursor is guessed or overwritten. A subsequent invocation will
-            # replay safely from the native canonical consumer and semantic hashes.
-            raise RuntimeError('native cursor compare-and-swap failed')
+            # Even a quiet baseline keeps an exact conflicting intent pending;
+            # acknowledging its failure report cannot discard unknown progress.
+            fault = {'source': 'ledger', 'error': 'native ledger cursor conflict'}
+            candidate['activeFaults'] = sorted(set(candidate['activeFaults']) | {hash_value(fault)})
+            return stage(root, state, config, epoch, [{'ref': 'ledger', 'kind': 'BEAT', 'detail': fault['error']}],
+                         [], [], candidate, intent, [fault])
         return {'new': [], 'errors': []}
 
 
@@ -355,6 +441,8 @@ def native_questions(inventory, config):
         if life.get('pendingQuestion') is not True or not life.get('question'):
             continue
         ref, native = row.get('sessionId'), row.get('nativeId')
+        if excluded(ref, config):
+            continue
         where = config.get('whereByRef', {}).get(ref)
         if not where and row.get('harness') == 'codex' and isinstance(native, str) and follow.SESSION.fullmatch('codex:' + native):
             where = 'codex://threads/' + native
@@ -383,7 +471,10 @@ def interview(config, root, output, inventory=None, full=False, consumer='lifecy
             native_cards, native_errors = native_questions(inventory, config)
             cards.extend(native_cards)
             errors.extend(native_errors)
-        save(output, {'schema': 'agent-mesh.lifecycle-interview.v1', 'decisions': sorted(cards, key=card_order), 'errors': errors})
+        report = {'schema': 'agent-mesh.lifecycle-interview.v1', 'decisions': sorted(cards, key=card_order), 'errors': errors}
+        if cards and config.get('decisionDestination'):
+            report['decisionDestination'] = config['decisionDestination']
+        save(output, report)
         # Interview export is durable output, not a reminder delivery acknowledgement.
         state['humanRefs'] = refs
         save(root / 'state.json', state)

@@ -232,6 +232,15 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
     for event in events:
         kind = event.get("kind")
         event_id = str(event.get("source_event_id") or "")
+        pending["latest_event_kind"] = kind
+        pending["latest_event_id"] = event_id
+        if kind in {"turn_started", "human_message"}:
+            pending["question_active"] = False
+            for field in ("question_event_id", "question_body", "question_timestamp"):
+                pending.pop(field, None)
+        if kind == "question" or kind == "tool" and event.get("schema") != "agent-mesh.event.v2" and event.get("tool_name") in {"AskUserQuestion", "request_user_input", "request_user_input_async"}:
+            pending.update(question_active=True, question_event_id=event_id,
+                           question_body=str(event.get("body") or ""), question_timestamp=event.get("timestamp"))
         if kind == "turn_started":
             pending["active"] = True
             if event.get("turn_id"):

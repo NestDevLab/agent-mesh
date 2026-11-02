@@ -31,6 +31,17 @@ class FollowerTest(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
+    def test_formal_question_pending_is_cleared_by_human_or_new_turn(self):
+        question = {"source_event_id": "q", "kind": "question", "body": "Choose source", "timestamp": "2026-03-28T12:00:00Z"}
+        _, pending = follow.derive(REF, ENTRY, [question], {})
+        self.assertTrue(pending["question_active"])
+        self.assertEqual(pending["question_event_id"], "q")
+        for kind in ("human_message", "turn_started"):
+            _, cleared = follow.derive(REF, ENTRY, [{"kind": kind, "source_event_id": "next"}], dict(pending))
+            self.assertFalse(cleared["question_active"])
+            self.assertNotIn("question_body", cleared)
+            self.assertEqual(cleared["latest_event_kind"], kind)
+
     def test_completion_carries_native_turn_and_outcome_fields(self):
         events = [{"source_event_id": "complete", "kind": "turn_complete", "turn_id": "native-turn",
                    "completion": "task", "outcome": "replied", "reply": "Explicit final"}]
