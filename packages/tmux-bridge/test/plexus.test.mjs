@@ -261,3 +261,30 @@ test("Q7 invalidates metadata and alias removal without leaking removed scope fa
     assert.equal((await query(state, "changes", { sinceCursor: start, scope: { ...scopeA, targets: [] } })).events.length, 0);
   } finally { await rm(state, { recursive: true, force: true }); }
 });
+
+test("local search includes canonical lifecycle metadata while scoped search preserves its DTO", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-local-inventory-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const local = await query(state, "search", { harness: "codex" });
+    assert.equal(local.linkCoverage, true);
+    assert.ok(local.sessions.every(item => Array.isArray(item.links) && Array.isArray(item.nodeIds)));
+    const scoped = await query(state, "search", { harness: "codex", scope: scopeA });
+    assert.ok(scoped.sessions.every(item => !('lifecycle' in item) && !('surface' in item) && !('links' in item)));
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
+
+test("a metadata move out of scope still invalidates the previously visible identity", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-scope-invalidation-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const start = (await query(state, "changes", {})).cursor;
+    const node = (await ok(state, ["show", "--json"])).nodes.find(item => item.runtimeUuid === CODEX);
+    await ok(state, ["add", "--id", node.id, "--agent", "codex", "--tmux-target", node.tmuxTarget, "--cwd", "/work/space-b/app", "--runtime-uuid", CODEX]);
+    const feed = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.deepEqual(feed.events.map(item => item.type), ["session.updated"]);
+    assert.ok(feed.events.every(item => !('lastKnown' in item) && !('cwd' in item)));
+  } finally { await rm(state, { recursive: true, force: true }); }
+});

@@ -178,6 +178,7 @@ export function sessionIndex(graph) {
       status: newest.status,
       attention: nodes.map((node) => node.attention).find((item) => item && LIVE_ATTENTION.includes(item.state)) || newest.attention || null,
       lifecycle: newest.lifecycle || null,
+      class: newest.class, origin: newest.origin, surface: newest.surface || {},
       domains: [...new Set(nodes.flatMap((node) => node.domains || []))].sort(),
       lastSeenAt: newest.lastSeenAt || newest.updatedAt,
       archived: nodes.some((node) => node.surface?.archived === true),
@@ -233,7 +234,9 @@ function sessionView(view, session, sessionId) {
     title: session.title, cwd: session.cwd, status: session.status, attention: session.attention?.state || null,
     lastSeenAt: session.lastSeenAt, domains: session.domains,
     // Detailed transcript facts remain local; scoped gateway queries keep their existing DTO.
-    ...(!view.scoped ? { lifecycle: session.lifecycle } : {}), ...(target ? { target } : {}),
+    ...(!view.scoped ? { lifecycle: session.lifecycle, archived: session.archived,
+      resumable: session.resumable, resumabilityReasons: session.resumabilityReasons,
+      class: session.class, origin: session.origin, surface: session.surface, nodeIds: session.nodeIds } : {}), ...(target ? { target } : {}),
   };
 }
 
@@ -481,7 +484,9 @@ export function searchSessions(graph, input = {}, scope = null) {
     .filter((session) => !after || session.sessionId > after);
   const page = matches.slice(0, limit);
   return {
-    sessions: page.map((session) => sessionView(ctx.view, session, session.sessionId)),
+    sessions: page.map((session) => ({ ...sessionView(ctx.view, session, session.sessionId),
+      ...(!ctx.view.scoped ? { links: ctx.links.filter(link => link.session === session.sessionId && link.until === null).map(linkView) } : {}) })),
+    ...(!ctx.view.scoped ? { linkCoverage: graph.migrated === true && graph.unnumbered !== true } : {}),
     cursor: matches.length > limit ? encodeCursor({ kind: "search", after: page.at(-1).sessionId }) : null,
   };
 }
@@ -585,7 +590,9 @@ function feedFor(state, seen, item) {
       out.push({ type: "session.created", session: id, subject: id });
     }
     if (seen.has(id) && (!previous || JSON.stringify(previous) !== JSON.stringify(item.node)) && !out.some(entry => entry.type === "session.created")) {
-      out.push({ type: "session.updated", session: id, subject: id });
+      const prior = sessionIndex({ nodes: [...state.nodes.values()] }).get(id);
+      out.push({ type: "session.updated", session: id, subject: id,
+        lastKnown: prior ? { cwd: prior.cwd, domains: prior.domains, harness: prior.harness } : null });
     }
     if (previous) {
       if (previous.status !== item.node.status || previous.attention?.state !== item.node.attention?.state) {
@@ -605,8 +612,9 @@ function feedFor(state, seen, item) {
     const id = sessionIdOf(previous);
     if (!id) return out;
     const remaining = [...state.nodes.values()].some(node => node.id !== item.id && sessionIdOf(node) === id);
+    const prior = sessionIndex({ nodes: [...state.nodes.values()] }).get(id);
     out.push({ type: remaining ? "session.updated" : "session.removed", session: id, subject: id,
-      ...(remaining ? {} : { lastKnown: { cwd: previous.cwd, domains: previous.domains || [], harness: previous.agent } }) });
+      lastKnown: { cwd: prior.cwd, domains: prior.domains, harness: prior.harness } });
     return out;
   }
   if (item.type === "edge.added") {
@@ -635,7 +643,7 @@ function admitted(feed, view, sessions, state, refsFilter, scope) {
     if (refsFilter && !refsFilter.has(feed.ref)) return false;
   }
   const subjects = feed.ref !== undefined ? [feed.from] : [feed.session, feed.from, feed.to].filter(Boolean);
-  if (scope && subjects.some((id) => !visible(view, sessions.get(id) || (feed.type === "session.removed" && id === feed.session ? feed.lastKnown : null)))) return false;
+  if (scope && subjects.some((id) => !visible(view, sessions.get(id)) && !(["session.removed", "session.updated"].includes(feed.type) && id === feed.session && feed.lastKnown && visible(view, feed.lastKnown)))) return false;
   if (refsFilter && feed.ref === undefined) {
     const linked = [...state.links.values()].some((link) => link.until === null && refsFilter.has(link.ref) && subjects.includes(link.session));
     if (!linked) return false;
