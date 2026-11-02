@@ -307,3 +307,20 @@ test("removing one alias invalidates the identity; only the final alias emits re
     assert.notEqual(first.events[0].eventId, last.events[0].eventId);
   } finally { await rm(state, { recursive: true, force: true }); }
 });
+
+test("replacing a node identity invalidates the old identity using its previous scope", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-identity-change-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const start = (await query(state, "changes", {})).cursor;
+    const node = (await ok(state, ["show", "--json"])).nodes.find(item => item.runtimeUuid === CODEX);
+    await ok(state, ["add", "--id", node.id, "--agent", "codex", "--tmux-target", node.tmuxTarget, "--cwd", "/work/space-b/app", "--runtime-uuid", RENEWED]);
+    const local = await query(state, "changes", { sinceCursor: start });
+    assert.ok(local.events.some(item => item.type === "session.removed" && item.session === `codex:${CODEX}`));
+    assert.ok(local.events.some(item => item.type === "session.created" && item.session === `codex:${RENEWED}`));
+    const oldScope = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.deepEqual(oldScope.events.map(item => [item.type, item.session]), [["session.removed", `codex:${CODEX}`]]);
+    assert.ok(oldScope.events.every(item => !('lastKnown' in item)));
+  } finally { await rm(state, { recursive: true, force: true }); }
+});

@@ -644,9 +644,9 @@ function factAttention(fact, refs, observedAt) {
     state = "waiting-user"; since = fact.last_final_at || fact.updatedAt; evidence = ["pending-question"];
   } else if (fact.last_error) {
     state = "stalled-error"; since = fact.last_complete_at || fact.updatedAt; evidence = ["runtime-error"];
-  } else if (fact.history_complete !== false && Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
+  } else if (fact.history_complete === true && Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
     state = "never-started"; evidence = ["no-human-turns"];
-  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && fact.history_complete !== false && Number(fact.mutating_tool_calls) === 0) {
+  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && fact.history_complete === true && Number(fact.mutating_tool_calls) === 0) {
     state = "finished"; evidence = ["completed-turn", "unlinked-read-only"];
   } else if (["human_message", "tool", "turn_started"].includes(fact.last_event_kind) && age >= 2 * 60 * 60_000) {
     state = "stalled-abandoned"; evidence = ["unfinished-turn", "idle-writer"];

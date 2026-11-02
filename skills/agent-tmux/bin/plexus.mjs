@@ -583,8 +583,15 @@ function feedFor(state, seen, item) {
   const out = [];
   if (item.type === "node.upserted") {
     const id = sessionIdOf(item.node);
-    if (!id) return out;
     const previous = state.nodes.get(item.node.id);
+    const previousId = sessionIdOf(previous);
+    if (previousId && previousId !== id) {
+      const aliasesRemain = [...state.nodes.values()].some(node => node.id !== item.node.id && sessionIdOf(node) === previousId);
+      const prior = sessionIndex({ nodes: [...state.nodes.values()] }).get(previousId);
+      out.push({ type: aliasesRemain ? "session.updated" : "session.removed", session: previousId, subject: previousId,
+        lastKnown: { cwd: prior.cwd, domains: prior.domains, harness: prior.harness } });
+    }
+    if (!id) return out;
     if (!seen.has(id)) {
       seen.add(id);
       out.push({ type: "session.created", session: id, subject: id });
