@@ -60,7 +60,7 @@ def adapters():
         result[scheme] = {**entry, 'timeoutMs': timeout}
     return result
 
-def invoke(adapter, operation, request):
+def invoke(adapter, operation, request, expected_schema=SCHEMA):
     """Bound output while reading; diagnostics never enter the caller's report."""
     deadline = time.monotonic() + adapter['timeoutMs'] / 1000
     try:
@@ -106,7 +106,7 @@ def invoke(adapter, operation, request):
             response = json.loads(data)
         except (ValueError, UnicodeError):
             raise ProtocolError('adapter returned invalid JSON') from None
-        if not isinstance(response, dict) or response.get('schema') != SCHEMA:
+        if not isinstance(response, dict) or expected_schema and response.get('schema') != expected_schema:
             raise ProtocolError('adapter returned invalid schema')
         return response
     except (BrokenPipeError, OSError):
@@ -255,17 +255,28 @@ def capabilities(adapter, scheme):
         raise ProtocolError('invalid adapter capabilities')
     return {'scheme': scheme, 'operations': response['operations'], 'sessionField': response['sessionField']}
 
-def changes(adapter, args):
+def changes(adapter, args, before_advance=None):
     with cursor_store() as (path, state):
         key = args.scheme + ':' + args.consumer
         request = {'cursor': None if args.full else state['cursors'].get(key), 'limit': 200}
         if args.full:
             request['full'] = True
         response = checked(invoke(adapter, 'changes', request), args.scheme, 'changes')
+        if before_advance and not response['errors']:
+            response['sync'] = before_advance(response['items'])
+            if response['sync'].get('unresolved'):
+                response['errors'].append({'error': 'session references unresolved'})
         if not args.peek and not response['errors']:
             state['cursors'][key] = response['cursor']
             save(path, state)
         return response
+
+def sync_links(items):
+    if not items:
+        return {'changed': False, 'events': 0, 'unresolved': []}
+    helper = Path(__file__).with_name('mesh-graph.mjs')
+    return invoke({'command': ['node', str(helper), '--json', '--input', '-', 'ledger'], 'timeoutMs': 10000},
+                  'sync', {'items': items}, expected_schema=None)
 
 def matches(value, expression):
     clauses = expression.split(',') if expression else []
@@ -302,10 +313,10 @@ def main():
     describe = commands.add_parser('describe')
     describe.add_argument('refs', nargs='+')
     describe.add_argument('--json', action='store_true')
-    for command in ('changes', 'producer'):
+    for command in ('changes', 'producer', 'sync'):
         sub = commands.add_parser(command)
         sub.add_argument('--scheme', required=True)
-        sub.add_argument('--consumer', default='default' if command == 'changes' else None, required=command == 'producer')
+        sub.add_argument('--consumer', default='plexus' if command == 'sync' else 'default' if command == 'changes' else None, required=command == 'producer')
         sub.add_argument('--peek', action='store_true')
         sub.add_argument('--full', action='store_true')
         sub.add_argument('--filter', default='')
@@ -335,17 +346,21 @@ def main():
         else:
             if not SCHEME.fullmatch(args.scheme):
                 raise ProtocolError('invalid scheme')
-            if args.command in {'changes', 'producer'} and not NAME.fullmatch(args.consumer):
+            if args.command in {'changes', 'producer', 'sync'} and not NAME.fullmatch(args.consumer):
                 raise ProtocolError('invalid consumer')
             adapter = configured.get(args.scheme)
             if not adapter:
                 result = {'status': 'no-adapter', 'items': [], 'errors': [], 'more': False}
+            elif args.command == 'sync' and adapter.get('linkSessions') is False:
+                result = {'status': 'link-sync-disabled', 'items': [], 'errors': []}
             elif args.command == 'conformance':
                 result = conformance(adapter, args.scheme)
             else:
                 # Validate the filter before advancing the cursor.
                 matches({}, args.filter)
-                result = changes(adapter, args)
+                if args.command == 'sync' and (args.consumer != 'plexus' or args.peek):
+                    raise ProtocolError('sync owns the plexus consumer and does not support peek')
+                result = changes(adapter, args, before_advance=sync_links if args.command == 'sync' else None)
             if args.command == 'producer':
                 result = {'new': [{'id': value['ref'] + ':' + value['updatedAt'], **value} for value in result.get('items', []) if matches(value, args.filter)], 'errors': result['errors'], 'more': result.get('more', False), **({'status': 'no-adapter'} if not adapter else {})}
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
