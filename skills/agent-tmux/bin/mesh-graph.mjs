@@ -28,7 +28,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import * as plexus from "./plexus.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation"]);
@@ -36,12 +38,20 @@ const GRAPH_SCHEMA = "agent-mesh.session-graph.v1";
 const EVENT_SCHEMA = "agent-mesh.session-graph-event.v1";
 const NODE_STATUSES = new Set(["active", "waiting", "blocked", "quiet", "closed"]);
 const NODE_CLASSES = new Set(["orchestrator", "worker", "observer", "ephemeral", "unclassified"]);
-const EDGE_TYPES = new Set(["spawned-by", "delegates-to", "linked", "watches"]);
+const EDGE_TYPES = new Set(["spawned-by", "delegates-to", "linked", "watches", "forked-from", "succeeds"]);
 // References deliberately identify no provider-specific schema. Consumers may
 // join them with their own stores; the graph only preserves explicit links.
 const OPAQUE_REF = /^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const MAX_SUMMARY_LENGTH = 240;
 const GRAPH_DIR = resolve(process.env.XDG_STATE_HOME || join(homedir(), ".local", "state"), "agent-mesh", "graph");
+const QUERIES = {
+  "ledger-sessions": (graph, input, scope) => plexus.ledgerSessions(graph, input, scope),
+  "session-ledgers": (graph, input, scope) => plexus.sessionLedgers(graph, input, scope),
+  neighbours: (graph, input, scope) => plexus.neighbours(graph, input, scope),
+  subgraph: (graph, input, scope) => plexus.subgraph(graph, input, scope),
+  resume: (graph, input, scope) => plexus.resumeInfo(graph, input, scope, probeWriter),
+  search: (graph, input, scope) => plexus.searchSessions(graph, input, scope),
+};
 
 const { values, positionals } = parseArgs({
   options: {
@@ -68,6 +78,10 @@ const { values, positionals } = parseArgs({
     to: { type: "string" },
     type: { type: "string" },
     id: { type: "string" },
+    "link-id": { type: "string" },
+    source: { type: "string" },
+    evidence: { type: "string" },
+    input: { type: "string" },
     apply: { type: "boolean", default: false },
     "all-history": { type: "boolean", default: false },
     "retention-days": { type: "string" },
@@ -86,8 +100,11 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-if (command === "ref") {
-  if (positionals.length !== 2) fail("ref requires exactly one operation: add or remove");
+const SUBCOMMANDS = { ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+if (SUBCOMMANDS[command]) {
+  if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
+} else if (command === "link" && positionals.length === 2) {
+  if (!["open", "close", "touch"].includes(subcommand)) fail("link operation must be open, close or touch");
 } else if (positionals.length !== 1) {
   fail("only one command may be supplied");
 }
@@ -114,7 +131,19 @@ try {
       printResult(claimDomain(stateDir, values), values);
       break;
     case "link":
-      printResult(addEdge(stateDir, values), values);
+      printResult(subcommand ? updateLink(stateDir, subcommand, values) : addEdge(stateDir, values), values);
+      break;
+    case "edge":
+      printResult(endEdge(stateDir, values), values);
+      break;
+    case "renew":
+      printResult(renewSession(stateDir, values), { ...values, json: true });
+      break;
+    case "migrate":
+      printResult(migrateStore(stateDir, values), { ...values, json: true });
+      break;
+    case "query":
+      process.stdout.write(`${JSON.stringify(runQuery(stateDir, subcommand, values))}\n`);
       break;
     case "ref":
       printResult(updateRef(stateDir, subcommand, values), values);
@@ -147,11 +176,16 @@ function addNode(statePath, options) {
     const existing = graph.nodes.find((node) => node.tmuxTarget === tmuxTarget);
     if (existing) {
       const changes = nodeChanges(existing, options);
-      if (Object.keys(changes).length === 0) return { graph, result: { node: existing, changed: false } };
+      const refEvents = [];
+      if (graph.migrated) {
+        delete changes.refs;
+        if (options.refs !== undefined) refEvents.push(...plexus.refDiffEvents(graph, plexus.linkSubject({ ...existing, ...changes }), parseRefs(options.refs), event, sourceOption(options)));
+      }
+      if (Object.keys(changes).length === 0) return { graph, events: refEvents, result: { node: existing, changed: refEvents.length > 0 } };
       const node = { ...existing, ...changes, updatedAt: now() };
       return {
         graph,
-        event: event("node.upserted", { node }),
+        events: [event("node.upserted", { node }), ...refEvents],
         result: { node, changed: true },
       };
     }
@@ -176,13 +210,15 @@ function addNode(statePath, options) {
       domainPredecessors: {},
       lastSeenAt: timestamp,
       runtimeUuid: optionalRuntimeUuid(options["runtime-uuid"]) || null,
-      refs: refsChanges([], options),
+      refs: graph.migrated ? [] : refsChanges([], options),
       createdAt: timestamp,
       updatedAt: timestamp,
     };
+    const refEvents = graph.migrated && options.refs !== undefined
+      ? plexus.refDiffEvents(graph, plexus.linkSubject(node), parseRefs(options.refs), event, sourceOption(options)) : [];
     return {
       graph,
-      event: event("node.upserted", { node }),
+      events: [event("node.upserted", { node }), ...refEvents],
       result: { node, changed: true },
     };
   });
@@ -472,7 +508,8 @@ function applyLaunchProvenance(nodes) {
   }
 }
 
-function registryProjection(graph, days) {
+function registryProjection(fullGraph, days) {
+  const graph = { ...fullGraph, edges: fullGraph.edges.filter((edge) => !edge.endedAt) };
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   const identity = (node) => node && ["codex", "claude"].includes(node.agent) &&
     /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(node.runtimeUuid || "")
@@ -732,6 +769,13 @@ function updateRef(statePath, operation, options) {
   const opaqueRef = requiredOpaqueRef(options.ref);
   return mutate(statePath, (graph) => {
     const existing = selectNode(graph, options);
+    if (graph.migrated) {
+      const subject = plexus.linkSubject(existing);
+      const open = graph.links.filter((link) => link.session === subject && link.until === null).map((link) => link.ref);
+      const desired = operation === "add" ? [...new Set([...open, opaqueRef])] : open.filter((item) => item !== opaqueRef);
+      const events = plexus.refDiffEvents(graph, subject, desired, event, sourceOption(options));
+      return { graph, events, result: { node: existing, changed: events.length > 0 } };
+    }
     const refs = normalizeRefs(existing.refs);
     const present = refs.includes(opaqueRef);
     if ((operation === "add" && present) || (operation === "remove" && !present)) {
@@ -773,7 +817,7 @@ function addEdge(statePath, options) {
   return mutate(statePath, (graph) => {
     if (!graph.nodes.some((node) => node.id === from)) throw new Error(`source node not found: ${from}`);
     if (!graph.nodes.some((node) => node.id === to)) throw new Error(`target node not found: ${to}`);
-    const existing = graph.edges.find((edge) => edge.from === from && edge.to === to && edge.type === type);
+    const existing = graph.edges.find((edge) => edge.from === from && edge.to === to && edge.type === type && !edge.endedAt);
     if (existing) return { graph, result: { edge: existing, changed: false } };
     const edge = { id: `edge-${randomUUID()}`, from, to, type, createdAt: now() };
     return { graph, event: event("edge.added", { edge }), result: { edge, changed: true } };
@@ -843,7 +887,11 @@ function printResult(result, options) {
     process.stdout.write(`compaction=${result.compaction} events=${result.events} retained=${result.retained}\n`);
     return;
   }
-  const item = result.node || result.edge;
+  if (Array.isArray(result.links)) {
+    process.stdout.write(`links=${result.links.length} changed=${result.changed === true}\n`);
+    return;
+  }
+  const item = result.node || result.edge || result.link;
   const identity = result.node ? result.node.id : item.id;
   process.stdout.write(`${identity}${result.changed ? "" : " (unchanged)"}\n`);
 }
@@ -854,6 +902,11 @@ function mutate(statePath, operation, options = {}) {
     const { graph, checkpointValid } = readGraphState(statePath);
     const result = operation(graph);
     const events = result.events || (result.event ? [result.event] : []);
+    if (graph.migrated) {
+      events.push(...pendingResolutions(graph, events));
+      let seq = graph.lastSeq || 0;
+      for (const item of events) Object.assign(item, { seq: ++seq, host: plexus.hostLabel() });
+    }
     if (events.length === 0) {
       if (Array.isArray(result.result?.nodes)) writeProjection(statePath, graph);
       if (!checkpointValid) writeCheckpoint(statePath, graph);
@@ -983,9 +1036,21 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
+  const state = { links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const baseSeq = base?.lastSeq || 0;
+  let lastSeq = baseSeq;
   let generatedAt = base?.generatedAt || "1970-01-01T00:00:00.000Z";
   for (const item of events) {
+    if (Number.isSafeInteger(item.seq)) {
+      // An interrupted compaction can leave already-snapshotted events in the stream.
+      if (item.seq <= baseSeq) continue;
+      lastSeq = Math.max(lastSeq, item.seq);
+    }
     generatedAt = item.at || generatedAt;
+    if (plexus.PLEXUS_EVENTS.has(item.type)) {
+      plexus.applyPlexusEvent(state, item);
+      continue;
+    }
     if (item.type === "node.upserted") {
       validateNode(item.node);
       nodes.set(item.node.id, normalizeNode(item.node));
@@ -1004,11 +1069,17 @@ function deriveGraph(events, base = null) {
     }
     throw new Error(`unsupported event type '${item.type}'`);
   }
+  const links = [...state.links.values()].sort((left, right) => left.id.localeCompare(right.id));
+  const sortedNodes = [...nodes.values()].sort((left, right) => left.id.localeCompare(right.id));
   return {
     schema: GRAPH_SCHEMA,
     generatedAt,
-    nodes: [...nodes.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    nodes: state.migrated ? plexus.projectNodeRefs(sortedNodes, links) : sortedNodes,
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
+    links,
+    renewals: state.renewals,
+    migrated: state.migrated,
+    lastSeq,
   };
 }
 
@@ -1035,7 +1106,7 @@ function compactGraph(statePath, options) {
 }
 
 function emptyGraph() {
-  return { schema: GRAPH_SCHEMA, generatedAt: now(), nodes: [], edges: [] };
+  return { schema: GRAPH_SCHEMA, generatedAt: now(), nodes: [], edges: [], links: [], renewals: [], migrated: false, lastSeq: 0 };
 }
 
 function normalizeNode(node) {
@@ -1198,6 +1269,7 @@ function validateEdge(edge) {
     if (typeof edge[key] !== "string") throw new Error("edge has invalid fields");
   }
   if (!EDGE_TYPES.has(edge.type)) throw new Error(`edge '${edge.id}' has invalid type`);
+  if (edge.endedAt !== undefined && typeof edge.endedAt !== "string") throw new Error(`edge '${edge.id}' has invalid endedAt`);
 }
 
 function required(value, flag) {
@@ -1301,5 +1373,172 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+}
+
+function pendingResolutions(graph, events) {
+  const resolutions = [];
+  for (const item of events) {
+    if (item.type !== "node.upserted") continue;
+    const session = plexus.sessionIdOf(item.node);
+    const pending = `pending:${item.node.id}`;
+    if (session && graph.links.some((link) => link.session === pending && link.until === null)) {
+      resolutions.push(event("link.resolved", { from: pending, to: session }));
+    }
+  }
+  return resolutions;
+}
+
+function sourceOption(options) {
+  const source = options.source === undefined ? "operator" : requiredSingleLine(options.source, "--source");
+  if (!plexus.LINK_SOURCES.test(source)) throw new Error(`--source is not a known link source: ${source}`);
+  return source;
+}
+
+function linkSubjectFor(graph, options) {
+  if (options.id !== undefined) return plexus.linkSubject(selectNode(graph, options));
+  const agent = requiredSingleLine(options.agent, "--agent");
+  if (!plexus.isHarness(agent)) throw new Error(`--agent must be a registered harness: ${agent}`);
+  return `${agent}:${requiredRuntimeUuid(options["runtime-uuid"])}`;
+}
+
+function updateLink(statePath, operation, options) {
+  return mutate(statePath, (graph) => {
+    if (!graph.migrated) throw new Error("link operations need a migrated store; run 'mesh-graph migrate --apply' first");
+    const source = sourceOption(options);
+    const find = () => {
+      if (options["link-id"] !== undefined) {
+        const id = requiredSingleLine(options["link-id"], "--link-id");
+        const link = graph.links.find((item) => item.id === id);
+        if (!link) throw new Error(`link not found: ${id}`);
+        return [link];
+      }
+      const subject = linkSubjectFor(graph, options);
+      const ref = requiredOpaqueRef(options.ref);
+      return graph.links.filter((link) => link.session === subject && link.ref === ref && link.until === null &&
+        (options.role === undefined || link.role === options.role));
+    };
+    if (operation === "open") {
+      const session = linkSubjectFor(graph, options);
+      const ref = requiredOpaqueRef(options.ref);
+      const role = options.role === undefined ? "works-on" : requiredSingleLine(options.role, "--role");
+      if (!plexus.LINK_ROLES.has(role)) throw new Error(`--role must be one of: ${[...plexus.LINK_ROLES].join(", ")}`);
+      const existing = graph.links.find((link) => link.session === session && link.ref === ref && link.role === role && link.until === null);
+      if (existing) return { graph, events: [], result: { link: existing, changed: false } };
+      const link = plexus.newLink({
+        session, ref, role, source,
+        title: optionalSingleLine(options.title, "--title"),
+        evidence: options.evidence === undefined ? undefined : parseEvidence(options.evidence),
+      });
+      return { graph, event: event("link.opened", { link }), result: { link, changed: true } };
+    }
+    const links = find().filter((link) => link.until === null);
+    if (links.length === 0) return { graph, events: [], result: { links: [], changed: false } };
+    if (operation === "close") {
+      return { graph, events: links.map((link) => event("link.closed", { linkId: link.id, closedBy: source })), result: { links: links.map((link) => link.id), changed: true } };
+    }
+    const at = Date.now();
+    const due = links.filter((link) => !link.lastActivityAt || at - Date.parse(link.lastActivityAt) >= plexus.TOUCH_COALESCE_MS);
+    const evidence = options.evidence === undefined ? undefined : parseEvidence(options.evidence);
+    return { graph, events: due.map((link) => event("link.touched", { linkId: link.id, ...(evidence ? { evidence } : {}) })), result: { links: due.map((link) => link.id), changed: due.length > 0 } };
+  });
+}
+
+function parseEvidence(value) {
+  const items = requiredSingleLine(value, "--evidence").split(",").map((item) => item.trim()).filter(Boolean);
+  if (items.some((item) => item.length > 200)) throw new Error("--evidence items must be short pointers");
+  return items;
+}
+
+function renewSession(statePath, options) {
+  const from = plexus.parseSessionId(requiredSingleLine(options.from, "--from"));
+  const to = plexus.parseSessionId(requiredSingleLine(options.to, "--to"));
+  if (from === to) throw new Error("--from and --to must name different sessions");
+  return mutate(statePath, (graph) => {
+    if (!graph.migrated) throw new Error("renew needs a migrated store; run 'mesh-graph migrate --apply' first");
+    if (graph.renewals.some((item) => item.from === from && item.to === to)) return { graph, events: [], result: { renewal: { from, to }, changed: false } };
+    return { graph, event: event("session.renewed", { from, to }), result: { renewal: { from, to }, changed: true } };
+  });
+}
+
+function endEdge(statePath, options) {
+  const id = requiredSingleLine(options.id, "--id");
+  return mutate(statePath, (graph) => {
+    if (!graph.migrated) throw new Error("edge end needs a migrated store; run 'mesh-graph migrate --apply' first");
+    const edge = graph.edges.find((item) => item.id === id);
+    if (!edge) throw new Error(`edge not found: ${id}`);
+    if (edge.endedAt) return { graph, events: [], result: { edge, changed: false } };
+    return { graph, event: event("edge.ended", { edgeId: id, source: sourceOption(options) }), result: { edge: { ...edge, endedAt: now() }, changed: true } };
+  });
+}
+
+// Numbers the legacy stream and opens one works-on link per legacy node ref, in place.
+// Moving the store to plexus/ is a separate step (docs/design/plexus.md, section 2).
+function migrateStore(statePath, options) {
+  ensureStateDir(statePath);
+  return withLock(statePath, () => {
+    const snapshot = readSnapshot(statePath);
+    const events = tailEvents([...readEvents(statePath)], snapshot?.lastEventId);
+    const graph = deriveGraph(events, snapshot?.graph);
+    if (graph.migrated) return { migration: "already-migrated", changed: false };
+    if (events.some((item) => item.seq !== undefined)) throw new Error("store has numbered events but no store.migrated marker; refusing to renumber");
+    let seq = snapshot?.graph?.lastSeq || 0;
+    const numbered = events.map((item) => ({ ...item, seq: ++seq }));
+    const groups = new Map();
+    for (const node of graph.nodes) {
+      const subject = plexus.linkSubject(node);
+      if (!groups.has(subject)) groups.set(subject, []);
+      groups.get(subject).push(node);
+    }
+    const added = [];
+    for (const [subject, nodes] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
+      const since = nodes.map((node) => node.createdAt).sort()[0];
+      for (const ref of [...new Set(nodes.flatMap((node) => node.refs || []))].sort()) {
+        added.push(event("link.opened", { link: plexus.newLink({ session: subject, ref, role: "works-on", source: "legacy-node-refs", at: since }) }));
+      }
+    }
+    added.push(event("store.migrated", { from: GRAPH_SCHEMA }));
+    for (const item of added) Object.assign(item, { seq: ++seq, host: plexus.hostLabel() });
+    const report = { migration: options.apply ? "applied" : "dry-run", events: numbered.length, links: added.length - 1, lastSeq: seq };
+    if (!options.apply) return report;
+    const all = [...numbered, ...added];
+    writeAtomic(join(statePath, "events.jsonl"), all.map((item) => JSON.stringify(item)).join("\n") + "\n");
+    const derived = deriveGraph(all, snapshot?.graph);
+    writeProjection(statePath, derived);
+    writeCheckpoint(statePath, derived);
+    return { ...report, changed: true };
+  });
+}
+
+function runQuery(statePath, name, options) {
+  let input = {};
+  if (options.input !== undefined) {
+    try {
+      input = JSON.parse(options.input);
+    } catch {
+      throw new Error("--input must be a JSON object");
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("--input must be a JSON object");
+  }
+  const { scope = null, ...query } = input;
+  if (name === "changes") {
+    const snapshot = readSnapshot(statePath);
+    const events = tailEvents([...readEvents(statePath)], snapshot?.lastEventId);
+    return plexus.changes(snapshot?.graph || null, events, query, scope);
+  }
+  const handler = QUERIES[name];
+  if (!handler) throw new Error(`unknown query '${name}'`);
+  return handler(loadGraph(statePath), query, scope);
+}
+
+function probeWriter(session) {
+  const bin = process.env.MESH_PLEXUS_WRITER_STATUS ||
+    join(dirname(fileURLToPath(import.meta.url)), "session-writer-status.mjs");
+  const result = spawnSync(process.execPath, [bin, "--agent", session.harness, "--session", session.nativeId, "--json"], { encoding: "utf8", timeout: 5_000 });
+  if (result.status !== 0) return null;
+  try {
+    return JSON.parse(result.stdout.trim().split("\n").at(-1));
+  } catch {
+    return null;
+  }
 }

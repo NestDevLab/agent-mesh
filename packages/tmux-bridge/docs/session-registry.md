@@ -45,3 +45,21 @@ missing threadId. Unknown callers become null. Resume alone never makes a human
 session a bridge child. Provenance is metadata, never steering permission:
 `agent-follow.py` continues to require explicit graph `delegates-to` for steering
 and `spawned-by` for child mode. Registry membership grants observation only.
+
+## Plexus links and queries
+
+`mesh-graph migrate --apply` numbers the event stream (`seq`), opens one `works-on` link per
+legacy node ref (`source: legacy-node-refs`) and appends a `store.migrated` marker; rerunning is a
+no-op. After that, `node.refs` is derived from open links, `ref add|remove` and `--refs` become link
+operations, and these commands are available:
+
+- `mesh-graph link open|close|touch` for session-ledger links; a node without a runtime UUID gets a
+  `pending:<nodeId>` link that resolves when the UUID is recorded.
+- `mesh-graph edge end --id <edge-id>` and `mesh-graph renew --from <agent:uuid> --to <agent:uuid>`.
+- `mesh-graph query <name> --input '<json>'` for `ledger-sessions`, `session-ledgers`,
+  `neighbours`, `subgraph`, `resume`, `search` and `changes` (Q1-Q7 of `docs/design/plexus.md`).
+  An optional `scope` (`refPrefixes`, `targets`, `handleKey`) applies one principal's visibility and
+  redaction; without it the query is the local operator view.
+
+`MESH_PLEXUS_HOST` sets the host label carried by links, events and cursors (default `local`).
+Moving the store to `plexus/` is not part of `migrate` yet.
