@@ -63,3 +63,22 @@ operations, and these commands are available:
 
 `MESH_PLEXUS_HOST` sets the host label carried by links, events and cursors (default `local`).
 Moving the store to `plexus/` is not part of `migrate` yet.
+
+## Incremental lifecycle facts
+
+Discovery and sweep retain normalized lifecycle facts in the existing graph,
+including completion kind, last task outcome, error, explicit question and native
+transcript path. Local Plexus search returns those facts; scoped gateway queries
+keep their existing public DTO. Codex and Claude identities are distinct even
+when a runtime UUID happens to match.
+
+The watcher cache reads appended bytes only. A missing or invalid cache bootstraps
+from a bounded tail and marks incomplete history; it cannot establish a finished
+read-only session or a never-started session from that partial history. Pass
+`mesh-graph sweep --full` (or `discover --full`) for an explicit full baseline.
+Routine runs omit it. Metadata flags are refreshed outside the transcript cache.
+
+The Plexus change feed includes `session.updated` invalidations for metadata and
+`session.removed` when the last graph alias is purged. Consumers re-read that
+identity; they never build another authoritative session registry. Retention
+reset still requires an explicit new baseline.
