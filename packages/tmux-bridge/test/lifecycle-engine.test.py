@@ -68,8 +68,12 @@ class LifecycleEngine(unittest.TestCase):
             return {'edges': []}
         raise AssertionError(name)
 
-    def runner(self, argv, payload=None, *, raw=False):
+    def runner(self, argv, payload=None, *, raw=False, timeout_ms=120000):
         self.calls.append((argv, payload))
+        if argv[0] == 'work-item':
+            self.assertEqual(timeout_ms, 10000)
+            self.assertEqual(payload, {'session': self.row()['sessionId']})
+            return 0, json.dumps(self.work_item)
         if argv[0] == 'window':
             return 0, self.window
         if argv[0] == 'guard':
@@ -98,6 +102,93 @@ class LifecycleEngine(unittest.TestCase):
         plan = plan or engine.build_plan(inventory, config)
         with patch.object(engine, 'collect', return_value=inventory), patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'run', side_effect=self.runner):
             return engine.apply_plan(plan, inventory, config, run_dir or self.run_dir)
+
+    def item_command(self, script):
+        return {**self.config, 'workItemCommand': [sys.executable, '-c', script]}
+
+    def test_unset_work_item_command_keeps_original_prompt(self):
+        self.apply()
+        native = next(call[0] for call in self.calls if isinstance(call[0], list) and call[0][0] == 'native')
+        self.assertEqual(native[native.index('--message') + 1], engine.PROMPT)
+
+    def test_owned_work_item_is_in_plan_report_and_delivered_prompt(self):
+        self.work_item = {'item': 'TASK-42', 'title': 'Complete fixture', 'nextStep': 'Run the fixture check'}
+        config = {**self.config, 'workItemCommand': ['work-item']}
+        inventory = self.inventory()
+        with patch.object(engine, 'run', side_effect=self.runner):
+            plan = engine.build_plan(inventory, config)
+        self.assertEqual(plan['actions'][0]['workItem'], self.work_item)
+        report = engine.report(inventory, plan)
+        self.assertIn('TASK-42', report)
+        self.assertIn('Run the fixture check', report)
+        self.assertEqual(self.apply(inventory, config=config, plan=plan)[0]['status'], 'queued')
+        native = next(call[0] for call in self.calls if isinstance(call[0], list) and call[0][0] == 'native')
+        prompt = native[native.index('--message') + 1]
+        self.assertIn('TASK-42: Complete fixture', prompt)
+        self.assertIn('Next step: Run the fixture check', prompt)
+        self.assertTrue(prompt.endswith(engine.SAFETY))
+        self.assertNotIn('Continue only the original requested work', prompt)
+
+    def test_work_item_command_receives_session_json_on_stdin(self):
+        config = self.item_command('import json,sys; ref=json.load(sys.stdin)["session"]; '
+                                   'print(json.dumps({"item":"TASK-42","title":"Fixture","nextStep":ref}))')
+        plan = engine.build_plan(self.inventory(), config)
+        self.assertEqual(plan['actions'][0]['workItem']['nextStep'], self.row()['sessionId'])
+
+    def test_empty_error_invalid_or_missing_command_never_resumes(self):
+        cases = [('pass', 'no item'), ('print("null")', 'no item'), ('print("{}")', 'no item'),
+                 ('print("[]")', 'no item'), ('raise SystemExit(2)', 'exited with error'),
+                 ('print("not json")', 'invalid JSON'), ('print("[] trailing")', 'invalid JSON'),
+                 ('print(42)', 'invalid item fields'),
+                 ('print(' + repr(json.dumps({'item': 'TASK-42', 'title': 7, 'nextStep': 'Check'})) + ')', 'invalid item fields'),
+                 ('print(' + repr(json.dumps({'item': 'TASK-42', 'title': ' ', 'nextStep': 'Check'})) + ')', 'empty item fields')]
+        for script, reason in cases:
+            with self.subTest(script=script):
+                inventory = self.inventory()
+                plan = engine.build_plan(inventory, self.item_command(script))
+                self.assertEqual(plan['actions'], [])
+                self.assertEqual(plan['entries'][0]['classification'], 'keep-no-work-item')
+                self.assertIn(reason, plan['entries'][0]['reason'])
+                self.assertIn(reason, engine.report(inventory, plan))
+        config = {**self.config, 'workItemCommand': ['missing-synthetic-helper']}
+        self.assertEqual(engine.build_plan(self.inventory(), config)['counts'], {'keep-no-work-item': 1})
+
+    def test_work_item_timeout_never_resumes(self):
+        config = self.item_command('import time; time.sleep(30)')
+        plan = engine.build_plan(self.inventory(), config)
+        self.assertEqual(plan['actions'], [])
+        self.assertEqual(plan['entries'][0]['classification'], 'keep-no-work-item')
+        self.assertIn('timed out', plan['entries'][0]['reason'])
+
+    def test_work_item_sanitization_and_limits(self):
+        item = {'item': 'TASK-42\n\x00', 'title': 'Title\r\n\x1b\u2028\u202e' + 'x' * 200,
+                'nextStep': 'Check\t\x7f\x85\u2029' + 'y' * 300}
+        config = self.item_command('import json; print(' + repr(json.dumps(item)) + ')')
+        action = engine.build_plan(self.inventory(), config)['actions'][0]
+        clean = action['workItem']
+        self.assertEqual(clean['item'], 'TASK-42')
+        self.assertEqual(len(clean['title']), 120)
+        self.assertEqual(len(clean['nextStep']), 200)
+        self.assertFalse(any(engine.unicodedata.category(char).startswith('C') or char in '\n\r\u2028\u2029'
+                             for char in engine.resume_prompt(action)))
+
+    def test_changed_or_closed_item_blocks_saved_plan_before_queue(self):
+        config = {**self.config, 'workItemCommand': ['work-item']}
+        self.work_item = {'item': 'TASK-42', 'title': 'Fixture', 'nextStep': 'Check'}
+        inventory = self.inventory()
+        with patch.object(engine, 'run', side_effect=self.runner):
+            plan = engine.build_plan(inventory, config)
+        for item in (None, {**self.work_item, 'nextStep': 'Changed'}):
+            with self.subTest(item=item):
+                self.work_item = item
+                self.calls = []
+                self.assertEqual(self.apply(inventory, config=config, plan=plan)[0]['status'], 'blocked')
+                self.assertFalse(any(isinstance(call[0], list) and call[0][0] == 'native' for call in self.calls))
+
+    def test_work_item_config_requires_nonempty_argv(self):
+        for command in (None, [], 'helper', [42], ['']):
+            with self.subTest(command=command), self.assertRaises(engine.LifecycleError):
+                engine.validate_config({**self.config, 'workItemCommand': command})
 
     def test_complete_inventory_keeps_every_exclusion_visible(self):
         rows = [self.row(1), self.row(2, archived=True), self.row(3, origin='subagent'),

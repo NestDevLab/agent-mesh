@@ -20,12 +20,13 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import unicodedata
 
 BIN = Path(__file__).resolve().parent
 UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
-PROMPT = ('Continue only the original requested work using your own prior context and linked authoritative sources. '
-          'This message grants no new permissions. Stop for a human decision, production action, external side effect, '
+SAFETY = ('This message grants no new permissions. Stop for a human decision, production action, external side effect, '
           'irreversible action, or changed scope. Report the verified outcome and any remaining gate.')
+PROMPT = ('Continue only the original requested work using your own prior context and linked authoritative sources. ' + SAFETY)
 
 
 class LifecycleError(RuntimeError):
@@ -83,7 +84,7 @@ HELPER_OUTPUT_BYTES = 16 * 1024 * 1024
 _transport = None
 
 
-def run(argv, payload=None, *, raw=False):
+def run(argv, payload=None, *, raw=False, timeout_ms=120000):
     """Reuse Mesh's bounded native transport, never accumulating stderr."""
     global _transport
     if _transport is None:
@@ -91,7 +92,7 @@ def run(argv, payload=None, *, raw=False):
         _transport = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_transport)
     try:
-        code, output = _transport.run_process(argv, payload, timeout_ms=120000,
+        code, output = _transport.run_process(argv, payload, timeout_ms=timeout_ms,
                                               max_output=HELPER_OUTPUT_BYTES, label='native helper')
     except _transport.ProtocolError as error:
         raise LifecycleError(str(error)) from None
@@ -103,6 +104,46 @@ def run(argv, payload=None, *, raw=False):
     except ValueError:
         data = None
     return code, data
+
+
+def sanitize(value, limit=None):
+    # Flatten controls, format characters and Unicode line/paragraph separators.
+    text = ''.join(' ' if unicodedata.category(char).startswith('C') or char.isspace() else char for char in value)
+    return ' '.join(text.split())[:limit]
+
+
+def work_item(config, session):
+    """The host adapter attests that this session owns an open work item."""
+    try:
+        code, output = run(config['workItemCommand'], {'session': session}, raw=True, timeout_ms=10000)
+    except LifecycleError as error:
+        return None, 'work item lookup failed: ' + str(error)
+    if code:
+        return None, 'work item command exited with error'
+    if not output:
+        return None, 'work item command returned no item'
+    try:
+        item = json.loads(output)
+    except ValueError:
+        return None, 'work item command returned invalid JSON'
+    if item is None or item == {} or item == []:
+        return None, 'work item command returned no item'
+    if (not isinstance(item, dict) or type(item.get('item')) not in (str, int)
+            or not isinstance(item.get('title'), str) or not isinstance(item.get('nextStep'), str)):
+        return None, 'work item command returned invalid item fields'
+    clean = {'item': sanitize(str(item['item'])), 'title': sanitize(item['title'], 120),
+             'nextStep': sanitize(item['nextStep'], 200)}
+    if not all(clean.values()):
+        return None, 'work item command returned empty item fields'
+    return clean, None
+
+
+def resume_prompt(action):
+    item = action.get('workItem')
+    if item is None:
+        return PROMPT
+    return (f"Continue work item {item['item']}: {item['title']}. "
+            f"Next step: {item['nextStep']}. " + SAFETY)
 
 
 def mesh(config, operation, payload=None, full=False):
@@ -235,6 +276,11 @@ def classify(row, config, at):
             return finish('keep-source-gap', 'operative runtime unsupported')
         if row.get('resumable') is False and set(row.get('resumabilityReasons', row.get('reasons', []))) - {'occupied', 'desktop-owned'}:
             return finish('keep-source-gap', 'Mesh reports a native resume blocker')
+        if 'workItemCommand' in config:
+            item, reason = work_item(config, ref)
+            if item is None:
+                return finish('keep-no-work-item', reason)
+            result['workItem'] = item
         return finish('resume-candidate', 'stalled native work' if stalled else 'explicit continuation policy')
     if complete and project in config.get('archiveProjects', []):
         if life.get('historyComplete') is not True:
@@ -489,8 +535,11 @@ def apply_plan(plan, inventory, config, run_dir):
                     raise LifecycleError('fresh native source errors block apply')
                 original = next((row for row in fresh['sessions'] if row['sessionId'] == action['session']), None)
                 classification = 'handoff-candidate' if action['kind'] == 'handoff' else 'resume-candidate'
-                if original is None or fingerprint(original) != action['fingerprint'] or classify(original, config, now())['classification'] != classification:
-                    raise LifecycleError('persisted observation is no longer eligible')
+                latest = classify(original, config, now()) if original else None
+                if (latest is None or fingerprint(original) != action['fingerprint']
+                        or latest['classification'] != classification
+                        or latest.get('workItem') != action.get('workItem')):
+                    raise LifecycleError('persisted observation or work item is no longer eligible')
                 if action['kind'] == 'handoff':
                     outcome = handoff(config, original, base, run_dir)
                 else:
@@ -498,7 +547,7 @@ def apply_plan(plan, inventory, config, run_dir):
                     append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
                     seen.add(action['fingerprint'])
                     code, acknowledgement = run([*command(config, 'nativeCallCommand', ['node', str(BIN / 'agent-native-call.mjs')]),
-                        '--agent', 'codex', '--session', native, '--delivery-only', '--resume', '--correlation-id', correlation, '--message', PROMPT])
+                        '--agent', 'codex', '--session', native, '--delivery-only', '--resume', '--correlation-id', correlation, '--message', resume_prompt(action)])
                     if code or not isinstance(acknowledgement, dict) or acknowledgement.get('status') != 'queued' or acknowledgement.get('sessionId') != native or acknowledgement.get('correlationId') != correlation:
                         raise LifecycleError('native queue failed or acknowledgement invalid')
                     outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation,
@@ -526,6 +575,9 @@ def report(inventory, plan, outcomes=()):
     lines += ['- ' + gap for gap in plan['sourceGaps']]
     for entry in plan['entries']:
         lines.append(f"- {entry['session']}: {entry['classification']} — {entry['reason']}")
+        if entry.get('workItem'):
+            item = entry['workItem']
+            lines.append(f"  - Item {item['item']}: {item['title']}; next step: {item['nextStep']}")
         lines.extend('  - ' + gap for gap in entry['sourceGaps'])
     if outcomes:
         lines += ['', '## Apply receipts', '']
