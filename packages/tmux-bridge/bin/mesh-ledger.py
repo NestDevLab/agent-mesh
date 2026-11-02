@@ -18,6 +18,7 @@ import time
 
 SCHEMA = 'agent-mesh.ledger-adapter.v1'
 MAX_BYTES = 1024 * 1024
+MAX_CURSOR_BYTES = 32 * MAX_BYTES
 STATUSES = {'open', 'active', 'waiting', 'blocked', 'done', 'cancelled', 'deleted'}
 SCHEME = re.compile(r'^[a-z][a-z0-9+.-]{0,63}$')
 NAME = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
@@ -26,10 +27,10 @@ FIELDS = {'ref', 'title', 'state', 'status', 'assignee', 'domain', 'nextAction',
 class ProtocolError(Exception):
     pass
 
-def read_json(path, default):
+def read_json(path, default, limit=MAX_BYTES):
     if not path.exists():
         return default
-    if path.stat().st_size > MAX_BYTES:
+    if path.stat().st_size > limit:
         raise ProtocolError('JSON file exceeds size limit')
     try:
         return json.loads(path.read_text())
@@ -111,8 +112,12 @@ def invoke(adapter, operation, request):
     except (BrokenPipeError, OSError):
         raise ProtocolError('adapter transport failed') from None
     finally:
-        if process.poll() is None:
+        # Descendants can retain pipes after their leader exits. Always retire
+        # this invocation's process group, including on successful completion.
+        try:
             os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait()
         process.stdout.close()
         if not process.stdin.closed:
@@ -216,7 +221,7 @@ def cursor_store():
                     raise ProtocolError('cursor store busy')
                 time.sleep(0.02)
         path = root / 'cursors.json'
-        state = read_json(path, {'schemaVersion': 1, 'cursors': {}})
+        state = read_json(path, {'schemaVersion': 1, 'cursors': {}}, limit=MAX_CURSOR_BYTES)
         if not isinstance(state, dict) or state.get('schemaVersion') != 1 or not isinstance(state.get('cursors'), dict) or any(not isinstance(value, str) for value in state['cursors'].values()):
             raise ProtocolError('invalid cursor store')
         try:
@@ -225,11 +230,14 @@ def cursor_store():
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 def save(path, state):
+    payload = json.dumps(state, sort_keys=True)
+    if len(payload.encode()) > MAX_CURSOR_BYTES:
+        raise ProtocolError('cursor store exceeds size limit')
     temporary = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(descriptor, 'w') as handle:
-            json.dump(state, handle, sort_keys=True)
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)

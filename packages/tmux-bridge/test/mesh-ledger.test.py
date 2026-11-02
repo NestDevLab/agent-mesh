@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise adapter boundaries and consumer isolation with a synthetic ledger."""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -7,10 +8,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 CLI = ROOT / 'bin/mesh-ledger.py'
 ADAPTER = ROOT / 'test/fixtures/ledger-adapter.mjs'
+spec = importlib.util.spec_from_file_location('mesh_ledger', CLI)
+ledger = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ledger)
 
 class LedgerCLI(unittest.TestCase):
     def setUp(self):
@@ -129,6 +134,30 @@ class LedgerCLI(unittest.TestCase):
         refs = ['work:' + str(i) + 'x' * 500 for i in range(200)]
         result = self.run_cli('describe', *refs, code=1)
         self.assertEqual(result['errors'][0]['error'], 'adapter timed out')
+
+    def test_cursor_store_accepts_multiple_large_cursors_and_preserves_prior_at_limit(self):
+        path = self.root / 'cursors.json'
+        value = {'schemaVersion': 1, 'cursors': {f'work:c{i}': 'x' * (ledger.MAX_BYTES // 2) for i in range(3)}}
+        ledger.save(path, value)
+        self.assertEqual(ledger.read_json(path, {}, limit=ledger.MAX_CURSOR_BYTES), value)
+        previous = path.read_bytes()
+        with patch.object(ledger, 'MAX_CURSOR_BYTES', len(previous)):
+            with self.assertRaises(ledger.ProtocolError):
+                ledger.save(path, {'schemaVersion': 1, 'cursors': {**value['cursors'], 'work:extra': 'x'}})
+        self.assertEqual(path.read_bytes(), previous)
+
+    def test_timeout_retires_descendants_after_adapter_leader_exits(self):
+        pid_file = self.root / 'child.pid'
+        program = ('import os,time; pid=os.fork(); '
+                   + f'open({str(pid_file)!r}, "w").write(str(pid)) if pid else None; '
+                   + 'time.sleep(30) if pid == 0 else None')
+        self.configure(timeout=300, command=[sys.executable, '-c', program])
+        result = self.changes(code=1)
+        self.assertEqual(result['errors'][0]['error'], 'adapter timed out')
+        pid = int(pid_file.read_text())
+        status = Path(f'/proc/{pid}/stat')
+        if status.exists():
+            self.assertEqual(status.read_text().split(') ', 1)[1].split()[0], 'Z')
 
     def test_command_is_argv_without_shell(self):
         marker = self.root / 'must-not-exist'
