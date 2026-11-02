@@ -566,3 +566,20 @@ cursor anchors. Replacement, truncation and anchored rewrites reset parsing;
 partial final records wait for a newline. Stable source event IDs let the durable
 follow outbox deduplicate replay after a reset. These guards sample boundaries;
 they do not claim to detect arbitrary edits in an unsampled middle region.
+
+### External ledger adapters
+
+`mesh-ledger adapters|describe|changes|producer|conformance` calls private executables
+registered in `$MESH_LEDGERS_FILE` (default `$XDG_CONFIG_HOME/agent-mesh/ledgers.json`).
+The JSON protocol is `agent-mesh.ledger-adapter.v1`; commands run as argv without
+a shell, with bounded time and output. Adapter stderr stays diagnostic-only.
+
+`changes --scheme work --consumer lifecycle` establishes a quiet baseline on its
+first call. `--full` explicitly requests all items (`full: true` in the adapter
+request); use it on the first page only. Continue while `more` is true. `--peek`
+leaves the cursor unchanged. Each consumer owns its cursor; failed or partial
+pages do not advance it. Mesh stores no item content. `producer --filter
+status=waiting,waitingOn.who=human` emits the existing waker report format.
+
+Plexus link synchronization is a separate subsequent command; this change only
+introduces read access and the per-consumer cursor contract.

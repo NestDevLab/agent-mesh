@@ -67,6 +67,7 @@ python3 scripts/idle-expiry-test.py
 scripts/launch-options-test.sh
 scripts/mesh-cli-smoke.sh
 scripts/session-writer-test.sh
+python3 test/mesh-ledger.test.py
 scripts/session-watch-test.sh
 python3 test/lifecycle-facts.test.py
 scripts/session-link-test.sh
