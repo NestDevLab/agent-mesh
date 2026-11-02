@@ -118,6 +118,30 @@ class LifecycleFacts(unittest.TestCase):
         watch.update_facts(facts, 'claude', ID, {'type': 'assistant', 'isApiErrorMessage': True, 'message': {'content': 'capacity'}})
         self.assertEqual(facts['last_error']['message'], 'capacity')
 
+    def test_discovery_bootstrap_is_bounded_unless_full_is_explicit(self):
+        self.path.write_text(encoded(row('user_message', message='old request')) + '{}\n' * 100 + encoded(row('task_complete', last_agent_message='done')))
+        with patch.object(watch, 'DISCOVERY_BOOTSTRAP_BYTES', 200):
+            partial = watch.read_appended_facts('codex', ID, self.path, None)
+            self.assertFalse(partial['history_complete'])
+            self.assertEqual(partial['last_assistant'], 'done')
+            self.assertEqual(partial['human_turns'], 0)
+            complete = watch.read_appended_facts('codex', ID, self.path, partial, full=True)
+            self.assertTrue(complete['history_complete'])
+            self.assertEqual(complete['human_turns'], 1)
+            self.assertEqual(watch.read_appended_facts('codex', ID, self.path, complete), complete)
+
+    def test_discovery_refreshes_metadata_instead_of_caching_native_flags(self):
+        self.path.write_text(encoded(row('user_message', message='source prompt')))
+        cache = Path(self.temp.name) / 'cache.json'
+        with patch.object(watch, 'session_root', return_value=Path(self.temp.name)), patch.object(watch, 'bridge_parents', return_value={}):
+            with patch.object(watch, 'codex_metadata', return_value={ID: {'archived': True, 'name': 'metadata title'}}):
+                first, _ = watch.discover_transcripts('codex', cache)
+                self.assertTrue(first[0]['archived'])
+            with patch.object(watch, 'codex_metadata', return_value={}):
+                second, _ = watch.discover_transcripts('codex', cache)
+                self.assertNotIn('archived', second[0])
+                self.assertEqual(second[0]['title'], 'source prompt')
+
     def test_archived_metadata_only_session_is_observed(self):
         with patch.object(watch, 'codex_metadata', return_value={ID: {'archived': True, 'name': 'archived', 'metadata_updated_at_ns': 0}}), patch.object(watch, 'transcript_candidates', return_value=[]), patch.object(watch, 'bridge_parents', return_value={}):
             facts, _ = watch.discover_transcripts('codex')

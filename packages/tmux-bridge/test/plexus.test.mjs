@@ -177,7 +177,7 @@ test("Q7 replays from an old cursor with identical event ids and resets past the
     await ok(state, ["link", "close", "--agent", "codex", "--runtime-uuid", CODEX, "--ref", item]);
 
     const first = await query(state, "changes", { sinceCursor: start, scope: scopeA });
-    assert.deepEqual(first.events.map((entry) => entry.type), ["edge.added", "session.state_changed", "edge.ended"]);
+    assert.deepEqual(first.events.map((entry) => entry.type), ["edge.added", "session.updated", "session.state_changed", "edge.ended"]);
     assert.ok(first.events.every((entry) => entry.host === "test-host"));
     const again = await query(state, "changes", { sinceCursor: start, scope: scopeA });
     assert.deepEqual(again.events.map((entry) => entry.eventId), first.events.map((entry) => entry.eventId));
@@ -239,4 +239,25 @@ test("Q7 resets a cursor ahead of the stream; scope roots compare normalized pat
   } finally {
     await rm(state, { recursive: true, force: true });
   }
+});
+
+// Metadata-only changes and purge must invalidate incremental inventory consumers.
+test("Q7 invalidates metadata and alias removal without leaking removed scope facts", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-inventory-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    let start = (await query(state, "changes", {})).cursor;
+    const first = (await ok(state, ["show", "--json"])).nodes.find(node => node.runtimeUuid === CODEX);
+    await ok(state, ["add", "--id", first.id, "--agent", "codex", "--tmux-target", first.tmuxTarget, "--cwd", first.cwd, "--runtime-uuid", CODEX, "--title", "Renamed session"]);
+    const renamed = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.equal(renamed.events.filter(item => item.type === "session.updated").length, 1);
+    assert.deepEqual((await query(state, "changes", { sinceCursor: start, scope: scopeA })).events, renamed.events);
+    start = renamed.cursor;
+    await ok(state, ["purge", "--id", first.id]);
+    const removed = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.equal(removed.events.filter(item => item.type === "session.removed").length, 1);
+    assert.ok(removed.events.every(item => !('lastKnown' in item) && !('cwd' in item)));
+    assert.equal((await query(state, "changes", { sinceCursor: start, scope: { ...scopeA, targets: [] } })).events.length, 0);
+  } finally { await rm(state, { recursive: true, force: true }); }
 });
