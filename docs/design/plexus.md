@@ -452,7 +452,7 @@ The consumer's needs spec was the input; the code changes it as follows.
    authorization, creator-scoped `launch.*` feed events.
 5. Federation: one Plexus per host, merged through the gateway using the `host` labels and per-host
    cursors.
-6. Ledger adapters, outside this repo.
+6. Ledger adapters, outside this repo, through the contract in `docs/design/ledger-adapters.md`.
 
 Each batch is independently shippable and keeps the existing registry contract.
 

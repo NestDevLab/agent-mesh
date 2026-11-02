@@ -72,6 +72,7 @@ Repository mode remains supported by setting `AGENT_MESH_ROOT` and using
 ## Design
 
 - `docs/design/plexus.md`: Plexus, the proposed n:m graph between agent sessions and work ledgers.
+- `docs/design/ledger-adapters.md`: the adapter contract that plugs any work ledger into agent-mesh.
 
 ## Consolidation notes
 
