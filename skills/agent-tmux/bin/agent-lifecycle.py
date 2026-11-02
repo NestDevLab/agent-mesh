@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import importlib.util
@@ -33,6 +33,13 @@ class LifecycleError(RuntimeError):
     pass
 
 
+class RetryableFailure(LifecycleError):
+    def __init__(self, reason, retry_class):
+        super().__init__(reason)
+        self.retry_class = retry_class
+
+
+
 def now():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
@@ -51,10 +58,12 @@ def digest(value):
 def validate_config(config):
     if not isinstance(config, dict):
         raise LifecycleError('configuration must be an object')
-    for field, default, maximum in [('maxResumes', 0, 3), ('maxArchives', 0, 200), ('idleSeconds', 3600, 31536000)]:
+    for field, default, maximum in [('maxResumes', 0, 3), ('maxArchives', 0, 200), ('idleSeconds', 3600, 31536000), ('retryBaseSeconds', 300, 86400), ('retryMaxSeconds', 3600, 604800), ('retryMaxAttempts', 3, 10)]:
         value = config.get(field, default)
         if type(value) is not int or not 0 <= value <= maximum:
             raise LifecycleError('invalid ' + field)
+    if config.get('retryBaseSeconds', 300) < 1 or config.get('retryMaxSeconds', 3600) < config.get('retryBaseSeconds', 300):
+        raise LifecycleError('retry delays require positive base and maximum >= base')
     for field in ('permanentRefs', 'permanentPrefixes', 'permanentPatterns', 'excludeRefs', 'excludePatterns',
                   'allowedProjects', 'archiveProjects', 'continuationPatterns', 'humanWaitPatterns'):
         if not isinstance(config.get(field, []), list) or any(not isinstance(value, str) for value in config.get(field, [])):
@@ -224,6 +233,18 @@ def fingerprint(row):
                     'lastEventKind', 'lastEventId', 'lastHumanAt', 'question', 'pendingQuestion', 'error', 'detail')}})
 
 
+def model_capacity(error):
+    """Only explicit provider facts, never arbitrary stderr/keyword heuristics."""
+    code = error.get('code') if isinstance(error, dict) else None
+    message = error.get('message', '') if isinstance(error, dict) else error
+    message = ' '.join(str(message or '').split()).casefold()
+    return code in {'model_capacity', 'selected_model_at_capacity', 'model_overloaded'} or message.rstrip('.') == 'selected model is at capacity' or message.startswith('selected model is at capacity.')
+
+
+def retry_delay(config, count):
+    return min(config.get('retryMaxSeconds', 3600), config.get('retryBaseSeconds', 300) * 2 ** min(count, 10))
+
+
 def classify(row, config, at):
     ref, life = row['sessionId'], row.get('lifecycle') or {}
     project = project_for(row, config)
@@ -247,6 +268,14 @@ def classify(row, config, at):
         return finish('approval-excluded', 'policy exclusion remains visible')
     if project is None or project not in config.get('allowedProjects', []):
         return finish('approval-project', 'project is outside operative policy')
+    if model_capacity(life.get('error')):
+        try:
+            failed_at = instant(life.get('completedAt') or row['lastSeenAt'])
+            result['retryability'] = {'retryable': True, 'retryClass': 'model-capacity', 'failureAt': failed_at.isoformat(),
+                                     'nextRetryAt': (failed_at + timedelta(seconds=retry_delay(config, 0))).isoformat()}
+        except (ValueError, TypeError, KeyError):
+            result['sourceGaps'].append('model capacity failure timestamp unavailable')
+            return finish('keep-source-gap', 'capacity retry lacks native timestamp')
     if life.get('pendingQuestion') or matching(config.get('humanWaitPatterns', []), text):
         return finish('approval-human', 'pending human question or explicit human wait')
     if not isinstance(row.get('nativeId'), str) or not UUID.fullmatch(row['nativeId']):
@@ -270,6 +299,8 @@ def classify(row, config, at):
     complete = life.get('completion') == 'task' and life.get('turnActive') is False
     continuing = complete and matching(config.get('continuationPatterns', []), text)
     if stalled or continuing:
+        if result.get('retryability') and instant(at) < instant(result['retryability']['nextRetryAt']):
+            return finish('keep-retry-backoff', 'native model capacity rejection waiting for backoff')
         if row.get('harness') == 'claude':
             return finish('handoff-candidate', 'Codex child handoff uses governed launcher and new-target ownership proof')
         if row.get('harness') != 'codex':
@@ -290,12 +321,32 @@ def classify(row, config, at):
     return result
 
 
-def build_plan(inventory, config, attempted_fingerprints=()):
+def build_plan(inventory, config, attempted_fingerprints=(), retry_records=()):
     entries = [classify(row, config, inventory['at']) for row in inventory['sessions']]
     seen = set(attempted_fingerprints)
+    states = retry_states(retry_records, config)
     for entry in entries:
+        context = child_context(states, entry['session'])
+        if context and context.get('fingerprint') != entry['fingerprint'] and entry['classification'] == 'handoff-candidate':
+            entry.update(classification='keep-child-held', reason='recorded child requires reconciliation before a different observation')
+        retry = states.get(entry['fingerprint'])
+        if retry and (retry.get('failure') or {}).get('retryable'):
+            entry['retry'] = retry['failure']
+
+        if entry.get('retryability') and entry['classification'] in ('resume-candidate', 'handoff-candidate', 'keep-retry-backoff'):
+            scope = digest({'session': entry['session'], 'item': (entry.get('workItem') or {}).get('item')})
+            count = sum(record.get('phase') == 'attempt' and record.get('modelCapacityScope') == scope for record in retry_records)
+            entry['modelCapacityScope'] = scope
+            due = instant(entry['retryability']['failureAt']) + timedelta(seconds=retry_delay(config, count))
+            entry['retryability'].update(retryAttempt=count, nextRetryAt=due.isoformat(), retryExhausted=count >= config.get('retryMaxAttempts', 3))
+            if count >= config.get('retryMaxAttempts', 3):
+                entry.update(classification='keep-retry-held', reason='model capacity retry hard cap reached; reconciliation required')
+            elif instant(inventory['at']) < due:
+                entry.update(classification='keep-retry-backoff', reason='native model capacity rejection waiting for backoff')
         if entry['fingerprint'] in seen and entry['classification'] in ('resume-candidate', 'handoff-candidate'):
-            entry.update(classification='keep-attempted', reason='native attempt recorded; await a new observation')
+            retrying = bool(retry and (retry.get('failure') or {}).get('retryable'))
+            entry.update(classification='keep-retry-held' if retrying and (retry['failure'].get('retryExhausted')) else 'keep-retry-backoff' if retrying else 'keep-attempted',
+                         reason='retry is bounded by receipt backoff or hard cap' if retrying else 'native attempt recorded; await a new observation')
     counts = dict(Counter(entry['classification'] for entry in entries))
     projects = dict(Counter(entry['project'] or 'unmapped' for entry in entries))
     selected = []
@@ -373,21 +424,83 @@ def locked(run_dir, consumer):
         os.close(descriptor)
 
 
-def attempted(run_dir, consumer):
-    result = set()
+def receipt_history(run_dir, consumer):
+    records = []
     for sibling in run_dir.parent.iterdir():
         if sibling.is_dir() and (sibling / 'plan.json').exists() and not (sibling / 'actions.jsonl').is_file():
             raise LifecycleError('persisted run has missing action receipts; deduplication unavailable')
-    for path in run_dir.parent.glob('*/actions.jsonl'):
+    for path in sorted(run_dir.parent.glob('*/actions.jsonl')):
         try:
             with path.open() as stream:
                 for line in stream:
                     record = json.loads(line)
-                    if record.get('consumer') == consumer and record.get('phase') == 'attempt':
-                        result.add(record['fingerprint'])
+                    if record.get('consumer') == consumer:
+                        records.append(record)
         except (OSError, ValueError, KeyError):
             raise LifecycleError('action receipt history is unreadable; deduplication unavailable') from None
-    return result
+    return sorted(records, key=lambda record: record.get('at', ''))
+
+
+def retry_states(records, config=None):
+    states = {}
+    for record in records:
+        fingerprint = record.get('fingerprint')
+        if not fingerprint:
+            continue
+        state = states.setdefault(fingerprint, {'fingerprint': fingerprint, 'attempted': False, 'deliveryStarted': False})
+        state['session'] = record.get('session')
+        for key in ('target', 'childNativeId', 'childSession', 'correlationId'):
+            if record.get(key):
+                state[key] = record[key]
+        if record.get('phase') == 'attempt':
+            state.update(attempted=True, failure=None)
+        elif record.get('phase') == 'child-created':
+            state['childCreated'] = True
+        elif record.get('phase') == 'delivery-attempt':
+            state['deliveryStarted'] = True
+        elif record.get('phase') == 'acknowledgement':
+            state['acknowledged'] = True
+        elif record.get('phase') == 'failure':
+            if (record.get('reason') == 'new child ownership or native identity unavailable' and state.get('target')
+                    and state.get('childCreated') and not state.get('deliveryStarted') and not state.get('acknowledged')):
+                try:
+                    record = {**record, **retry_failure(RetryableFailure(record['reason'], 'handoff-proof'), None, config or {}, record)}
+                except (ValueError, KeyError, TypeError):
+                    pass
+            state['failure'] = record
+    return states
+
+
+def child_context(states, session):
+    return next((state for state in reversed(list(states.values())) if state.get('session') == session and state.get('target')), None)
+
+
+def retry_ready(state, config, at):
+    failure = state.get('failure') or {}
+    if not failure.get('retryable') or state.get('acknowledged') or state.get('deliveryStarted'):
+        return False
+    if failure.get('retryClass') not in ('handoff-proof', 'capacity'):
+        return False
+    if failure.get('retryAttempt', 0) >= config.get('retryMaxAttempts', 3):
+        return False
+    try:
+        return instant(at) >= instant(failure['nextRetryAt'])
+    except (ValueError, KeyError, TypeError):
+        return False
+
+
+def attempted(run_dir, consumer, config=None, at=None):
+    states = retry_states(receipt_history(run_dir, consumer), config)
+    return {fingerprint for fingerprint, state in states.items() if state['attempted'] and not retry_ready(state, config or {}, at or now())}
+
+
+def retry_failure(error, context, config, base):
+    count = (context or {}).get('failure') or {}
+    count = count.get('retryAttempt', 0) + 1
+    delay = min(config.get('retryMaxSeconds', 3600), config.get('retryBaseSeconds', 300) * 2 ** min(count - 1, 10))
+    return {'retryable': True, 'retryClass': error.retry_class, 'retryAttempt': count,
+            'nextRetryAt': (instant(base['at']) + timedelta(seconds=delay)).isoformat().replace('+00:00', 'Z'),
+            'retryExhausted': count >= config.get('retryMaxAttempts', 3)}
 
 
 def publish_outcomes(config, records, run_dir):
@@ -454,7 +567,7 @@ def resume_safe(config, session):
     return native
 
 
-def handoff(config, original, base, run_dir):
+def handoff(config, original, base, run_dir, retry=None):
     """Create exactly one unique, owned Codex child; never resume/stop Claude."""
     if config.get('handoffProfile') != 'developer' or not isinstance(config.get('limenConfig'), str):
         raise LifecycleError('governed handoff profile or policy unavailable')
@@ -462,21 +575,34 @@ def handoff(config, original, base, run_dir):
     if info.get('sessionId') != original['sessionId'] or info.get('successor') or set(info.get('reasons', [])) - {'occupied', 'desktop-owned'} or info.get('writer', {}).get('state') not in ('free', 'occupied'):
         raise LifecycleError('original handoff source is not safely observable')
     launcher = command(config, 'sessionCommand', ['bash', str(BIN / 'agent-session.sh')])
-    target = 'lifecycle-' + uuid.uuid4().hex
-    # A missing target is exit 3. Any existing or unresolved target blocks launch.
-    code, _ = run([*launcher, '--agent', 'codex', 'target-session', target], raw=True)
-    if code != 3:
-        raise LifecycleError('new handoff target is not proven absent')
+    target = retry.get('target') if retry else 'lifecycle-' + uuid.uuid4().hex
     correlation = 'lifecycle-' + base['fingerprint'][:32]
-    append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'target': target, 'correlationId': correlation})
-    code, created = run([*launcher, '--agent', 'codex', '--profile', 'developer', '--limen-config', config['limenConfig'],
-                         'new', original['cwd'], target], raw=True)
-    if code or not isinstance(created, str) or created.splitlines()[-1:] != [target]:
-        raise LifecycleError('governed Codex child launch failed; do not retry')
-    append(run_dir / 'actions.jsonl', {**base, 'phase': 'child-created', 'target': target})
-    code, native = run([*launcher, '--agent', 'codex', 'target-session', target, '--owned-cwd', original['cwd']], raw=True)
+    if retry is None:
+        # A missing target is exit 3. Any unresolved/existing target blocks launch.
+        code, _ = run([*launcher, '--agent', 'codex', 'target-session', target], raw=True)
+        if code != 3:
+            raise LifecycleError('new handoff target is not proven absent')
+        append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'target': target, 'correlationId': correlation})
+        code, created = run([*launcher, '--agent', 'codex', '--profile', 'developer', '--limen-config', config['limenConfig'],
+                             'new', original['cwd'], target], raw=True)
+        if code == 75:
+            # The native capacity dispatcher owns this pending target/job. Never
+            # submit a second launch; later retries only probe this same target.
+            raise RetryableFailure('native governed launch is waiting for capacity', 'capacity')
+        if code or not isinstance(created, str) or created.splitlines()[-1:] != [target]:
+            raise LifecycleError('governed Codex child launch failed; outcome ambiguous, do not retry')
+        append(run_dir / 'actions.jsonl', {**base, 'phase': 'child-created', 'target': target})
+    else:
+        append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'target': target, 'correlationId': correlation, 'reusedChild': True})
+    try:
+        code, native = run([*launcher, '--agent', 'codex', 'target-session', target, '--owned-cwd', original['cwd']], raw=True)
+    except LifecycleError:
+        raise RetryableFailure('recorded child ownership proof unavailable; no new child created', 'handoff-proof') from None
     if code or not isinstance(native, str) or not UUID.fullmatch(native):
-        raise LifecycleError('new child ownership or native identity unavailable')
+        kind = 'capacity' if retry and (retry.get('failure') or {}).get('retryClass') == 'capacity' and code == 3 else 'handoff-proof'
+        raise RetryableFailure('recorded child ownership proof unavailable; no new child created', kind)
+    if retry and retry.get('childNativeId') and native != retry['childNativeId']:
+        raise LifecycleError('recorded child native identity changed; held for reconciliation')
     append(run_dir / 'actions.jsonl', {**base, 'phase': 'child-identified', 'target': target, 'childNativeId': native,
                                       'childSession': 'codex:' + native, 'originalSession': original['sessionId']})
     refreshed = collect(config)
@@ -488,6 +614,7 @@ def handoff(config, original, base, run_dir):
               'to recover that original request before acting. ' + PROMPT)
     # This helper owns its pane/approval/composer checks. The owned-cwd proof
     # above permits only this newly created unattended single-pane child.
+    append(run_dir / 'actions.jsonl', {**base, 'phase': 'delivery-attempt', 'target': target, 'childNativeId': native, 'correlationId': correlation})
     code, _ = run([*command(config, 'sendCommand', ['bash', str(BIN / 'agent-send.sh')]), '--quiet', '--agent', 'codex',
                     '--correlation-id', correlation, '--result-token', token, target, prompt, '5'], raw=True)
     if code not in (0, 4, 65, 124):
@@ -512,17 +639,33 @@ def apply_plan(plan, inventory, config, run_dir):
         raise LifecycleError('unsupported action or resume limit exceeded')
     outcomes = []
     with locked(run_dir, plan['consumer']):
-        seen = attempted(run_dir, plan['consumer'])
+        history = receipt_history(run_dir, plan['consumer'])
+        states = retry_states(history, config)
+        seen = {key for key, value in states.items() if value['attempted'] and not retry_ready(value, config, now())}
         recover_outcomes(config, run_dir)
         for action in actions:
             base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': action['kind'],
                     'fingerprint': action['fingerprint'], 'planDigest': expected}
+            if action.get('modelCapacityScope'):
+                base['modelCapacityScope'] = action['modelCapacityScope']
             if action['fingerprint'] in seen:
                 outcome = {**base, 'phase': 'deduplicated', 'status': 'not-retried'}
                 append(run_dir / 'actions.jsonl', outcome)
                 outcomes.append(outcome)
                 continue
+            context = states.get(action['fingerprint'])
             try:
+                if context and retry_ready(context, config, now()) and config.get('retryGuardCommand'):
+                    code, permission = run(config['retryGuardCommand'], {'session': action['session'], 'target': context.get('target'),
+                        'retryClass': context['failure']['retryClass']})
+                    if code or not isinstance(permission, dict) or permission.get('allow') is not True:
+                        raise RetryableFailure('retry held by private source or permission policy', context['failure']['retryClass'])
+                if action.get('modelCapacityScope'):
+                    model_attempts = sum(record.get('phase') == 'attempt' and record.get('modelCapacityScope') == action['modelCapacityScope'] for record in history)
+                    if model_attempts >= config.get('retryMaxAttempts', 3):
+                        raise LifecycleError('model capacity retry hard cap reached; reconciliation required')
+                    if instant(now()) < instant(action['retryability']['failureAt']) + timedelta(seconds=retry_delay(config, model_attempts)):
+                        raise LifecycleError('model capacity retry is still in receipt-backed backoff')
                 window = config.get('resumeWindowCommand')
                 if not window:
                     raise LifecycleError('resume window guard unavailable')
@@ -541,13 +684,18 @@ def apply_plan(plan, inventory, config, run_dir):
                         or latest.get('workItem') != action.get('workItem')):
                     raise LifecycleError('persisted observation or work item is no longer eligible')
                 if action['kind'] == 'handoff':
-                    outcome = handoff(config, original, base, run_dir)
+                    prior_child = child_context(states, action['session'])
+                    if prior_child and prior_child['fingerprint'] != action['fingerprint']:
+                        raise LifecycleError('recorded child belongs to another observation; held for reconciliation')
+                    outcome = handoff(config, original, base, run_dir, context if context and context.get('target') else None)
                 else:
                     correlation = 'lifecycle-' + action['fingerprint'][:32]
                     append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
                     seen.add(action['fingerprint'])
                     code, acknowledgement = run([*command(config, 'nativeCallCommand', ['node', str(BIN / 'agent-native-call.mjs')]),
                         '--agent', 'codex', '--session', native, '--delivery-only', '--resume', '--correlation-id', correlation, '--message', resume_prompt(action)])
+                    if code == 75 and isinstance(acknowledgement, dict) and acknowledgement.get('status') == 'waiting_capacity' and acknowledgement.get('accepted') is False and acknowledgement.get('sessionId') == native and acknowledgement.get('correlationId') == correlation:
+                        raise RetryableFailure('native queue explicitly rejected for capacity before acceptance', 'capacity')
                     if code or not isinstance(acknowledgement, dict) or acknowledgement.get('status') != 'queued' or acknowledgement.get('sessionId') != native or acknowledgement.get('correlationId') != correlation:
                         raise LifecycleError('native queue failed or acknowledgement invalid')
                     outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation,
@@ -555,6 +703,8 @@ def apply_plan(plan, inventory, config, run_dir):
                                'resumeDiagnostic': acknowledgement.get('resumeDiagnostic', False)}
             except LifecycleError as error:
                 outcome = {**base, 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
+                if isinstance(error, RetryableFailure):
+                    outcome.update(retry_failure(error, context, config, base))
                 append(run_dir / 'actions.jsonl', outcome)
                 publish_outcomes(config, [outcome], run_dir)
                 outcomes.append(outcome)
@@ -575,6 +725,9 @@ def report(inventory, plan, outcomes=()):
     lines += ['- ' + gap for gap in plan['sourceGaps']]
     for entry in plan['entries']:
         lines.append(f"- {entry['session']}: {entry['classification']} — {entry['reason']}")
+        retry = entry.get('retry') or entry.get('retryability')
+        if retry:
+            lines.append(f"  - Retry {retry.get('retryClass')}: due {retry.get('nextRetryAt')}; attempt {retry.get('retryAttempt', 0)}; exhausted {retry.get('retryExhausted', False)}")
         if entry.get('workItem'):
             item = entry['workItem']
             lines.append(f"  - Item {item['item']}: {item['title']}; next step: {item['nextStep']}")
@@ -609,7 +762,8 @@ def main():
             if (args.run_dir / 'plan.json').exists():
                 raise LifecycleError('use a new run directory; persisted plans are immutable')
             inventory = collect(config, args.full)
-            plan = build_plan(inventory, config, attempted(args.run_dir, config.get('consumer', 'lifecycle')))
+            history = receipt_history(args.run_dir, config.get('consumer', 'lifecycle'))
+            plan = build_plan(inventory, config, attempted(args.run_dir, config.get('consumer', 'lifecycle'), config), history)
             write(args.run_dir / 'inventory.json', inventory)
             write(args.run_dir / 'plan.json', plan)
             append(args.run_dir / 'actions.jsonl', {'at': now(), 'consumer': plan['consumer'], 'phase': 'planned', 'planDigest': plan['digest']})
