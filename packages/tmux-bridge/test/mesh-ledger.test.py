@@ -116,6 +116,12 @@ class LedgerCLI(unittest.TestCase):
         self.run_cli('producer', '--scheme', 'work', '--consumer', 'beat', '--filter', 'status=open,bad', code=1)
         self.assertEqual(len(self.changes()['items']), 1)
 
+    def test_timeout_also_bounds_a_child_that_never_reads_stdin(self):
+        self.configure(timeout=100, command=[sys.executable, '-c', 'import time; time.sleep(30)'])
+        refs = ['work:' + str(i) + 'x' * 500 for i in range(200)]
+        result = self.run_cli('describe', *refs, code=1)
+        self.assertEqual(result['errors'][0]['error'], 'adapter timed out')
+
     def test_command_is_argv_without_shell(self):
         marker = self.root / 'must-not-exist'
         self.configure(command=['node', str(ADAPTER), '; touch ' + str(marker)])

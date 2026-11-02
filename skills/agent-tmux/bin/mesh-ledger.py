@@ -68,16 +68,26 @@ def invoke(adapter, operation, request):
     except OSError:
         raise ProtocolError('adapter could not start') from None
     try:
-        process.stdin.write(json.dumps(request).encode())
-        process.stdin.close()
+        payload = json.dumps(request).encode()
+        if len(payload) > MAX_BYTES:
+            raise ProtocolError('adapter request exceeds size limit')
+        sent = 0
         data = bytearray()
+        os.set_blocking(process.stdin.fileno(), False)
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
+            selector.register(process.stdin, selectors.EVENT_WRITE)
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise ProtocolError('adapter timed out')
                 for key, _ in selector.select(remaining):
+                    if key.fileobj is process.stdin:
+                        sent += os.write(key.fd, payload[sent:sent + 65536])
+                        if sent == len(payload):
+                            selector.unregister(process.stdin)
+                            process.stdin.close()
+                        continue
                     chunk = os.read(key.fd, min(65536, MAX_BYTES + 1 - len(data)))
                     if not chunk:
                         selector.unregister(key.fileobj)
@@ -105,6 +115,8 @@ def invoke(adapter, operation, request):
             os.killpg(process.pid, signal.SIGKILL)
         process.wait()
         process.stdout.close()
+        if not process.stdin.closed:
+            process.stdin.close()
 
 def one_line(value, name, limit=4096):
     if not isinstance(value, str) or len(value) > limit or '\n' in value or '\r' in value:
@@ -179,6 +191,8 @@ def checked(response, scheme, operation, requested=()):
             raise ProtocolError('invalid describe refs')
         if len(missing) != len(set(missing)) or set(missing).intersection(refs):
             raise ProtocolError('invalid missing refs')
+        if not result['errors'] and set(refs + missing) != set(requested):
+            raise ProtocolError('describe omitted requested refs')
         result['missing'] = missing
     else:
         if not isinstance(response.get('cursor'), str) or len(response['cursor']) > MAX_BYTES // 2 or not isinstance(response.get('more'), bool):
@@ -229,7 +243,7 @@ def save(path, state):
 
 def capabilities(adapter, scheme):
     response = invoke(adapter, 'capabilities', {})
-    if scheme not in response.get('schemes', []) or not {'describe', 'changes'} <= set(response.get('operations', [])) or not isinstance(response.get('sessionField'), bool):
+    if not isinstance(response.get('schemes'), list) or not isinstance(response.get('operations'), list) or any(not isinstance(op, str) for op in response['operations']) or scheme not in response['schemes'] or not {'describe', 'changes'} <= set(response['operations']) or not isinstance(response.get('sessionField'), bool):
         raise ProtocolError('invalid adapter capabilities')
     return {'scheme': scheme, 'operations': response['operations'], 'sessionField': response['sessionField']}
 
