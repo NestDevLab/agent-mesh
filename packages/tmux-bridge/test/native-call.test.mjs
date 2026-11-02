@@ -177,7 +177,7 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
   const blocker = JSON.parse(result.stdout);
   assert.equal(blocker.schemaVersion, 1);
   assert.equal(blocker.status, "blocked");
-  assert.equal(blocker.reason, "claude_active_user_turn_unsupported");
+  assert.equal(blocker.reason, "claude_managed_inbox_root_missing");
   assert.equal(blocker.delivery.attempted, false);
   assert.equal(blocker.delivery.visibleUserTurn, false);
   assert.deepEqual(blocker.ownership.writers, [

@@ -37,3 +37,36 @@ test("a Claude CLI launched with --session-id owns that session", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a Remote Control child running the versioned binary is a verified writer", () => {
+  const root = mkdtempSync(join(tmpdir(), "mesh-claude-ownership-"));
+  try {
+    const proc = join(root, "proc");
+    const argvs = {
+      300: ["/opt/claude/versions/9.9.9", "--print", "--sdk-url", "https://example.invalid"],
+      301: ["/opt/other/versions/9.9.9", "--print"]
+    };
+    for (const [pid, argv] of Object.entries(argvs)) {
+      mkdirSync(join(proc, pid), { recursive: true });
+      writeFileSync(join(proc, pid, "cmdline"), `${argv.join("\0")}\0`);
+      writeFileSync(join(proc, pid, "status"), "Name:\tclaude\nPPid:\t299\n");
+    }
+    const claudeBin = join(root, "claude");
+    writeFileSync(claudeBin, `#!/bin/sh\necho '[{"pid": 300, "sessionId": "${SESSION}"}]'\n`);
+    chmodSync(claudeBin, 0o755);
+
+    const ownership = inspectClaudeSessionOwnership(SESSION, { procRoot: proc, claudeBin });
+    assert.equal(ownership.state, "owned");
+    assert.equal(ownership.discovery.complete, true);
+    assert.deepEqual(ownership.writers, [
+      { pid: 300, kind: "claude-remote-control", source: "claude-agents", parentPid: 299 }
+    ]);
+
+    writeFileSync(claudeBin, `#!/bin/sh\necho '[{"pid": 301, "sessionId": "${SESSION}"}]'\n`);
+    const unverified = inspectClaudeSessionOwnership(SESSION, { procRoot: proc, claudeBin });
+    assert.equal(unverified.state, "unknown");
+    assert.deepEqual(unverified.discovery.issues, ["owner_process_unverifiable"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

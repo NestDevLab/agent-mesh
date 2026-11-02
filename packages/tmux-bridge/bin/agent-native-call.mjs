@@ -272,7 +272,7 @@ function claudeMessageText(record, role) {
 
 async function requireManagedClaudeInbox(id, correlation, configuredRoot) {
   const root = String(configuredRoot || "").trim();
-  if (!root) blockClaudeVisibleTurn(id, correlation, "claude_active_user_turn_unsupported");
+  if (!root) blockClaudeVisibleTurn(id, correlation, "claude_managed_inbox_root_missing");
   const inbox = resolve(root, `${id}.jsonl`);
   if (!inbox.startsWith(`${resolve(root)}/`)) blockClaudeVisibleTurn(id, correlation, "claude_managed_inbox_invalid");
   try { await access(inbox); }

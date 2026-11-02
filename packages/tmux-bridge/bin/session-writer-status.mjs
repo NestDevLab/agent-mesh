@@ -181,7 +181,12 @@ function detectMonitorInboxWatchers(inbox) {
   ], { encoding: "utf8", timeout: 500 });
   try {
     const record = probe.status === 0 ? JSON.parse(probe.stdout) : undefined;
-    if (record && writers.some((writer) => writer.pid === record.owner?.pid)) {
+    // A Remote Control session's inbox lock names the shared `claude remote-control` parent, so the
+    // supervisor must also descend from this session's own child or it may belong to a replaced one.
+    const bound = (writer) => record.owner?.pid === writer.pid
+      || (writer.parentPid !== undefined && record.owner?.pid === writer.parentPid
+        && descendsFrom(record.supervisor?.pid, writer.pid));
+    if (record && writers.some(bound)) {
       watchers.push(record.supervisor.pid);
     }
   } catch { /* Missing/invalid supervisor evidence is not readiness. */ }
@@ -205,6 +210,21 @@ function detectMonitorInboxWatchers(inbox) {
     watchers.push(Number(entry.name));
   }
   return watchers.sort((left, right) => left - right);
+}
+
+function descendsFrom(pid, ancestor) {
+  for (let current = pid, hops = 0; Number.isInteger(current) && current > 1 && hops < 64; hops += 1) {
+    let status;
+    try {
+      status = readFileSync(`${procRoot}/${current}/status`, "utf8");
+    } catch {
+      return false;
+    }
+    const parent = Number(status.match(/^PPid:\s+(\d+)$/m)?.[1]);
+    if (parent === ancestor) return true;
+    current = parent;
+  }
+  return false;
 }
 
 function summarize(writers) {
