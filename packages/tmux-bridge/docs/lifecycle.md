@@ -39,6 +39,7 @@ Configuration is a private JSON object. No host policy is embedded here.
 | `continuationPatterns` | Explicit continuation evidence for completed idle turns |
 | `humanWaitPatterns` | Human-wait evidence that blocks continuation |
 | `timezone` | Passed to the host resume-window guard; default `UTC` |
+| `workItemCommand` | Optional argv for an owned open work item lookup; 10-second timeout |
 | `resumeWindowCommand` | Required JSON guard argv before each operative action |
 | `handoffProfile` | Must be `developer` to enable governed Codex child handoffs |
 | `limenConfig` | Host-owned explicit policy path for those handoffs |
@@ -62,7 +63,34 @@ The inventory runs `mesh-graph sweep [--full] --json`, then pages the local
 remain counted, including archived, closed, noise, excluded and subagent
 sessions. A source failure marks inventory incomplete and blocks all actions.
 Classification and project totals, approvals and source gaps are persisted.
-No ledger match is required for a stalled native work item.
+Without `workItemCommand`, stalled native work retains the existing behavior:
+no ledger match is required and the generic continuation prompt is used.
+
+When configured, `workItemCommand` runs only for otherwise eligible existing-session
+resume candidates. It receives `{"session":"codex:11111111-1111-4111-8111-111111111111"}`
+as JSON on stdin (no extra arguments and no shell). The host adapter must return
+exit 0 and JSON such as:
+
+```json
+{"item":"TASK-42","title":"Complete the fixture","nextStep":"Run the fixture check"}
+```
+
+The adapter is responsible for proving that the item is open and owned by the
+supplied session. It must return no item for closed, unassigned or differently
+owned work. Empty output, `null`, `{}` or `[]`, command errors, a 10-second timeout,
+invalid JSON or invalid/empty fields classify the candidate as `keep-no-work-item`;
+no resume is selected. Each reason is retained in the plan and report. `item`
+accepts a nonempty string or integer; `title` and `nextStep` require nonempty strings.
+
+Item text is flattened to one line: whitespace, control and format characters
+become spaces, repeated whitespace is collapsed, title is capped at 120 characters
+and next step at 200. The item id is also sanitized. Each resume action includes
+`workItem` with the sanitized fields; the report shows the item and next step.
+The fixed prompt is `Continue work item <item>: <title>. Next step: <nextStep>.`
+followed by the existing safety text beginning `This message grants no new permissions.`
+The adapter is called again before queueing; a missing or changed item blocks the
+saved action and requires a new plan. This option does not alter Claude child
+handoff policy.
 
 Archived sessions, subagents and explicit noise are kept. Permanent refs,
 coordinator/orchestrator sessions, director/coordinator titles and the current
@@ -149,7 +177,7 @@ python3 packages/tmux-bridge/test/lifecycle-engine.test.py
 ```
 
 Fixtures cover complete counts, explicit exclusions, native work without ledger
-matches, bounds, window and ownership guards, queue acknowledgements, attempted
+matches when the option is unset, work-item success/failure/timeout/sanitization, bounds, window and ownership guards, queue acknowledgements, attempted
 mutation deduplication, human waits, archive protection, supported/unsupported
 handoffs, native source failure and persisted-plan integrity. Host adapters,
 live runtime delivery, archive reviews and ledger decision polling require
