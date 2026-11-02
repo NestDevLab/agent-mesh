@@ -28,6 +28,7 @@ const agentTmuxBundleFiles = [
   "bin/mesh-ledger.py",
   "bin/agent-decisions.py",
   "bin/agent-lifecycle-beat.py",
+  "bin/agent-lifecycle.py",
   "bin/mesh-models.sh",
   "bin/mesh-send.sh",
   "bin/session-writer-status.mjs",

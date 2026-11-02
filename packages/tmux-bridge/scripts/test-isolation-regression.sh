@@ -72,6 +72,7 @@ python3 test/decision-cards.test.py
 scripts/session-watch-test.sh
 python3 test/lifecycle-facts.test.py
 python3 test/lifecycle-beat.test.py
+python3 test/lifecycle-engine.test.py
 scripts/session-link-test.sh
 scripts/desktop-session-link-test.sh
 
