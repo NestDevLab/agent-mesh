@@ -67,10 +67,15 @@ def record(args: argparse.Namespace) -> int:
     target = directory / f"{ended.astimezone(timezone.utc):%Y-%m-%d}.jsonl"
     line = json.dumps(receipt, sort_keys=True) + "\n"
     # O_APPEND plus an exclusive lock keeps lines whole when two jobs end at once.
+    payload = line.encode()
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
-        os.write(fd, line.encode())
+        while payload:
+            written = os.write(fd, payload)
+            if written <= 0:
+                raise OSError(f"short write to {target}")
+            payload = payload[written:]
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -78,18 +83,19 @@ def record(args: argparse.Namespace) -> int:
     return 0
 
 
-def latest_receipt(job: str, since: datetime) -> dict[str, Any] | None:
+def latest_receipt(job: str) -> dict[str, Any] | None:
+    """Return the newest receipt for job; daily files are named by endedAt, so stop at the first hit."""
     directory = runs_dir()
     if not directory.is_dir():
         return None
-    newest: dict[str, Any] | None = None
-    for path in sorted(directory.glob("*.jsonl")):
+    days = []
+    for path in directory.glob("*.jsonl"):
         try:
-            day = datetime.strptime(path.stem, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            days.append((datetime.strptime(path.stem, "%Y-%m-%d"), path))
         except ValueError:
             continue
-        if day + timedelta(days=1) < since:
-            continue
+    for _, path in sorted(days, reverse=True):
+        newest: dict[str, Any] | None = None
         for raw in path.read_text(errors="replace").splitlines():
             try:
                 item = json.loads(raw)
@@ -100,7 +106,9 @@ def latest_receipt(job: str, since: datetime) -> dict[str, Any] | None:
                 continue
             if newest is None or item["_at"] >= newest["_at"]:
                 newest = item
-    return newest
+        if newest:
+            return newest
+    return None
 
 
 def field(document: Any, dotted: str) -> Any:
@@ -136,8 +144,7 @@ def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
                     result["mismatch"] = mismatches
     else:
         result["evidence"] = "receipts"
-        # Look back a little past the limit so an overdue job still shows its last run.
-        receipt = latest_receipt(name, now - max_age * 2)
+        receipt = latest_receipt(name)
         if receipt:
             last = receipt["_at"]
             result["outcome"] = receipt.get("outcome")
@@ -157,17 +164,34 @@ def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
     return result
 
 
+def load_watch_list(path: Path) -> list[dict[str, Any]]:
+    config = json.loads(path.read_text())
+    jobs = config.get("jobs") if isinstance(config, dict) else None
+    if not isinstance(jobs, list):
+        raise ValueError("invalid watch list: expected {\"jobs\": [...]}")
+    for index, job in enumerate(jobs):
+        problem = None
+        if not isinstance(job, dict) or not isinstance(job.get("name"), str) or not job["name"]:
+            problem = "name must be a non-empty string"
+        elif isinstance(job.get("maxAgeHours"), bool) or not isinstance(job.get("maxAgeHours"), (int, float)) \
+                or job["maxAgeHours"] <= 0:
+            problem = "maxAgeHours must be a positive number"
+        elif "path" in job and (not isinstance(job["path"], str) or not job["path"]):
+            problem = "path must be a non-empty string"
+        elif "expect" in job and (not isinstance(job["expect"], dict) or "path" not in job):
+            problem = "expect must be an object and needs path"
+        if problem:
+            raise ValueError(f"invalid watch list: job {index}: {problem}")
+    return jobs
+
+
 def check(args: argparse.Namespace) -> int:
     try:
-        config = json.loads(Path(args.config).expanduser().read_text())
-        jobs = config["jobs"]
-        for job in jobs:
-            if not job.get("name") or "maxAgeHours" not in job:
-                raise ValueError("every job needs name and maxAgeHours")
-    except (OSError, ValueError, KeyError, TypeError) as error:
-        print(f"agent-run-receipt: invalid watch list: {error}", file=sys.stderr)
+        jobs = load_watch_list(Path(args.config).expanduser())
+        now = parse_time(args.now) if args.now else utcnow()
+    except (OSError, ValueError) as error:
+        print(f"agent-run-receipt: {error}", file=sys.stderr)
         return 1
-    now = parse_time(args.now) if args.now else utcnow()
     healthy = True
     for job in jobs:
         result = check_job(job, now)
@@ -200,7 +224,11 @@ def main(argv: list[str] | None = None) -> int:
     chk.set_defaults(func=check)
 
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except (OSError, ValueError) as error:
+        print(f"agent-run-receipt: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

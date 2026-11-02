@@ -61,6 +61,28 @@ class RunReceiptTest(unittest.TestCase):
         code, [result] = self.check({"name": "daily", "maxAgeHours": 12})
         self.assertEqual((code, result["status"]), (2, "missed"))
 
+    def test_receipt_older_than_any_window_is_missed_not_never(self):
+        self.run_main("record", "--job", "daily", "--outcome", "acted", "--ended-at", "2026-10-13T11:10:00Z")
+        code, [result] = self.check({"name": "daily", "maxAgeHours": 26})
+        self.assertEqual((code, result["status"], result["lastRunAt"]), (2, "missed", "2026-10-13T11:10:00Z"))
+
+    def test_exact_age_limit_is_still_ok(self):
+        self.run_main("record", "--job", "daily", "--outcome", "acted", "--ended-at", "2026-11-01T10:00:00Z")
+        _, [result] = self.check({"name": "daily", "maxAgeHours": 26})
+        self.assertEqual(result["status"], "ok")
+
+    def test_short_writes_are_completed(self):
+        real_write = os.write
+        with patch.object(receipts.os, "write", side_effect=lambda fd, data: real_write(fd, data[:5])):
+            code, _ = self.run_main("record", "--job", "daily", "--outcome", "noop", "--ended-at", "2026-11-02T09:00:00Z")
+        line = (self.root / "runs" / "2026-11-02.jsonl").read_text()
+        self.assertEqual((code, json.loads(line)["outcome"]), (0, "noop"))
+
+    def test_failed_write_exits_nonzero(self):
+        with patch.object(receipts.os, "write", return_value=0):
+            code, _ = self.run_main("record", "--job", "daily", "--outcome", "noop")
+        self.assertEqual(code, 1)
+
     def test_job_without_evidence_is_never(self):
         code, [result] = self.check({"name": "nightly-audit", "maxAgeHours": 26})
         self.assertEqual((code, result["status"]), (2, "never"))
@@ -99,8 +121,19 @@ class RunReceiptTest(unittest.TestCase):
         self.assertEqual((code, [r["job"] for r in results]), (2, ["nightly-audit"]))
 
     def test_invalid_watch_list_exits_1(self):
-        code, results = self.check({"maxAgeHours": 1})
-        self.assertEqual((code, results), (1, []))
+        for job in ({"maxAgeHours": 1}, {"name": "x", "maxAgeHours": -1}, {"name": "x", "maxAgeHours": "2"},
+                    {"name": "x", "maxAgeHours": 1, "path": 3},
+                    {"name": "x", "maxAgeHours": 1, "path": "*.json", "expect": ["status"]},
+                    {"name": "x", "maxAgeHours": 1, "expect": {"status": "ok"}}, "x"):
+            with self.subTest(job=job):
+                code, results = self.check(job)
+                self.assertEqual((code, results), (1, []))
+
+    def test_invalid_times_exit_1(self):
+        code, _ = self.check({"name": "x", "maxAgeHours": 1}, extra=("--now", "yesterday"))
+        self.assertEqual(code, 1)
+        code, _ = self.run_main("record", "--job", "x", "--outcome", "noop", "--ended-at", "soon")
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":
