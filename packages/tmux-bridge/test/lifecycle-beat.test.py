@@ -316,6 +316,45 @@ class LifecycleBeat(unittest.TestCase):
         self.assertTrue(second['new'])
         self.assertNotEqual(first['new'], second['new'])
 
+    def test_native_facts_track_event_identity_and_repeated_human_in_new_turn(self):
+        watch = beat.follow.watch
+        facts = watch.empty_facts('codex', REF.split(':')[1], self.root / 'synthetic.jsonl')
+        current = []
+        def apply(event):
+            current[:] = [event]
+            with patch.object(watch, 'events_for', return_value=iter(current)):
+                watch.update_facts(facts, 'codex', REF.split(':')[1], {})
+        apply({'kind': 'turn_started', 'turn_id': 'one', 'source_event_id': 'start-one'})
+        apply({'kind': 'human_message', 'body': 'continue', 'source_event_id': 'human-one', 'timestamp': '2026-03-28T12:00:00Z'})
+        apply({'kind': 'turn_complete', 'source_event_id': 'complete-one'})
+        apply({'kind': 'turn_started', 'turn_id': 'two', 'source_event_id': 'start-two'})
+        self.assertEqual(facts['last_event_id'], 'start-two')
+        apply({'kind': 'human_message', 'body': 'continue', 'source_event_id': 'human-two', 'timestamp': '2026-03-28T13:00:00Z'})
+        self.assertEqual(facts['human_turns'], 2)
+        self.assertEqual(facts['last_event_id'], 'human-two')
+        self.assertEqual(facts['last_human_at'], '2026-03-28T13:00:00Z')
+
+    def test_claude_repeated_human_is_deduplicated_only_during_active_turn(self):
+        watch = beat.follow.watch
+        facts = watch.empty_facts('claude', REF.split(':')[1], self.root / 'synthetic.jsonl')
+        def apply(event):
+            with patch.object(watch, 'events_for', return_value=iter([event])):
+                watch.update_facts(facts, 'claude', REF.split(':')[1], {})
+        apply({'kind': 'human_message', 'body': 'continue', 'source_event_id': 'one'})
+        apply({'kind': 'human_message', 'body': 'continue', 'source_event_id': 'wrapper-duplicate'})
+        self.assertEqual(facts['human_turns'], 1)
+        apply({'kind': 'turn_complete', 'source_event_id': 'completed'})
+        apply({'kind': 'human_message', 'body': 'continue', 'source_event_id': 'new-turn'})
+        self.assertEqual(facts['human_turns'], 2)
+        self.assertEqual(facts['last_event_id'], 'new-turn')
+
+    def test_changed_lifecycle_failure_cause_survives_same_observation_fingerprint(self):
+        rows = [self.row(1, kind='LIFECYCLE', payload={'status': 'blocked', 'fingerprint': 'same', 'reason': 'writer unknown'}),
+                self.row(2, kind='LIFECYCLE', payload={'status': 'blocked', 'fingerprint': 'same', 'reason': 'window blocked'}),
+                self.row(3, kind='LIFECYCLE', payload={'status': 'blocked', 'fingerprint': 'same', 'reason': 'window blocked'})]
+        immediate, *_ = beat.events_since(rows, beat.initial())
+        self.assertEqual([event['reason'] for event in immediate], ['writer unknown', 'window blocked'])
+
     def test_no_adapter_is_quiet_and_no_raw_source_reader_exists(self):
         self.assertEqual(beat.producer(self.config, self.state, epoch=100), {'new': [], 'errors': []})
         source = (BIN / 'agent-lifecycle-beat.py').read_text()

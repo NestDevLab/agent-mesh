@@ -70,6 +70,8 @@ The engine publishes action outcomes into the same native follow outbox with
 `kind: LIFECYCLE` and a structured `payload`. `failure` phase or failed/blocked
 status is immediate; queued/submitted status is ordinary summary material.
 Native observation fingerprints distinguish genuinely different failed actions.
+Failure facts also retain the structured native reason, so a changed cause for
+the same observation is visible rather than suppressed.
 Formal native follow `QUESTION` rows also produce immediate decision cards.
 The producer checks the official follow cursor under its lock: only the latest
 active formal question survives, and human input/new-turn events clear it. A
@@ -153,7 +155,11 @@ the five-minute producer does not fetch full native inventories.
 ## Observed stalled turns and limits
 
 Native follow now preserves normalized `turn_id`, completion, outcome and error
-fields. `followConfig.follower.observeStalledAlerts: true` opts observed sessions
+fields. Native watch facts retain the normalized `last_event_id` alongside
+`last_human_at`. Starting a Codex turn clears same-body human deduplication;
+Claude deduplicates repeated human wrappers only while its turn is active, so
+an identical continuation after completion still represents new work.
+`followConfig.follower.observeStalledAlerts: true` opts observed sessions
 into the existing stalled-turn threshold; the default observe behavior is
 unchanged. `stalledMinutes` remains host policy. Growth timestamps survive
 no-growth reads, and native outbox IDs suppress duplicate alerts.

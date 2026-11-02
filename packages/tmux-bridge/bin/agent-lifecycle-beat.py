@@ -101,6 +101,8 @@ def events_since(rows, state, config=None):
             item = {'ref': ref, 'kind': kind, 'detail': detail}
             if payload.get('fingerprint'):
                 item['observation'] = payload['fingerprint']
+            if urgent and payload.get('reason'):
+                item['reason'] = str(payload['reason'])
         if urgent:
             # Native duplicate completion markers for one turn are one fact.
             semantic = {key: value for key, value in item.items() if key != 'detail'} if turn else item
