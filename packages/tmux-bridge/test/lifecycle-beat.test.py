@@ -54,6 +54,17 @@ class LifecycleBeat(unittest.TestCase):
     def report(self, result):
         return json.loads(Path(result['new'][0]['report']).read_text())
 
+    def test_native_question_template_does_not_replace_ledger_question(self):
+        config={'nativeQuestionTemplate': 'Open this session to decide?', 'labels': {'fallback': 'Local fallback'}}
+        native=item(ref=REF)
+        self.assertEqual(beat.card_for(native, config)['question'], 'Open this session to decide?')
+        self.assertEqual(beat.card_for(item(), config)['question'], 'Choose candidate')
+        fallback=beat.card_for(item(url='/tmp/example-ledger/EXAMPLE-1.md'), config)
+        self.assertTrue(fallback['whereFallback'])
+        self.assertEqual(fallback['whereLabel'], 'Local fallback')
+        self.assertEqual(fallback['where'], '/tmp/example-ledger/EXAMPLE-1.md')
+        self.assertEqual(fallback['options'][0]['action']['value'], 'Proceed with candidate A.')
+
     def test_ordinary_deferred_latest_nonempty_and_no_change_quiet(self):
         self.outbox([self.row(), self.row(2, body='Latest\nprogress'), self.row(3, body='   ')])
         self.assertEqual(beat.producer(self.config, self.state, epoch=100)['new'], [])

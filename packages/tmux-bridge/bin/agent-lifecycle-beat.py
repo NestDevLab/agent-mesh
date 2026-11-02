@@ -203,7 +203,8 @@ def card_for(item, config):
     project = config.get('projectMap', {}).get(domain, domain)
     card = decisions.make_decision(item, project=project, where=config.get('whereByRef', {}).get(item['ref']),
         guard_sentence=config.get('guardSentence'), labels=config.get('labels'),
-        question_template=config.get('questionTemplate', '{ask}'))
+        question_template=config.get('nativeQuestionTemplate', config.get('questionTemplate', '{ask}'))
+            if item['ref'].split(':', 1)[0] in ('codex', 'claude') else config.get('questionTemplate', '{ask}'))
     if card is not None:
         wait = item.get('waitingOn') or {}
         card.update(urgency=wait.get('urgency', 'normal'), due=wait.get('due'))

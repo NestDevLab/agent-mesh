@@ -184,3 +184,7 @@ acknowledgement, full report preservation, exact cursor CAS and partial errors,
 explicit decisions and calendar delegation, job semantic failures, native tool
 question export, lock discipline and opt-in stalled observation. Live waker
 wiring, host policy and any recovery/migration remain separate validation.
+
+## Host presentation and fallback locations
+
+Hosts may set `labels` and `questionTemplate` for source-language presentation. `nativeQuestionTemplate` applies only to native Codex/Claude question cards, retaining ledger-owned questions for adapter refs. A location without a URI scheme is explicitly marked `whereFallback:true`, `whereKind:local-source-fallback`, and a configurable `whereLabel`. The exact location and source sentence action values remain unchanged; no cloud URL or approval is inferred.

@@ -12,10 +12,11 @@ from datetime import datetime, time, timedelta, timezone as dt_timezone
 import hashlib
 import json
 from zoneinfo import ZoneInfo
+from urllib.parse import urlsplit
 
 
 WAITING_STATUSES = frozenset({"waiting", "blocked"})
-DEFAULT_LABELS = {"recommended": "Recommended", "continue": "Use source sentence", "open": "Open source", "discuss": "Discuss at source"}
+DEFAULT_LABELS = {"recommended": "Recommended", "continue": "Use source sentence", "open": "Open source", "discuss": "Discuss at source", "fallback": "Local source fallback"}
 
 
 def _text(value):
@@ -68,13 +69,16 @@ def make_decision(item, *, project=None, where=None, guard_sentence=None,
         "marker": wording["recommended"],
         "action": {"kind": "source-sentence", "value": sentence} if sentence else {"kind": "open-source", "value": location},
     }
-    return {
+    card = {
         "id": item["ref"], "project": project if project is not None else item.get("domain"),
         "question": question, "options": [recommended, {
             "label": wording["discuss"], "recommended": False,
             "action": {"kind": "discuss-at-source", "value": location},
         }], "discuss": True, "where": location, "sourceGap": sentence is None,
     }
+    if not urlsplit(location).scheme:
+        card.update(whereFallback=True, whereKind="local-source-fallback", whereLabel=wording["fallback"])
+    return card
 
 
 def semantic_hash(card):
