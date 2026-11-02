@@ -142,7 +142,7 @@ def item(raw, scheme):
     if not ref.startswith(scheme + ':') or not ref[len(scheme) + 1:] or any(ch.isspace() for ch in ref):
         raise ProtocolError('item ref does not belong to adapter')
     one_line(result.get('title'), 'title', 512)
-    if result.get('status') not in STATUSES:
+    if not isinstance(result.get('status'), str) or result['status'] not in STATUSES:
         raise ProtocolError('invalid item status')
     iso(result.get('updatedAt'))
     for key in ('state', 'assignee', 'domain', 'nextAction', 'resumeCondition', 'url'):
@@ -150,12 +150,12 @@ def item(raw, scheme):
             one_line(result[key], key)
     if 'waitingOn' in result:
         wait = result['waitingOn']
-        if not isinstance(wait, dict) or wait.get('who') not in {'human', 'agent', 'external'}:
+        if not isinstance(wait, dict) or not isinstance(wait.get('who'), str) or wait['who'] not in {'human', 'agent', 'external'}:
             raise ProtocolError('invalid waiting owner')
         result['waitingOn'] = {key: value for key, value in wait.items() if key in {'who', 'ask', 'urgency', 'due'}}
         if 'ask' in wait:
             one_line(wait['ask'], 'waitingOn.ask')
-        if 'urgency' in wait and wait['urgency'] not in {'low', 'normal', 'high'}:
+        if 'urgency' in wait and (not isinstance(wait['urgency'], str) or wait['urgency'] not in {'low', 'normal', 'high'}):
             raise ProtocolError('invalid waiting urgency')
         if 'due' in wait:
             iso(wait['due'])
@@ -167,7 +167,7 @@ def item(raw, scheme):
             if not isinstance(session, dict) or not isinstance(session.get('session'), str) or not re.fullmatch(r'(?:(?:codex|claude):)?[0-9a-fA-F-]{8,36}', session['session']):
                 raise ProtocolError('invalid item session')
             clean = {key: value for key, value in session.items() if key in {'session', 'role', 'at'}}
-            if 'role' in clean and clean['role'] not in {'owns', 'works-on', 'reviews', 'coordinates', 'discusses', 'observes', 'mentioned'}:
+            if 'role' in clean and (not isinstance(clean['role'], str) or clean['role'] not in {'owns', 'works-on', 'reviews', 'coordinates', 'discusses', 'observes', 'mentioned'}):
                 raise ProtocolError('invalid item session role')
             if 'at' in clean:
                 iso(clean['at'])
@@ -217,7 +217,7 @@ def cursor_store():
                 time.sleep(0.02)
         path = root / 'cursors.json'
         state = read_json(path, {'schemaVersion': 1, 'cursors': {}})
-        if not isinstance(state, dict) or state.get('schemaVersion') != 1 or not isinstance(state.get('cursors'), dict):
+        if not isinstance(state, dict) or state.get('schemaVersion') != 1 or not isinstance(state.get('cursors'), dict) or any(not isinstance(value, str) for value in state['cursors'].values()):
             raise ProtocolError('invalid cursor store')
         try:
             yield path, state
