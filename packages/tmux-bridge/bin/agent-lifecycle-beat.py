@@ -225,7 +225,7 @@ def decision_delta(config, state, epoch, full=False, consumer='lifecycle-beat', 
             membership.add(item['ref'])
         else:
             membership.discard(item['ref'])
-    due = membership if describe_all else set(decisions.due_ids(state['decisions'], stamp(epoch)))
+    due = membership if describe_all else (set(decisions.due_ids(state['decisions'], stamp(epoch))) | (membership - set(state['decisions'])))
     due -= {item['ref'] for item in items}
     due = {ref for ref in due if not excluded(ref, config)}
     if enabled and due:
@@ -300,6 +300,13 @@ def native_decision_delta(config, state, epoch, follower_root, rows, tick_ok):
         errors.extend(gaps)
     emitted, metadata = decisions.select_due(cards, previous, stamp(epoch), config.get('timezone', 'UTC'),
         next_morning_hour=config.get('nextMorningHour', 9), interval_days=config.get('intervalDays', 2), closed_refs=closed)
+    rendered = {card['id'] for card in cards}
+    for ref, _ in active:
+        if ref not in rendered and ref not in closed:
+            # Retry unresolved formal questions against current native authority,
+            # even after the outbox sequence has been durably consumed.
+            metadata[ref] = {'hash': '', 'lastEmission': None, 'nextDue': stamp(epoch),
+                             'reminderCount': 0, 'sourceGap': True}
     return emitted, metadata, errors
 
 
@@ -327,9 +334,17 @@ def acknowledged(staged, config):
     return set(staged['keys']).issubset(keys)
 
 
-def finish_ack(state, epoch):
+def finish_ack(state, epoch, config):
     staged = state['staged']
     candidate = staged['candidate']
+    delivered = staged.get('deliveredAt', epoch)
+    for key in ('decisions', 'nativeDecisions'):
+        cards = [card for card in staged.get('cards', []) if card['id'] in candidate.get(key, {})]
+        _, acknowledged_metadata = decisions.select_due(cards, state.get(key, {}), stamp(delivered),
+            config.get('timezone', 'UTC'), next_morning_hour=config.get('nextMorningHour', 9),
+            interval_days=config.get('intervalDays', 2))
+        for card in cards:
+            candidate[key][card['id']] = acknowledged_metadata[card['id']]
     for key in ('decisions', 'humanRefs', 'jobHashes', 'seen', 'nativeDecisions', 'activeFaults'):
         if key in candidate:
             state[key] = candidate[key]
@@ -355,7 +370,7 @@ def stage(root, state, config, epoch, immediate, cards, summary, candidate, inte
     if cards and config.get('decisionDestination'):
         items[0]['decisionDestination'] = config['decisionDestination']
     state['staged'] = {'path': str(path), 'items': items, 'keys': [waker.item_key(item) for item in items],
-                       'createdAt': epoch, 'includesSummary': bool(summary), 'candidate': candidate,
+                       'createdAt': epoch, 'includesSummary': bool(summary), 'candidate': candidate, 'cards': cards,
                        'ledgerCommit': intent}
     save(root / 'state.json', state)
     if commit_cursor(intent):
@@ -385,9 +400,16 @@ def producer(config, root, full=False, epoch=None):
                 staged['ledgerCommit'] = None
                 staged.pop('commitError', None)
                 save(root / 'state.json', state)
-            if staged.get('ledgerCommit') or not acknowledged(staged, config):
-                return {'new': staged['items'], 'errors': [{'source': 'ledger', 'error': 'native ledger cursor conflict'}] if staged.get('commitError') else []}
-            finish_ack(state, epoch)
+            if staged.get('deliveredAt') is None and acknowledged(staged, config):
+                delivery = follow.read_json(Path(config['wakerState']).expanduser(), {}).get('lastDelivery') or {}
+                delivered_at = delivery.get('at')
+                staged['deliveredAt'] = delivered_at if isinstance(delivered_at, (int, float)) and staged['createdAt'] <= delivered_at <= epoch else epoch
+                save(root / 'state.json', state)
+            if staged.get('ledgerCommit') or staged.get('deliveredAt') is None:
+                # An acknowledged report must never be requeued merely because
+                # its independent cursor commit is still unresolved.
+                return {'new': [] if staged.get('deliveredAt') is not None else staged['items'], 'errors': []}
+            finish_ack(state, epoch, config)
             save(root / 'state.json', state)
         with follow.locked(follower_root / 'state.lock'):
             rows, _ = follow.outbox(follower_root)

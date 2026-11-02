@@ -294,7 +294,7 @@ class LifecycleBeat(unittest.TestCase):
         self.acknowledge()
         with patch.object(beat, 'commit_cursor', return_value=False):
             pending = beat.producer(self.config, self.state, epoch=1774699201)
-        self.assertEqual(first['new'], pending['new'])
+        self.assertEqual(pending['new'], [])
         state = beat.read_state(self.state / 'state.json')
         self.assertEqual(state['staged']['ledgerCommit'], intent)
         self.assertEqual(state['decisions'], {})
@@ -303,6 +303,35 @@ class LifecycleBeat(unittest.TestCase):
         state = beat.read_state(self.state / 'state.json')
         self.assertIsNone(state['staged'])
         self.assertTrue(state['decisions'])
+
+
+    def test_delayed_delivery_schedules_reminder_from_ack(self):
+        with patch.object(beat, 'fetch_changes', return_value=([item()], None, [], True)):
+            beat.producer(self.config, self.state, epoch=1774699200)
+        self.acknowledge()
+        # A delivery two days after staging must not trigger an immediate reminder.
+        self.assertEqual(beat.producer(self.config, self.state, epoch=1774872000)['new'], [])
+        metadata = beat.read_state(self.state / 'state.json')['decisions']['work:EXAMPLE-1']
+        self.assertGreater(beat.decisions._instant(metadata['nextDue']).timestamp(), 1774872000)
+
+    def test_unrenderable_ledger_wait_is_retried_without_new_delta(self):
+        with patch.object(beat, 'fetch_changes', return_value=([item(url=None)], None, [], True)):
+            self.assertTrue(beat.producer(self.config, self.state, epoch=100)['new'])
+        self.acknowledge()
+        with patch.object(beat, 'fetch_changes', return_value=([], None, [], True)), patch.object(beat, 'describe_refs', return_value=([item()], [], [])) as describe:
+            result = beat.producer(self.config, self.state, epoch=101)
+        self.assertEqual(len(self.report(result)['decisions']), 1)
+        describe.assert_called_once()
+
+    def test_unrenderable_native_question_is_retried_after_location_fix(self):
+        self.formal_question()
+        original = beat.native_questions
+        with patch.object(beat.follow, 'session_source', return_value=({}, {}, {}, {})), patch.object(beat, 'native_questions', return_value=([], [{'source': 'native', 'error': 'missing location'}])):
+            beat.producer(self.config, self.state, epoch=100)
+        self.acknowledge()
+        with patch.object(beat.follow, 'session_source', return_value=({}, {}, {}, {})), patch.object(beat, 'native_questions', wraps=original):
+            result = beat.producer(self.config, self.state, epoch=101)
+        self.assertEqual(self.report(result)['decisions'][0]['id'], REF)
 
     def test_fixed_source_fault_reawakens_after_recovery(self):
         self.tick.side_effect = RuntimeError('synthetic source failure')
