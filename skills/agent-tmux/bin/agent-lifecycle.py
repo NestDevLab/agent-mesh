@@ -187,7 +187,7 @@ def classify(row, config, at):
         return finish('keep-archived', 'native archived identity')
     attention = row.get('attention') or {}
     attention_state = attention.get('state', '') if isinstance(attention, dict) else str(attention)
-    if row.get('origin') == 'subagent' or row.get('class') == 'ephemeral' or 'noise' in str(row.get('reasons', [])).lower() or attention_state == 'noise':
+    if row.get('origin') in ('subagent', 'automation') or row.get('class') == 'ephemeral' or 'noise' in str(row.get('reasons', [])).lower() or attention_state == 'noise':
         return finish('keep-noise', 'subagent or explicit noise classification')
     if ref == config.get('selfRef') or row.get('class') == 'orchestrator' or any(value in config.get('permanentRefs', []) or any(value.startswith(prefix) for prefix in config.get('permanentPrefixes', [])) for value in refs) or matching([r'\b(?:director|coordinator)\b', *config.get('permanentPatterns', [])], text):
         return finish('approval-compaction', 'permanent or coordinator session protected')

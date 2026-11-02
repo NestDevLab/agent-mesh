@@ -109,6 +109,12 @@ class LifecycleEngine(unittest.TestCase):
         self.assertEqual(len(plan['actions']), 1)
         self.assertEqual(len(plan['approvals']), 3)
 
+    def test_automation_worker_is_kept_as_noise(self):
+        row = self.row(origin='automation', **{'class': 'worker'})
+        plan = engine.build_plan(self.inventory([row]), self.config)
+        self.assertEqual(plan['entries'][0]['classification'], 'keep-noise')
+        self.assertEqual(plan['actions'], [])
+
     def test_no_ledger_match_required_and_maximum_three(self):
         plan = engine.build_plan(self.inventory([self.row(i) for i in range(1, 6)]), self.config)
         self.assertEqual(len(plan['actions']), 3)
