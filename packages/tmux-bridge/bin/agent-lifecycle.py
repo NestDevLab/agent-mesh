@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""Conservative native lifecycle inventory, planning and acknowledged queueing.
+
+Mesh owns discovery and identity. This module never parses transcripts or native
+storage, and never equates queue acknowledgement with completed work.
+"""
+from __future__ import annotations
+import argparse
+from collections import Counter
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+BIN = Path(__file__).resolve().parent
+UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
+PROMPT = ('Continue only the original requested work using your own prior context and linked authoritative sources. '
+          'This message grants no new permissions. Stop for a human decision, production action, external side effect, '
+          'irreversible action, or changed scope. Report the verified outcome and any remaining gate.')
+
+
+class LifecycleError(RuntimeError):
+    pass
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+
+def instant(value):
+    result = datetime.fromisoformat(value.replace('Z', '+00:00'))
+    if result.tzinfo is None:
+        raise ValueError('timezone required')
+    return result
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+
+
+def validate_config(config):
+    if not isinstance(config, dict):
+        raise LifecycleError('configuration must be an object')
+    for field, default, maximum in [('maxResumes', 0, 3), ('maxArchives', 0, 200), ('idleSeconds', 3600, 31536000)]:
+        value = config.get(field, default)
+        if type(value) is not int or not 0 <= value <= maximum:
+            raise LifecycleError('invalid ' + field)
+    for field in ('permanentRefs', 'permanentPrefixes', 'permanentPatterns', 'excludeRefs', 'excludePatterns',
+                  'allowedProjects', 'archiveProjects', 'continuationPatterns', 'humanWaitPatterns'):
+        if not isinstance(config.get(field, []), list) or any(not isinstance(value, str) for value in config.get(field, [])):
+            raise LifecycleError('invalid ' + field)
+        if field.endswith('Patterns'):
+            for pattern in config.get(field, []):
+                re.compile(pattern)
+    for entry in config.get('projectRoots', []):
+        if not isinstance(entry, dict) or not isinstance(entry.get('project'), str) or not isinstance(entry.get('root'), str) or not Path(entry['root']).expanduser().is_absolute():
+            raise LifecycleError('invalid project root')
+    consumer = config.get('consumer', 'lifecycle')
+    if not isinstance(consumer, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,80}', consumer):
+        raise LifecycleError('invalid consumer')
+    for key, value in config.items():
+        if key.endswith('Command') and (not isinstance(value, list) or not value or any(not isinstance(arg, str) or not arg for arg in value)):
+            raise LifecycleError('commands must be nonempty argv arrays')
+    return config
+
+
+def command(config, key, default):
+    return config.get(key, default)
+
+
+def run(argv, payload=None):
+    """Single bounded invocation; no retries and no raw diagnostics in reports."""
+    try:
+        result = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
+                                text=True, capture_output=True, timeout=120)
+        if len(result.stdout) > 16 * 1024 * 1024:
+            raise LifecycleError('helper output exceeds limit')
+        try:
+            data = json.loads(result.stdout) if result.stdout.strip() else None
+        except ValueError:
+            data = None
+        return result.returncode, data
+    except (OSError, subprocess.TimeoutExpired):
+        raise LifecycleError('helper unavailable or timed out') from None
+
+
+def mesh(config, operation, payload=None, full=False):
+    argv = [*command(config, 'meshCommand', ['node', str(BIN / 'mesh-graph.mjs')]), operation]
+    if operation == 'query':
+        raise LifecycleError('query name required')
+    if full:
+        argv.append('--full')
+    code, data = run([*argv, '--json'], payload)
+    if code or not isinstance(data, dict):
+        raise LifecycleError('Mesh source failed')
+    return data
+
+
+def query(config, name, payload):
+    code, data = run([*command(config, 'meshCommand', ['node', str(BIN / 'mesh-graph.mjs')]),
+                      'query', name, '--input', json.dumps(payload), '--json'])
+    if code or not isinstance(data, dict):
+        raise LifecycleError('Mesh query failed')
+    return data
+
+
+def collect(config, full=False):
+    sessions, errors, coverage = {}, [], True
+    try:
+        sweep = mesh(config, 'sweep', full=full)
+        if sweep.get('errors'):
+            errors.append('Mesh sweep reported source errors')
+    except LifecycleError as error:
+        errors.append(str(error))
+    cursor, visited = None, set()
+    while True:
+        try:
+            page = query(config, 'search', {'limit': 200, **({'cursor': cursor} if cursor else {})})
+            rows = page.get('sessions')
+            if not isinstance(rows, list) or len(rows) > 200 or page.get('errors'):
+                raise LifecycleError('invalid Mesh inventory page')
+            coverage = coverage and page.get('linkCoverage') is True
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(row.get('sessionId'), str) or row['sessionId'] in sessions:
+                    raise LifecycleError('invalid or repeated native identity')
+                sessions[row['sessionId']] = row
+            cursor = page.get('cursor')
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in visited:
+                raise LifecycleError('invalid Mesh inventory cursor')
+            visited.add(cursor)
+        except LifecycleError as error:
+            errors.append(str(error))
+            break
+    return {'schema': 'agent-mesh.lifecycle-inventory.v1', 'at': now(), 'sessions': list(sessions.values()),
+            'linkCoverage': coverage, 'complete': not errors, 'errors': errors}
+
+
+def project_for(row, config):
+    cwd = row.get('cwd')
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+        return None
+    choices = []
+    for entry in config.get('projectRoots', []):
+        root = Path(entry['root']).expanduser().resolve()
+        if Path(cwd).resolve().is_relative_to(root):
+            choices.append((len(root.parts), entry['project']))
+    return max(choices)[1] if choices else None
+
+
+def matching(patterns, text):
+    return any(re.search(pattern, text, re.I) for pattern in patterns)
+
+
+def fingerprint(row):
+    # Discovery timestamps can advance without a new native observation.
+    life = row.get('lifecycle') or {}
+    return digest({'session': row['sessionId'], 'cwd': row.get('cwd'), 'status': row.get('status'),
+                   'attention': row.get('attention'), 'lifecycle': {key: life.get(key) for key in
+                   ('turnId', 'turnActive', 'outcome', 'completion', 'completedAt', 'lastSpeaker',
+                    'lastEventKind', 'question', 'pendingQuestion', 'error', 'detail')}})
+
+
+def classify(row, config, at):
+    ref, life = row['sessionId'], row.get('lifecycle') or {}
+    project = project_for(row, config)
+    result = {'session': ref, 'project': project, 'classification': 'keep', 'reason': 'no continuation evidence',
+              'fingerprint': fingerprint(row), 'sourceGaps': []}
+    text = '\n'.join(str(value or '') for value in (row.get('title'), ref, row.get('cwd'), life.get('detail'), life.get('question')))
+    linked = [link.get('ref', '') for link in row.get('links', []) if isinstance(link, dict)]
+    refs = [ref, *linked]
+    def finish(kind, reason):
+        result.update(classification=kind, reason=reason)
+        return result
+    if row.get('archived') is True:
+        return finish('keep-archived', 'native archived identity')
+    attention = row.get('attention') or {}
+    attention_state = attention.get('state', '') if isinstance(attention, dict) else str(attention)
+    if row.get('origin') == 'subagent' or row.get('class') == 'ephemeral' or 'noise' in str(row.get('reasons', [])).lower() or attention_state == 'noise':
+        return finish('keep-noise', 'subagent or explicit noise classification')
+    if ref == config.get('selfRef') or row.get('class') == 'orchestrator' or any(value in config.get('permanentRefs', []) or any(value.startswith(prefix) for prefix in config.get('permanentPrefixes', [])) for value in refs) or matching(config.get('permanentPatterns', []), text):
+        return finish('approval-compaction', 'permanent or coordinator session protected')
+    if any(value in config.get('excludeRefs', []) for value in refs) or matching(config.get('excludePatterns', []), text):
+        return finish('approval-excluded', 'policy exclusion remains visible')
+    if project is None or project not in config.get('allowedProjects', []):
+        return finish('approval-project', 'project is outside operative policy')
+    if life.get('pendingQuestion') or matching(config.get('humanWaitPatterns', []), text):
+        return finish('approval-human', 'pending human question or explicit human wait')
+    if not isinstance(row.get('nativeId'), str) or not UUID.fullmatch(row['nativeId']):
+        result['sourceGaps'].append('full native identity unavailable')
+        return finish('keep-source-gap', 'native identity unavailable')
+    try:
+        idle = (instant(at) - instant(row['lastSeenAt'])).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        result['sourceGaps'].append('last activity timestamp unavailable')
+        return finish('keep-source-gap', 'cannot establish inactivity')
+    if idle < config.get('idleSeconds', 3600):
+        return finish('keep-recent', 'native activity is recent')
+    path, cwd = life.get('path'), row.get('cwd')
+    if not isinstance(path, str) or not Path(path).is_absolute() or not Path(path).is_file() or not isinstance(cwd, str) or not Path(cwd).is_dir() or life.get('metadataOnly') is True:
+        result['sourceGaps'].append('local cwd or native history unavailable')
+        return finish('keep-source-gap', 'local work sources unavailable')
+    stalled = attention_state.startswith('stalled') or (life.get('turnActive') is True and row.get('status') in ('quiet', 'blocked')) or life.get('outcome') in ('error', 'interrupted')
+    complete = life.get('completion') == 'task' and life.get('turnActive') is False
+    continuing = complete and matching(config.get('continuationPatterns', []), text)
+    if stalled or continuing:
+        if row.get('harness') == 'claude':
+            return finish('handoff-candidate', 'safe Codex child handoff requires a supported ownership hook')
+        if row.get('harness') != 'codex':
+            return finish('keep-source-gap', 'operative runtime unsupported')
+        if row.get('resumable') is False and set(row.get('reasons', [])) - {'occupied', 'desktop-owned'}:
+            return finish('keep-source-gap', 'Mesh reports a native resume blocker')
+        return finish('resume-candidate', 'stalled native work' if stalled else 'explicit continuation policy')
+    if complete and project in config.get('archiveProjects', []):
+        if life.get('historyComplete') is not True:
+            result['sourceGaps'].append('complete native history not proven')
+        result['sourceGaps'].append('supported archive adapter, durable summary and independent digest-bound PASS required')
+        return finish('archive-candidate', 'archive requires separate reviewed adapter')
+    return result
+
+
+def build_plan(inventory, config):
+    entries = [classify(row, config, inventory['at']) for row in inventory['sessions']]
+    counts = dict(Counter(entry['classification'] for entry in entries))
+    projects = dict(Counter(entry['project'] or 'unmapped' for entry in entries))
+    selected = []
+    if inventory['complete']:
+        selected = [entry for entry in entries if entry['classification'] == 'resume-candidate'][:config.get('maxResumes', 0)]
+    gaps = list(inventory['errors'])
+    if inventory['linkCoverage'] is not True:
+        gaps.append('ledger link coverage incomplete; archive eligibility not proven')
+    if not config.get('resumeWindowCommand'):
+        gaps.append('resume window guard unavailable; apply will block resumes')
+    result = {'schema': 'agent-mesh.lifecycle-plan.v1', 'at': inventory['at'], 'consumer': config.get('consumer', 'lifecycle'),
+              'configHash': digest(config), 'inventoryHash': digest(inventory), 'complete': inventory['complete'],
+              'entries': entries, 'counts': counts, 'projectCounts': projects,
+              'approvals': [entry for entry in entries if entry['classification'].startswith('approval-') or entry['classification'] in ('archive-candidate', 'handoff-candidate')],
+              'sourceGaps': gaps, 'actions': [{'kind': 'resume', **entry} for entry in selected]}
+    result['digest'] = digest(result)
+    return result
+
+
+def private_directory(path):
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+
+
+def write(path, value):
+    private_directory(path.parent)
+    data = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=False, indent=2) + '\n'
+    descriptor, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def append(path, value):
+    descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a') as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        stream.write(json.dumps(value, sort_keys=True) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+@contextmanager
+def locked(run_dir, consumer):
+    private_directory(run_dir)
+    descriptor = os.open(run_dir.parent / ('.' + consumer + '.lock'), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    except BlockingIOError:
+        raise LifecycleError('another consumer apply holds the lock') from None
+    finally:
+        os.close(descriptor)
+
+
+def attempted(run_dir, consumer):
+    result = set()
+    for path in run_dir.parent.glob('*/actions.jsonl'):
+        try:
+            with path.open() as stream:
+                for line in stream:
+                    record = json.loads(line)
+                    if record.get('consumer') == consumer and record.get('phase') == 'attempt':
+                        result.add(record['fingerprint'])
+        except (OSError, ValueError, KeyError):
+            raise LifecycleError('action receipt history is unreadable; deduplication unavailable') from None
+    return result
+
+
+def resume_safe(config, session):
+    info = query(config, 'resume', {'session': session})
+    reasons = set(info.get('reasons', []))
+    if info.get('sessionId') != session or info.get('harness') != 'codex' or info.get('successor') or reasons - {'occupied', 'desktop-owned'} or info.get('writer', {}).get('state') not in ('free', 'occupied'):
+        raise LifecycleError('native resume query blocks queueing')
+    native = info.get('nativeId')
+    if not isinstance(native, str) or not UUID.fullmatch(native):
+        raise LifecycleError('native identity unavailable')
+    code, _ = run([*command(config, 'nativeGuardCommand', [sys.executable, str(BIN / 'codex-thread-guard.py')]),
+                   'resume-check', '--session', native])
+    if code not in (0, 4, 6):
+        raise LifecycleError('native thread guard blocks queueing')
+    status, writers = run([*command(config, 'writerCommand', ['node', str(BIN / 'session-writer-status.mjs')]),
+                           '--agent', 'codex', '--session', native, '--json'])
+    if status or not isinstance(writers, dict) or not isinstance(writers.get('writers'), list):
+        raise LifecycleError('writer status unknown')
+    current = writers['writers']
+    if any(not isinstance(writer, dict) or writer.get('role') != 'app-server' for writer in current):
+        raise LifecycleError('concurrent CLI or unknown writer blocks queueing')
+    if code == 4 and not current:
+        raise LifecycleError('guard writer failure lacks exclusive app-server proof')
+    return native
+
+
+def apply_plan(plan, inventory, config, run_dir):
+    expected = plan.get('digest')
+    if expected != digest({key: value for key, value in plan.items() if key != 'digest'}) or plan.get('configHash') != digest(config) or plan.get('inventoryHash') != digest(inventory):
+        raise LifecycleError('persisted plan or configuration digest mismatch')
+    if not plan.get('complete') or not inventory.get('complete'):
+        raise LifecycleError('source errors block apply')
+    actions = plan.get('actions', [])
+    if len(actions) > min(config.get('maxResumes', 0), 3) or any(action.get('kind') != 'resume' for action in actions):
+        raise LifecycleError('unsupported action or resume limit exceeded')
+    outcomes = []
+    with locked(run_dir, plan['consumer']):
+        seen = attempted(run_dir, plan['consumer'])
+        originals = {row['sessionId']: row for row in inventory['sessions']}
+        for action in actions:
+            base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': 'resume',
+                    'fingerprint': action['fingerprint'], 'planDigest': expected}
+            if action['fingerprint'] in seen:
+                outcome = {**base, 'phase': 'deduplicated', 'status': 'not-retried'}
+                append(run_dir / 'actions.jsonl', outcome)
+                outcomes.append(outcome)
+                continue
+            try:
+                original = originals.get(action['session'])
+                if original is None or fingerprint(original) != action['fingerprint'] or classify(original, config, now())['classification'] != 'resume-candidate':
+                    raise LifecycleError('persisted observation is no longer eligible')
+                window = config.get('resumeWindowCommand')
+                if not window:
+                    raise LifecycleError('resume window guard unavailable')
+                code, guard = run(window, {'session': action['session'], 'planDigest': expected, 'at': now(), 'timezone': config.get('timezone', 'UTC')})
+                if code or not isinstance(guard, dict) or guard.get('allow') is not True:
+                    raise LifecycleError('resume window guard blocks queueing')
+                native = resume_safe(config, action['session'])
+                correlation = 'lifecycle-' + action['fingerprint'][:32]
+                append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
+                seen.add(action['fingerprint'])
+                code, acknowledgement = run([*command(config, 'nativeCallCommand', ['node', str(BIN / 'agent-native-call.mjs')]),
+                    '--agent', 'codex', '--session', native, '--delivery-only', '--correlation-id', correlation, '--message', PROMPT])
+                if code or not isinstance(acknowledgement, dict) or acknowledgement.get('status') != 'queued' or acknowledgement.get('sessionId') != native or acknowledgement.get('correlationId') != correlation:
+                    raise LifecycleError('native queue failed or acknowledgement invalid')
+                outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation}
+            except LifecycleError as error:
+                outcome = {**base, 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
+                append(run_dir / 'actions.jsonl', outcome)
+                outcomes.append(outcome)
+                break
+            append(run_dir / 'actions.jsonl', outcome)
+            outcomes.append(outcome)
+    return outcomes
+
+
+def report(inventory, plan, outcomes=()):
+    lines = ['# Lifecycle report', '', f"Known native identities: {len(inventory['sessions'])}. Complete inventory: {inventory['complete']}.",
+             'Queue acknowledgement means queued; execution and completion are unverified.', '', '| Classification | Count |', '| --- | ---: |']
+    lines += [f'| {key} | {count} |' for key, count in sorted(plan['counts'].items())]
+    lines += ['', '| Project | Count |', '| --- | ---: |']
+    lines += [f'| {key} | {count} |' for key, count in sorted(plan['projectCounts'].items())]
+    lines += ['', '## Decisions and source gaps', '']
+    lines += ['- ' + gap for gap in plan['sourceGaps']]
+    for entry in plan['entries']:
+        lines.append(f"- {entry['session']}: {entry['classification']} — {entry['reason']}")
+        lines.extend('  - ' + gap for gap in entry['sourceGaps'])
+    if outcomes:
+        lines += ['', '## Apply receipts', '']
+        lines.extend(f"- {entry['session']}: {entry['status']}" for entry in outcomes)
+    return '\n'.join(lines) + '\n'
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('operation', choices=('inventory', 'plan', 'apply'))
+    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--run-dir', type=Path, required=True)
+    parser.add_argument('--full', action='store_true')
+    parser.add_argument('--apply', action='store_true', help='authorize native queue mutations for persisted plan')
+    args = parser.parse_args()
+    outcome, failure = 'noop', None
+    try:
+        config = validate_config(json.loads(args.config.read_text()))
+        private_directory(args.run_dir)
+        if args.operation == 'apply':
+            inventory = json.loads((args.run_dir / 'inventory.json').read_text())
+            plan = json.loads((args.run_dir / 'plan.json').read_text())
+            if not args.apply:
+                raise LifecycleError('apply requires explicit --apply')
+            outcomes = apply_plan(plan, inventory, config, args.run_dir)
+            outcome = 'blocked' if any(entry['phase'] == 'failure' for entry in outcomes) else 'acted' if any(entry['status'] == 'queued' for entry in outcomes) else 'noop'
+            write(args.run_dir / 'report.md', report(inventory, plan, outcomes))
+        else:
+            if (args.run_dir / 'plan.json').exists():
+                raise LifecycleError('use a new run directory; persisted plans are immutable')
+            inventory = collect(config, args.full)
+            plan = build_plan(inventory, config)
+            write(args.run_dir / 'inventory.json', inventory)
+            write(args.run_dir / 'plan.json', plan)
+            append(args.run_dir / 'actions.jsonl', {'at': now(), 'consumer': plan['consumer'], 'phase': 'planned', 'planDigest': plan['digest']})
+            write(args.run_dir / 'report.md', report(inventory, plan))
+            outcome = 'noop' if inventory['complete'] else 'blocked'
+        print(json.dumps({'status': outcome, 'runDir': str(args.run_dir), 'planDigest': plan['digest']}))
+    except (LifecycleError, OSError, ValueError, KeyError, TypeError) as error:
+        failure, outcome = str(error), 'failed'
+        print(json.dumps({'status': outcome, 'error': failure}))
+    if 'config' in locals():
+        try:
+            code, _ = run([*command(config, 'runReceiptCommand', [sys.executable, str(BIN / 'agent-run-receipt.py')]),
+                           'record', '--job', config.get('consumer', 'lifecycle'), '--outcome', outcome, '--trigger', 'manual',
+                           '--note', 'Lifecycle observation or native queue acknowledgement; execution unverified.'])
+            if code:
+                failure = 'run receipt helper failed'
+        except LifecycleError:
+            failure = 'run receipt helper unavailable'
+    return 1 if failure or outcome in ('failed', 'blocked') else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
