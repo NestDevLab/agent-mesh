@@ -100,7 +100,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -141,6 +141,10 @@ try {
       break;
     case "migrate":
       printResult(migrateStore(stateDir, values), { ...values, json: true });
+      break;
+    case "ledger":
+      if (subcommand !== "sync") throw new Error("ledger operation must be sync");
+      printResult(syncLedgerLinks(stateDir, values), { ...values, json: true });
       break;
     case "query":
       process.stdout.write(`${JSON.stringify(runQuery(stateDir, subcommand, values))}\n`);
@@ -1378,7 +1382,7 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 
 function pendingResolutions(graph, events) {
@@ -1392,6 +1396,29 @@ function pendingResolutions(graph, events) {
     }
   }
   return resolutions;
+}
+
+function syncLedgerLinks(statePath, options) {
+  let raw = options.input;
+  if (raw === "-") {
+    const chunks = []; let size = 0;
+    while (size <= 1024 * 1024) {
+      const buffer = Buffer.alloc(Math.min(65536, 1024 * 1024 + 1 - size));
+      const count = readSync(0, buffer, 0, buffer.length, null);
+      if (!count) break;
+      chunks.push(buffer.subarray(0, count)); size += count;
+    }
+    raw = Buffer.concat(chunks).toString("utf8");
+  }
+  if (typeof raw !== "string" || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("ledger input must be bounded JSON");
+  let input;
+  try { input = JSON.parse(raw); } catch { throw new Error("ledger input must be JSON"); }
+  return mutate(statePath, graph => {
+    if (!graph.migrated || graph.unnumbered) throw new Error("ledger sync needs a migrated store with compatible writers");
+    const result = plexus.ledgerSyncEvents(graph, input?.items);
+    const events = result.events.map(({ type, ...payload }) => event(type, payload));
+    return { graph, events, result: { changed: events.length > 0, events: events.length, unresolved: result.unresolved } };
+  });
 }
 
 function sourceOption(options) {

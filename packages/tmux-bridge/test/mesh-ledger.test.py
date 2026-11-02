@@ -159,6 +159,76 @@ class LedgerCLI(unittest.TestCase):
         if status.exists():
             self.assertEqual(status.read_text().split(') ', 1)[1].split()[0], 'Z')
 
+    def graph(self, *args, code=0):
+        done = subprocess.run(['node', str(ROOT / 'bin/mesh-graph.mjs'), *args, '--json'], env=self.env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(done.returncode, code, done.stderr)
+        return json.loads(done.stdout) if done.stdout.strip() else None
+
+    def seed_graph(self, migrate=True):
+        for key in ('11111111-1111-4111-8111-111111111111', '22222222-2222-4222-8222-222222222222'):
+            self.graph('add', '--agent', 'codex', '--runtime-uuid', key, '--cwd', str(self.root), '--tmux-target', 'test-' + key[:8])
+        if migrate:
+            self.graph('migrate', '--apply')
+
+    def test_sync_opens_touches_closes_and_preserves_operator_links(self):
+        self.seed_graph()
+        a = 'codex:11111111-1111-4111-8111-111111111111'
+        b = '22222222-2222-4222-8222-222222222222'
+        self.graph('link', 'open', '--agent', 'codex', '--runtime-uuid', b, '--ref', 'work:A', '--role', 'owns', '--source', 'operator')
+        self.write(sessions=[{'session': a}])
+        self.run_cli('sync', '--scheme', 'work', '--full')
+        links = self.graph('show')['links']
+        owned = next(link for link in links if link['source'] == 'ledger-write')
+        self.assertIsNone(owned['lastActivityAt'])
+        self.write('active', sessions=[{'session': a}])
+        self.run_cli('sync', '--scheme', 'work')
+        self.assertIsNotNone(next(link for link in self.graph('show')['links'] if link['id'] == owned['id'])['lastActivityAt'])
+        self.write('done')
+        self.run_cli('sync', '--scheme', 'work')
+        links = self.graph('show')['links']
+        self.assertIsNotNone(next(link for link in links if link['id'] == owned['id'])['until'])
+        self.assertIsNone(next(link for link in links if link['source'] == 'operator')['until'])
+
+    def test_sync_prefix_resolution_is_unique_and_never_advances_on_ambiguity(self):
+        self.seed_graph()
+        self.write(sessions=[{'session': '11111111'}])
+        self.run_cli('sync', '--scheme', 'work', '--full')
+        self.graph('add', '--agent', 'claude', '--runtime-uuid', '11111111-1111-4111-8111-111111111111', '--cwd', str(self.root), '--tmux-target', 'test-claude')
+        self.write('active', sessions=[{'session': '11111111'}])
+        path = self.root / 'state/agent-mesh/ledger/cursors.json'
+        before = path.read_bytes()
+        result = self.run_cli('sync', '--scheme', 'work')
+        self.assertEqual(result['sync']['unresolved'][0]['reason'], 'ambiguous')
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(len([link for link in self.graph('show')['links'] if link['until'] is None]), 1)
+        self.write('active', sessions=[{'session': 'codex:11111111'}])
+        self.assertEqual(self.run_cli('sync', '--scheme', 'work')['errors'], [])
+
+    def test_sync_missing_sessions_is_not_removal_and_disabled_adapter_is_read_only(self):
+        self.seed_graph()
+        self.write(sessions=[{'session': 'codex:11111111'}])
+        self.run_cli('sync', '--scheme', 'work', '--full')
+        self.write('active')
+        self.run_cli('sync', '--scheme', 'work')
+        self.assertIsNone(self.graph('show')['links'][0]['until'])
+        self.write('active', sessions=[])
+        self.run_cli('sync', '--scheme', 'work')
+        self.assertIsNotNone(self.graph('show')['links'][0]['until'])
+        value = json.loads(self.config.read_text())
+        value['adapters'][0]['linkSessions'] = False
+        self.config.write_text(json.dumps(value))
+        self.assertEqual(self.run_cli('sync', '--scheme', 'work')['status'], 'link-sync-disabled')
+
+    def test_sync_never_migrates_a_legacy_graph_or_advances_after_failure(self):
+        self.seed_graph(migrate=False)
+        self.run_cli('sync', '--scheme', 'work')
+        path = self.root / 'state/agent-mesh/ledger/cursors.json'
+        before = path.read_bytes()
+        self.write(sessions=[{'session': 'codex:11111111'}])
+        self.run_cli('sync', '--scheme', 'work', code=1)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(self.graph('show').get('migrated'))
+
     def test_command_is_argv_without_shell(self):
         marker = self.root / 'must-not-exist'
         self.configure(command=['node', str(ADAPTER), '; touch ' + str(marker)])
