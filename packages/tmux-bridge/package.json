@@ -24,7 +24,8 @@
     "mesh-graph": "./bin/mesh-graph.mjs",
     "mesh-list-agents": "./bin/mesh-list-agents.sh",
     "mesh-send": "./bin/mesh-send.sh",
-    "mesh-capacity-dispatch": "./bin/mesh-capacity-dispatch.mjs"
+    "mesh-capacity-dispatch": "./bin/mesh-capacity-dispatch.mjs",
+    "mesh-ledger": "./bin/mesh-ledger.py"
   },
   "engines": {
     "node": ">=20"
