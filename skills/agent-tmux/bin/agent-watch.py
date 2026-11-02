@@ -542,10 +542,10 @@ def question_text(value: Any) -> str:
         questions = value.get("questions")
         if isinstance(questions, list):
             return clipped("\n".join(
-                str(item.get("question") or item.get("header") or "")
+                str(item.get("question") or item.get("title") or item.get("header") or "")
                 for item in questions if isinstance(item, dict)
             ))
-        return clipped(value.get("question") or value.get("prompt") or "")
+        return clipped(value.get("question") or value.get("title") or value.get("prompt") or "")
     return ""
 
 

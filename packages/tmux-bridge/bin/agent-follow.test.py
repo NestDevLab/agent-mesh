@@ -31,6 +31,38 @@ class FollowerTest(unittest.TestCase):
         environment.start()
         self.addCleanup(environment.stop)
 
+    def test_completion_carries_native_turn_and_outcome_fields(self):
+        events = [{"source_event_id": "complete", "kind": "turn_complete", "turn_id": "native-turn",
+                   "completion": "task", "outcome": "replied", "reply": "Explicit final"}]
+        rows, _ = follow.derive(REF, {**ENTRY, "mode": "observe"}, events, {})
+        self.assertEqual(rows[0]["turn_id"], "native-turn")
+        self.assertEqual(rows[0]["completion"], "task")
+        self.assertEqual(rows[0]["outcome"], "replied")
+
+    def test_observer_stalled_alert_is_opt_in_and_growth_timestamp_survives(self):
+        root = self.root / "observe"
+        path = self.root / "history.jsonl"
+        path.write_text("")
+        entry = {**ENTRY, "mode": "observe", "addedBy": "manual"}
+        follow.save_selection(root, {REF: entry})
+        _, pending = follow.derive(REF, entry, [{"kind": "turn_started", "turn_id": "active-turn"}], {})
+        follow.atomic_json(follow.cursor_path(root, REF), {"path": str(path), "offset": 0,
+                            "pending": pending, "last_growth_at": 100})
+        with patch.object(follow, "reconcile", return_value=([], {}, set())), \
+             patch.object(follow, "discover", return_value=([], {REF: path}, {})), \
+             patch.object(follow.time, "time", return_value=10000):
+            follow.tick(root, {"follower": {"stalledMinutes": 1}}, None)
+            self.assertEqual(follow.outbox(root)[0], [])
+            follow.tick(root, {"follower": {"stalledMinutes": 1, "observeStalledAlerts": True}}, None)
+            rows = follow.outbox(root)[0]
+            self.assertEqual([row["kind"] for row in rows], ["STALLED"])
+            self.assertEqual(rows[0]["turn_id"], "active-turn")
+            follow.tick(root, {"follower": {"stalledMinutes": 1, "observeStalledAlerts": True}}, None)
+            self.assertEqual(len(follow.outbox(root)[0]), 1)
+
+    def test_async_question_title_alias(self):
+        self.assertEqual(follow.watch.question_text({"questions": [{"title": "Choose candidate"}]}), "Choose candidate")
+
     def test_crash_after_outbox_fsync_before_cursor_save_deduplicates(self):
         event = {"source_event_id": "turn:0", "kind": "turn_complete", "outcome": "replied", "reply": "Done", "timestamp": "2026-10-08T12:00:00Z"}
         first, _ = follow.derive(REF, ENTRY, [event], {})

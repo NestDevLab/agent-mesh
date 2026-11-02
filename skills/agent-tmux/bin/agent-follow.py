@@ -234,6 +234,8 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
         event_id = str(event.get("source_event_id") or "")
         if kind == "turn_started":
             pending["active"] = True
+            if event.get("turn_id"):
+                pending["turn_id"] = event["turn_id"]
             pending.pop("stalled", None)
         elif kind == "human_message":
             pending["last_human"] = str(event.get("body") or "")
@@ -260,9 +262,12 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
                 body, line_kind = str(reply), "REPLY"
             if (mode != "child" or line_kind != "REPLY") and (mode != "observe" or not observe_questions_only or line_kind == "ERROR"):
                 out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected,
-                            **({"completion": event["completion"]} if event.get("completion") else {})})
+                            **({"completion": event["completion"]} if event.get("completion") else {}),
+                            **({"turn_id": event.get("turn_id") or pending.get("turn_id")} if event.get("turn_id") or pending.get("turn_id") else {}),
+                            "outcome": outcome, **({"error": error} if error else {})})
             pending.pop("last_reply", None)
             pending["active"] = False
+            pending.pop("turn_id", None)
     return out, pending
 
 
@@ -592,11 +597,12 @@ def tick(root: Path, config: dict[str, Any], self_ref: str | None) -> int:
             lines, next_cursor["pending"] = derive(ref, selection, events, next_cursor["pending"], config)
             follower = config.get("follower", {}) if isinstance(config.get("follower"), dict) else {}
             stalled_seconds = float(follower.get("stalledMinutes", 30)) * 60
+            next_cursor["last_growth_at"] = cursor.get("last_growth_at", time.time())
             if events:
                 next_cursor["last_growth_at"] = time.time()
-            elif selection.get("mode") == "steer" and next_cursor["pending"].get("active") and not next_cursor["pending"].get("stalled") and time.time() - float(next_cursor.get("last_growth_at", time.time())) >= stalled_seconds:
+            elif (selection.get("mode") == "steer" or follower.get("observeStalledAlerts", False) and selection.get("mode") == "observe") and next_cursor["pending"].get("active") and not next_cursor["pending"].get("stalled") and time.time() - float(next_cursor.get("last_growth_at", time.time())) >= stalled_seconds:
                 next_cursor["pending"]["stalled"] = True
-                lines.append({"event_id": f"stalled:{ref}:{next_cursor['offset']}", "ref": ref, "kind": "STALLED", "body": "active turn has not grown", "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selection})
+                lines.append({"event_id": f"stalled:{ref}:{next_cursor['offset']}", "ref": ref, "kind": "STALLED", "turn_id": next_cursor["pending"].get("turn_id"), "body": "active turn has not grown", "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(), "selection": selection})
             candidates.extend(lines)
             staged.append((cp, next_cursor))
         fresh = append_outbox(root, candidates)
