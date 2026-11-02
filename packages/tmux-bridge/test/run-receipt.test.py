@@ -114,6 +114,33 @@ class RunReceiptTest(unittest.TestCase):
         code, [result] = self.check(job)
         self.assertEqual((code, result["status"], result["mismatch"]), (2, "unexpected", {"status": "unguarded"}))
 
+    def test_future_evidence_is_flagged(self):
+        self.run_main("record", "--job", "daily", "--outcome", "failed", "--ended-at", "2026-11-02T11:00:00Z")
+        self.run_main("record", "--job", "daily", "--outcome", "acted", "--ended-at", "2099-01-01T00:00:00Z")
+        code, [result] = self.check({"name": "daily", "maxAgeHours": 26})
+        self.assertEqual((code, result["status"]), (2, "future"))
+        report = self.root / "out.json"
+        report.write_text("{}")
+        os.utime(report, (epoch("2026-11-02T12:30:00Z"),) * 2)
+        code, [result] = self.check({"name": "out", "maxAgeHours": 26, "path": str(report)})
+        self.assertEqual((code, result["status"]), (2, "future"))
+
+    def test_expect_compares_presence_and_json_type(self):
+        report = self.root / "out.json"
+        job = {"name": "out", "maxAgeHours": 26, "path": str(report)}
+        cases = (("not json", {"status": None}), ('{"enabled": 0}', {"enabled": False}),
+                 ("{}", {"status": None}), ('{"count": "1"}', {"count": 1}))
+        for body, expect in cases:
+            with self.subTest(body=body):
+                report.write_text(body)
+                os.utime(report, (epoch("2026-11-02T11:00:00Z"),) * 2)
+                code, [result] = self.check(dict(job, expect=expect))
+                self.assertEqual((code, result["status"]), (2, "unexpected"))
+        report.write_text('{"status": null, "enabled": false}')
+        os.utime(report, (epoch("2026-11-02T11:00:00Z"),) * 2)
+        code, [result] = self.check(dict(job, expect={"status": None, "enabled": False}))
+        self.assertEqual((code, result["status"]), (0, "ok"))
+
     def test_alerts_only_hides_healthy_jobs(self):
         self.run_main("record", "--job", "daily", "--outcome", "noop", "--ended-at", "2026-11-02T11:00:00Z")
         code, results = self.check({"name": "daily", "maxAgeHours": 26},

@@ -22,6 +22,8 @@ from typing import Any
 
 SCHEMA = "agent-mesh.run-receipt.v1"
 CHECK_SCHEMA = "agent-mesh.run-check.v1"
+CLOCK_SKEW = timedelta(minutes=5)
+MISSING = object()
 OUTCOMES = ("acted", "noop", "blocked", "failed")
 TRIGGERS = ("cron", "timer", "inbox", "relay", "manual")
 
@@ -114,9 +116,14 @@ def latest_receipt(job: str) -> dict[str, Any] | None:
 def field(document: Any, dotted: str) -> Any:
     for part in dotted.split("."):
         if not isinstance(document, dict) or part not in document:
-            return None
+            return MISSING
         document = document[part]
     return document
+
+
+def same(actual: Any, want: Any) -> bool:
+    # JSON types must match too: 0 is not false and null is not a missing field.
+    return actual is not MISSING and type(actual) is type(want) and actual == want
 
 
 def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -137,11 +144,15 @@ def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
                 try:
                     document = json.loads(newest.read_text())
                 except (OSError, ValueError):
-                    document = None
-                mismatches = {key: field(document, key) for key, want in expect.items()
-                              if field(document, key) != want}
-                if mismatches:
-                    result["mismatch"] = mismatches
+                    result["mismatch"] = {"(file)": "not valid JSON"}
+                else:
+                    mismatches = {}
+                    for key, want in expect.items():
+                        actual = field(document, key)
+                        if not same(actual, want):
+                            mismatches[key] = "(missing)" if actual is MISSING else actual
+                    if mismatches:
+                        result["mismatch"] = mismatches
     else:
         result["evidence"] = "receipts"
         receipt = latest_receipt(name)
@@ -153,7 +164,9 @@ def check_job(job: dict[str, Any], now: datetime) -> dict[str, Any]:
         return result
     result["lastRunAt"] = iso(last)
     result["ageHours"] = round((now - last).total_seconds() / 3600, 2)
-    if now - last > max_age:
+    if last - now > CLOCK_SKEW:
+        result["status"] = "future"
+    elif now - last > max_age:
         result["status"] = "missed"
     elif result.get("mismatch"):
         result["status"] = "unexpected"

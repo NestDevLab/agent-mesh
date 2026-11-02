@@ -36,6 +36,7 @@ agent-run-receipt.py check --config watch.json [--alerts-only] [--now <iso>]
 ```
 
 Prints one `agent-mesh.run-check.v1` line per job with `status`: `ok`, `missed` (older than
-`maxAgeHours`), `never` (no evidence), `unexpected` (an `expect` field differs) or `failed` (latest
-receipt outcome). Exit codes: `0` all ok, `2` at least one job needs attention, `1` invalid watch
+`maxAgeHours`), `never` (no evidence), `future` (evidence more than 5 minutes ahead of now),
+`unexpected` (an `expect` field is missing, differs in value or JSON type, or the file is not JSON)
+or `failed` (latest receipt outcome). Exit codes: `0` all ok, `2` at least one job needs attention, `1` invalid watch
 list.
