@@ -9,7 +9,7 @@ agent-waker.py run --job daily --session <UUID> --managed-inbox-root <ROOT> -- <
 ```
 
 - The producer prints `{"new": [...], "errors": [...]}` and owns its own cursor, so every `new`
-  item is reported once (for example `im-daily-checkin/scripts/poll.py`).
+  item is reported once.
 - Nothing new and no new error: no wake, `noop` receipt.
 - New items: one note listing them, `acted` receipt. If the bridge refuses (exit 78 or any other
   non-queued code), the items stay pending in `$XDG_STATE_HOME/agent-waker/<job>.json` and are
