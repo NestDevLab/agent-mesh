@@ -467,6 +467,44 @@ class LifecycleEngine(unittest.TestCase):
         records.insert(2, {**base, 'phase': 'delivery-attempt'})
         self.assertFalse(engine.retry_ready(engine.retry_states(records)['same'], self.config, '2026-11-02T12:05:00Z'))
 
+    def test_new_model_capacity_scope_cannot_bypass_private_retry_guard(self):
+        row = self.row()
+        row['lifecycle'].update(error={'message': 'Selected model is at capacity'}, outcome='error',
+                                completedAt='2026-11-02T12:00:00Z')
+        inventory = self.inventory([row], at='2026-11-02T13:00:00Z')
+        config = {**self.config, 'retryGuardCommand': ['retry-policy']}
+        self.retry_permission = False
+        with patch.object(engine, 'now', return_value='2026-11-02T13:00:00Z'):
+            result = self.apply(inventory, config=config)
+        self.assertEqual(result[0]['retryClass'], 'model-capacity')
+        self.assertIn('private', result[0]['reason'])
+        guards = [call[1] for call in self.calls if isinstance(call[0], list) and call[0][0] == 'retry-policy']
+        self.assertEqual(guards, [{'session': row['sessionId'], 'target': None, 'retryClass': 'model-capacity'}])
+        self.assertFalse(any(isinstance(call[0], list) and call[0][0] in ('native', 'session', 'send') for call in self.calls))
+        with patch.object(engine, 'now', return_value='2026-11-02T13:00:01Z'):
+            self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'not-retried')
+
+    def test_long_launch_failure_backoff_starts_when_failure_is_observed(self):
+        inventory, config = self.handoff_fixture()
+        clock = {'at': '2026-11-02T12:00:00Z'}
+        self.launch_code = 75
+        runner = self.runner
+        def delayed(argv, payload=None, **kwargs):
+            result = runner(argv, payload, **kwargs)
+            if argv[0] == 'session' and 'new' in argv:
+                clock['at'] = '2026-11-02T12:20:00Z'
+            return result
+        with patch.object(engine, 'now', side_effect=lambda: clock['at']), patch.object(engine, 'collect', return_value=inventory), \
+             patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'run', side_effect=delayed):
+            plan = engine.build_plan(inventory, config)
+            result = engine.apply_plan(plan, inventory, config, self.run_dir)
+        failure = result[0]
+        self.assertEqual(failure['actionStartedAt'], '2026-11-02T12:00:00Z')
+        self.assertEqual(failure['failureObservedAt'], '2026-11-02T12:20:00Z')
+        self.assertEqual(failure['at'], failure['failureObservedAt'])
+        self.assertEqual(failure['nextRetryAt'], '2026-11-02T12:25:00Z')
+        self.assertIn(plan['actions'][0]['fingerprint'], engine.attempted(self.run_dir, config['consumer'], config, '2026-11-02T12:20:01Z'))
+
     def test_run_artifacts_have_restrictive_modes(self):
         path = self.run_dir / 'plan.json'
         engine.write(path, {'synthetic': True})

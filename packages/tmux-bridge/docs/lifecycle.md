@@ -214,7 +214,9 @@ but a due safe retry becomes eligible after its exponential delay. Defaults
 are 300 seconds, doubling to a 3600-second maximum, with a hard budget of three.
 A zero retry budget disables retry. Every due retry still passes current
 source/classification, original-work-item, reset-window and native safety
-checks. Backoff/held metadata appears in plans/reports; it is not a claim that
+checks. Failure receipts preserve action start separately from actual failure-observed
+time; nextRetryAt starts at failure observation, so a long guard/sweep/launch
+cannot consume its own retry delay. Backoff/held metadata appears in plans/reports; it is not a claim that
 the work executed.
 
 Two capacity causes are deliberately distinguished:
@@ -250,7 +252,10 @@ explicit reconciliation. A crash after an unclassified mutation attempt stays
 held. These rules prevent child floods and duplicate queued work.
 
 An optional host `retryGuardCommand` receives `{session,target,retryClass}` on
-stdin. Only exit 0 with `{allow:true}` permits a due retry to continue. Missing
+stdin. Only exit 0 with `{allow:true}` permits a due retry to continue. This guard
+also covers a newly observed model-capacity scope without any same-fingerprint
+receipt, using `retryClass: model-capacity`; a new scope cannot bypass private
+permission policy. Denials retain bounded backoff even before native mutation. Missing
 or unsupported source/permission proof can remain held by that private policy;
 for example an ownership helper blocked by EACCES must not be replaced with a
 new child or a privileged bypass. Repeated held probes consume the bounded

@@ -479,7 +479,7 @@ def retry_ready(state, config, at):
     failure = state.get('failure') or {}
     if not failure.get('retryable') or state.get('acknowledged') or state.get('deliveryStarted'):
         return False
-    if failure.get('retryClass') not in ('handoff-proof', 'capacity'):
+    if failure.get('retryClass') not in ('handoff-proof', 'capacity', 'model-capacity'):
         return False
     if failure.get('retryAttempt', 0) >= config.get('retryMaxAttempts', 3):
         return False
@@ -491,7 +491,7 @@ def retry_ready(state, config, at):
 
 def attempted(run_dir, consumer, config=None, at=None):
     states = retry_states(receipt_history(run_dir, consumer), config)
-    return {fingerprint for fingerprint, state in states.items() if state['attempted'] and not retry_ready(state, config or {}, at or now())}
+    return {fingerprint for fingerprint, state in states.items() if (state['attempted'] or (state.get('failure') or {}).get('retryable')) and not retry_ready(state, config or {}, at or now())}
 
 
 def retry_failure(error, context, config, base):
@@ -641,7 +641,7 @@ def apply_plan(plan, inventory, config, run_dir):
     with locked(run_dir, plan['consumer']):
         history = receipt_history(run_dir, plan['consumer'])
         states = retry_states(history, config)
-        seen = {key for key, value in states.items() if value['attempted'] and not retry_ready(value, config, now())}
+        seen = {key for key, value in states.items() if (value['attempted'] or (value.get('failure') or {}).get('retryable')) and not retry_ready(value, config, now())}
         recover_outcomes(config, run_dir)
         for action in actions:
             base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': action['kind'],
@@ -655,11 +655,12 @@ def apply_plan(plan, inventory, config, run_dir):
                 continue
             context = states.get(action['fingerprint'])
             try:
-                if context and retry_ready(context, config, now()) and config.get('retryGuardCommand'):
-                    code, permission = run(config['retryGuardCommand'], {'session': action['session'], 'target': context.get('target'),
-                        'retryClass': context['failure']['retryClass']})
+                retry_class = 'model-capacity' if action.get('modelCapacityScope') else (context['failure']['retryClass'] if context and retry_ready(context, config, now()) else None)
+                if retry_class and config.get('retryGuardCommand'):
+                    code, permission = run(config['retryGuardCommand'], {'session': action['session'], 'target': (context or {}).get('target'),
+                        'retryClass': retry_class})
                     if code or not isinstance(permission, dict) or permission.get('allow') is not True:
-                        raise RetryableFailure('retry held by private source or permission policy', context['failure']['retryClass'])
+                        raise RetryableFailure('retry held by private source or permission policy', retry_class)
                 if action.get('modelCapacityScope'):
                     model_attempts = sum(record.get('phase') == 'attempt' and record.get('modelCapacityScope') == action['modelCapacityScope'] for record in history)
                     if model_attempts >= config.get('retryMaxAttempts', 3):
@@ -702,9 +703,11 @@ def apply_plan(plan, inventory, config, run_dir):
                                'resumeRequested': True, 'resumeVerified': False,
                                'resumeDiagnostic': acknowledgement.get('resumeDiagnostic', False)}
             except LifecycleError as error:
-                outcome = {**base, 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
+                observed_at = now()
+                outcome = {**base, 'at': observed_at, 'actionStartedAt': base['at'], 'failureObservedAt': observed_at,
+                           'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
                 if isinstance(error, RetryableFailure):
-                    outcome.update(retry_failure(error, context, config, base))
+                    outcome.update(retry_failure(error, context, config, outcome))
                 append(run_dir / 'actions.jsonl', outcome)
                 publish_outcomes(config, [outcome], run_dir)
                 outcomes.append(outcome)
