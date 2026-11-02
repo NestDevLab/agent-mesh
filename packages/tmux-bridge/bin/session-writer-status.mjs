@@ -181,7 +181,9 @@ function detectMonitorInboxWatchers(inbox) {
   ], { encoding: "utf8", timeout: 500 });
   try {
     const record = probe.status === 0 ? JSON.parse(probe.stdout) : undefined;
-    if (record && writers.some((writer) => writer.pid === record.owner?.pid)) {
+    // A Remote Control session's inbox is owned by its `claude remote-control` parent process.
+    const owners = (writer) => [writer.pid, writer.parentPid];
+    if (record && writers.some((writer) => owners(writer).includes(record.owner?.pid))) {
       watchers.push(record.supervisor.pid);
     }
   } catch { /* Missing/invalid supervisor evidence is not readiness. */ }

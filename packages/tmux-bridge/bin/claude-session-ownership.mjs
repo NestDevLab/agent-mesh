@@ -21,7 +21,7 @@ export function inspectClaudeSessionOwnership(sessionId, options = {}) {
         issues.push("owner_process_unverifiable");
         continue;
       }
-      writers.set(entry.pid, { pid: entry.pid, kind, source: "claude-agents" });
+      writers.set(entry.pid, withParent({ pid: entry.pid, kind, source: "claude-agents" }, procRoot));
     }
   } else {
     issues.push(inventory.reason);
@@ -67,7 +67,7 @@ function detectArgvWriters(sessionId, procRoot) {
     const argv = readProcessArgv(procRoot, pid);
     if (!claimsSession(argv, sessionId)) continue;
     const kind = classifyClaudeProcess(argv);
-    if (kind) writers.push({ pid, kind, source: "process-argv" });
+    if (kind) writers.push(withParent({ pid, kind, source: "process-argv" }, procRoot));
   }
   return writers;
 }
@@ -80,11 +80,25 @@ function readProcessArgv(procRoot, pid) {
   }
 }
 
+function withParent(writer, procRoot) {
+  if (writer.kind !== "claude-remote-control") return writer;
+  try {
+    const match = readFileSync(`${procRoot}/${writer.pid}/status`, "utf8").match(/^PPid:\s+(\d+)$/m);
+    return match ? { ...writer, parentPid: Number(match[1]) } : writer;
+  } catch {
+    return writer;
+  }
+}
+
 function classifyClaudeProcess(argv) {
   if (!argv.length) return undefined;
   const executable = argv[0];
   if (executable.includes("/.claude/remote/ccd-cli/")) return "claude-desktop";
   if (basename(executable) === "claude") return "claude-cli";
+  // Remote Control children run the versioned binary directly, e.g. ~/.local/share/claude/versions/2.1.309.
+  if (/\/claude\/versions\/[^/]+$/.test(executable)) {
+    return argv.includes("--sdk-url") ? "claude-remote-control" : "claude-cli";
+  }
   return undefined;
 }
 

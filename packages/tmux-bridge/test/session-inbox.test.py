@@ -357,6 +357,28 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(watcher.poll())
 
+    def test_readiness_accepts_remote_control_child_of_inbox_owner(self):
+        self.hook()
+        watcher = self.watcher()
+        self.ready()
+        child = Path(self.temp.name) / 'proc' / '999999'
+        child.mkdir(parents=True)
+        (child / 'cmdline').write_bytes(b'/opt/claude/versions/9.9.9\0--print\0--sdk-url\0https://example.invalid\0')
+        (child / 'status').write_text(f'Name:\tclaude\nPPid:\t{os.getpid()}\n')
+        provider = Path(self.temp.name) / 'claude-inventory'
+        provider.write_text(f'#!/bin/sh\nprintf \'[{{"pid": 999999, "sessionId": "{SESSION}"}}]\\n\'\n')
+        provider.chmod(0o700)
+        command = ['node', str(SCRIPT.with_name('session-writer-status.mjs')), '--agent', 'claude',
+                   '--session', SESSION, '--require-single',
+                   '--require-monitor-inbox', str(self.root / (SESSION + '.jsonl'))]
+        env = {**os.environ, 'AGENT_WRITER_PROC_ROOT': str(child.parent), 'CLAUDE_BIN': str(provider)}
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (child / 'status').write_text('Name:\tclaude\nPPid:\t1\n')
+        result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertIsNone(watcher.poll())
+
     def test_openpack_declares_claude_hooks_and_configurable_binary(self):
         repo = SCRIPT.parents[3]
         manifest = json.loads((repo / 'openpack.json').read_text())
