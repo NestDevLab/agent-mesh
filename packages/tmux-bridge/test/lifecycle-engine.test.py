@@ -4,6 +4,7 @@ import copy
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -287,6 +288,24 @@ class LifecycleEngine(unittest.TestCase):
         self.assertEqual(rows[0]['payload']['status'], 'queued')
         self.apply(inventory, config=config, plan=plan)
         self.assertEqual(len(outbox.read_text().splitlines()), 1)
+
+    def test_each_dispatch_refreshes_native_context_after_previous_actions(self):
+        inventory = self.inventory([self.row(1), self.row(2)])
+        changed = copy.deepcopy(inventory)
+        changed['sessions'][1]['lifecycle']['pendingQuestion'] = True
+        plan = engine.build_plan(inventory, self.config)
+        with patch.object(engine, 'collect', side_effect=[inventory, changed]) as refresh, patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'run', side_effect=self.runner):
+            results = engine.apply_plan(plan, inventory, self.config, self.run_dir)
+        self.assertEqual([row['status'] for row in results], ['queued', 'blocked'])
+        self.assertEqual(refresh.call_count, 2)
+        self.assertEqual(sum(isinstance(call[0], list) and call[0][0] == 'native' for call in self.calls), 1)
+
+    def test_native_helper_output_is_bounded_during_read(self):
+        with patch.object(engine, 'HELPER_OUTPUT_BYTES', 1024):
+            with self.assertRaisesRegex(engine.LifecycleError, 'output exceeds size limit'):
+                engine.run([sys.executable, '-c', 'import sys;sys.stdout.write("x" * 65536)'])
+        code, value = engine.run([sys.executable, '-c', 'import sys;sys.stderr.write("diagnostic" * 65536);print("ok")'], raw=True)
+        self.assertEqual((code, value), (0, 'ok'))
 
 if __name__ == '__main__':
     unittest.main()

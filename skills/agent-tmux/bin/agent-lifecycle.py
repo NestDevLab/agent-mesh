@@ -79,22 +79,30 @@ def command(config, key, default):
     return config.get(key, default)
 
 
+HELPER_OUTPUT_BYTES = 16 * 1024 * 1024
+_transport = None
+
+
 def run(argv, payload=None, *, raw=False):
-    """Single bounded invocation; no retries and no raw diagnostics in reports."""
+    """Reuse Mesh's bounded native transport, never accumulating stderr."""
+    global _transport
+    if _transport is None:
+        spec = importlib.util.spec_from_file_location('lifecycle_native_transport', BIN / 'mesh-ledger.py')
+        _transport = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_transport)
     try:
-        result = subprocess.run(argv, input=json.dumps(payload) if payload is not None else None,
-                                text=True, capture_output=True, timeout=120)
-        if len(result.stdout) > 16 * 1024 * 1024:
-            raise LifecycleError('helper output exceeds limit')
-        if raw:
-            return result.returncode, result.stdout.strip()
-        try:
-            data = json.loads(result.stdout) if result.stdout.strip() else None
-        except ValueError:
-            data = None
-        return result.returncode, data
-    except (OSError, subprocess.TimeoutExpired):
-        raise LifecycleError('helper unavailable or timed out') from None
+        code, output = _transport.run_process(argv, payload, timeout_ms=120000,
+                                              max_output=HELPER_OUTPUT_BYTES, label='native helper')
+    except _transport.ProtocolError as error:
+        raise LifecycleError(str(error)) from None
+    text = output.decode('utf-8', 'replace').strip()
+    if raw:
+        return code, text
+    try:
+        data = json.loads(text) if text else None
+    except ValueError:
+        data = None
+    return code, data
 
 
 def mesh(config, operation, payload=None, full=False):
@@ -425,6 +433,10 @@ def handoff(config, original, base, run_dir):
         raise LifecycleError('new child ownership or native identity unavailable')
     append(run_dir / 'actions.jsonl', {**base, 'phase': 'child-identified', 'target': target, 'childNativeId': native,
                                       'childSession': 'codex:' + native, 'originalSession': original['sessionId']})
+    refreshed = collect(config)
+    latest = next((row for row in refreshed['sessions'] if row['sessionId'] == original['sessionId']), None)
+    if not refreshed['complete'] or latest is None or fingerprint(latest) != base['fingerprint'] or classify(latest, config, now())['classification'] != 'handoff-candidate':
+        raise LifecycleError('original context changed during handoff launch; child retained without prompt')
     token = hashlib.sha256(correlation.encode()).hexdigest()[:16]
     prompt = ('Original source session: ' + original['sessionId'] + '. Use the native Mesh context and linked sources '
               'to recover that original request before acting. ' + PROMPT)
@@ -456,12 +468,6 @@ def apply_plan(plan, inventory, config, run_dir):
     with locked(run_dir, plan['consumer']):
         seen = attempted(run_dir, plan['consumer'])
         recover_outcomes(config, run_dir)
-        # Refresh official native facts; an old persisted plan cannot authorize
-        # queueing after a new question, completion, archive or observation.
-        fresh = collect(config)
-        if not fresh['complete']:
-            raise LifecycleError('fresh native source errors block apply')
-        originals = {row['sessionId']: row for row in fresh['sessions']}
         for action in actions:
             base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': action['kind'],
                     'fingerprint': action['fingerprint'], 'planDigest': expected}
@@ -471,20 +477,23 @@ def apply_plan(plan, inventory, config, run_dir):
                 outcomes.append(outcome)
                 continue
             try:
-                original = originals.get(action['session'])
-                classification = 'handoff-candidate' if action['kind'] == 'handoff' else 'resume-candidate'
-                if original is None or fingerprint(original) != action['fingerprint'] or classify(original, config, now())['classification'] != classification:
-                    raise LifecycleError('persisted observation is no longer eligible')
                 window = config.get('resumeWindowCommand')
                 if not window:
                     raise LifecycleError('resume window guard unavailable')
                 code, guard = run(window, {'session': action['session'], 'planDigest': expected, 'at': now(), 'timezone': config.get('timezone', 'UTC')})
                 if code or not isinstance(guard, dict) or guard.get('allow') is not True:
                     raise LifecycleError('resume window guard blocks queueing')
+                native = resume_safe(config, action['session']) if action['kind'] == 'resume' else None
+                fresh = collect(config)
+                if not fresh['complete']:
+                    raise LifecycleError('fresh native source errors block apply')
+                original = next((row for row in fresh['sessions'] if row['sessionId'] == action['session']), None)
+                classification = 'handoff-candidate' if action['kind'] == 'handoff' else 'resume-candidate'
+                if original is None or fingerprint(original) != action['fingerprint'] or classify(original, config, now())['classification'] != classification:
+                    raise LifecycleError('persisted observation is no longer eligible')
                 if action['kind'] == 'handoff':
                     outcome = handoff(config, original, base, run_dir)
                 else:
-                    native = resume_safe(config, action['session'])
                     correlation = 'lifecycle-' + action['fingerprint'][:32]
                     append(run_dir / 'actions.jsonl', {**base, 'phase': 'attempt', 'nativeId': native, 'correlationId': correlation})
                     seen.add(action['fingerprint'])

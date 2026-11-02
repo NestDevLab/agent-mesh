@@ -158,3 +158,10 @@ retry recovers missing outbox events before deduplicating native attempts.
 Previously attempted observation fingerprints are filtered before selecting the
 next capped batch, so they cannot starve later candidates. Native event and human
 input identities, when present, distinguish new work from polling timestamps.
+
+Native helper pipes reuse the bounded transport in `mesh-ledger`: stderr is
+discarded, stdout is limited while reading, and the invocation process group is
+retired on completion or failure. Native tmux workers and lease monitors detach
+through the existing bridge transport. Each dispatch refreshes and reclassifies
+its original context after earlier actions and guard checks; a Claude handoff
+checks again after child launch, before delivering its continuation prompt.

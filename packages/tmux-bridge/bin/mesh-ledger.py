@@ -62,60 +62,55 @@ def adapters():
         result[scheme] = {**entry, 'timeoutMs': timeout}
     return result
 
-def invoke(adapter, operation, request, expected_schema=SCHEMA):
-    """Bound output while reading; diagnostics never enter the caller's report."""
-    deadline = time.monotonic() + adapter['timeoutMs'] / 1000
+def run_process(argv, payload=None, *, timeout_ms=10000, max_output=MAX_BYTES, label='adapter'):
+    """Bound helper pipes while reading and retire only this invocation group.
+
+    Persistent workers must use their native detached service/tmux transport.
+    """
+    deadline = time.monotonic() + timeout_ms / 1000
+    encoded = json.dumps(payload).encode() if payload is not None else b''
+    if len(encoded) > MAX_BYTES:
+        raise ProtocolError(label + ' request exceeds size limit')
     try:
-        process = subprocess.Popen([*adapter['command'], operation], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        process = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
-        raise ProtocolError('adapter could not start') from None
+        raise ProtocolError(label + ' could not start') from None
     try:
-        payload = json.dumps(request).encode()
-        if len(payload) > MAX_BYTES:
-            raise ProtocolError('adapter request exceeds size limit')
-        sent = 0
-        data = bytearray()
+        sent, data = 0, bytearray()
         os.set_blocking(process.stdin.fileno(), False)
         with selectors.DefaultSelector() as selector:
             selector.register(process.stdout, selectors.EVENT_READ)
-            selector.register(process.stdin, selectors.EVENT_WRITE)
+            if encoded:
+                selector.register(process.stdin, selectors.EVENT_WRITE)
+            else:
+                process.stdin.close()
             while selector.get_map():
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise ProtocolError('adapter timed out')
+                    raise ProtocolError(label + ' timed out')
                 for key, _ in selector.select(remaining):
                     if key.fileobj is process.stdin:
-                        sent += os.write(key.fd, payload[sent:sent + 65536])
-                        if sent == len(payload):
+                        sent += os.write(key.fd, encoded[sent:sent + 65536])
+                        if sent == len(encoded):
                             selector.unregister(process.stdin)
                             process.stdin.close()
                         continue
-                    chunk = os.read(key.fd, min(65536, MAX_BYTES + 1 - len(data)))
+                    chunk = os.read(key.fd, min(65536, max_output + 1 - len(data)))
                     if not chunk:
                         selector.unregister(key.fileobj)
                     else:
                         data.extend(chunk)
-                        if len(data) > MAX_BYTES:
-                            raise ProtocolError('adapter output exceeds size limit')
+                        if len(data) > max_output:
+                            raise ProtocolError(label + ' output exceeds size limit')
         try:
             code = process.wait(timeout=max(0.001, deadline - time.monotonic()))
         except subprocess.TimeoutExpired:
-            raise ProtocolError('adapter timed out') from None
-        if code:
-            raise ProtocolError('adapter failed')
-        try:
-            response = json.loads(data)
-        except (ValueError, UnicodeError):
-            raise ProtocolError('adapter returned invalid JSON') from None
-        if not isinstance(response, dict) or expected_schema and response.get('schema') != expected_schema:
-            raise ProtocolError('adapter returned invalid schema')
-        return response
+            raise ProtocolError(label + ' timed out') from None
+        return code, bytes(data)
     except (BrokenPipeError, OSError):
-        raise ProtocolError('adapter transport failed') from None
+        raise ProtocolError(label + ' transport failed') from None
     finally:
-        # Descendants can retain pipes after their leader exits. Always retire
-        # this invocation's process group, including on successful completion.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -124,6 +119,21 @@ def invoke(adapter, operation, request, expected_schema=SCHEMA):
         process.stdout.close()
         if not process.stdin.closed:
             process.stdin.close()
+
+
+def invoke(adapter, operation, request, expected_schema=SCHEMA):
+    """Invoke the adapter protocol over the shared bounded helper transport."""
+    code, data = run_process([*adapter['command'], operation], request, timeout_ms=adapter['timeoutMs'])
+    if code:
+        raise ProtocolError('adapter failed')
+    try:
+        response = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise ProtocolError('adapter returned invalid JSON') from None
+    if not isinstance(response, dict) or expected_schema and response.get('schema') != expected_schema:
+        raise ProtocolError('adapter returned invalid schema')
+    return response
+
 
 def one_line(value, name, limit=4096):
     if not isinstance(value, str) or len(value) > limit or '\n' in value or '\r' in value:
