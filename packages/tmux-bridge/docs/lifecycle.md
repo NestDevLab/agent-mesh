@@ -150,3 +150,11 @@ mutation deduplication, human waits, archive protection, supported/unsupported
 handoffs, native source failure and persisted-plan integrity. Host adapters,
 live runtime delivery, archive reviews and ledger decision polling require
 separate integration validation.
+
+`eventOutbox` optionally names the existing native follower root used by the
+beat. Acknowledgements and failures are projected there with stable event IDs
+through `agent-follow` under its lock. Per-run receipts remain the evidence; a
+retry recovers missing outbox events before deduplicating native attempts.
+Previously attempted observation fingerprints are filtered before selecting the
+next capped batch, so they cannot starve later candidates. Native event and human
+input identities, when present, distinguish new work from polling timestamps.

@@ -260,5 +260,33 @@ class LifecycleEngine(unittest.TestCase):
         self.assertEqual((BIN / 'agent-lifecycle.py').read_bytes(), (BIN.parents[2] / 'skills/agent-tmux/bin/agent-lifecycle.py').read_bytes())
 
 
+    def test_prior_attempts_are_filtered_before_the_batch_limit(self):
+        inventory = self.inventory([self.row(i) for i in range(1, 7)])
+        first = engine.build_plan(inventory, self.config)
+        second = engine.build_plan(inventory, self.config, [entry['fingerprint'] for entry in first['actions']])
+        self.assertEqual([entry['session'] for entry in second['actions']], [row['sessionId'] for row in inventory['sessions'][3:]])
+        self.assertEqual(second['counts']['keep-attempted'], 3)
+        changed = copy.deepcopy(inventory)
+        changed['sessions'][0]['lifecycle']['lastEventId'] = 'new-native-event'
+        self.assertNotEqual(engine.fingerprint(changed['sessions'][0]), first['actions'][0]['fingerprint'])
+
+    def test_action_outbox_recovers_acknowledgement_without_repeating_native_queue(self):
+        config = {**self.config, 'eventOutbox': str(self.root / 'follow')}
+        inventory = self.inventory()
+        plan = engine.build_plan(inventory, config)
+        with patch.object(engine, 'publish_outcomes', side_effect=engine.LifecycleError('interrupted after receipt')):
+            with self.assertRaises(engine.LifecycleError):
+                self.apply(inventory, config=config, plan=plan)
+        result = self.apply(inventory, config=config, plan=plan)
+        self.assertEqual(result[0]['status'], 'not-retried')
+        self.assertEqual(sum(isinstance(call[0], list) and call[0][0] == 'native' for call in self.calls), 1)
+        outbox = self.root / 'follow/outbox.jsonl'
+        rows = [json.loads(line) for line in outbox.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['kind'], 'LIFECYCLE')
+        self.assertEqual(rows[0]['payload']['status'], 'queued')
+        self.apply(inventory, config=config, plan=plan)
+        self.assertEqual(len(outbox.read_text().splitlines()), 1)
+
 if __name__ == '__main__':
     unittest.main()

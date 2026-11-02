@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -69,6 +70,8 @@ def validate_config(config):
     for key, value in config.items():
         if key.endswith('Command') and (not isinstance(value, list) or not value or any(not isinstance(arg, str) or not arg for arg in value)):
             raise LifecycleError('commands must be nonempty argv arrays')
+    if config.get('eventOutbox') is not None and (not isinstance(config['eventOutbox'], str) or not Path(config['eventOutbox']).expanduser().is_absolute()):
+        raise LifecycleError('eventOutbox must be an absolute native follower root')
     return config
 
 
@@ -169,7 +172,7 @@ def fingerprint(row):
     return digest({'session': row['sessionId'], 'cwd': row.get('cwd'), 'status': row.get('status'),
                    'attention': row.get('attention'), 'lifecycle': {key: life.get(key) for key in
                    ('turnId', 'turnActive', 'outcome', 'completion', 'completedAt', 'lastSpeaker',
-                    'lastEventKind', 'question', 'pendingQuestion', 'error', 'detail')}})
+                    'lastEventKind', 'lastEventId', 'lastHumanAt', 'question', 'pendingQuestion', 'error', 'detail')}})
 
 
 def classify(row, config, at):
@@ -233,8 +236,12 @@ def classify(row, config, at):
     return result
 
 
-def build_plan(inventory, config):
+def build_plan(inventory, config, attempted_fingerprints=()):
     entries = [classify(row, config, inventory['at']) for row in inventory['sessions']]
+    seen = set(attempted_fingerprints)
+    for entry in entries:
+        if entry['fingerprint'] in seen and entry['classification'] in ('resume-candidate', 'handoff-candidate'):
+            entry.update(classification='keep-attempted', reason='native attempt recorded; await a new observation')
     counts = dict(Counter(entry['classification'] for entry in entries))
     projects = dict(Counter(entry['project'] or 'unmapped' for entry in entries))
     selected = []
@@ -329,6 +336,44 @@ def attempted(run_dir, consumer):
     return result
 
 
+def publish_outcomes(config, records, run_dir):
+    """Project acknowledged actions into the existing replayable follow outbox."""
+    if not config.get('eventOutbox'):
+        return
+    module_path = BIN / 'agent-follow.py'
+    spec = importlib.util.spec_from_file_location('lifecycle_native_follow', module_path)
+    follow = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(follow)
+    candidates = []
+    for record in records:
+        if record.get('phase') not in ('acknowledgement', 'failure'):
+            continue
+        semantic = {key: record.get(key) for key in ('session', 'kind', 'fingerprint', 'phase', 'status', 'reason')}
+        payload = {**record, 'report': str((run_dir / 'report.md').resolve())}
+        candidates.append({'event_id': 'lifecycle:' + digest(semantic), 'ref': record['session'],
+                           'kind': 'LIFECYCLE', 'body': str(record.get('status') or ''),
+                           'timestamp': record.get('at'), 'payload': payload,
+                           'selection': {'mode': 'observe', 'label': 'lifecycle'}})
+    if candidates:
+        root = Path(config['eventOutbox']).expanduser()
+        try:
+            with follow.locked(root / 'state.lock'):
+                follow.append_outbox(root, candidates)
+        except (OSError, ValueError, RuntimeError):
+            raise LifecycleError('native action outbox unavailable; preserve receipts') from None
+
+
+def recover_outcomes(config, run_dir):
+    path = run_dir / 'actions.jsonl'
+    if not config.get('eventOutbox') or not path.exists():
+        return
+    try:
+        records = [json.loads(line) for line in path.read_text().splitlines()]
+    except (OSError, ValueError):
+        raise LifecycleError('action event recovery cannot read receipts') from None
+    publish_outcomes(config, records, run_dir)
+
+
 def resume_safe(config, session):
     info = query(config, 'resume', {'session': session})
     reasons = set(info.get('reasons', []))
@@ -410,6 +455,7 @@ def apply_plan(plan, inventory, config, run_dir):
     outcomes = []
     with locked(run_dir, plan['consumer']):
         seen = attempted(run_dir, plan['consumer'])
+        recover_outcomes(config, run_dir)
         # Refresh official native facts; an old persisted plan cannot authorize
         # queueing after a new question, completion, archive or observation.
         fresh = collect(config)
@@ -450,9 +496,11 @@ def apply_plan(plan, inventory, config, run_dir):
             except LifecycleError as error:
                 outcome = {**base, 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
                 append(run_dir / 'actions.jsonl', outcome)
+                publish_outcomes(config, [outcome], run_dir)
                 outcomes.append(outcome)
                 break
             append(run_dir / 'actions.jsonl', outcome)
+            publish_outcomes(config, [outcome], run_dir)
             outcomes.append(outcome)
     return outcomes
 
@@ -498,7 +546,7 @@ def main():
             if (args.run_dir / 'plan.json').exists():
                 raise LifecycleError('use a new run directory; persisted plans are immutable')
             inventory = collect(config, args.full)
-            plan = build_plan(inventory, config)
+            plan = build_plan(inventory, config, attempted(args.run_dir, config.get('consumer', 'lifecycle')))
             write(args.run_dir / 'inventory.json', inventory)
             write(args.run_dir / 'plan.json', plan)
             append(args.run_dir / 'actions.jsonl', {'at': now(), 'consumer': plan['consumer'], 'phase': 'planned', 'planDigest': plan['digest']})
