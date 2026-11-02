@@ -16,8 +16,9 @@ plan, without resuming work. `--full` requests an official full Mesh sweep;
 normal runs use its incremental cache. Neither operation migrates the graph.
 `apply` consumes the existing immutable plan, checks its digest, configuration
 and inventory binding, and requires explicit `--apply`. Use a new run directory
-for each observation. Apply can be repeated for recovery, but recorded attempts
-are never blindly repeated.
+for each observation. Apply can be repeated for recovery. Ambiguous recorded attempts are never
+blindly repeated; only explicit pre-delivery proof/capacity failures use the
+bounded retry policy described below.
 
 ## Host policy
 
@@ -35,6 +36,10 @@ Configuration is a private JSON object. No host policy is embedded here.
 | `selfRef` | Current native session identity, protected from intervention |
 | `maxResumes` | Total existing-thread resumes plus handoffs, integer 0–3; default 0 |
 | `maxArchives` | Accepted policy limit, but this version performs no archives |
+| `retryBaseSeconds` | Initial retry delay, positive integer seconds; default 300 |
+| `retryMaxSeconds` | Exponential delay ceiling, at least base; default 3600 |
+| `retryMaxAttempts` | Hard retry budget 0–10; default 3, zero disables retry |
+| `retryGuardCommand` | Optional private source/permission guard before a due retry |
 | `idleSeconds` | Minimum native inactivity, default 3600 |
 | `continuationPatterns` | Explicit continuation evidence for completed idle turns |
 | `humanWaitPatterns` | Human-wait evidence that blocks continuation |
@@ -156,8 +161,9 @@ worker to its original requested work and authoritative context, stopping at a
 human decision, production/external/irreversible action or changed scope.
 
 Before any native mutation, apply appends and fsyncs an attempt fingerprint.
-A launch/queue failure, timeout or crash after that marker prevents automatic
-retry of the same observation. It stops on the first action failure. Ambiguous
+An ambiguous launch/queue failure, timeout or crash after that marker prevents
+automatic retry of the same observation. Explicit safe retry exceptions follow
+the receipt-backed policy below. It stops on the first action failure. Ambiguous
 results need inspection, not a retry flag. The maximum of three includes both
 queue resumes and new child handoffs.
 
@@ -197,3 +203,69 @@ retired on completion or failure. Native tmux workers and lease monitors detach
 through the existing bridge transport. Each dispatch refreshes and reclassifies
 its original context after earlier actions and guard checks; a Claude handoff
 checks again after child launch, before delivering its continuation prompt.
+
+## Receipt-backed retryability and model capacity
+
+Retry state is derived from the existing sibling-run `actions.jsonl` receipts;
+there is no new store, scheduler, ledger or model call. New failure receipts can
+carry `retryable`, `retryClass`, `retryAttempt`, `nextRetryAt` and
+`retryExhausted`. Planning excludes unchanged attempts before batch selection,
+but a due safe retry becomes eligible after its exponential delay. Defaults
+are 300 seconds, doubling to a 3600-second maximum, with a hard budget of three.
+A zero retry budget disables retry. Every due retry still passes current
+source/classification, original-work-item, reset-window and native safety
+checks. Failure receipts preserve action start separately from actual failure-observed
+time; nextRetryAt starts at failure observation, so a long guard/sweep/launch
+cannot consume its own retry delay. Backoff/held metadata appears in plans/reports; it is not a claim that
+the work executed.
+
+Two capacity causes are deliberately distinguished:
+
+- A native lifecycle error explicitly identifying model overload, including the
+  known provider message `Selected model is at capacity`, is `model-capacity`.
+  Its stable native failure timestamp starts backoff, not a polling timestamp.
+  Model-capacity attempts share a receipt-backed hard budget by session and
+  attested work-item identity where available. Native subagents/automation,
+  protected roles and ownership exclusions retain their earlier classifications.
+  Missing trustworthy failure time is a source gap, not permission to retry.
+- Governed launcher exit 75 means the native capacity dispatcher already owns a
+  waiting job for the recorded target. A retry only reprobes/reuses that target;
+  it never submits another launch or drains the queue itself. The capacity
+  dispatcher remains responsible for admission. For an existing Codex queue,
+  retryability requires exit 75 plus explicit structured `waiting_capacity`,
+  `accepted: false`, and matching session/correlation identities. Generic
+  nonzero exits, absent acknowledgements or arbitrary capacity text are not
+  evidence that delivery was rejected safely.
+
+A failed new-child ownership proof is retryable only before prompt delivery.
+After backoff the engine reuses the recorded target and reruns the native
+`target-session --owned-cwd` proof. A recorded child identity must match; a
+missing target never authorizes replacement. Known legacy pre-delivery proof
+receipts can be recovered from their exact fixed reason and child-created
+marker, rather than becoming permanent failures after an upgrade.
+
+The engine now fsyncs a `delivery-attempt` before guarded child send. Any such
+attempt or accepted acknowledgement blocks automatic retry even if later
+lineage/reporting fails. A different observation cannot silently create another
+child for a session with a retained target; it becomes `keep-child-held` for
+explicit reconciliation. A crash after an unclassified mutation attempt stays
+held. These rules prevent child floods and duplicate queued work.
+
+An optional host `retryGuardCommand` receives `{session,target,retryClass}` on
+stdin. Only exit 0 with `{allow:true}` permits a due retry to continue. This guard
+also covers a newly observed model-capacity scope without any same-fingerprint
+receipt, using `retryClass: model-capacity`; a new scope cannot bypass private
+permission policy. Denials retain bounded backoff even before native mutation. Missing
+or unsupported source/permission proof can remain held by that private policy;
+for example an ownership helper blocked by EACCES must not be replaced with a
+new child or a privileged bypass. Repeated held probes consume the bounded
+retry budget. Native permission/ownership checks run again before any send.
+Raw stderr and provider payloads are never copied into generic retry reasons.
+
+Use the existing synthetic suite to verify proof recovery, target reuse,
+capacity ownership, exponential delay/caps, private permission holds, legacy
+receipts, model-error metadata and ambiguous delivery protection:
+
+```sh
+python3 packages/tmux-bridge/test/lifecycle-engine.test.py
+```

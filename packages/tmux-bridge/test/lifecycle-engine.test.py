@@ -42,6 +42,11 @@ class LifecycleEngine(unittest.TestCase):
         self.window = {'allow': True, 'reason': 'safe window'}
         self.preflight = 3
         self.target = None
+        self.proof_code = 0
+        self.launch_code = 0
+        self.send_code = 4
+        self.native_capacity = False
+        self.retry_permission = True
 
     def row(self, number=1, **changes):
         native = f'11111111-1111-4111-8111-{number:012d}'
@@ -74,6 +79,8 @@ class LifecycleEngine(unittest.TestCase):
             self.assertEqual(timeout_ms, 10000)
             self.assertEqual(payload, {'session': self.row()['sessionId']})
             return 0, json.dumps(self.work_item)
+        if argv[0] == 'retry-policy':
+            return 0, {'allow': self.retry_permission}
         if argv[0] == 'window':
             return 0, self.window
         if argv[0] == 'guard':
@@ -81,6 +88,9 @@ class LifecycleEngine(unittest.TestCase):
         if argv[0] == 'writers':
             return 0, {'agent': 'codex', 'sessionId': argv[argv.index('--session') + 1], 'writers': self.writers}
         if argv[0] == 'native':
+            if self.native_capacity:
+                return 75, {'status': 'waiting_capacity', 'accepted': False, 'sessionId': argv[argv.index('--session') + 1],
+                            'correlationId': argv[argv.index('--correlation-id') + 1]}
             if self.fail_delivery:
                 return 1, None
             return 0, {'status': 'queued', 'sessionId': argv[argv.index('--session') + 1],
@@ -88,12 +98,12 @@ class LifecycleEngine(unittest.TestCase):
         if argv[0] == 'session':
             if 'new' in argv:
                 self.target = argv[-1]
-                return 0, self.target
+                return self.launch_code, self.target
             if '--owned-cwd' in argv:
-                return 0, '22222222-2222-4222-8222-222222222222'
+                return self.proof_code, '22222222-2222-4222-8222-222222222222'
             return self.preflight, ''
         if argv[0] == 'send':
-            return 4, 'progress is deliberately ignored'
+            return self.send_code, 'progress is deliberately ignored'
         raise AssertionError(argv)
 
     def apply(self, inventory=None, config=None, run_dir=None, plan=None):
@@ -346,6 +356,154 @@ class LifecycleEngine(unittest.TestCase):
         self.assertTrue(inventory['complete'])
         with patch.object(engine, 'mesh', side_effect=engine.LifecycleError('source failure')), patch.object(engine, 'query', return_value={'sessions': [], 'cursor': None}):
             self.assertFalse(engine.collect(self.config)['complete'])
+
+    def handoff_fixture(self):
+        row = self.row(harness='claude')
+        row['sessionId'] = 'claude:' + row['nativeId']
+        return self.inventory([row]), {**self.config, 'handoffProfile': 'developer', 'limenConfig': 'fixture-policy.json'}
+
+    def test_known_handoff_proof_failure_backs_off_then_reuses_same_child(self):
+        inventory, config = self.handoff_fixture()
+        self.proof_code = 4
+        with patch.object(engine, 'now', return_value='2026-11-02T12:00:00Z'):
+            first = self.apply(inventory, config=config)
+        self.assertEqual(first[0]['retryClass'], 'handoff-proof')
+        self.assertEqual(first[0]['nextRetryAt'], '2026-11-02T12:05:00Z')
+        target = self.target
+        self.calls = []
+        with patch.object(engine, 'now', return_value='2026-11-02T12:04:59Z'):
+            self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'not-retried')
+        self.proof_code = 0
+        with patch.object(engine, 'now', return_value='2026-11-02T12:05:00Z'):
+            result = self.apply(inventory, config=config)
+        self.assertEqual(result[0]['status'], 'submitted')
+        self.assertEqual(result[0]['target'], target)
+        self.assertFalse(any(isinstance(call[0], list) and 'new' in call[0] for call in self.calls))
+
+    def test_capacity_dispatcher_keeps_ownership_of_pending_target_without_child_flood(self):
+        inventory, config = self.handoff_fixture()
+        self.launch_code = 75
+        with patch.object(engine, 'now', return_value='2026-11-02T12:00:00Z'):
+            first = self.apply(inventory, config=config)
+        self.assertEqual(first[0]['retryClass'], 'capacity')
+        self.calls = []
+        self.proof_code = 3
+        with patch.object(engine, 'now', return_value='2026-11-02T12:05:00Z'):
+            second = self.apply(inventory, config=config)
+        self.assertEqual(second[0]['retryAttempt'], 2)
+        self.assertEqual(second[0]['nextRetryAt'], '2026-11-02T12:15:00Z')
+        self.assertFalse(any(isinstance(call[0], list) and 'new' in call[0] for call in self.calls))
+        self.proof_code = 0
+        with patch.object(engine, 'now', return_value='2026-11-02T12:15:00Z'):
+            self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'submitted')
+
+    def test_explicit_queue_capacity_rejection_is_retryable_but_ambiguous_failure_is_not(self):
+        inventory = self.inventory()
+        self.native_capacity = True
+        with patch.object(engine, 'now', return_value='2026-11-02T12:00:00Z'):
+            result = self.apply(inventory)
+        self.assertTrue(result[0]['retryable'])
+        self.native_capacity = False
+        with patch.object(engine, 'now', return_value='2026-11-02T12:05:00Z'):
+            self.assertEqual(self.apply(inventory)[0]['status'], 'queued')
+
+    def test_private_permission_hold_and_hard_cap_never_launch_new_children(self):
+        inventory, config = self.handoff_fixture()
+        config.update(retryMaxAttempts=2, retryGuardCommand=['retry-policy'])
+        self.proof_code = 4
+        with patch.object(engine, 'now', return_value='2026-11-02T12:00:00Z'):
+            self.apply(inventory, config=config)
+        self.retry_permission = False
+        self.calls = []
+        with patch.object(engine, 'now', return_value='2026-11-02T12:05:00Z'):
+            held = self.apply(inventory, config=config)
+        self.assertTrue(held[0]['retryExhausted'])
+        self.assertIn('private', held[0]['reason'])
+        with patch.object(engine, 'now', return_value='2026-11-03T12:00:00Z'):
+            self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'not-retried')
+        self.assertFalse(any(isinstance(call[0], list) and 'new' in call[0] for call in self.calls))
+
+    def test_ambiguous_child_send_is_held_and_new_observation_cannot_create_another_child(self):
+        inventory, config = self.handoff_fixture()
+        self.send_code = 1
+        first = self.apply(inventory, config=config)
+        self.assertNotIn('retryable', first[0])
+        self.calls = []
+        self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'not-retried')
+        changed = copy.deepcopy(inventory)
+        changed['sessions'][0]['lifecycle']['lastEventId'] = 'new-observation'
+        history = engine.receipt_history(self.run_dir, config['consumer'])
+        plan = engine.build_plan(changed, config, (), history)
+        self.assertEqual(plan['entries'][0]['classification'], 'keep-child-held')
+        self.assertEqual(plan['actions'], [])
+
+    def test_model_capacity_fact_backoff_and_budget_do_not_reclassify_noise(self):
+        row = self.row()
+        row['lifecycle'].update(error={'message': 'Selected model is at capacity'}, outcome='error',
+                                completedAt='2026-11-02T12:00:00Z')
+        inventory = self.inventory([row], at='2026-11-02T12:01:00Z')
+        waiting = engine.build_plan(inventory, self.config)
+        self.assertEqual(waiting['entries'][0]['classification'], 'keep-retry-backoff')
+        self.assertEqual(waiting['entries'][0]['retryability']['retryClass'], 'model-capacity')
+        inventory['at'] = '2026-11-02T13:00:00Z'
+        due = engine.build_plan(inventory, self.config)
+        self.assertEqual(len(due['actions']), 1)
+        scope = due['actions'][0]['modelCapacityScope']
+        history = [{'phase': 'attempt', 'modelCapacityScope': scope} for _ in range(3)]
+        held = engine.build_plan(inventory, self.config, (), history)
+        self.assertEqual(held['entries'][0]['classification'], 'keep-retry-held')
+        row['origin'] = 'subagent'
+        noise = engine.build_plan(self.inventory([row]), self.config)
+        self.assertEqual(noise['entries'][0]['classification'], 'keep-noise')
+        self.assertNotIn('retryability', noise['entries'][0])
+
+    def test_legacy_known_pre_delivery_proof_failure_is_recoverable_but_delivery_is_not(self):
+        base = {'fingerprint': 'same', 'session': self.row()['sessionId'], 'consumer': 'fixture', 'at': '2026-11-02T12:00:00Z'}
+        records = [{**base, 'phase': 'attempt', 'target': 'lifecycle-existing'},
+                   {**base, 'phase': 'child-created', 'target': 'lifecycle-existing'},
+                   {**base, 'phase': 'failure', 'reason': 'new child ownership or native identity unavailable'}]
+        state = engine.retry_states(records)['same']
+        self.assertTrue(engine.retry_ready(state, self.config, '2026-11-02T12:05:00Z'))
+        records.insert(2, {**base, 'phase': 'delivery-attempt'})
+        self.assertFalse(engine.retry_ready(engine.retry_states(records)['same'], self.config, '2026-11-02T12:05:00Z'))
+
+    def test_new_model_capacity_scope_cannot_bypass_private_retry_guard(self):
+        row = self.row()
+        row['lifecycle'].update(error={'message': 'Selected model is at capacity'}, outcome='error',
+                                completedAt='2026-11-02T12:00:00Z')
+        inventory = self.inventory([row], at='2026-11-02T13:00:00Z')
+        config = {**self.config, 'retryGuardCommand': ['retry-policy']}
+        self.retry_permission = False
+        with patch.object(engine, 'now', return_value='2026-11-02T13:00:00Z'):
+            result = self.apply(inventory, config=config)
+        self.assertEqual(result[0]['retryClass'], 'model-capacity')
+        self.assertIn('private', result[0]['reason'])
+        guards = [call[1] for call in self.calls if isinstance(call[0], list) and call[0][0] == 'retry-policy']
+        self.assertEqual(guards, [{'session': row['sessionId'], 'target': None, 'retryClass': 'model-capacity'}])
+        self.assertFalse(any(isinstance(call[0], list) and call[0][0] in ('native', 'session', 'send') for call in self.calls))
+        with patch.object(engine, 'now', return_value='2026-11-02T13:00:01Z'):
+            self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'not-retried')
+
+    def test_long_launch_failure_backoff_starts_when_failure_is_observed(self):
+        inventory, config = self.handoff_fixture()
+        clock = {'at': '2026-11-02T12:00:00Z'}
+        self.launch_code = 75
+        runner = self.runner
+        def delayed(argv, payload=None, **kwargs):
+            result = runner(argv, payload, **kwargs)
+            if argv[0] == 'session' and 'new' in argv:
+                clock['at'] = '2026-11-02T12:20:00Z'
+            return result
+        with patch.object(engine, 'now', side_effect=lambda: clock['at']), patch.object(engine, 'collect', return_value=inventory), \
+             patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'run', side_effect=delayed):
+            plan = engine.build_plan(inventory, config)
+            result = engine.apply_plan(plan, inventory, config, self.run_dir)
+        failure = result[0]
+        self.assertEqual(failure['actionStartedAt'], '2026-11-02T12:00:00Z')
+        self.assertEqual(failure['failureObservedAt'], '2026-11-02T12:20:00Z')
+        self.assertEqual(failure['at'], failure['failureObservedAt'])
+        self.assertEqual(failure['nextRetryAt'], '2026-11-02T12:25:00Z')
+        self.assertIn(plan['actions'][0]['fingerprint'], engine.attempted(self.run_dir, config['consumer'], config, '2026-11-02T12:20:01Z'))
 
     def test_run_artifacts_have_restrictive_modes(self):
         path = self.run_dir / 'plan.json'
