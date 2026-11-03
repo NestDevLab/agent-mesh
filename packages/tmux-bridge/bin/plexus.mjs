@@ -57,9 +57,22 @@ export function applyPlexusEvent(state, item) {
       if (!state.roleClaims) state.roleClaims = new Map();
       if (item.previous) state.roleClaims.set(item.previous.id, item.previous);
       state.roleClaims.set(item.claim.id, item.claim);
-      for (const node of item.nodes) state.nodes.set(node.id, node);
-      for (const link of item.links) state.links.set(link.id, link);
-      for (const edge of item.edges) state.edges.set(edge.id, edge);
+      for (const node of item.nodes) {
+        const previous = state.nodes.get(node.id);
+        const id = sessionIdOf(node);
+        if (id) effects.push({ kind: "session.updated", session: id, lastKnown: previous ? { cwd: previous.cwd, domains: previous.domains, harness: previous.agent } : null });
+        state.nodes.set(node.id, node);
+      }
+      for (const link of item.links) {
+        const prior = state.links.get(link.id);
+        state.links.set(link.id, link);
+        if (link.until !== null && prior?.until === null) effects.push({ kind: "link.ended", link });
+        else if (link.until === null) effects.push({ kind: "link.added", link });
+      }
+      for (const edge of item.edges) {
+        state.edges.set(edge.id, edge);
+        effects.push({ kind: edge.endedAt ? "edge.ended" : "edge.added", edge });
+      }
       break;
     case "link.opened":
       validateLink(item.link);
@@ -645,9 +658,11 @@ function feedFor(state, seen, item) {
     if (effect.kind === "link.added" || effect.kind === "link.ended") {
       if (effect.link.session.startsWith("pending:")) continue;
       out.push({ type: effect.kind === "link.added" ? "edge.added" : "edge.ended", edgeId: effect.link.id, kind: effect.link.role, from: effect.link.session, to: effect.link.ref, ref: effect.link.ref, subject: effect.link.id });
-    } else if (effect.kind === "edge.ended") {
+    } else if (effect.kind === "session.updated") {
+      out.push({ type: "session.updated", session: effect.session, subject: effect.session, lastKnown: effect.lastKnown });
+    } else if (effect.kind === "edge.ended" || effect.kind === "edge.added") {
       const from = sessionIdOf(state.nodes.get(effect.edge.from)), to = sessionIdOf(state.nodes.get(effect.edge.to));
-      if (from && to) out.push({ type: "edge.ended", edgeId: effect.edge.id, kind: effect.edge.type, from, to, subject: effect.edge.id });
+      if (from && to) out.push({ type: effect.kind, edgeId: effect.edge.id, kind: effect.edge.type, from, to, subject: effect.edge.id });
     } else if (effect.kind === "session.renewed") {
       out.push({ type: "session.renewed", from: effect.from, to: effect.to, subject: effect.to });
     }

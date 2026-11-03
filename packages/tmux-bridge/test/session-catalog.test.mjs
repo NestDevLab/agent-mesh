@@ -89,3 +89,29 @@ test('stale claims require named takeover, expired heartbeat fails, daily and ho
   assert.throws(()=>roleOperation({...graph,roleClaims:[c]},'claim',{session:b,role,project:'other'},ev),/role held/);
  }
 });
+
+test('purged holders can be taken over; one session cannot silently hold multiple roles', () => fixture(async state => {
+ const first=(await ok(state,...claim(a))).claim;
+ assert.notEqual((await run(state,'role','claim','--session',a,'--role','daily','--project','example')).code,0);
+ const old=(await ok(state,'show')).nodes.find(n=>n.agent==='claude');
+ await ok(state,'purge','--id',old.id);
+ await ok(state,...claim(b,'--take-over',first.id,'--reason','Holder purged'));
+ await rm(join(state,'checkpoint.json'));
+ assert.equal((await ok(state,'role','list')).claims.filter(c=>c.status==='active').length,1);
+}));
+
+test('compound takeover invalidates scoped sessions and relationships and replays identical event IDs', () => fixture(async state => {
+ const first=(await ok(state,...claim(a))).claim;
+ await ok(state,'link','open','--agent','claude','--runtime-uuid',a.split(':')[1],'--ref','work:example/1');
+ const baseline=await ok(state,'query','changes','--input','{}');
+ await ok(state,...claim(b,'--take-over',first.id,'--reason','Handoff'));
+ const scope={refPrefixes:['work:example/'],targets:[{id:'example',harness:'claude',roots:['/work/example']},{id:'example-codex',harness:'codex',roots:['/work/example']}],handleKey:'test-key-01234567890123456789'};
+ const q={cursor:baseline.cursor,scope};
+ const changes=await ok(state,'query','changes','--input',JSON.stringify(q));
+ assert.ok(changes.events.some(e=>e.type==='session.updated' && e.session===a));
+ assert.ok(changes.events.some(e=>e.type==='edge.ended'));
+ assert.ok(changes.events.some(e=>e.type==='edge.added'));
+ assert.deepEqual(changes, await ok(state,'query','changes','--input',JSON.stringify(q)));
+ const hidden=await ok(state,'query','changes','--input',JSON.stringify({...q,scope:{...scope,targets:[]}}));
+ assert.equal(hidden.events.length,0);
+}));

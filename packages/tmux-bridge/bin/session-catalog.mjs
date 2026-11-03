@@ -74,7 +74,7 @@ export function roleOperation(graph, operation, options, makeEvent) {
   const ttl = Number(options.ttl ?? DEFAULT_TTL);
   if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > 86400) throw new Error('ttl must be 1..86400 seconds');
   if (['heartbeat','release','check'].includes(operation)) {
-    if (nodes.some(n => n.catalogStatus === 'superseded') || !active || active.session !== session || active.id !== options['claim-id'] || claimState(active) !== 'active') throw new Error(`claim fenced or expired; current holder: ${active?.session || 'none'} claim: ${active?.id || 'none'}`);
+    if (nodes.some(n => n.catalogStatus === 'superseded') || !active || active.session !== session || active.id !== options['claim-id'] || (operation !== 'release' && claimState(active) !== 'active')) throw new Error(`claim fenced or expired; current holder: ${active?.session || 'none'} claim: ${active?.id || 'none'}`);
     if (operation === 'check') return { events: [], result: { claim: active, valid: true } };
     const claim = { ...active, ...(operation === 'release' ? { status: 'released', releasedAt: at } : { heartbeatAt: at, expiresAt: new Date(Date.now() + active.ttl * 1000).toISOString() }) };
     return { events: [makeEvent('role.changed', { claim, nodes: [], links: [], edges: [] })], result: { claim, changed: true } };
@@ -86,11 +86,12 @@ export function roleOperation(graph, operation, options, makeEvent) {
     if (options['take-over'] !== active.id) throw new Error(`role held by ${active.session} claim ${active.id} (${claimState(active)}); explicit --take-over ${active.id} required`);
     text(options.reason, 'takeover reason');
   } else if (options['take-over']) throw new Error('takeover claim is no longer current');
+  if ((graph.roleClaims || []).some(c => c.session === session && c.status === 'active' && c.key !== key)) throw new Error('session already holds another role; release it before changing role or project');
   const claim = { id: `claim-${randomUUID()}`, key, role, project, session, status: 'active', ttl, claimedAt: at, heartbeatAt: at, expiresAt: new Date(Date.now() + ttl * 1000).toISOString(), ...(active ? { predecessor: active.id, reason: options.reason } : {}) };
   const replacements = nodes.map(n => ({ ...n, catalogRole: role, catalogProject: project, catalogStatus: 'active', updatedAt: at }));
   const links = [], edges = [];
   if (active && active.session !== session) {
-    const oldNodes = members(graph, active.session);
+    const oldNodes = graph.nodes.filter(n => sessionIdOf(n) === active.session);
     const oldIds = new Set(oldNodes.map(n => n.id));
     replacements.push(...oldNodes.map(n => ({ ...n, catalogStatus: 'superseded', supersededBy: session, updatedAt: at })));
     for (const link of graph.links || []) if (link.session === active.session && link.until === null) {
