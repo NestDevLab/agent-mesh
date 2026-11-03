@@ -42,6 +42,7 @@ class ArchiveProtocol(unittest.TestCase):
         self.ambiguous_apply = None
         self.bad_review = False
         self.verdict = 'PASS'
+        self.attestation = True
 
     def ref(self, number):
         return f'codex:11111111-1111-4111-8111-{number:012d}'
@@ -72,6 +73,7 @@ class ArchiveProtocol(unittest.TestCase):
             if ref in self.prepare_skips:
                 return 0, {'status': 'skipped', 'reasonCode': 'writer_live'}
             return 0, {'status': 'eligible', 'session': ref, 'fingerprint': payload['fingerprint'],
+                       **({'obligationsChecked': self.attestation} if self.attestation is not None else {}),
                        'summary': self.artifact(ref + '-summary', {'durable': 'fixture'}),
                        'evidence': self.artifact(ref + '-evidence', {'eligibility': 'fixture'})}
         if argv == ['review']:
@@ -209,7 +211,7 @@ class ArchiveProtocol(unittest.TestCase):
         row['lifecycle']['pendingQuestion'] = True
         self.assertEqual(engine.archive_guard(row, inventory, self.config), 'human_wait_or_unknown')
 
-    def test_claude_unsupported_and_missing_coverage_stay_skipped(self):
+    def test_claude_unsupported_and_unconfigured_coverage_gap_stay_skipped(self):
         inventory = self.inventory()
         row = inventory['sessions'][0]
         row.update(harness='claude', sessionId=row['sessionId'].replace('codex:', 'claude:'))
@@ -219,7 +221,7 @@ class ArchiveProtocol(unittest.TestCase):
         self.assertEqual(self.apply(plan, inventory), [])
         self.assertFalse(self.calls)
         inventory['linkCoverage'] = False
-        self.assertEqual(engine.archive_guard(row, inventory, self.config), 'source_coverage_unproven')
+        self.assertEqual(engine.archive_guard(row, inventory, {**self.config, 'maxArchives': 0}), 'source_coverage_unproven')
 
     def test_prepare_pool_and_config_hard_limits(self):
         self.config['archivePrepareLimit'] = 2
@@ -326,6 +328,76 @@ class ArchiveProtocol(unittest.TestCase):
                    {'kind': 'archive', 'session': self.ref(1), 'phase': 'preparation-skipped', 'reasonCode': 'writer_live'},
                    {'kind': 'archive', 'session': self.ref(1), 'phase': 'skipped', 'planDigest': 'new', 'actionDigest': 'different'}]
         self.assertTrue(engine.archive_module().history(records)[self.ref(1)]['unresolved'])
+
+    def test_global_projection_gap_allows_attested_canonical_per_thread_gate(self):
+        inventory = self.inventory()
+        inventory['linkCoverage'] = False
+        plan = self.prepare(inventory)
+        self.assertEqual(plan['archive']['status'], 'ready')
+        self.assertEqual(plan['archive']['prepareCalls'], 1)
+        action = plan['actions'][0]
+        self.assertIs(action['obligationsChecked'], True)
+        without = {key: value for key, value in action.items() if key not in ('actionDigest', 'obligationsChecked')}
+        self.assertNotEqual(engine.digest(without), action['actionDigest'])
+        self.assertFalse(inventory['linkCoverage'])
+        self.assertTrue(any('link coverage incomplete' in gap for gap in plan['sourceGaps']))
+        result = self.apply(plan, inventory)
+        self.assertEqual(result[0]['status'], 'archived')
+        self.assertEqual([c[0] for c in self.calls], ['prepare', 'review', 'apply'])
+        frozen = json.loads((self.run_dir / 'plan.json').read_text())
+        self.assertIs(frozen['actions'][0]['obligationsChecked'], True)
+        self.assertFalse(json.loads((self.run_dir / 'inventory.json').read_text())['linkCoverage'])
+
+    def test_missing_or_false_obligation_attestation_is_protocol_stop(self):
+        inventory = self.inventory()
+        inventory['linkCoverage'] = False
+        for index, attestation in enumerate((None, False, 1, 'true')):
+            with self.subTest(attestation=attestation):
+                self.attestation = attestation
+                self.run_dir = self.root / 'runs' / ('invalid-proof-' + str(index))
+                self.run_dir.mkdir()
+                plan = self.prepare(inventory)
+                self.assertEqual(plan['archive']['status'], 'technical-error')
+                self.assertIn('attestation required', plan['archive']['reason'])
+                self.assertEqual(plan['actions'], [])
+                with self.assertRaises(engine.LifecycleError):
+                    self.apply(plan, inventory)
+        self.assertTrue(all(call[0] == 'prepare' for call in self.calls))
+
+    def test_incomplete_native_inventory_stops_before_prepare_hook(self):
+        inventory = self.inventory()
+        inventory.update(complete=False, linkCoverage=False, errors=['synthetic native failure'])
+        plan = self.prepare(inventory)
+        self.assertEqual(plan['archive']['status'], 'technical-error')
+        self.assertIn('native inventory incomplete', plan['archive']['reason'])
+        self.assertEqual(plan['archive']['prepareCalls'], 0)
+        self.assertFalse(self.calls)
+        with self.assertRaises(engine.LifecycleError):
+            self.apply(plan, inventory)
+
+    def test_projection_gap_never_relaxes_hard_protection(self):
+        inventory = self.inventory()
+        row = inventory['sessions'][0]
+        cases = [(self.config, {'lifecycle': {**row['lifecycle'], 'pendingQuestion': True}}),
+                 ({**self.config, 'selfRef': row['sessionId']}, {}),
+                 ({**self.config, 'excludeRefs': [row['sessionId']]}, {}),
+                 ({**self.config, 'permanentRefs': [row['sessionId']]}, {}),
+                 (self.config, {'class': 'orchestrator'})]
+        for config, changes in cases:
+            candidate = {**row, **changes}
+            expected = engine.archive_guard(candidate, inventory, config)
+            self.assertIsNotNone(expected)
+            self.assertEqual(engine.archive_guard(candidate, {**inventory, 'linkCoverage': False}, config), expected)
+
+    def test_no_canonical_hook_keeps_projection_gap_report_only(self):
+        inventory = self.inventory()
+        inventory['linkCoverage'] = False
+        del self.config['archivePrepareCommand']
+        plan = self.prepare(inventory)
+        self.assertEqual(plan['archive']['status'], 'report-only')
+        self.assertEqual(plan['actions'], [])
+        self.assertFalse(self.calls)
+        self.assertEqual(engine.archive_guard(inventory['sessions'][0], inventory, self.config), 'source_coverage_unproven')
 
     def test_source_error_before_mutation_stops(self):
         inventory = self.inventory(2)

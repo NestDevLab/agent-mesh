@@ -111,13 +111,14 @@ outcome or an unfinished quiet/blocked native turn can justify continuation.
 An idle completed task needs an explicit continuation pattern. Classification
 uses native facts and host patterns, without a model pass over the inventory.
 
-Completed work can become an archive proposal, but incomplete native history
-or ledger link coverage cannot prove archive eligibility. This initial engine
-performs **zero archives** even if `maxArchives` is positive. Actual archiving
-requires a separately supported adapter, a durable summary gate and independent
-AI PASS review bound to the exact persisted plan digest. The reviewer must be
-different from the acting session. Supplying an unrelated review receipt does
-not enable archiving in this version. No stop/kill operation is implemented.
+Completed work can become an archive proposal. Actual archiving requires the
+configured canonical per-thread adapter, durable summary and obligation proof,
+and independent AI review bound to the exact persisted plan/action digests.
+An incomplete global ledger-link projection cannot prove absence of obligations;
+it remains a reported gap. With no configured canonical hooks, archives remain
+report-only. The per-thread protocol below requires individual authoritative
+proof rather than treating that global projection gap as archive permission.
+No stop/kill operation is implemented.
 
 ## Applying operative continuation
 
@@ -302,7 +303,7 @@ private eligibility or parse transcripts.
 `archivePrepareCommand` receives `{session,fingerprint,runDir}`. Return:
 
 - `{status:"skipped",reasonCode}` for canonical semantic refusal.
-- `{status:"eligible",session,fingerprint,summary,evidence}` for a prepared action.
+- `{status:"eligible",session,fingerprint,obligationsChecked:true,summary,evidence}` for a prepared action.
   `summary` and `evidence` are `{path,sha256}` descriptors of existing regular
   files with absolute paths. The engine hashes their bytes and binds both to the
   action digest. The adapter owns durable-summary readback, exact history,
@@ -342,8 +343,24 @@ explicit exclusions, permanent catalog refs/prefixes, orchestrator/current role,
 current human waits, excluded-topic policy or unknown native facts. New content
 requires a fresh observation-bound approval. Codex is the only supported native
 archive harness; nominated Claude threads are reported `unsupported_harness`.
-Full history, local sources and graph link coverage must be proven. Missing
-migration/coverage remains a skip, not archive permission.
+Complete native inventory, full history and local sources remain mandatory.
+A global `linkCoverage:false` stays visible as a projection gap; configured
+canonical hooks can still check authoritative per-thread obligations. Every
+eligible response must attest `obligationsChecked:true` (literal boolean), bound
+into the action digest alongside the evidence file hash. Missing/false
+attestation is a technical protocol error. Native inventory incompleteness stops
+the archive batch before any prepare hook, regardless of global coverage.
+
+The canonical host adapter must resolve both modern and legacy graph references
+using official Mesh APIs, native history and authoritative ledger backlinks,
+then apply the existing recursive canonical obligation guard. Unknown/opaque
+refs or unresolved identities are semantic SKIPs; tool/schema errors stop the
+batch. Hash-bound evidence must prove the individual obligation inventory was
+complete, even while the global projection remains incomplete. The independent
+reviewer must verify this evidence for each per-action PASS. Before mutation the
+apply adapter must reread both current graph references and ledger proof as well
+as its canonical guard; a native fingerprint alone does not cover changed links.
+No global coverage flag is changed or migration inferred by these checks.
 
 Archive attempt markers are fsynced into the existing `actions.jsonl` **before**
 the native adapter. Confirmed success receipts and semantic skips use that same

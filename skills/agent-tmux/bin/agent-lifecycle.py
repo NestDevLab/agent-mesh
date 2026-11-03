@@ -332,7 +332,10 @@ def classify(row, config, at):
 
 def archive_guard(row, inventory, config):
     """Hard protections apply even to observation-bound temporary approvals."""
-    if not inventory.get('complete') or inventory.get('linkCoverage') is not True:
+    if inventory.get('complete') is not True:
+        return 'native_inventory_incomplete'
+    canonical = config.get('maxArchives', 0) > 0 and all(config.get(name) for name in ('archivePrepareCommand', 'archiveReviewCommand', 'archiveApplyCommand'))
+    if inventory.get('linkCoverage') is not True and not canonical:
         return 'source_coverage_unproven'
     if row is None:
         return 'native_session_missing'
@@ -425,7 +428,7 @@ def build_plan(inventory, config, attempted_fingerprints=(), retry_records=()):
                     entry['classification'] == 'handoff-candidate' and config.get('handoffProfile') == 'developer' and config.get('limenConfig')][:config.get('maxResumes', 0)]
     gaps = list(inventory['errors'])
     if inventory['linkCoverage'] is not True:
-        gaps.append('ledger link coverage incomplete; archive eligibility not proven')
+        gaps.append('ledger link coverage incomplete; canonical per-thread obligation proof required for archives')
     if not config.get('resumeWindowCommand'):
         gaps.append('resume window guard unavailable; apply will block resumes')
     result = {'schema': 'agent-mesh.lifecycle-plan.v1', 'at': inventory['at'], 'consumer': config.get('consumer', 'lifecycle'),

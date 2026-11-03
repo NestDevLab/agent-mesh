@@ -74,6 +74,10 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
     if not enabled:
         plan['digest'] = api.digest({key: value for key, value in plan.items() if key != 'digest'})
         return plan
+    if inventory.get('complete') is not True:
+        batch.update(status='technical-error', reason='native inventory incomplete; archive preparation stopped')
+        plan['digest'] = api.digest({key: value for key, value in plan.items() if key != 'digest'})
+        return plan
     previous = history(history_records)
     rows = {row['sessionId']: row for row in inventory['sessions']}
     entries = {entry['session']: entry for entry in plan['entries']}
@@ -117,7 +121,9 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
                 continue
             if data.get('status') != 'eligible' or data.get('session') != session or data.get('fingerprint') != fingerprint:
                 raise api.Error('archive preparation failed or identity mismatch')
-            action = {'kind': 'archive', 'session': session, 'fingerprint': fingerprint,
+            if data.get('obligationsChecked') is not True:
+                raise api.Error('canonical per-thread obligation attestation required')
+            action = {'kind': 'archive', 'session': session, 'fingerprint': fingerprint, 'obligationsChecked': True,
                       'summary': artifact(data.get('summary'), api), 'evidence': artifact(data.get('evidence'), api)}
             action['actionDigest'] = api.digest(action)
             batch['prepared'].append(action)
@@ -137,6 +143,8 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
 
 
 def review(plan, config, run_dir, api):
+    if any(action.get('obligationsChecked') is not True for action in plan['actions'] if action.get('kind') == 'archive'):
+        raise api.Error('archive review requires canonical per-thread obligation attestation')
     actor = config.get('selfRef')
     if not isinstance(actor, str) or not SESSION.fullmatch(actor):
         raise api.Error('archive actor identity required for independent review')
@@ -195,6 +203,10 @@ def review(plan, config, run_dir, api):
 
 def apply_action(action, plan, inventory, config, run_dir, reviewed, base, api):
     """Fresh guard and hashes immediately before the private canonical adapter."""
+    if inventory.get('complete') is not True:
+        raise api.Error('fresh native inventory incomplete; archive stopped')
+    if action.get('obligationsChecked') is not True:
+        raise api.Error('canonical per-thread obligation attestation required')
     refusal = api.archive_guard(next((row for row in inventory['sessions'] if row['sessionId'] == action['session']), None), inventory, config)
     if refusal:
         return {'status': 'skipped', 'reasonCode': refusal}
