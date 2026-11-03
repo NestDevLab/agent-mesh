@@ -106,8 +106,10 @@ test('compound takeover invalidates scoped sessions and relationships and replay
  const baseline=await ok(state,'query','changes','--input','{}');
  await ok(state,...claim(b,'--take-over',first.id,'--reason','Handoff'));
  const scope={refPrefixes:['work:example/'],targets:[{id:'example',harness:'claude',roots:['/work/example']},{id:'example-codex',harness:'codex',roots:['/work/example']}],handleKey:'test-key-01234567890123456789'};
- const q={cursor:baseline.cursor,scope};
+ const q={sinceCursor:baseline.cursor,scope};
  const changes=await ok(state,'query','changes','--input',JSON.stringify(q));
+ assert.ok(changes.events.length > 0);
+ assert.ok(changes.events.every(e=>e.type !== 'session.created'));
  assert.ok(changes.events.some(e=>e.type==='session.updated' && e.session===a));
  assert.ok(changes.events.some(e=>e.type==='edge.ended'));
  assert.ok(changes.events.some(e=>e.type==='edge.added'));
@@ -123,4 +125,28 @@ test('role run checks the exact lease and holds the graph lock across the writer
  assert.equal(guarded.claim,first.id); assert.match(guarded.pid,/^\d+$/);
  await ok(state,...claim(b,'--take-over',first.id,'--reason','New writer'));
  assert.notEqual((await run(state,...action('run',a,first.id),'--input',payload)).code,0);
+}));
+
+
+test('guarded writer is killed at lease expiry even when SIGTERM is ignored', () => fixture(async state => {
+ const first=(await ok(state,...claim(a,'--ttl','1'))).claim;
+ const output=join(state,'late-write');
+ const code=`process.on('SIGTERM',()=>{});setTimeout(()=>require('fs').writeFileSync(process.argv[1],'late'),1500);setTimeout(()=>{},10000)`;
+ const started=Date.now();
+ const result=await run(state,...action('run',a,first.id),'--input',JSON.stringify({argv:[process.execPath,'-e',code,output]}));
+ assert.notEqual(result.code,0); assert.ok(Date.now()-started<1400);
+ await new Promise(resolve=>setTimeout(resolve,700));
+ await assert.rejects(readFile(output));
+}));
+
+test('concurrent takeover waits for the guarded writer to finish', () => fixture(async state => {
+ const first=(await ok(state,...claim(a))).claim;
+ const marker=join(state,'running');
+ const script=`require('fs').writeFileSync(process.argv[1],'started');setTimeout(()=>{console.log(JSON.stringify({finished:Date.now()}))},500)`;
+ const writer=run(state,...action('run',a,first.id),'--input',JSON.stringify({argv:[process.execPath,'-e',script,marker]}));
+ for(let tries=0;tries<100;tries++){try{await readFile(marker);break;}catch{await new Promise(r=>setTimeout(r,10));}}
+ const takeover=ok(state,...claim(b,'--take-over',first.id,'--reason','Concurrent handoff'));
+ const [written,taken]=await Promise.all([writer,takeover]);
+ assert.equal(written.code,0,written.error);
+ assert.ok(Date.parse(taken.claim.claimedAt)>=written.data.finished);
 }));

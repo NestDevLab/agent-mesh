@@ -27,7 +27,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import * as plexus from "./plexus.mjs";
@@ -137,11 +137,14 @@ try {
         const input = JSON.parse(values.input === "-" ? readFileSync(0, "utf8") : values.input || "{}");
         if (!Array.isArray(input.argv) || !input.argv.length || input.argv.some(v => typeof v !== "string" || v.includes("\0")) || (input.stdin !== undefined && typeof input.stdin !== "string")) throw new Error("role run needs argv strings and optional stdin text");
         ensureStateDir(stateDir);
-        const result = withLock(stateDir, () => {
-          roleOperation(loadGraph(stateDir), "check", values, event);
-          return spawnSync(input.argv[0], input.argv.slice(1), { encoding: "utf8", input: input.stdin || "", timeout: 30000, maxBuffer: 16 * 1024 * 1024,
-            env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: values["claim-id"] } });
-        });
+        const release = acquireLock(stateDir);
+        let result;
+        try {
+          const checked = roleOperation(loadGraph(stateDir), "check", values, event).result.claim;
+          const budget = Math.min(30000, Date.parse(checked.expiresAt) - Date.now());
+          if (budget <= 0) throw new Error("claim expired before guarded execution");
+          result = await runGuardedChild(input, values["claim-id"], budget);
+        } finally { release(); }
         if (result.stdout) process.stdout.write(result.stdout);
         if (result.stderr) process.stderr.write(result.stderr);
         if (result.error) throw result.error;
@@ -1234,7 +1237,7 @@ function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
 }
 
-function withLock(statePath, callback) {
+function acquireLock(statePath) {
   const lock = join(statePath, "graph.lock");
   const deadline = Date.now() + 5_000;
   while (true) {
@@ -1252,11 +1255,37 @@ function withLock(statePath, callback) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
-  try {
-    return callback();
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
+  return () => rmSync(lock, { recursive: true, force: true });
+}
+
+function withLock(statePath, callback) {
+  const release = acquireLock(statePath);
+  try { return callback(); } finally { release(); }
+}
+
+function runGuardedChild(input, claimId, budget) {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(input.argv[0], input.argv.slice(1), { detached: true, stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: claimId } });
+    let stdout = "", stderr = "", timedOut = false, failed = false;
+    const killGroup = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; } } };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, budget);
+    const output = (channel, data) => {
+      if (channel === "stdout") stdout += data; else stderr += data;
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 16 * 1024 * 1024) { failed = true; killGroup(); }
+    };
+    child.stdout.on("data", data => output("stdout", data));
+    child.stderr.on("data", data => output("stderr", data));
+    child.stdin.on("error", () => {}); // Early child exit may close stdin.
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    // Kill remaining descendants before releasing the graph lock, including on successful exit.
+    child.on("exit", killGroup);
+    child.on("close", status => {
+      clearTimeout(timer);
+      resolveResult({ stdout, stderr: stderr + (timedOut ? "guarded writer deadline exceeded\n" : failed ? "guarded writer output limit exceeded\n" : ""), status: timedOut || failed ? 1 : status });
+    });
+    child.stdin.end(input.stdin || "");
+  });
 }
 
 function renderCompact(graph) {
