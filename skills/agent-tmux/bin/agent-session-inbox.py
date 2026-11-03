@@ -338,6 +338,7 @@ def watch(args):
         return
     cursor = inbox.with_suffix('.cursor.json')
     offset = load_cursor(cursor, inbox)['offset']
+    acknowledged_offset = offset
     batch, deadline = [], None
     receiver = process_identity(int(os.environ['AGENT_MESH_INBOX_RECEIVER_PID'])) if os.environ.get('AGENT_MESH_INBOX_RECEIVER_PID', '').isdecimal() else None
     try:
@@ -375,13 +376,14 @@ def watch(args):
                         if not delivery.deliver(args.session, batch, owner):
                             # Do not acknowledge failed or ambiguous deliveries.
                             batch, deadline = [], None
-                            offset = load_cursor(cursor, inbox)['offset']
+                            offset = acknowledged_offset
                             time.sleep(5)
                             continue
                     elif not emit_batch(batch, owner):
                         return
                     try:
                         atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox), 'offset': offset})
+                        acknowledged_offset = offset
                     except OSError:
                         pass  # At-least-once replay after a cursor write failure.
                     if getattr(args, 'mode', 'watch') != 'serve':
@@ -389,6 +391,7 @@ def watch(args):
                     batch, deadline = [], None
                 if not batch and boundary:
                     atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox), 'offset': offset})
+                    acknowledged_offset = offset
             except (OSError, ValueError):
                 # Keep ownership and retry; an owner change still terminates promptly.
                 pass

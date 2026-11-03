@@ -74,6 +74,39 @@ class SessionInboxTest(unittest.TestCase):
         with (self.root / (SESSION + '.jsonl')).open('a') as stream:
             stream.write(text)
 
+    def test_refused_batch_rolls_back_without_rereading_cursor(self):
+        spec = importlib.util.spec_from_file_location('checkpoint_inbox_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.prepare(self.root, SESSION)
+        inbox = self.root / (SESSION + '.jsonl')
+        self.append(record('refused-A'))
+        delivered = []
+        def send(_session, batch, _owner):
+            delivered.append(list(batch))
+            if len(delivered)==1:
+                self.append(record('later-B'))
+                return False
+            return True
+        helper = SimpleNamespace(deliver=send)
+        fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module:None))
+        real_load = module.load_cursor
+        reads = []
+        def load(*args):
+            reads.append(True)
+            if len(reads)>1: raise OSError('transient cursor read failure')
+            return real_load(*args)
+        args = SimpleNamespace(root=self.root, session=SESSION, owner_pid=os.getpid(), owner_start=None,
+                               mode='serve', batch_seconds=0, retry_seconds=0.01)
+        with patch.object(module,'load_cursor',side_effect=load), patch.object(module,'alive',side_effect=lambda _owner:len(delivered)<2), patch.object(
+                module.time,'sleep'), patch('importlib.util.spec_from_file_location',return_value=fake_spec), patch(
+                'importlib.util.module_from_spec',return_value=helper):
+            module.watch(args)
+        self.assertEqual(len(reads),1)
+        self.assertIn('refused-A',str(delivered[1]))
+        self.assertIn('later-B',str(delivered[1]))
+        self.assertEqual(json.loads(inbox.with_suffix('.cursor.json').read_text())['offset'],inbox.stat().st_size)
+
     def test_detached_service_survives_hook_exit_and_delivers_only_real_batches(self):
         owner = subprocess.Popen(['sleep', '30'])
         self.processes.append(owner)
