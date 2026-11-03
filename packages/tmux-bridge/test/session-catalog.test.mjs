@@ -105,7 +105,7 @@ test('compound takeover invalidates scoped sessions and relationships and replay
  await ok(state,'link','open','--agent','claude','--runtime-uuid',a.split(':')[1],'--ref','work:example/1');
  const baseline=await ok(state,'query','changes','--input','{}');
  await ok(state,...claim(b,'--take-over',first.id,'--reason','Handoff'));
- const scope={refPrefixes:['work:example/'],targets:[{id:'example',harness:'claude',roots:['/work/example']},{id:'example-codex',harness:'codex',roots:['/work/example']}],handleKey:'test-key-01234567890123456789'};
+ const scope={refPrefixes:['work:example/'],targets:[{id:'example',harness:'claude',roots:['/work/example']},{id:'example-codex',harness:'codex',roots:['/work/example']}],handleKey:'test-key-abcdefgh-ijklmnop'};
  const q={sinceCursor:baseline.cursor,scope};
  const changes=await ok(state,'query','changes','--input',JSON.stringify(q));
  assert.ok(changes.events.length > 0);
