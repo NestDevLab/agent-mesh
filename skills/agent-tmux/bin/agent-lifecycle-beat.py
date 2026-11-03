@@ -387,6 +387,8 @@ def stage(root, state, config, epoch, immediate, cards, summary, candidate, inte
 
 def producer(config, root, full=False, epoch=None):
     epoch = time.time() if epoch is None else epoch
+    if config.get('ownerNotify'):
+        load('agent-owner-notify').tick(config['ownerNotify'])
     private(root)
     follower_root = Path(config['followerRoot']).expanduser() if config.get('followerRoot') else follow.state_dir(config.get('followerName', 'lifecycle'))
     private(follower_root)

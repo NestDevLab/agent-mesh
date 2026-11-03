@@ -607,6 +607,26 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             )
         return
 
+    if record_type == "response_item" and payload_type in {"custom_tool_call_output", "function_call_output"}:
+        # Native goal receipts are structured tool results, not assistant prose.
+        output = payload.get("output")
+        parts = output if isinstance(output, list) else [{"text": output}]
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if not isinstance(text, str):
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                goal = value.get("goal") if isinstance(value, dict) else None
+                if isinstance(goal, dict) and goal.get("threadId") == session_id and goal.get("status") in {
+                    "active", "complete", "blocked", "budget_limited", "usage_limited"}:
+                    yield event(timestamp=timestamp, agent="codex", session_id=session_id,
+                                kind="goal_status", body=goal["status"])
+        return
+
     if record_type == "response_item" and payload_type == "message":
         body = clipped(message_text(payload.get("content")))
         if body:
