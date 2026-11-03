@@ -505,6 +505,53 @@ class LifecycleEngine(unittest.TestCase):
         self.assertEqual(failure['nextRetryAt'], '2026-11-02T12:25:00Z')
         self.assertIn(plan['actions'][0]['fingerprint'], engine.attempted(self.run_dir, config['consumer'], config, '2026-11-02T12:20:01Z'))
 
+    def test_foreign_manual_report_does_not_require_native_action_receipts(self):
+        sibling = self.run_dir.parent / 'manual-report'
+        sibling.mkdir()
+        engine.write(sibling / 'plan.json', {'schema': 'example.manual-archive-plan.v1', 'actions': []})
+        engine.append(self.run_dir / 'actions.jsonl', {'consumer': self.config['consumer'], 'phase': 'attempt', 'fingerprint': 'fixture', 'at': engine.now()})
+        self.assertEqual([r['fingerprint'] for r in engine.receipt_history(self.run_dir, self.config['consumer'])], ['fixture'])
+        # Foreign artifacts are not native receipts, even if their own log is malformed.
+        (sibling / 'actions.jsonl').write_text('manual report content')
+        self.assertEqual(len(engine.receipt_history(self.run_dir, self.config['consumer'])), 1)
+
+    def test_current_native_plan_missing_receipts_still_refuses(self):
+        engine.write(self.run_dir / 'plan.json', {'schema': 'agent-mesh.lifecycle-plan.v1', 'consumer': self.config['consumer']})
+        with self.assertRaisesRegex(engine.LifecycleError, 'missing action receipts'):
+            engine.receipt_history(self.run_dir, self.config['consumer'])
+
+    def test_current_native_plan_corrupt_receipts_still_refuses(self):
+        engine.write(self.run_dir / 'plan.json', {'schema': 'agent-mesh.lifecycle-plan.v1', 'consumer': self.config['consumer']})
+        for value in ('not json', '[]'):
+            (self.run_dir / 'actions.jsonl').write_text(value + '\n')
+            with self.assertRaisesRegex(engine.LifecycleError, 'receipt history is unreadable'):
+                engine.receipt_history(self.run_dir, self.config['consumer'])
+
+    def test_other_explicit_consumer_does_not_require_its_receipts(self):
+        sibling = self.run_dir.parent / 'another-consumer'
+        sibling.mkdir()
+        engine.write(sibling / 'plan.json', {'schema': 'agent-mesh.lifecycle-plan.v1', 'consumer': 'another-consumer'})
+        self.assertEqual(engine.receipt_history(self.run_dir, self.config['consumer']), [])
+
+    def test_legacy_plan_and_orphan_action_stream_remain_in_scope(self):
+        engine.write(self.run_dir / 'plan.json', {})
+        with self.assertRaisesRegex(engine.LifecycleError, 'missing action receipts'):
+            engine.receipt_history(self.run_dir, self.config['consumer'])
+        record = {'consumer': self.config['consumer'], 'phase': 'attempt', 'fingerprint': 'legacy', 'at': engine.now()}
+        engine.append(self.run_dir / 'actions.jsonl', record)
+        self.assertEqual(engine.receipt_history(self.run_dir, self.config['consumer']), [record])
+        (self.run_dir / 'plan.json').unlink()
+        self.assertEqual(engine.receipt_history(self.run_dir, self.config['consumer']), [record])
+
+    def test_ambiguous_headers_do_not_establish_foreign_exclusion(self):
+        for value in ('not json', '[]', '{"schema":null}', '{"schema":" "}',
+                      '{"schema":"example.manual.v1","consumer":null}',
+                      '{"schema":"example.manual.v1","consumer":"fixture"}',
+                      '{"schema":"agent-mesh.lifecycle-plan.v2","consumer":"fixture"}'):
+            (self.run_dir / 'plan.json').write_text(value)
+            with self.assertRaisesRegex(engine.LifecycleError, 'header is ambiguous or unreadable'):
+                engine.receipt_history(self.run_dir, self.config['consumer'])
+
     def test_run_artifacts_have_restrictive_modes(self):
         path = self.run_dir / 'plan.json'
         engine.write(path, {'synthetic': True})
