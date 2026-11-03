@@ -20,7 +20,10 @@ and invokes `claude mcp serve` only for a nonempty batch. This invokes no model.
 It resolves the exact session through the live Claude session registration,
 checking PID, process start ticks, session ID and owner ancestry. Native
 ListAgents must return one matching name and a current disambiguation ref;
-SendMessage delivers to that listed address. Ambiguity or refusal leaves the
+The listed ref must also match the typed socket/stable-session identity hash
+used by Claude 2.1; otherwise delivery fails closed. SendMessage must explicitly
+return `success: true` before the cursor advances. Reference-format changes
+require adapter updates, never a name-only fallback. Ambiguity or refusal leaves the
 cursor pending for a silent retry. No terminal injection, second session writer,
 credential handling or private Remote Control API is used.
 

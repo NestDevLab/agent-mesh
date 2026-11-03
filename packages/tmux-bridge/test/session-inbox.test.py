@@ -15,7 +15,7 @@ import threading
 from types import SimpleNamespace
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'bin' / 'agent-session-inbox.py'
 SESSION = 'synthetic-session'
@@ -511,6 +511,52 @@ for line in sys.stdin:
                                 text=True, capture_output=True, timeout=2)
         self.assertEqual((result.returncode, result.stderr), (0, ''))
         self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
+
+
+class NativeDeliveryTest(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location('native_delivery_test', SCRIPT.with_name('agent-inbox-native.py'))
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.owner = identity(os.getpid())
+        self.registration = {'name':'synthetic-peer', 'sessionId':SESSION,
+                             'messagingSocketPath':'/synthetic/peer.sock'}
+        self.ref = __import__('hashlib').sha256(b'session:/synthetic/peer.sock').hexdigest()[:6]
+
+    def native_result(self, value):
+        return {'content':[{'type':'text','text':json.dumps(value)}]}
+
+    def deliver(self, result, ref=None):
+        native = MagicMock()
+        native.__enter__.return_value = native
+        native.request.side_effect = [self.native_result({'sections':[{'kind':'sessions','rows':[
+            {'name':'synthetic-peer', 'ref':ref or self.ref}]}]}), result]
+        with patch.object(self.module, 'registration', return_value=(self.registration, self.owner)), patch.object(
+                self.module, 'NativeClient', return_value=native):
+            accepted = self.module.deliver(SESSION, ['real record'], self.owner)
+        return accepted, native
+
+    def test_native_delivery_requires_explicit_success(self):
+        for value in ({'success':False}, {}, {'status':'sent'}):
+            self.assertFalse(self.deliver(self.native_result(value))[0])
+        self.assertFalse(self.deliver({'isError':True,'content':[]})[0])
+        self.assertTrue(self.deliver(self.native_result({'success':True}))[0])
+
+    def test_same_name_with_another_ref_never_receives_records(self):
+        accepted, native = self.deliver(self.native_result({'success':True}), ref='abcdef')
+        self.assertFalse(accepted)
+        self.assertEqual(native.request.call_count, 1)
+
+    def test_initialization_failure_reaps_native_child(self):
+        process = MagicMock()
+        with patch.object(self.module.subprocess, 'Popen', return_value=process), patch.object(
+                self.module.NativeClient, 'request', side_effect=TimeoutError('synthetic timeout')):
+            with self.assertRaises(TimeoutError):
+                self.module.NativeClient().__enter__()
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once()
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
 
 
 if __name__ == '__main__':
