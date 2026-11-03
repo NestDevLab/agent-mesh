@@ -21,6 +21,7 @@ import sys
 import tempfile
 import uuid
 import unicodedata
+from types import SimpleNamespace
 
 BIN = Path(__file__).resolve().parent
 UUID = re.compile(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
@@ -58,7 +59,7 @@ def digest(value):
 def validate_config(config):
     if not isinstance(config, dict):
         raise LifecycleError('configuration must be an object')
-    for field, default, maximum in [('maxResumes', 0, 3), ('maxArchives', 0, 200), ('idleSeconds', 3600, 31536000), ('retryBaseSeconds', 300, 86400), ('retryMaxSeconds', 3600, 604800), ('retryMaxAttempts', 3, 10)]:
+    for field, default, maximum in [('maxResumes', 0, 3), ('maxArchives', 0, 10), ('archivePrepareLimit', 100, 200), ('archiveMaxCandidates', 100, 200), ('archiveReviewTimeoutMs', 240000, 300000), ('archivePrepareTimeoutMs', 120000, 120000), ('archiveApplyTimeoutMs', 120000, 120000), ('idleSeconds', 3600, 31536000), ('retryBaseSeconds', 300, 86400), ('retryMaxSeconds', 3600, 604800), ('retryMaxAttempts', 3, 10)]:
         value = config.get(field, default)
         if type(value) is not int or not 0 <= value <= maximum:
             raise LifecycleError('invalid ' + field)
@@ -74,6 +75,14 @@ def validate_config(config):
     for entry in config.get('projectRoots', []):
         if not isinstance(entry, dict) or not isinstance(entry.get('project'), str) or not isinstance(entry.get('root'), str) or not Path(entry['root']).expanduser().is_absolute():
             raise LifecycleError('invalid project root')
+    for field in ('archivePrepareLimit', 'archiveMaxCandidates', 'archiveReviewTimeoutMs', 'archivePrepareTimeoutMs', 'archiveApplyTimeoutMs'):
+        if config.get(field, 1) < 1:
+            raise LifecycleError('invalid ' + field)
+    if 'archivePrepareLimit' in config and 'archiveMaxCandidates' in config and config['archivePrepareLimit'] != config['archiveMaxCandidates']:
+        raise LifecycleError('archive candidate limit aliases disagree')
+    approvals = config.get('reviewedTemporaryRefs', [])
+    if not isinstance(approvals, list) or any(not isinstance(entry, dict) or not isinstance(entry.get('session'), str) or not re.fullmatch(r'(?:codex|claude):' + UUID.pattern, entry['session']) or not re.fullmatch(r'[0-9a-f]{64}', str(entry.get('fingerprint', ''))) for entry in approvals):
+        raise LifecycleError('reviewed temporary refs require native session and observation fingerprint')
     consumer = config.get('consumer', 'lifecycle')
     if not isinstance(consumer, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,80}', consumer):
         raise LifecycleError('invalid consumer')
@@ -321,6 +330,67 @@ def classify(row, config, at):
     return result
 
 
+def archive_guard(row, inventory, config):
+    """Hard protections apply even to observation-bound temporary approvals."""
+    if not inventory.get('complete') or inventory.get('linkCoverage') is not True:
+        return 'source_coverage_unproven'
+    if row is None:
+        return 'native_session_missing'
+    ref, life = row['sessionId'], row.get('lifecycle') or {}
+    refs = [ref, *[link.get('ref', '') for link in row.get('links', []) if isinstance(link, dict)]]
+    hard_text = '\n'.join(str(value or '') for value in (ref, row.get('cwd'), life.get('question')))
+    text = hard_text + '\n' + str(row.get('title') or '') + '\n' + str(life.get('detail') or '')
+    if ref == config.get('selfRef') or row.get('class') == 'orchestrator' or str(row.get('role', '')).casefold() in ('director', 'coordinator', 'orchestrator'):
+        return 'hard_role_protection'
+    if any(value in config.get('permanentRefs', []) or any(value.startswith(prefix) for prefix in config.get('permanentPrefixes', [])) for value in refs):
+        return 'permanent_catalog_protection'
+    if any(value in config.get('excludeRefs', []) for value in refs) or matching(config.get('excludePatterns', []), text):
+        return 'policy_excluded'
+    if row.get('harness') != 'codex':
+        return 'unsupported_harness'
+    if life.get('pendingQuestion') is not False or matching(config.get('humanWaitPatterns', []), text):
+        return 'human_wait_or_unknown'
+    reviewed = any(entry['session'] == ref and entry['fingerprint'] == fingerprint(row) for entry in config.get('reviewedTemporaryRefs', []))
+    patterns = [r'\b(?:director|coordinator)\b', *config.get('permanentPatterns', [])]
+    if matching(patterns, hard_text) or not reviewed and matching(patterns, text):
+        return 'permanent_policy_protection'
+    if not reviewed and project_for(row, config) not in config.get('archiveProjects', []):
+        return 'archive_project_out_of_scope'
+    native = row.get('nativeId')
+    if not isinstance(native, str) or not UUID.fullmatch(native) or ref != 'codex:' + native:
+        return 'native_identity_unproven'
+    if row.get('archived') is True:
+        return 'already_archived'
+    if life.get('turnActive') is not False:
+        return 'active_or_unknown_turn'
+    path, cwd = life.get('path'), row.get('cwd')
+    if life.get('historyComplete') is not True or life.get('metadataOnly') is True or not isinstance(path, str) or not Path(path).is_absolute() or not Path(path).is_file() or not isinstance(cwd, str) or not Path(cwd).is_dir():
+        return 'local_history_unproven'
+    try:
+        if (instant(now()) - instant(row['lastSeenAt'])).total_seconds() < config.get('idleSeconds', 3600):
+            return 'native_activity_recent'
+    except (ValueError, TypeError, KeyError):
+        return 'native_activity_unknown'
+    return None
+
+
+_archive = None
+
+
+def archive_module():
+    global _archive
+    if _archive is None:
+        spec = importlib.util.spec_from_file_location('lifecycle_archive', BIN / 'agent-lifecycle-archive.py')
+        _archive = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(_archive)
+    return _archive
+
+
+def archive_api():
+    return SimpleNamespace(Error=LifecycleError, run=run, digest=digest, write=write, append=append,
+                           query=query, fingerprint=fingerprint, archive_guard=archive_guard, now=now)
+
+
 def build_plan(inventory, config, attempted_fingerprints=(), retry_records=()):
     entries = [classify(row, config, inventory['at']) for row in inventory['sessions']]
     seen = set(attempted_fingerprints)
@@ -444,6 +514,8 @@ def receipt_history(run_dir, consumer):
 def retry_states(records, config=None):
     states = {}
     for record in records:
+        if record.get('kind') == 'archive':
+            continue
         fingerprint = record.get('fingerprint')
         if not fingerprint:
             continue
@@ -490,8 +562,10 @@ def retry_ready(state, config, at):
 
 
 def attempted(run_dir, consumer, config=None, at=None):
-    states = retry_states(receipt_history(run_dir, consumer), config)
-    return {fingerprint for fingerprint, state in states.items() if (state['attempted'] or (state.get('failure') or {}).get('retryable')) and not retry_ready(state, config or {}, at or now())}
+    records = receipt_history(run_dir, consumer)
+    states = retry_states(records, config)
+    held = set().union(*(state['fingerprints'] for state in archive_module().history(records).values() if state['unresolved'] or state['successes']))
+    return held | {fingerprint for fingerprint, state in states.items() if (state['attempted'] or (state.get('failure') or {}).get('retryable')) and not retry_ready(state, config or {}, at or now())}
 
 
 def retry_failure(error, context, config, base):
@@ -513,9 +587,11 @@ def publish_outcomes(config, records, run_dir):
     spec.loader.exec_module(follow)
     candidates = []
     for record in records:
-        if record.get('phase') not in ('acknowledgement', 'failure'):
+        if record.get('phase') not in ('acknowledgement', 'failure') and not (record.get('kind') == 'archive' and record.get('phase') == 'skipped'):
             continue
         semantic = {key: record.get(key) for key in ('session', 'kind', 'fingerprint', 'phase', 'status', 'reason')}
+        if record.get('kind') == 'archive':
+            semantic['reasonCode'] = record.get('reasonCode')
         payload = {**record, 'report': str((run_dir / 'report.md').resolve())}
         candidates.append({'event_id': 'lifecycle:' + digest(semantic), 'ref': record['session'],
                            'kind': 'LIFECYCLE', 'body': str(record.get('status') or ''),
@@ -635,17 +711,66 @@ def apply_plan(plan, inventory, config, run_dir):
     if not plan.get('complete') or not inventory.get('complete'):
         raise LifecycleError('source errors block apply')
     actions = plan.get('actions', [])
-    if len(actions) > min(config.get('maxResumes', 0), 3) or any(action.get('kind') not in ('resume', 'handoff') for action in actions):
+    if sum(action.get('kind') in ('resume', 'handoff') for action in actions) > min(config.get('maxResumes', 0), 3) or sum(action.get('kind') == 'archive' for action in actions) > config.get('archiveMaxCandidates', config.get('archivePrepareLimit', 100)) or any(action.get('kind') not in ('resume', 'handoff', 'archive') for action in actions):
         raise LifecycleError('unsupported action or resume limit exceeded')
+    if plan.get('archive', {}).get('status') == 'technical-error':
+        raise LifecycleError('archive preparation technical error blocks apply')
+    archives = [action for action in actions if action['kind'] == 'archive']
+    if archives and (not 0 < config.get('maxArchives', 0) <= 10 or not all(config.get(key) for key in ('archivePrepareCommand', 'archiveReviewCommand', 'archiveApplyCommand'))):
+        raise LifecycleError('archive protocol or success limit unavailable')
     outcomes = []
     with locked(run_dir, plan['consumer']):
         history = receipt_history(run_dir, plan['consumer'])
         states = retry_states(history, config)
         seen = {key for key, value in states.items() if (value['attempted'] or (value.get('failure') or {}).get('retryable')) and not retry_ready(value, config, now())}
         recover_outcomes(config, run_dir)
+        archive_states = archive_module().history(history)
+        for state in archive_states.values():
+            if state['successes']:
+                seen.update(state['fingerprints'])
+        if any(state['unresolved'] for state in archive_states.values()):
+            raise LifecycleError('unresolved native archive attempt requires reconciliation')
+        reviewed = archive_module().review(plan, config, run_dir, archive_api()) if archives else None
+        successes = sum(1 for state in archive_states.values() for plan_digest, _ in state['successes'] if plan_digest == expected)
         for action in actions:
             base = {'at': now(), 'consumer': plan['consumer'], 'session': action['session'], 'kind': action['kind'],
                     'fingerprint': action['fingerprint'], 'planDigest': expected}
+            if action['kind'] == 'archive':
+                base['actionDigest'] = action['actionDigest']
+                prior = archive_states.get(action['session'], {})
+                if (expected, action['actionDigest']) in prior.get('successes', set()):
+                    outcomes.append({**base, 'phase': 'deduplicated', 'status': 'already-archived'})
+                    continue
+                if prior.get('successes') and action['fingerprint'] in prior.get('fingerprints', set()):
+                    outcome = {**base, 'phase': 'skipped', 'status': 'skipped', 'reasonCode': 'previous_native_archive_confirmed'}
+                    append(run_dir / 'actions.jsonl', outcome)
+                    outcomes.append(outcome)
+                    continue
+                if (expected, action['actionDigest']) in prior.get('skipped', set()):
+                    outcomes.append({**base, 'phase': 'deduplicated', 'status': 'already-skipped'})
+                    continue
+                if successes >= config['maxArchives']:
+                    outcomes.append({**base, 'phase': 'deferred', 'status': 'success-limit'})
+                    continue
+                try:
+                    decision = reviewed['decisions'][action['actionDigest']]
+                    if decision['verdict'] == 'SKIP':
+                        result = {'status': 'skipped', 'reasonCode': decision['reasonCode']}
+                    else:
+                        fresh = collect(config)
+                        if not fresh.get('complete'):
+                            raise LifecycleError('fresh native source errors block archive')
+                        result = archive_module().apply_action(action, plan, fresh, config, run_dir, reviewed, base, archive_api())
+                    outcome = {**base, 'at': now(), 'phase': 'acknowledgement' if result['status'] == 'archived' else 'skipped', **result}
+                    successes += result['status'] == 'archived'
+                except LifecycleError as error:
+                    outcome = {**base, 'at': now(), 'phase': 'failure', 'status': 'blocked', 'reason': str(error)}
+                append(run_dir / 'actions.jsonl', outcome)
+                publish_outcomes(config, [outcome], run_dir)
+                outcomes.append(outcome)
+                if outcome['phase'] == 'failure':
+                    break
+                continue
             if action.get('modelCapacityScope'):
                 base['modelCapacityScope'] = action['modelCapacityScope']
             if action['fingerprint'] in seen:
@@ -735,6 +860,12 @@ def report(inventory, plan, outcomes=()):
             item = entry['workItem']
             lines.append(f"  - Item {item['item']}: {item['title']}; next step: {item['nextStep']}")
         lines.extend('  - ' + gap for gap in entry['sourceGaps'])
+    if plan.get('archive'):
+        batch = plan['archive']
+        lines += ['', '## Archive preparation', '', f"Status: {batch['status']}; prepared: {len(batch['prepared'])}; success limit: {batch['successLimit']}."]
+        lines.extend(f"- {entry['session']}: skipped ({entry['reasonCode']})" for entry in batch['skipped'])
+        if batch.get('reason'):
+            lines.append('- Technical stop: ' + batch['reason'])
     if outcomes:
         lines += ['', '## Apply receipts', '']
         lines.extend(f"- {entry['session']}: {entry['status']}" for entry in outcomes)
@@ -759,7 +890,7 @@ def main():
             if not args.apply:
                 raise LifecycleError('apply requires explicit --apply')
             outcomes = apply_plan(plan, inventory, config, args.run_dir)
-            outcome = 'blocked' if any(entry['phase'] == 'failure' for entry in outcomes) else 'acted' if any(entry['status'] in ('queued', 'submitted') for entry in outcomes) else 'noop'
+            outcome = 'blocked' if any(entry['phase'] == 'failure' for entry in outcomes) else 'acted' if any(entry['status'] in ('queued', 'submitted', 'archived') for entry in outcomes) else 'noop'
             write(args.run_dir / 'report.md', report(inventory, plan, outcomes))
         else:
             if (args.run_dir / 'plan.json').exists():
@@ -768,10 +899,14 @@ def main():
             history = receipt_history(args.run_dir, config.get('consumer', 'lifecycle'))
             plan = build_plan(inventory, config, attempted(args.run_dir, config.get('consumer', 'lifecycle'), config), history)
             write(args.run_dir / 'inventory.json', inventory)
+            if args.operation == 'plan':
+                plan = archive_module().prepare(plan, inventory, config, args.run_dir, archive_api(), history)
+                plan['counts'] = dict(Counter(entry['classification'] for entry in plan['entries']))
+                plan['digest'] = digest({key: value for key, value in plan.items() if key != 'digest'})
             write(args.run_dir / 'plan.json', plan)
             append(args.run_dir / 'actions.jsonl', {'at': now(), 'consumer': plan['consumer'], 'phase': 'planned', 'planDigest': plan['digest']})
             write(args.run_dir / 'report.md', report(inventory, plan))
-            outcome = 'noop' if inventory['complete'] else 'blocked'
+            outcome = 'noop' if inventory['complete'] and plan.get('archive', {}).get('status') != 'technical-error' else 'blocked'
         result = {'status': outcome, 'runDir': str(args.run_dir), 'planDigest': plan['digest']}
     except (LifecycleError, OSError, ValueError, KeyError, TypeError) as error:
         failure, outcome = str(error), 'failed'

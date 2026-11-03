@@ -269,3 +269,97 @@ receipts, model-error metadata and ambiguous delivery protection:
 ```sh
 python3 packages/tmux-bridge/test/lifecycle-engine.test.py
 ```
+
+## Per-thread archive protocol
+
+`inventory` remains read-only and never invokes archive hooks. `plan` can prepare
+an archive pool; only `apply --apply` can invoke native mutation. Defaults remain
+report-only (`maxArchives: 0`). Configure all three argv hooks to enable archives:
+
+| Key | Default | Bound |
+| --- | ---: | ---: |
+| `maxArchives` | 0 | 0–10 confirmed successes per frozen run |
+| `archiveMaxCandidates` | 100 | 1–200 candidate preparations |
+| `archivePrepareTimeoutMs` | 120000 | 1–120000 |
+| `archiveReviewTimeoutMs` | 240000 | 1–300000 |
+| `archiveApplyTimeoutMs` | 120000 | 1–120000 |
+
+`archivePrepareLimit` is a compatibility alias for `archiveMaxCandidates`;
+setting both to different values is rejected. `inventory.json` is persisted in
+the same `runDir` before preparing any candidate. Artifact files are bounded to
+16 MiB; review and native-confirmation JSON receipts to 1 MiB.
+
+Hooks receive JSON on stdin and return one JSON object on stdout. Nonzero exit,
+timeout, malformed protocol, missing proof, invalid receipt or ambiguous native
+outcome is a technical error and stops the batch. `status: skipped` with a short
+`reasonCode` is a semantic refusal and continues to the next thread. Neither
+prepare skips, review skips nor apply skips consume the success limit. Every
+hook must preserve canonical eligibility: a source-only/review-only task without
+its required merged/installed/verified proof is a semantic skip, never a fabricated
+`N/A`, `not required` or substitute PASS. The generic engine does not implement
+private eligibility or parse transcripts.
+
+`archivePrepareCommand` receives `{session,fingerprint,runDir}`. Return:
+
+- `{status:"skipped",reasonCode}` for canonical semantic refusal.
+- `{status:"eligible",session,fingerprint,summary,evidence}` for a prepared action.
+  `summary` and `evidence` are `{path,sha256}` descriptors of existing regular
+  files with absolute paths. The engine hashes their bytes and binds both to the
+  action digest. The adapter owns durable-summary readback, exact history,
+  descendants, writers and all canonical eligibility checks.
+- `{status:"technical_error",reasonCode}` for guard/tool failure (batch stop).
+
+The engine freezes the entire eligible pool in `plan.json` before any review or
+native apply. `archiveReviewCommand` receives `{planPath,planDigest,actor}`.
+Return `{verdict,planDigest,reviewerRef,decisions,receipt}`. `receipt` is a file
+hash descriptor whose JSON contains the same verdict, digest, reviewer and
+complete decisions array. Every archive action must occur exactly once as
+`{actionDigest,verdict:"PASS"}` or
+`{actionDigest,verdict:"SKIP",reasonCode}`. Overall `PASS` may contain a mixture;
+overall `FAIL` is valid only when every action explicitly says SKIP. Missing or
+malformed decisions are technical errors. Only per-action PASS can reach apply.
+The reviewer must be a different full native session from `selfRef`, verified
+through the existing Mesh identity API. The host hook must obtain an actual
+independent AI review; an invented receipt or a generic eligibility PASS is not
+review. Empty prepared pools make no review/model call. Persisted exact review
+receipts are reused on restart rather than requesting another model review.
+
+Immediately before **each** archive, the engine refreshes canonical inventory,
+rechecks hard protection and requires the same native observation fingerprint.
+`archiveApplyCommand` receives
+`{session,planDigest,actionDigest,summary,evidence,reviewReceipt}`. It must recheck
+current host policy, the canonical archive guard and native adapter. A semantic
+refusal returns `{status:"skipped",reasonCode}`. Confirmed success returns
+`{status:"archived",session,planDigest,actionDigest,receipt}`. This receipt's JSON
+must repeat those identities and include `nativeArchived:true`, based on actual
+native readback. Queue acceptance alone cannot establish archive success.
+
+Normal candidates remain restricted by `archiveProjects`. Explicit
+`reviewedTemporaryRefs: [{session,fingerprint}]` may additionally nominate exact
+observations, overriding only stale title/detail permanence heuristics and those
+named refs' project scope. They never grant resumes and never override self,
+explicit exclusions, permanent catalog refs/prefixes, orchestrator/current role,
+current human waits, excluded-topic policy or unknown native facts. New content
+requires a fresh observation-bound approval. Codex is the only supported native
+archive harness; nominated Claude threads are reported `unsupported_harness`.
+Full history, local sources and graph link coverage must be proven. Missing
+migration/coverage remains a skip, not archive permission.
+
+Archive attempt markers are fsynced into the existing `actions.jsonl` **before**
+the native adapter. Confirmed success receipts and semantic skips use that same
+stream; there is no parallel identity/task store. A crash or ambiguous response
+after an attempt holds further batches for explicit reconciliation. Successful
+or skipped actions are not repeated when reapplying the same frozen plan;
+confirmed successes across restarts still consume that plan's limit. Source
+refresh/summary/review errors before an archive attempt never claim a native
+archive happened. Resumes retain their separate three-action cap and native
+queue guards. Archive outcomes use the existing follow outbox, with semantic
+keys independent of run timestamps/digests, so unchanged refusals do not generate
+new wakes. Preparation skips remain visible in the frozen plan and report.
+
+Focused synthetic checks (run in the integration/test checkout):
+
+```sh
+python3 packages/tmux-bridge/test/lifecycle-archive.test.py
+python3 packages/tmux-bridge/test/lifecycle-engine.test.py
+```
