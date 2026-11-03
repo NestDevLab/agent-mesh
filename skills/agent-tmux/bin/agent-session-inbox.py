@@ -15,6 +15,8 @@ import sys
 import tempfile
 import time
 
+sys.dont_write_bytecode = True
+
 DEFAULT_ROOT = "/var/lib/agent-mesh-mcp/claude-managed-inboxes"
 CURSOR_SCHEMA = "agent-mesh.monitor-inbox-cursor.v1"
 LOCK_SCHEMA = "agent-mesh.session-inbox-lock.v1"

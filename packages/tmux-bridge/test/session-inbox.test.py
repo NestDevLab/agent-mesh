@@ -81,7 +81,7 @@ class SessionInboxTest(unittest.TestCase):
         (config / 'sessions').mkdir(parents=True)
         (config / 'sessions' / 'owner.json').write_text(json.dumps({
             'pid': owner.pid, 'sessionId': SESSION, 'procStart': identity(owner.pid)['start'],
-            'name': 'synthetic-peer'}))
+            'name': 'synthetic-peer', 'messagingSocketPath':'/synthetic/peer.sock'}))
         calls = Path(self.temp.name) / 'native-calls.jsonl'
         native = Path(self.temp.name) / 'claude-native'
         native.write_text('#!' + sys.executable + '\n' + """
@@ -91,10 +91,10 @@ for line in sys.stdin:
     if 'id' not in r: continue
     if r['method']=='initialize': result={}
     elif r['params']['name']=='ListAgents':
-        result={'content':[{'type':'text','text':json.dumps({'sections':[{'kind':'sessions','rows':[{'name':'synthetic-peer','ref':'live-ref'}]}]})}]}
+        result={'content':[{'type':'text','text':json.dumps({'sections':[{'kind':'sessions','rows':[{'name':'synthetic-peer','ref':__import__('hashlib').sha256(b'session:/synthetic/peer.sock').hexdigest()[:6]}]}]})}]}
     else:
         with open(os.environ['NATIVE_CALL_LOG'],'a') as f: f.write(json.dumps(r['params']['arguments'])+'\\n')
-        result={'content':[{'type':'text','text':json.dumps({'status':'sent'})}]}
+        result={'content':[{'type':'text','text':json.dumps({'success':True})}]}
     print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
 """)
         native.chmod(0o700)

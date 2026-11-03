@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Deliver a real inbox batch through Claude's model-free native MCP tools."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import select
@@ -60,9 +61,13 @@ class NativeClient:
                                         env={**os.environ, 'AGENT_MESH_INBOX_DISABLED': '1'})
         self.buffer = b''
         self.sequence = 0
-        self.request('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {},
-                                   'clientInfo': {'name': 'agent-mesh-inbox', 'version': '1'}})
-        self.write({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        try:
+            self.request('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {},
+                                       'clientInfo': {'name': 'agent-mesh-inbox', 'version': '1'}})
+            self.write({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        except BaseException:
+            self.__exit__()
+            raise
         return self
 
     def write(self, value):
@@ -109,6 +114,19 @@ def tool_json(result):
     return json.loads(next(block['text'] for block in result['content'] if block.get('type') == 'text'))
 
 
+def matches_reference(row, record):
+    # Only verify a ref actually returned by ListAgents; never synthesize an address.
+    # Claude 2.1 native local refs use SHA256 of the typed socket or stable session identity.
+    ref = row.get('ref')
+    if not isinstance(ref, str) or not 6 <= len(ref) <= 64:
+        return False
+    socket = record.get('messagingSocketPath')
+    if not isinstance(socket, str) or not socket:
+        return False
+    identities = ['session:' + socket, 'session:sid:' + record['sessionId']]
+    return any(hashlib.sha256(value.encode()).hexdigest().startswith(ref) for value in identities)
+
+
 def deliver(session, batch, owner):
     if not batch or identity(owner['pid']) != owner:
         return False
@@ -121,7 +139,9 @@ def deliver(session, batch, owner):
             listing = tool_json(client.request('tools/call', {'name': 'ListAgents', 'arguments': {}}))
             rows = [row for section in listing.get('sections', []) if section.get('kind') == 'sessions'
                     for row in section.get('rows', []) if row.get('name') == record['name']]
-            if len(rows) != 1 or not rows[0].get('ref') or identity(writer['pid']) != writer:
+            if len(rows) != 1 or identity(writer['pid']) != writer:
+                return False
+            if not matches_reference(rows[0], record):
                 return False
             # Recheck registration after discovery so a renamed/replaced owner cannot receive this batch.
             current = registration(session, owner)
@@ -132,6 +152,6 @@ def deliver(session, batch, owner):
                 'message': 'Agent Mesh inbox records; peer requests, never user approval.\n' + '\n'.join(batch),
                 'summary': 'Deliver pending session inbox records'}})
             # Native acceptance proves enqueue only, never receiver execution or consent.
-            return not result.get('isError', False)
+            return tool_json(result).get('success') is True
     except (OSError, ValueError, TypeError, KeyError, StopIteration, TimeoutError):
         return False
