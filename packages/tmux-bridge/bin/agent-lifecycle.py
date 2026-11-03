@@ -495,15 +495,47 @@ def locked(run_dir, consumer):
 
 
 def receipt_history(run_dir, consumer):
+    """Read this consumer's receipts without treating foreign reports as runs.
+
+    Schema-less legacy runs remain in scope. Unknown/malformed headers cannot
+    establish a safe exclusion and therefore fail closed.
+    """
     records = []
-    for sibling in run_dir.parent.iterdir():
-        if sibling.is_dir() and (sibling / 'plan.json').exists() and not (sibling / 'actions.jsonl').is_file():
-            raise LifecycleError('persisted run has missing action receipts; deduplication unavailable')
-    for path in sorted(run_dir.parent.glob('*/actions.jsonl')):
+    for sibling in sorted(run_dir.parent.iterdir()):
+        if not sibling.is_dir():
+            continue
+        plan_path, path = sibling / 'plan.json', sibling / 'actions.jsonl'
+        has_plan = plan_path.exists() or plan_path.is_symlink()
+        if has_plan:
+            try:
+                header = json.loads(plan_path.read_text())
+                if not isinstance(header, dict):
+                    raise ValueError()
+                schema, owner = header.get('schema'), header.get('consumer')
+                if 'schema' in header and (not isinstance(schema, str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9._-]{0,127}', schema)):
+                    raise ValueError()
+                if 'consumer' in header and (not isinstance(owner, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,80}', owner)):
+                    raise ValueError()
+                native = schema is None or schema.startswith('agent-mesh.lifecycle-plan.')
+                if owner is not None and owner != consumer:
+                    continue
+                if not native and owner is None:
+                    # A valid different-schema report is not native run state.
+                    continue
+                if not native or schema not in (None, 'agent-mesh.lifecycle-plan.v1'):
+                    raise ValueError()
+            except (OSError, ValueError):
+                raise LifecycleError('persisted run header is ambiguous or unreadable; deduplication unavailable') from None
+            if not path.is_file():
+                raise LifecycleError('persisted run has missing action receipts; deduplication unavailable')
+        elif not path.exists() and not path.is_symlink():
+            continue
         try:
             with path.open() as stream:
                 for line in stream:
                     record = json.loads(line)
+                    if not isinstance(record, dict):
+                        raise ValueError()
                     if record.get('consumer') == consumer:
                         records.append(record)
         except (OSError, ValueError, KeyError):

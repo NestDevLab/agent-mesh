@@ -378,3 +378,15 @@ only from `archive-considered` rows in the existing action receipts; it creates
 no additional cursor or task store. This prevents a permanently refused prefix
 of the pool from starving later completed work. Preparation refusal receipts
 never settle an older ambiguous native archive attempt.
+
+### Receipt history scope
+
+Sibling `plan.json` files are classified by schema and consumer before requiring
+native `actions.jsonl`. Valid foreign report schemas without this consumer, and
+native plans explicitly owned by another consumer, are outside this consumer's
+history. This permits read-only/manual reports beside native runs without
+inventing dummy receipts. Current-consumer native plans still require readable
+action receipts; schema-less legacy plans and receipt streams without a plan
+remain in scope. Malformed/unreadable headers, unsupported native plan versions,
+and foreign schemas claiming the current consumer fail closed. Missing or
+corrupt native receipts must be reconciled, never deleted or fabricated.
