@@ -164,3 +164,21 @@ test('catalog uses honest temporary labels when no native title can be recovered
  assert.equal(catalogList(graph).sessions[0].titleSource,'operator');
  assert.equal(catalogList(graph).sessions[0].title,'Explicit operator title');
 });
+
+ test('global controller is unique across projects and runtimes', () => fixture(async state => {
+ const args = (session, project) => ['role','claim','--session',session,'--role','global-controller','--project',project];
+ const first = await ok(state,...args(a,'global'));
+ assert.equal(first.claim.key,'global-controller');
+ assert.notEqual((await run(state,...args(b,'different'))).code,0);
+ }));
+
+test('only a fenced global controller maintains active Director leases', () => fixture(async state => {
+ const director = (await ok(state,...claim(a))).claim;
+ const ctl = (await ok(state,'role','claim','--session',b,'--role','global-controller','--project','global')).claim;
+ const args = ['role','maintain','--session',b,'--role','global-controller','--project','global','--claim-id',ctl.id,'--input',JSON.stringify({projects:['example']})];
+ assert.equal((await ok(state,...args)).maintained,1);
+ await ok(state,...action('release',a,director.id));
+ assert.equal((await ok(state,...args)).maintained,0);
+ await ok(state,'role','release','--session',b,'--role','global-controller','--project','global','--claim-id',ctl.id);
+ assert.notEqual((await run(state,...args)).code,0);
+}));
