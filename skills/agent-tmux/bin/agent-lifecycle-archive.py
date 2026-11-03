@@ -4,6 +4,7 @@
 The engine injects its small API facade. Host hooks own canonical eligibility,
 durable summaries, independent AI review and the native archive operation.
 """
+from collections import Counter
 import hashlib
 import json
 import os
@@ -66,7 +67,7 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
     """Stage a bounded frozen pool; semantic refusals do not stop preparation."""
     enabled = config.get('maxArchives', 0) > 0 and all(config.get(name) for name in ('archivePrepareCommand', 'archiveReviewCommand', 'archiveApplyCommand'))
     batch = {'status': 'ready' if enabled else 'report-only', 'successLimit': config.get('maxArchives', 0),
-             'prepareLimit': config.get('archiveMaxCandidates', config.get('archivePrepareLimit', 100)), 'prepared': [], 'skipped': []}
+             'prepareLimit': config.get('archiveMaxCandidates', config.get('archivePrepareLimit', 100)), 'prepareCalls': 0, 'prepared': [], 'skipped': []}
     plan['archive'] = batch
     reviewed_refs = {entry['session'] for entry in config.get('reviewedTemporaryRefs', [])}
     plan['actions'] = [action for action in plan['actions'] if action['session'] not in reviewed_refs]
@@ -76,23 +77,43 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
     previous = history(history_records)
     rows = {row['sessionId']: row for row in inventory['sessions']}
     entries = {entry['session']: entry for entry in plan['entries']}
+    # Finished temporary Codex work remains a potential candidate even when its
+    # ordinary resume classification is keep-noise/ephemeral. Eligibility stays
+    # exclusively with the hard guard and canonical host adapter.
+    completed = [row['sessionId'] for row in inventory['sessions'] if row.get('harness') == 'codex'
+                 and (row.get('lifecycle') or {}).get('completion') == 'task'
+                 and (row.get('lifecycle') or {}).get('turnActive') is False
+                 and (row.get('lifecycle') or {}).get('historyComplete') is True]
     ordered = list(dict.fromkeys([entry['session'] for entry in config.get('reviewedTemporaryRefs', [])] +
-                                [entry['session'] for entry in plan['entries'] if entry['classification'] == 'archive-candidate']))
-    for session in ordered[:batch['prepareLimit']]:
+                                [entry['session'] for entry in plan['entries'] if entry['classification'] == 'archive-candidate'] + completed))
+    # Derive fair rotation from the existing receipt stream, never another
+    # cursor authority. Unconsidered refs precede previously considered refs.
+    considered = {record.get('session'): index for index, record in enumerate(history_records)
+                  if record.get('kind') == 'archive' and record.get('phase') == 'archive-considered'}
+    ordered.sort(key=lambda session: considered.get(session, -1))
+    for session in ordered:
+        if batch['prepareCalls'] >= batch['prepareLimit']:
+            break
         row = rows.get(session)
+        fingerprint = api.fingerprint(row) if row else None
+        base = {'at': api.now(), 'consumer': plan['consumer'], 'kind': 'archive', 'session': session,
+                'fingerprint': fingerprint, 'stage': 'prepare'}
+        api.append(run_dir / 'actions.jsonl', {**base, 'phase': 'archive-considered'})
         refusal = api.archive_guard(row, inventory, config)
+        prior = previous.get(session, {})
+        if not refusal and prior.get('successes') and fingerprint in prior.get('fingerprints', set()):
+            refusal = 'previous_native_archive_confirmed'
         if refusal:
             batch['skipped'].append({'session': session, 'reasonCode': refusal})
+            api.append(run_dir / 'actions.jsonl', {**base, 'phase': 'preparation-skipped', 'status': 'skipped', 'reasonCode': refusal})
             continue
-        fingerprint = api.fingerprint(row)
-        prior = previous.get(session, {})
-        if prior.get('successes') and fingerprint in prior.get('fingerprints', set()):
-            batch['skipped'].append({'session': session, 'reasonCode': 'previous_native_archive_confirmed'})
-            continue
+        batch['prepareCalls'] += 1
         try:
             data = invoke(config, 'archivePrepareCommand', {'session': session, 'fingerprint': fingerprint, 'runDir': str(run_dir.resolve())}, api)
             if data.get('status') == 'skipped':
-                batch['skipped'].append({'session': session, 'reasonCode': reason(data, api)})
+                code = reason(data, api)
+                batch['skipped'].append({'session': session, 'reasonCode': code})
+                api.append(run_dir / 'actions.jsonl', {**base, 'phase': 'preparation-skipped', 'status': 'skipped', 'reasonCode': code})
                 continue
             if data.get('status') != 'eligible' or data.get('session') != session or data.get('fingerprint') != fingerprint:
                 raise api.Error('archive preparation failed or identity mismatch')
@@ -109,6 +130,8 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
     # A source thread can never be resumed and archived in the same frozen plan.
     archive_refs = {action['session'] for action in batch['prepared']}
     plan['actions'] = [action for action in plan['actions'] if action['session'] not in archive_refs] + batch['prepared']
+    plan['counts'] = dict(Counter(entry['classification'] for entry in plan['entries']))
+    plan['approvals'] = [entry for entry in plan['entries'] if entry['classification'].startswith('approval-') or entry['classification'] in ('archive-candidate', 'archive-prepared', 'handoff-candidate')]
     plan['digest'] = api.digest({key: value for key, value in plan.items() if key != 'digest'})
     return plan
 
@@ -212,15 +235,16 @@ def history(records):
     for record in records:
         if record.get('kind') != 'archive':
             continue
-        state = states.setdefault(record.get('session'), {'unresolved': False, 'successes': set(), 'fingerprints': set(), 'skipped': set()})
+        state = states.setdefault(record.get('session'), {'unresolved': False, 'successes': set(), 'fingerprints': set(), 'skipped': set(), 'attempts': set()})
         phase = record.get('phase')
         if phase == 'archive-attempt':
-            state['unresolved'] = True
+            state['attempts'].add((record.get('planDigest'), record.get('actionDigest')))
             state['fingerprints'].add(record['fingerprint'])
         elif phase == 'acknowledgement' and record.get('status') == 'archived':
-            state['unresolved'] = False
+            state['attempts'].discard((record.get('planDigest'), record.get('actionDigest')))
             state['successes'].add((record.get('planDigest'), record.get('actionDigest')))
-        elif phase == 'skipped':
-            state['unresolved'] = False
+        elif phase == 'skipped' and record.get('actionDigest'):
+            state['attempts'].discard((record.get('planDigest'), record.get('actionDigest')))
             state['skipped'].add((record.get('planDigest'), record.get('actionDigest')))
+        state['unresolved'] = bool(state['attempts'])
     return states

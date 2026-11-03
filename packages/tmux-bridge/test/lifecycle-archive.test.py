@@ -101,8 +101,6 @@ class ArchiveProtocol(unittest.TestCase):
         plan = engine.build_plan(inventory, self.config)
         with patch.object(engine, 'run', side_effect=self.runner):
             engine.archive_module().prepare(plan, inventory, self.config, self.run_dir, engine.archive_api(), engine.receipt_history(self.run_dir, self.config["consumer"]))
-        plan['counts'] = dict(engine.Counter(entry['classification'] for entry in plan['entries']))
-        plan['digest'] = engine.digest({key: value for key, value in plan.items() if key != 'digest'})
         engine.write(self.run_dir / 'inventory.json', inventory)
         engine.write(self.run_dir / 'plan.json', plan)
         engine.append(self.run_dir / 'actions.jsonl', {'consumer': self.config['consumer'], 'phase': 'planned', 'at': engine.now()})
@@ -282,6 +280,52 @@ class ArchiveProtocol(unittest.TestCase):
         rows = [json.loads(line) for line in (root / 'outbox.jsonl').read_text().splitlines()]
         self.assertEqual(len(rows), 2)
         self.assertNotEqual(rows[0]['event_id'], rows[1]['event_id'])
+
+    def test_known_hard_rejects_do_not_consume_prepare_hook_budget(self):
+        inventory = self.inventory(8)
+        self.config['archiveMaxCandidates'] = 2
+        self.config['excludeRefs'] = [self.ref(3)]
+        for row in inventory['sessions'][:2]:
+            row.update(harness='claude', sessionId=row['sessionId'].replace('codex:', 'claude:'))
+        self.config['reviewedTemporaryRefs'] = [{'session': row['sessionId'], 'fingerprint': engine.fingerprint(row)} for row in inventory['sessions'][:3]]
+        plan = self.prepare(inventory)
+        self.assertEqual(plan['archive']['prepareCalls'], 2)
+        self.assertEqual([a['session'] for a in plan['actions']], [self.ref(4), self.ref(5)])
+        self.assertEqual(len(plan['archive']['skipped']), 3)
+        records = [json.loads(line) for line in (self.run_dir / 'actions.jsonl').read_text().splitlines()]
+        self.assertEqual(sum(row['phase'] == 'preparation-skipped' for row in records), 3)
+
+    def test_receipt_rotation_reaches_candidates_after_permanent_semantic_skips(self):
+        inventory = self.inventory(5)
+        self.config['archiveMaxCandidates'] = 2
+        self.prepare_skips.update(row['sessionId'] for row in inventory['sessions'])
+        self.prepare(inventory)
+        self.run_dir = self.root / 'runs' / 'second'
+        self.run_dir.mkdir()
+        self.prepare(inventory)
+        self.run_dir = self.root / 'runs' / 'third'
+        self.run_dir.mkdir()
+        self.prepare(inventory)
+        considered = [call[1]['session'] for call in self.calls if call[0] == 'prepare']
+        self.assertEqual(considered[:5], [self.ref(n) for n in range(1, 6)])
+        self.assertEqual(len(considered), 6)
+
+    def test_completed_noise_and_ephemeral_codex_are_prepared_but_not_resumed(self):
+        inventory = self.inventory(2)
+        inventory['sessions'][0].update(origin='automation')
+        inventory['sessions'][1].update(origin='subagent', **{'class': 'ephemeral'})
+        plan = self.prepare(inventory)
+        self.assertEqual([action['kind'] for action in plan['actions']], ['archive', 'archive'])
+        self.assertEqual(plan['counts'], {'archive-prepared': 2})
+        self.assertTrue(all(entry['originalClassification'] == 'keep-noise' for entry in plan['entries']))
+        self.assertTrue(all(entry in plan['approvals'] for entry in plan['entries']))
+
+    def test_preparation_skip_cannot_settle_older_ambiguous_archive(self):
+        records = [{'kind': 'archive', 'session': self.ref(1), 'phase': 'archive-attempt',
+                    'fingerprint': 'a' * 64, 'planDigest': 'old', 'actionDigest': 'attempt'},
+                   {'kind': 'archive', 'session': self.ref(1), 'phase': 'preparation-skipped', 'reasonCode': 'writer_live'},
+                   {'kind': 'archive', 'session': self.ref(1), 'phase': 'skipped', 'planDigest': 'new', 'actionDigest': 'different'}]
+        self.assertTrue(engine.archive_module().history(records)[self.ref(1)]['unresolved'])
 
     def test_source_error_before_mutation_stops(self):
         inventory = self.inventory(2)

@@ -279,7 +279,7 @@ report-only (`maxArchives: 0`). Configure all three argv hooks to enable archive
 | Key | Default | Bound |
 | --- | ---: | ---: |
 | `maxArchives` | 0 | 0–10 confirmed successes per frozen run |
-| `archiveMaxCandidates` | 100 | 1–200 candidate preparations |
+| `archiveMaxCandidates` | 100 | 1–200 actual prepare-hook calls |
 | `archivePrepareTimeoutMs` | 120000 | 1–120000 |
 | `archiveReviewTimeoutMs` | 240000 | 1–300000 |
 | `archiveApplyTimeoutMs` | 120000 | 1–120000 |
@@ -363,3 +363,18 @@ Focused synthetic checks (run in the integration/test checkout):
 python3 packages/tmux-bridge/test/lifecycle-archive.test.py
 python3 packages/tmux-bridge/test/lifecycle-engine.test.py
 ```
+
+Candidate discovery also includes completed (`completion: task`, inactive turn,
+complete history) temporary Codex workers, including noise/ephemeral classes;
+this does not change their resume or queue behavior. Normal hard protections,
+project policy and canonical eligibility still apply. Known unsupported or
+hard-protected rows get per-thread `preparation-skipped` receipts without
+consuming the prepare-hook budget. Preparation updates plan classification
+counts and the approval list before freezing its digest.
+
+When more candidates exist than fit the hook budget, the next run considers
+previously unconsidered/least-recently considered refs first. Rotation is derived
+only from `archive-considered` rows in the existing action receipts; it creates
+no additional cursor or task store. This prevents a permanently refused prefix
+of the pool from starving later completed work. Preparation refusal receipts
+never settle an older ambiguous native archive attempt.
