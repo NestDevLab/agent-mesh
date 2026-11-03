@@ -74,15 +74,70 @@ class SessionInboxTest(unittest.TestCase):
         with (self.root / (SESSION + '.jsonl')).open('a') as stream:
             stream.write(text)
 
+    def test_detached_service_survives_hook_exit_and_delivers_only_real_batches(self):
+        owner = subprocess.Popen(['sleep', '30'])
+        self.processes.append(owner)
+        config = Path(self.temp.name) / 'claude'
+        (config / 'sessions').mkdir(parents=True)
+        (config / 'sessions' / 'owner.json').write_text(json.dumps({
+            'pid': owner.pid, 'sessionId': SESSION, 'procStart': identity(owner.pid)['start'],
+            'name': 'synthetic-peer'}))
+        calls = Path(self.temp.name) / 'native-calls.jsonl'
+        native = Path(self.temp.name) / 'claude-native'
+        native.write_text('#!' + sys.executable + '\n' + """
+import json, os, sys
+for line in sys.stdin:
+    r=json.loads(line)
+    if 'id' not in r: continue
+    if r['method']=='initialize': result={}
+    elif r['params']['name']=='ListAgents':
+        result={'content':[{'type':'text','text':json.dumps({'sections':[{'kind':'sessions','rows':[{'name':'synthetic-peer','ref':'live-ref'}]}]})}]}
+    else:
+        with open(os.environ['NATIVE_CALL_LOG'],'a') as f: f.write(json.dumps(r['params']['arguments'])+'\\n')
+        result={'content':[{'type':'text','text':json.dumps({'status':'sent'})}]}
+    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
+""")
+        native.chmod(0o700)
+        result = self.hook(owner=owner.pid, extra_env={'CLAUDE_CONFIG_DIR':str(config),
+                           'CLAUDE_BIN':str(native), 'NATIVE_CALL_LOG':str(calls)})
+        self.assertNotIn('run_in_background=true', result.stdout)
+        metadata = self.ready()
+        daemon = metadata['supervisor']['pid']
+        try:
+            self.assertEqual(metadata['receiver'], identity(owner.pid))
+            time.sleep(0.3)
+            self.assertFalse(calls.exists(), 'idle service must never call the native sender')
+            for text in ('first real record', 'second real record'):
+                self.append(record(text))
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline and (not calls.exists() or text not in calls.read_text()):
+                    time.sleep(0.02)
+                self.assertIn(text, calls.read_text())
+            self.assertEqual(len(calls.read_text().splitlines()), 2)
+            self.assertEqual(self.ready()['supervisor']['pid'], daemon)
+            self.assertEqual(self.hook(event='Stop', owner=owner.pid).stdout, '')
+            owner.terminate()
+            owner.wait(timeout=2)
+            deadline=time.monotonic()+2
+            while time.monotonic()<deadline:
+                try:
+                    if Path(f'/proc/{daemon}/stat').read_text().rsplit(')',1)[1].split()[0]=='Z': break
+                except FileNotFoundError: break
+                time.sleep(0.02)
+            else: self.fail('service outlived its owner')
+        finally:
+            try: os.kill(daemon, 15)
+            except ProcessLookupError: pass
+
     def test_hook_resume_context_permissions_and_authority(self):
         for _ in range(2):
             context = json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext']
-            self.assertIn('run_in_background=true', context)
+            self.assertIn('Do not launch or rearm', context)
             self.assertIn('never user approval', context)
             self.assertIn('do not expand permissions', context)
-            self.assertIn('--owner-pid', context)
-            self.assertIn('AGENT_MESH_INBOX_DUPLICATE do-not-relaunch', context)
-            self.assertIn('do not relaunch it', context)
+            self.assertIn('owner-bound detached', context)
+            self.assertIn('native cross-session messages', context)
+            self.assertIn('after an old background task times out', context)
         inbox = self.root / (SESSION + '.jsonl')
         inbox.write_text('retained\n')
         inbox.chmod(0o644)
@@ -116,7 +171,7 @@ class SessionInboxTest(unittest.TestCase):
                  (['-np'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}))
         for flags, env in cases:
             context = json.loads(self.hook(owner=self.fake_owner(*flags), extra_env=env).stdout)
-            self.assertIn('run_in_background=true', context['hookSpecificOutput']['additionalContext'])
+            self.assertIn('Do not launch or rearm', context['hookSpecificOutput']['additionalContext'])
 
     def test_codex_and_automation_disabled_without_side_effects(self):
         self.assertEqual(self.hook(agent='codex').stdout, '')
@@ -168,7 +223,7 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(result['hookEventName'], 'UserPromptSubmit')
         self.assertEqual(result['additionalContext'], json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext'])
         (self.root / (SESSION + '.watch.lock')).touch(mode=0o600)
-        self.assertIn('Start', self.hook(event='UserPromptSubmit').stdout)
+        self.assertIn('Session mailbox', self.hook(event='UserPromptSubmit').stdout)
 
     def test_live_prompt_probe_is_silent_read_only_and_session_specific(self):
         self.hook()
@@ -182,7 +237,7 @@ class SessionInboxTest(unittest.TestCase):
             self.assertEqual((result.stdout, result.stderr), ('', ''))
         for name, info in before.items():
             self.assertEqual(((self.root/name).stat().st_mtime_ns, (self.root/name).stat().st_mode), info)
-        self.assertIn('Start', self.hook(session='other-session', event='UserPromptSubmit').stdout)
+        self.assertIn('Session mailbox', self.hook(session='other-session', event='UserPromptSubmit').stdout)
         self.assertEqual(self.watcher().communicate(timeout=2), ('AGENT_MESH_INBOX_DUPLICATE do-not-relaunch\n', ''))
 
     def test_owner_exit_releases_lock_and_new_owner_takes_over(self):
@@ -398,7 +453,7 @@ class SessionInboxTest(unittest.TestCase):
         declaration = declarations[0]
         self.assertEqual(declaration['runtimes'], ['claude'])
         config = json.loads((repo / declaration['path']).read_text())
-        self.assertEqual(set(config['hooks']), {'SessionStart', 'UserPromptSubmit'})
+        self.assertEqual(set(config['hooks']), {'SessionStart', 'UserPromptSubmit', 'Stop'})
         env = {**os.environ, 'HOME': self.temp.name, 'CLAUDE_CONFIG_DIR': str(Path(self.temp.name) / '.claude'),
                'CLAUDE_PROJECT_DIR': str(Path(self.temp.name) / 'project'),
                'AGENT_MESH_HARNESS_PID': str(os.getpid()), 'AGENT_MESH_INBOX_ROOT': str(self.root)}
