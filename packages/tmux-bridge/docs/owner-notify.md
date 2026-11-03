@@ -15,6 +15,7 @@ Private configuration:
   "excludeRefs": [],
   "excludeWorkRefs": ["work:EXAMPLE-EXCLUDED"],
   "excludeDomains": [],
+  "excludeTitlePatterns": ["Example protected work"],
   "excludePromptPrefixes": ["Example excluded task:"],
   "noise": {"promptPrefixes": ["[example-probe]"]}
 }
@@ -47,3 +48,7 @@ append acknowledged, never owner execution. Deduplication uses thread plus turn;
 notifications are saved before advancing delivery, and a deterministic native
 `deliveryId` recovers an append followed by a crash before receipt persistence.
 Do not delete inbox records while an owner-notify delivery is pending.
+
+A torn final receipt is preserved in `receipt-fragments.jsonl` before repair.
+After a refused delivery, a now-dead owner can fall back; an existing native
+inbox append is recovered before changing that recipient.

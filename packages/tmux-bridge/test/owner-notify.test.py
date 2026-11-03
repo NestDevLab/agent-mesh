@@ -117,6 +117,37 @@ class OwnerNotify(unittest.TestCase):
         self.tick();self.assertEqual(self.send.call_count, 1)
         self.assertEqual(len(self.receipts()), 1)
 
+    def test_owner_dies_after_refused_delivery_uses_fallback(self):
+        self.owned();self.finish();self.send.side_effect = None;self.send.return_value = 3
+        self.assertEqual(self.tick()['pending'], 1)
+        self.live.side_effect = lambda root, owner: owner != OWNER
+        self.send.side_effect = self.delivery
+        self.assertEqual(self.tick()['pending'], 0)
+        self.assertEqual(self.send.call_args.args[1], FALLBACK)
+        self.assertEqual(self.receipts()[-1]['reason'], 'owner-dead')
+
+    def test_torn_receipt_recovers_delivery_without_duplicate(self):
+        self.owned();self.finish()
+        real = n.append
+        def torn(path, value):
+            if path.name == 'receipts.jsonl':
+                with path.open('ab') as f:f.write(b'{"id":')
+                raise OSError('torn append')
+            real(path, value)
+        with patch.object(n, 'append', side_effect=torn):
+            with self.assertRaises(OSError):self.tick()
+        self.tick();self.assertEqual(self.send.call_count, 1)
+        self.assertEqual(len(self.receipts()), 1)
+        self.assertTrue((self.state / 'receipt-fragments.jsonl').is_file())
+        self.finish('next');self.tick();self.assertEqual(len(self.receipts()), 2)
+
+    def test_title_exclusion_covers_discovered_work(self):
+        self.graph.write_text(json.dumps({'nodes': [{'id': 'c', 'agent': 'codex', 'runtimeUuid': THREAD, 'title': 'Example protected work'}]}))
+        self.config['excludeTitlePatterns'] = ['protected work']
+        self.finish();self.tick()
+        self.assertEqual(self.receipts()[-1]['reason'], 'excluded-work')
+        self.assertFalse(self.send.called)
+
     def test_dead_fallback_stays_pending(self):
         self.live.return_value = False;self.finish()
         self.assertEqual(self.tick()['pending'], 1)

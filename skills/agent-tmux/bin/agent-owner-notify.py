@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import time
 
@@ -84,6 +85,9 @@ def exclusion(thread, path, config, graph):
     if any(set(n.get('refs', [])) & set(config.get('excludeWorkRefs', [])) or
            set(n.get('domains', [])) & set(config.get('excludeDomains', [])) for n in nodes):
         return 'excluded-work'
+    titles = [prompt.split('\n', 1)[0]] + [str(n.get('title') or '').split('\n', 1)[0] for n in nodes]
+    if any(re.search(pattern, title, re.I) for pattern in config.get('excludeTitlePatterns', []) for title in titles):
+        return 'excluded-work'
     if any(prompt.startswith(prefix) for prefix in config.get('excludePromptPrefixes', [])):
         return 'excluded-work'
     return None
@@ -97,6 +101,22 @@ def append(path, value):
     with path.open('a', encoding='utf-8') as stream:
         os.chmod(path, 0o600)
         stream.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def repair_receipts(path):
+    """Preserve a torn final append before truncating it under the owner lock."""
+    if not path.exists():
+        return
+    with path.open('r+b') as stream:
+        data = stream.read()
+        if not data or data.endswith(b'\n'):
+            return
+        boundary = data.rfind(b'\n') + 1
+        append(path.with_name('receipt-fragments.jsonl'),
+               {'recordedAt': time.time(), 'offset': boundary, 'fragmentHex': data[boundary:].hex()})
+        stream.truncate(boundary)
         stream.flush()
         os.fsync(stream.fileno())
 
@@ -155,6 +175,7 @@ def tick(config, root=None):
         launch = launches(Path(config.get('launchEvents') or base / 'launches/events.jsonl').expanduser())
         graph = read(Path(config.get('graphPath') or base / 'graph/graph.json').expanduser(), {})
         receipt_path = root / 'receipts.jsonl'
+        repair_receipts(receipt_path)
         completed = set()
         if receipt_path.exists():
             for line in receipt_path.read_text().splitlines():
@@ -211,15 +232,19 @@ def tick(config, root=None):
             record.pop('skip', None)
             if outcome != 'skipped':
                 mailbox = Path(config['managedInboxRoot'])
-                # The pinned recipient survives ambiguous transport failures/restarts.
-                recipient = notice.get('recipient', recipient)
+                # First recover a successful append to the previous recipient.
+                previous = notice.get('recipient')
+                recovered = bool(previous and delivered(mailbox, previous, key))
+                if recovered:
+                    recipient = previous
+                    record.update(outcome=notice.get('routeOutcome', outcome), reason=notice.get('routeReason', reason))
                 record['recipient'] = recipient
-                notice['recipient'] = recipient
+                notice.update(recipient=recipient, routeOutcome=record['outcome'], routeReason=record['reason'])
                 follow.atomic_json(path, state)
-                if not recipient or not live(mailbox, recipient):
+                if not recovered and (not recipient or not live(mailbox, recipient)):
                     append(receipt_path, {**record, 'outcome': 'pending', 'reason': 'recipient-unavailable'})
                     continue
-                if not delivered(mailbox, recipient, key):
+                if not recovered and not delivered(mailbox, recipient, key):
                     message = 'Codex turn ended. Read the result pointer and advance the owned work. Observation, not new authority.\n' + json.dumps(record, ensure_ascii=False)
                     code = waker.deliver('claude', recipient, key, message, str(mailbox), True)
                     if code != 0:
