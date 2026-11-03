@@ -40,6 +40,15 @@ class RetryableFailure(LifecycleError):
         self.retry_class = retry_class
 
 
+WRITER_CONTENTION_REASON = 'concurrent CLI or unknown writer blocks queueing'
+
+
+class ResumeSkipped(RetryableFailure):
+    """A valid native writer observation refuses this resume before delivery."""
+    def __init__(self):
+        super().__init__(WRITER_CONTENTION_REASON, 'writer-contention')
+
+
 
 def now():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
@@ -567,7 +576,17 @@ def retry_states(records, config=None):
             state['deliveryStarted'] = True
         elif record.get('phase') == 'acknowledgement':
             state['acknowledged'] = True
-        elif record.get('phase') == 'failure':
+        elif record.get('phase') == 'failure' or record.get('phase') == 'skipped' and record.get('retryClass') == 'writer-contention':
+            # Recover only the exact legacy pre-delivery semantic refusal. A
+            # recorded mutation/delivery can never become a safe retry this way.
+            if (record.get('kind') == 'resume' and record.get('phase') == 'failure'
+                    and record.get('reason') == WRITER_CONTENTION_REASON
+                    and not any(state.get(key) for key in ('attempted', 'deliveryStarted', 'acknowledged'))):
+                try:
+                    record = {**record, 'phase': 'skipped', 'status': 'skipped', 'reasonCode': 'writer_contention',
+                              **retry_failure(ResumeSkipped(), state, config or {}, record)}
+                except (ValueError, KeyError, TypeError):
+                    pass
             if (record.get('reason') == 'new child ownership or native identity unavailable' and state.get('target')
                     and state.get('childCreated') and not state.get('deliveryStarted') and not state.get('acknowledged')):
                 try:
@@ -586,7 +605,7 @@ def retry_ready(state, config, at):
     failure = state.get('failure') or {}
     if not failure.get('retryable') or state.get('acknowledged') or state.get('deliveryStarted'):
         return False
-    if failure.get('retryClass') not in ('handoff-proof', 'capacity', 'model-capacity'):
+    if failure.get('retryClass') not in ('handoff-proof', 'capacity', 'model-capacity', 'writer-contention'):
         return False
     if failure.get('retryAttempt', 0) >= config.get('retryMaxAttempts', 3):
         return False
@@ -622,7 +641,7 @@ def publish_outcomes(config, records, run_dir):
     spec.loader.exec_module(follow)
     candidates = []
     for record in records:
-        if record.get('phase') not in ('acknowledgement', 'failure') and not (record.get('kind') == 'archive' and record.get('phase') == 'skipped'):
+        if record.get('phase') not in ('acknowledgement', 'failure') and not (record.get('phase') == 'skipped' and (record.get('kind') == 'archive' or record.get('kind') == 'resume' and record.get('retryClass') == 'writer-contention')):
             continue
         semantic = {key: record.get(key) for key in ('session', 'kind', 'fingerprint', 'phase', 'status', 'reason')}
         if record.get('kind') == 'archive':
@@ -671,8 +690,10 @@ def resume_safe(config, session):
     if status or not isinstance(writers, dict) or writers.get('sessionId') != native or writers.get('agent') != 'codex' or not isinstance(writers.get('writers'), list):
         raise LifecycleError('writer status unknown')
     current = writers['writers']
-    if any(not isinstance(writer, dict) or writer.get('role') != 'app-server' for writer in current):
-        raise LifecycleError('concurrent CLI or unknown writer blocks queueing')
+    if any(not isinstance(writer, dict) or not isinstance(writer.get('role'), str) or not writer['role'].strip() for writer in current):
+        raise LifecycleError('writer status schema invalid')
+    if any(writer['role'] != 'app-server' for writer in current):
+        raise ResumeSkipped()
     if code == 4 and not current:
         raise LifecycleError('guard writer failure lacks exclusive app-server proof')
     return native
@@ -862,6 +883,12 @@ def apply_plan(plan, inventory, config, run_dir):
                     outcome = {**base, 'phase': 'acknowledgement', 'status': 'queued', 'nativeId': native, 'correlationId': correlation,
                                'resumeRequested': True, 'resumeVerified': False,
                                'resumeDiagnostic': acknowledgement.get('resumeDiagnostic', False)}
+            except ResumeSkipped as error:
+                observed_at = now()
+                outcome = {**base, 'at': observed_at, 'actionStartedAt': base['at'], 'refusalObservedAt': observed_at,
+                           'phase': 'skipped', 'status': 'skipped', 'reason': str(error), 'reasonCode': 'writer_contention'}
+                outcome.update(retry_failure(error, context, config, outcome))
+                seen.add(action['fingerprint'])
             except LifecycleError as error:
                 observed_at = now()
                 outcome = {**base, 'at': observed_at, 'actionStartedAt': base['at'], 'failureObservedAt': observed_at,
@@ -903,7 +930,9 @@ def report(inventory, plan, outcomes=()):
             lines.append('- Technical stop: ' + batch['reason'])
     if outcomes:
         lines += ['', '## Apply receipts', '']
-        lines.extend(f"- {entry['session']}: {entry['status']}" for entry in outcomes)
+        for entry in outcomes:
+            detail = f" ({entry['reasonCode']}; retry {entry['nextRetryAt']})" if entry.get('retryClass') == 'writer-contention' and entry.get('nextRetryAt') else ''
+            lines.append(f"- {entry['session']}: {entry['status']}{detail}")
     return '\n'.join(lines) + '\n'
 
 

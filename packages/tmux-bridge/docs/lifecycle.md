@@ -407,3 +407,24 @@ action receipts; schema-less legacy plans and receipt streams without a plan
 remain in scope. Malformed/unreadable headers, unsupported native plan versions,
 and foreign schemas claiming the current consumer fail closed. Missing or
 corrupt native receipts must be reconciled, never deleted or fabricated.
+
+### Writer contention is a semantic resume skip
+
+A successful, identity-matching writer-status response with a non-app-server
+writer refuses queueing before any delivery attempt. It records `phase: skipped`,
+`status: skipped`, `reasonCode: writer_contention`, and receipt-backed
+`retryClass: writer-contention` with the existing exponential delay and hard
+retry budget. Other selected actions may continue; a run containing only these
+safe refusals exits zero. The ordinary follow outbox deduplicates unchanged
+semantic outcomes; polling time and retry count do not create failure alerts.
+No lock is bypassed, no second writer is launched, and no queued work is claimed.
+
+Due retries rerun current source, reset-window, native guard and writer checks.
+An optional configured retry guard also applies. A released CLI writer may allow
+native queueing after backoff; an exhausted budget remains held for reconciliation.
+Only the exact legacy pre-delivery writer-contention failure can be normalized
+from old receipts, and only without any recorded mutation/delivery/acknowledgement.
+Malformed metadata (including absent/non-string writer roles), failed helpers,
+missing identity, native guard errors and ambiguous delivery remain fatal and
+stop the batch with nonzero status. This semantic path never changes archive
+attempt receipts or their independent eligibility/review requirements.

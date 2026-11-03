@@ -2,6 +2,7 @@
 """Synthetic native helper stubs; no runtime or transcript parser is exercised."""
 import copy
 import importlib.util
+import io
 import json
 import os
 import sys
@@ -252,10 +253,119 @@ class LifecycleEngine(unittest.TestCase):
         other.mkdir()
         self.writers = [{'role': 'cli', 'kind': 'codex'}]
         changed = self.inventory([self.row(2)])
-        self.assertEqual(self.apply(changed, run_dir=other)[0]['status'], 'blocked')
+        self.assertEqual(self.apply(changed, run_dir=other)[0]['status'], 'skipped')
         self.guard_code = 3
         self.writers = []
         self.assertEqual(self.apply(self.inventory([self.row(3)]), run_dir=other)[0]['status'], 'blocked')
+
+    def test_writer_contention_skips_without_attempt_and_continues_batch(self):
+        inventory = self.inventory([self.row(1), self.row(2)])
+        runner = self.runner
+        def per_session(argv, *args, **kwargs):
+            self.writers = [{'kind': 'codex', 'role': 'cli'}] if 'writers' == argv[0] and self.row()['nativeId'] in argv else []
+            return runner(argv, *args, **kwargs)
+        with patch.object(engine, 'run', side_effect=per_session), patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'collect', return_value=inventory):
+            result = engine.apply_plan(engine.build_plan(inventory, self.config), inventory, self.config, self.run_dir)
+        self.assertEqual([row['status'] for row in result], ['skipped', 'queued'])
+        self.assertEqual(result[0]['reasonCode'], 'writer_contention')
+        self.assertEqual(result[0]['retryClass'], 'writer-contention')
+        self.assertTrue(result[0]['retryable'])
+        records = [json.loads(line) for line in (self.run_dir / 'actions.jsonl').read_text().splitlines()]
+        self.assertEqual([r['phase'] for r in records if r['session'] == self.row()['sessionId']], ['skipped'])
+
+    def test_writer_skip_backoff_reprobes_then_queues_after_writer_releases(self):
+        self.writers = [{'role': 'unknown', 'kind': 'codex'}]
+        inventory = self.inventory()
+        clock = {'at': '2026-01-01T12:00:00Z'}
+        with patch.object(engine, 'now', side_effect=lambda: clock['at']):
+            first = self.apply(inventory)[0]
+            self.assertEqual(first['nextRetryAt'], '2026-01-01T12:05:00Z')
+            self.assertEqual(first['retryAttempt'], 1)
+            receipts = engine.receipt_history(self.run_dir, self.config['consumer'])
+            held = engine.attempted(self.run_dir, self.config['consumer'], self.config, '2026-01-01T12:01:00Z')
+            plan = engine.build_plan(inventory, self.config, held, receipts)
+            self.assertEqual(plan['actions'], [])
+            clock['at'] = '2026-01-01T12:06:00Z'
+            second = self.root / 'runs' / 'second'
+            second.mkdir()
+            refused = self.apply(inventory, run_dir=second)[0]
+            self.assertEqual(refused['retryAttempt'], 2)
+            self.assertEqual(refused['nextRetryAt'], '2026-01-01T12:16:00Z')
+            self.writers = []
+            clock['at'] = '2026-01-01T12:17:00Z'
+            third = self.root / 'runs' / 'third'
+            third.mkdir()
+            self.assertEqual(self.apply(inventory, run_dir=third)[0]['status'], 'queued')
+
+    def test_writer_skip_hard_retry_budget_does_not_loop(self):
+        self.writers = [{'role': 'cli'}]
+        config = {**self.config, 'retryMaxAttempts': 1}
+        inventory = self.inventory()
+        first = self.apply(inventory, config=config)[0]
+        self.assertTrue(first['retryExhausted'])
+        other = self.root / 'runs' / 'held'
+        other.mkdir()
+        self.assertEqual(self.apply(inventory, config=config, run_dir=other)[0]['status'], 'not-retried')
+        self.assertFalse(any(isinstance(c[0], list) and c[0][0] == 'native' for c in self.calls))
+
+    def test_malformed_writer_metadata_and_helper_failures_remain_fatal(self):
+        for index, writers in enumerate(([None], [{}], [{'role': 1}], [{'role': ''}])):
+            self.writers = writers
+            target = self.root / 'runs' / ('bad-' + str(index))
+            target.mkdir()
+            result = self.apply(self.inventory([self.row(index + 10)]), run_dir=target)[0]
+            self.assertEqual(result['phase'], 'failure')
+            self.assertEqual(result['status'], 'blocked')
+            self.assertNotIn('retryable', result)
+        runner = self.runner
+        def failed_helper(argv, *args, **kwargs):
+            if argv[0] == 'writers':
+                return 1, {'agent': 'codex', 'sessionId': self.row()['nativeId'], 'writers': [{'role': 'cli'}]}
+            return runner(argv, *args, **kwargs)
+        inventory = self.inventory()
+        with patch.object(engine, 'run', side_effect=failed_helper), patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'collect', return_value=inventory):
+            result = engine.apply_plan(engine.build_plan(inventory, self.config), inventory, self.config, self.run_dir)
+        self.assertEqual(result[0]['phase'], 'failure')
+        self.assertEqual(result[0]['reason'], 'writer status unknown')
+
+    def test_exact_legacy_writer_refusal_recovers_only_before_mutation(self):
+        record = {'kind': 'resume', 'session': self.row()['sessionId'], 'fingerprint': 'fixture', 'phase': 'failure',
+                  'at': '2026-01-01T12:00:00Z', 'reason': 'concurrent CLI or unknown writer blocks queueing'}
+        state = engine.retry_states([record], self.config)['fixture']
+        self.assertEqual(state['failure']['phase'], 'skipped')
+        self.assertTrue(engine.retry_ready(state, self.config, '2026-01-01T12:06:00Z'))
+        attempted = {**record, 'phase': 'attempt'}
+        state = engine.retry_states([attempted, record], self.config)['fixture']
+        self.assertFalse(state['failure'].get('retryable', False))
+        unrelated = {**record, 'reason': 'writer status unknown'}
+        self.assertFalse(engine.retry_states([unrelated], self.config)['fixture']['failure'].get('retryable', False))
+
+    def test_cli_writer_skip_exits_zero_and_technical_error_exits_nonzero(self):
+        inventory = self.inventory()
+        config = {**self.config, 'runReceiptCommand': ['receipt']}
+        config_path = self.root / 'config.json'
+        engine.write(config_path, config)
+        engine.write(self.run_dir / 'inventory.json', inventory)
+        engine.write(self.run_dir / 'plan.json', engine.build_plan(inventory, config))
+        engine.append(self.run_dir / 'actions.jsonl', {'phase': 'planned', 'consumer': config['consumer']})
+        self.writers = [{'role': 'cli'}]
+        runner = self.runner
+        def with_receipt(argv, *args, **kwargs):
+            return (0, {}) if argv[0] == 'receipt' else runner(argv, *args, **kwargs)
+        argv = ['agent-lifecycle.py', 'apply', '--apply', '--config', str(config_path), '--run-dir', str(self.run_dir)]
+        with patch.object(sys, 'argv', argv), patch.object(engine, 'run', side_effect=with_receipt), patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'collect', return_value=inventory), patch.object(sys, 'stdout', new_callable=io.StringIO) as output:
+            self.assertEqual(engine.main(), 0)
+            self.assertEqual(json.loads(output.getvalue())['status'], 'noop')
+        self.guard_code = 3
+        inventory = self.inventory([self.row(2)])
+        other = self.root / 'runs' / 'technical'
+        other.mkdir()
+        engine.write(other / 'inventory.json', inventory)
+        engine.write(other / 'plan.json', engine.build_plan(inventory, config))
+        engine.append(other / 'actions.jsonl', {'phase': 'planned', 'consumer': config['consumer']})
+        argv[-1] = str(other)
+        with patch.object(sys, 'argv', argv), patch.object(engine, 'run', side_effect=with_receipt), patch.object(engine, 'query', side_effect=self.query), patch.object(engine, 'collect', return_value=inventory), patch.object(sys, 'stdout', new_callable=io.StringIO):
+            self.assertEqual(engine.main(), 1)
 
     def test_desktop_free_writer_can_queue_without_bypass(self):
         self.guard_code = 6
