@@ -57,3 +57,8 @@ belong here; the attention loop itself must not hold the graph lock.
 A session holds one outstanding role claim at a time. Release it before changing role or project;
 the holder may release an expired claim with its exact token. This prevents a partial takeover from
 silently fencing unrelated grants.
+
+Catalog rows always have a readable display title. `titleSource` is `operator`, `native`, or
+`unavailable`; the last case displays a temporary runtime/id label without overwriting the raw
+transcript facts. A missing or encrypted brief is not a recovered title. Discovery reports
+noncanonical child transcript names separately; those names are not native session UUIDs.

@@ -36,7 +36,8 @@ export function catalogList(graph, options = {}) {
   }
   const claims = graph.roleClaims || [];
   return { sessions: [...grouped].map(([session, node]) => ({
-    sessionId: session, runtime: node.agent, title: node.catalogTitle || node.title,
+    sessionId: session, runtime: node.agent, title: node.catalogTitle || node.title || `${node.agent} session ${session.split(':')[1].slice(0, 8)}`,
+    titleSource: node.catalogTitle ? 'operator' : node.title ? 'native' : 'unavailable',
     role: node.catalogRole || 'unclassified', project: node.catalogProject || null,
     status: node.catalogStatus || node.status,
     claims: claims.filter(c => c.session === session).map(c => ({ ...c, status: claimState(c) })),
