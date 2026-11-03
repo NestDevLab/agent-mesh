@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { parseSessionId, sessionIdOf } from './plexus.mjs';
 
-const SINGLETONS = new Set(['director', 'daily', 'holding-director']);
+const SINGLETONS = new Set(['director', 'daily', 'holding-director', 'global-controller']);
 const SLUG = /^[a-z][a-z0-9-]{0,63}$/;
 export const DEFAULT_TTL = 4200;
 
@@ -74,6 +74,19 @@ export function roleOperation(graph, operation, options, makeEvent) {
   const active = (graph.roleClaims || []).find(c => c.key === key && c.status === 'active');
   const ttl = Number(options.ttl ?? DEFAULT_TTL);
   if (!Number.isSafeInteger(ttl) || ttl < 1 || ttl > 86400) throw new Error('ttl must be 1..86400 seconds');
+  if (operation === 'maintain') {
+    if (role !== 'global-controller' || nodes.some(n => n.catalogStatus === 'superseded') ||
+        !active || active.session !== session || active.id !== options['claim-id'] || claimState(active) !== 'active') {
+      throw new Error('active global-controller token required for lease maintenance');
+    }
+    const projects = JSON.parse(options.input || '{}').projects;
+    if (!Array.isArray(projects) || projects.some(p => typeof p !== 'string' || !SLUG.test(p))) throw new Error('maintain requires projects slugs');
+    const events = (graph.roleClaims || []).filter(c => c.role === 'director' && projects.includes(c.project) &&
+      claimState(c) === 'active' && !graph.nodes.some(n => sessionIdOf(n) === c.session && n.catalogStatus === 'superseded'))
+      .map(c => makeEvent('role.changed', { claim: { ...c, heartbeatAt: at,
+        expiresAt: new Date(Date.now() + c.ttl * 1000).toISOString() }, nodes: [], links: [], edges: [] }));
+    return { events, result: { maintained: events.length } };
+  }
   if (['heartbeat','release','check'].includes(operation)) {
     if (nodes.some(n => n.catalogStatus === 'superseded') || !active || active.session !== session || active.id !== options['claim-id'] || (operation !== 'release' && claimState(active) !== 'active')) throw new Error(`claim fenced or expired; current holder: ${active?.session || 'none'} claim: ${active?.id || 'none'}`);
     if (operation === 'check') return { events: [], result: { claim: active, valid: true } };
