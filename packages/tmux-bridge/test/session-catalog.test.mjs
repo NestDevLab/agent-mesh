@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { roleOperation, claimState } from '../bin/session-catalog.mjs';
+import { roleOperation, claimState, catalogList } from '../bin/session-catalog.mjs';
 const exec = promisify(execFile);
 const bin = new URL('../bin/mesh-graph.mjs', import.meta.url).pathname;
 const a = 'claude:11111111-1111-4111-8111-111111111111', b = 'codex:22222222-2222-4222-8222-222222222222';
@@ -150,3 +150,17 @@ test('concurrent takeover waits for the guarded writer to finish', () => fixture
  assert.equal(written.code,0,written.error);
  assert.ok(Date.parse(taken.claim.claimedAt)>=written.data.finished);
 }));
+
+
+test('catalog uses honest temporary labels when no native title can be recovered', () => {
+ const node={agent:'claude',runtimeUuid:a.split(':')[1],updatedAt:'2026-01-01',title:'',status:'quiet'};
+ const graph={nodes:[node],roleClaims:[]};
+ const item=catalogList(graph).sessions[0];
+ assert.equal(item.title,'claude session 11111111'); assert.equal(item.titleSource,'unavailable');
+ assert.equal(node.title,'', 'presentation fallback must not overwrite transcript evidence');
+ node.title='First readable brief';
+ assert.equal(catalogList(graph).sessions[0].titleSource,'native');
+ node.catalogTitle='Explicit operator title';
+ assert.equal(catalogList(graph).sessions[0].titleSource,'operator');
+ assert.equal(catalogList(graph).sessions[0].title,'Explicit operator title');
+});
