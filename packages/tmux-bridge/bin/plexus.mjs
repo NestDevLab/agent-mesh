@@ -12,7 +12,7 @@ export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operat
 export const ROLE_WEIGHTS = { owns: 1, "works-on": 1, coordinates: 0.8, reviews: 0.7, discusses: 0.6, observes: 0.3, mentioned: 0.2 };
 export const HALF_LIFE_DAYS = 7;
 export const TOUCH_COALESCE_MS = 10 * 60 * 1000;
-export const PLEXUS_EVENTS = new Set(["link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated"]);
+export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated"]);
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -53,6 +53,14 @@ export function applyPlexusEvent(state, item) {
   const effects = [];
   const openLinks = () => [...state.links.values()].filter((link) => link.until === null);
   switch (item.type) {
+    case "role.changed":
+      if (!state.roleClaims) state.roleClaims = new Map();
+      if (item.previous) state.roleClaims.set(item.previous.id, item.previous);
+      state.roleClaims.set(item.claim.id, item.claim);
+      for (const node of item.nodes) state.nodes.set(node.id, node);
+      for (const link of item.links) state.links.set(link.id, link);
+      for (const edge of item.edges) state.edges.set(edge.id, edge);
+      break;
     case "link.opened":
       validateLink(item.link);
       state.links.set(item.link.id, item.link);
@@ -174,7 +182,9 @@ export function sessionIndex(graph) {
       nativeId: newest.runtimeUuid.toLowerCase(),
       nodeIds: nodes.map((node) => node.id).sort(),
       cwd: newest.cwd,
-      title: newest.title,
+      title: newest.catalogTitle || newest.title,
+      role: newest.catalogRole || "unclassified", project: newest.catalogProject || null,
+      catalogStatus: newest.catalogStatus || newest.status,
       status: newest.status,
       attention: nodes.map((node) => node.attention).find((item) => item && LIVE_ATTENTION.includes(item.state)) || newest.attention || null,
       lifecycle: newest.lifecycle || null,
@@ -236,6 +246,7 @@ function sessionView(view, session, sessionId) {
     // Detailed transcript facts remain local; scoped gateway queries keep their existing DTO.
     ...(!view.scoped ? { lifecycle: session.lifecycle, archived: session.archived,
       resumable: session.resumable, resumabilityReasons: session.resumabilityReasons,
+      role: session.role, project: session.project, catalogStatus: session.catalogStatus,
       class: session.class, origin: session.origin, surface: session.surface, nodeIds: session.nodeIds } : {}), ...(target ? { target } : {}),
   };
 }

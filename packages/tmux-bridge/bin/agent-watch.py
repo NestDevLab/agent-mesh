@@ -78,7 +78,11 @@ def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
 
 
 def first_real_prompt(body: str) -> str:
-    text = body.split("My request for Codex:", 1)[-1] if "My request for Codex:" in body else body
+    if body.lstrip().startswith("# AGENTS.md"):
+        return ""
+    # Claude launch wrappers put the actual brief after the closing note.
+    text = body.split("</note>", 1)[-1] if "</note>" in body else body
+    text = text.split("My request for Codex:", 1)[-1] if "My request for Codex:" in text else text
     return next((line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(("<", "# AGENTS.md"))), "")[:240]
 
 

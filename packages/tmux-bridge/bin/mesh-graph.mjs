@@ -31,6 +31,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import * as plexus from "./plexus.mjs";
+import { catalogList, catalogUpdate, roleOperation } from "./session-catalog.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation"]);
@@ -56,6 +57,11 @@ const QUERIES = {
 const { values, positionals } = parseArgs({
   options: {
     state: { type: "string" },
+    session: { type: "string" },
+    project: { type: "string" },
+    ttl: { type: "string" },
+    "claim-id": { type: "string" },
+    reason: { type: "string" },
     agent: { type: "string" },
     "tmux-target": { type: "string" },
     cwd: { type: "string" },
@@ -101,7 +107,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -113,6 +119,22 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "catalog":
+      if (subcommand === "list") printResult(catalogList(loadGraph(stateDir), values), { json: true });
+      else if (subcommand === "backfill") {
+        printResult(discoverNodes(stateDir, { ...values, full: true }), { json: true });
+      } else if (["register", "update"].includes(subcommand)) {
+        const id = plexus.parseSessionId(values.session);
+        if (subcommand === "register" && !loadGraph(stateDir).nodes.some(n => plexus.sessionIdOf(n) === id)) {
+          const [agent, uuid] = id.split(":");
+          adoptNode(stateDir, { agent, "runtime-uuid": uuid, class: "unclassified" });
+        }
+        printResult(mutate(stateDir, graph => ({ graph, ...catalogUpdate(graph, values.session, values, event) })), { json: true });
+      } else throw new Error("unknown catalog operation");
+      break;
+    case "role":
+      printResult(mutate(stateDir, graph => ({ graph, ...roleOperation(graph, subcommand, values, event) })), { json: true });
+      break;
     case "add":
       printResult(addNode(stateDir, values), values);
       break;
@@ -973,7 +995,7 @@ function readCheckpoint(statePath) {
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
       // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
-      !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
+      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1062,7 +1084,7 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
-  const state = { links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const state = { nodes, roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
   let unnumbered = base?.unnumbered === true;
@@ -1105,6 +1127,7 @@ function deriveGraph(events, base = null) {
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
     links,
     renewals: state.renewals,
+    roleClaims: [...state.roleClaims.values()],
     migrated: state.migrated,
     lastSeq,
     ...(unnumbered ? { unnumbered: true } : {}),
@@ -1401,7 +1424,7 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 
 function pendingResolutions(graph, events) {
