@@ -115,3 +115,12 @@ test('compound takeover invalidates scoped sessions and relationships and replay
  const hidden=await ok(state,'query','changes','--input',JSON.stringify({...q,scope:{...scope,targets:[]}}));
  assert.equal(hidden.events.length,0);
 }));
+
+test('role run checks the exact lease and holds the graph lock across the writer', () => fixture(async state => {
+ const first=(await ok(state,...claim(a))).claim;
+ const payload=JSON.stringify({argv:[process.execPath,'-e','console.log(JSON.stringify({pid:process.env.PROJECT_DIRECTOR_GUARD_PID,claim:process.env.PROJECT_DIRECTOR_GUARD_CLAIM}))']});
+ const guarded=await ok(state,...action('run',a,first.id),'--input',payload);
+ assert.equal(guarded.claim,first.id); assert.match(guarded.pid,/^\d+$/);
+ await ok(state,...claim(b,'--take-over',first.id,'--reason','New writer'));
+ assert.notEqual((await run(state,...action('run',a,first.id),'--input',payload)).code,0);
+}));

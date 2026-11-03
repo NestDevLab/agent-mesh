@@ -46,3 +46,14 @@ Use the Director state writer's integration for enforced checks at the write bou
 
 The CLI exposes mutations locally. Existing scoped gateway queries retain their authorization
 boundaries; the local catalog and claim ledger must not be exported as an unscoped remote MCP tool.
+
+A local consumer can execute a bounded state command while holding the same graph lock as takeover:
+`role run` takes the usual lease identity plus `--input -`, reading JSON `{ "argv": ["program", "arg"],
+"stdin": "optional input" }` from stdin. No shell is used. It checks the exact unexpired lease and
+holds the lock until the child exits (30 second timeout). The child receives guard PID and claim
+markers. This local operator primitive is never exposed by the gateway. Only short state commands
+belong here; the attention loop itself must not hold the graph lock.
+
+A session holds one outstanding role claim at a time. Release it before changing role or project;
+the holder may release an expired claim with its exact token. This prevents a partial takeover from
+silently fencing unrelated grants.

@@ -107,7 +107,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -133,6 +133,21 @@ try {
       } else throw new Error("unknown catalog operation");
       break;
     case "role":
+      if (subcommand === "run") {
+        const input = JSON.parse(values.input === "-" ? readFileSync(0, "utf8") : values.input || "{}");
+        if (!Array.isArray(input.argv) || !input.argv.length || input.argv.some(v => typeof v !== "string" || v.includes("\0")) || (input.stdin !== undefined && typeof input.stdin !== "string")) throw new Error("role run needs argv strings and optional stdin text");
+        ensureStateDir(stateDir);
+        const result = withLock(stateDir, () => {
+          roleOperation(loadGraph(stateDir), "check", values, event);
+          return spawnSync(input.argv[0], input.argv.slice(1), { encoding: "utf8", input: input.stdin || "", timeout: 30000, maxBuffer: 16 * 1024 * 1024,
+            env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: values["claim-id"] } });
+        });
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        if (result.error) throw result.error;
+        process.exitCode = result.status ?? 1;
+        break;
+      }
       printResult(mutate(stateDir, graph => ({ graph, ...roleOperation(graph, subcommand, values, event) })), { json: true });
       break;
     case "add":
