@@ -132,6 +132,18 @@ class ArchiveProtocol(unittest.TestCase):
         self.review_skips.add(self.ref(1))
         self.apply_skips.add(self.ref(2))
         plan = self.prepare(inventory)
+        # A previously persisted pool may be larger than the new preparation
+        # target. Applying that older plan must still cap confirmed successes.
+        for row in inventory['sessions'][10:]:
+            ref = row['sessionId']
+            action = {'kind': 'archive', 'session': ref, 'fingerprint': engine.fingerprint(row), 'obligationsChecked': True,
+                      'summary': self.artifact(ref + '-old-summary', {'durable': 'fixture'}),
+                      'evidence': self.artifact(ref + '-old-evidence', {'eligibility': 'fixture'})}
+            action['actionDigest'] = engine.digest(action)
+            plan['actions'].append(action)
+            plan['archive']['prepared'].append(action)
+        plan['digest'] = engine.digest({key: value for key, value in plan.items() if key != 'digest'})
+        engine.write(self.run_dir / 'plan.json', plan)
         outcomes = self.apply(plan, inventory)
         self.assertEqual(sum(o['status'] == 'archived' for o in outcomes), 10)
         self.assertEqual(sum(o['status'] == 'skipped' for o in outcomes), 2)
@@ -398,6 +410,17 @@ class ArchiveProtocol(unittest.TestCase):
         self.assertEqual(plan['actions'], [])
         self.assertFalse(self.calls)
         self.assertEqual(engine.archive_guard(inventory['sessions'][0], inventory, self.config), 'source_coverage_unproven')
+
+    def test_prepare_target_stops_after_ten_eligible_following_one_hundred_skips(self):
+        inventory = self.inventory(120)
+        self.config.update(maxArchives=10, archiveMaxCandidates=200)
+        self.prepare_skips.update(self.ref(index) for index in range(1, 101))
+        plan = self.prepare(inventory)
+        self.assertEqual(plan['archive']['prepareCalls'], 110)
+        self.assertEqual(len(plan['archive']['skipped']), 100)
+        self.assertEqual(len(plan['archive']['prepared']), 10)
+        self.assertEqual([action['session'] for action in plan['actions']], [self.ref(index) for index in range(101, 111)])
+        self.assertEqual(sum(call[0] == 'prepare' for call in self.calls), 110)
 
     def test_source_error_before_mutation_stops(self):
         inventory = self.inventory(2)
