@@ -27,10 +27,11 @@ import {
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import * as plexus from "./plexus.mjs";
+import { catalogList, catalogUpdate, roleOperation } from "./session-catalog.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation"]);
@@ -56,6 +57,11 @@ const QUERIES = {
 const { values, positionals } = parseArgs({
   options: {
     state: { type: "string" },
+    session: { type: "string" },
+    project: { type: "string" },
+    ttl: { type: "string" },
+    "claim-id": { type: "string" },
+    reason: { type: "string" },
     agent: { type: "string" },
     "tmux-target": { type: "string" },
     cwd: { type: "string" },
@@ -101,7 +107,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -113,6 +119,40 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "catalog":
+      if (subcommand === "list") printResult(catalogList(loadGraph(stateDir), values), { json: true });
+      else if (subcommand === "backfill") {
+        printResult(discoverNodes(stateDir, { ...values, full: true }), { json: true });
+      } else if (["register", "update"].includes(subcommand)) {
+        const id = plexus.parseSessionId(values.session);
+        if (subcommand === "register" && !loadGraph(stateDir).nodes.some(n => plexus.sessionIdOf(n) === id)) {
+          const [agent, uuid] = id.split(":");
+          adoptNode(stateDir, { agent, "runtime-uuid": uuid, class: "unclassified" });
+        }
+        printResult(mutate(stateDir, graph => ({ graph, ...catalogUpdate(graph, values.session, values, event) })), { json: true });
+      } else throw new Error("unknown catalog operation");
+      break;
+    case "role":
+      if (subcommand === "run") {
+        const input = JSON.parse(values.input === "-" ? readFileSync(0, "utf8") : values.input || "{}");
+        if (!Array.isArray(input.argv) || !input.argv.length || input.argv.some(v => typeof v !== "string" || v.includes("\0")) || (input.stdin !== undefined && typeof input.stdin !== "string")) throw new Error("role run needs argv strings and optional stdin text");
+        ensureStateDir(stateDir);
+        const release = acquireLock(stateDir);
+        let result;
+        try {
+          const checked = roleOperation(loadGraph(stateDir), "check", values, event).result.claim;
+          const budget = Math.min(30000, Date.parse(checked.expiresAt) - Date.now());
+          if (budget <= 0) throw new Error("claim expired before guarded execution");
+          result = await runGuardedChild(input, values["claim-id"], budget);
+        } finally { release(); }
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        if (result.error) throw result.error;
+        process.exitCode = result.status ?? 1;
+        break;
+      }
+      printResult(mutate(stateDir, graph => ({ graph, ...roleOperation(graph, subcommand, values, event) })), { json: true });
+      break;
     case "add":
       printResult(addNode(stateDir, values), values);
       break;
@@ -973,7 +1013,7 @@ function readCheckpoint(statePath) {
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
       // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
-      !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
+      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1062,7 +1102,7 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
-  const state = { links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const state = { nodes, roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
   let unnumbered = base?.unnumbered === true;
@@ -1105,6 +1145,7 @@ function deriveGraph(events, base = null) {
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
     links,
     renewals: state.renewals,
+    roleClaims: [...state.roleClaims.values()],
     migrated: state.migrated,
     lastSeq,
     ...(unnumbered ? { unnumbered: true } : {}),
@@ -1196,7 +1237,7 @@ function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
 }
 
-function withLock(statePath, callback) {
+function acquireLock(statePath) {
   const lock = join(statePath, "graph.lock");
   const deadline = Date.now() + 5_000;
   while (true) {
@@ -1214,11 +1255,37 @@ function withLock(statePath, callback) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
-  try {
-    return callback();
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
+  return () => rmSync(lock, { recursive: true, force: true });
+}
+
+function withLock(statePath, callback) {
+  const release = acquireLock(statePath);
+  try { return callback(); } finally { release(); }
+}
+
+function runGuardedChild(input, claimId, budget) {
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(input.argv[0], input.argv.slice(1), { detached: true, stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: claimId } });
+    let stdout = "", stderr = "", timedOut = false, failed = false;
+    const killGroup = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; } } };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, budget);
+    const output = (channel, data) => {
+      if (channel === "stdout") stdout += data; else stderr += data;
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 16 * 1024 * 1024) { failed = true; killGroup(); }
+    };
+    child.stdout.on("data", data => output("stdout", data));
+    child.stderr.on("data", data => output("stderr", data));
+    child.stdin.on("error", () => {}); // Early child exit may close stdin.
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    // Kill remaining descendants before releasing the graph lock, including on successful exit.
+    child.on("exit", killGroup);
+    child.on("close", status => {
+      clearTimeout(timer);
+      resolveResult({ stdout, stderr: stderr + (timedOut ? "guarded writer deadline exceeded\n" : failed ? "guarded writer output limit exceeded\n" : ""), status: timedOut || failed ? 1 : status });
+    });
+    child.stdin.end(input.stdin || "");
+  });
 }
 
 function renderCompact(graph) {
@@ -1401,7 +1468,7 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 
 function pendingResolutions(graph, events) {
