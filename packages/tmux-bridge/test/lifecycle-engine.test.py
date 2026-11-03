@@ -297,16 +297,42 @@ class LifecycleEngine(unittest.TestCase):
             third.mkdir()
             self.assertEqual(self.apply(inventory, run_dir=third)[0]['status'], 'queued')
 
-    def test_writer_skip_hard_retry_budget_does_not_loop(self):
+    def test_writer_skip_remains_retryable_after_budget_then_released_writer_queues(self):
         self.writers = [{'role': 'cli'}]
-        config = {**self.config, 'retryMaxAttempts': 1}
+        config = {**self.config, 'retryMaxAttempts': 3, 'retryBaseSeconds': 1, 'retryMaxSeconds': 4}
         inventory = self.inventory()
-        first = self.apply(inventory, config=config)[0]
-        self.assertTrue(first['retryExhausted'])
-        other = self.root / 'runs' / 'held'
-        other.mkdir()
-        self.assertEqual(self.apply(inventory, config=config, run_dir=other)[0]['status'], 'not-retried')
-        self.assertFalse(any(isinstance(c[0], list) and c[0][0] == 'native' for c in self.calls))
+        fingerprint = engine.fingerprint(inventory['sessions'][0])
+        for index in range(4):
+            target = self.root / 'runs' / ('writer-held-' + str(index))
+            target.mkdir()
+            at = f'2026-01-01T12:00:{index * 10:02d}Z'
+            with patch.object(engine, 'now', return_value=at):
+                first = self.apply(inventory, config=config, run_dir=target)[0]
+            self.assertEqual(first['phase'], 'skipped')
+            self.assertEqual(first['retryAttempt'], index + 1)
+            self.assertFalse(first['retryExhausted'])
+            delay = (engine.instant(first['nextRetryAt']) - engine.instant(at)).total_seconds()
+            self.assertEqual(delay, [1, 2, 4, 4][index])
+            self.assertEqual(first['fingerprint'], fingerprint)
+        self.writers = []
+        with patch.object(engine, 'now', return_value='2026-01-01T12:00:40Z'):
+            self.assertEqual(self.apply(inventory, config=config)[0]['status'], 'queued')
+        self.assertEqual(sum(isinstance(c[0], list) and c[0][0] == 'native' for c in self.calls), 1)
+
+    def test_legacy_exhausted_writer_skip_remains_due_but_guard_errors_keep_cap(self):
+        record = {'phase': 'skipped', 'kind': 'resume', 'fingerprint': 'fixture', 'session': self.row()['sessionId'],
+                  'retryClass': 'writer-contention', 'retryable': True, 'retryAttempt': 3, 'retryExhausted': True,
+                  'nextRetryAt': '2026-01-01T12:00:00Z'}
+        state = engine.retry_states([record], self.config)['fixture']
+        self.assertFalse(state['failure']['retryExhausted'])
+        self.assertTrue(engine.retry_ready(state, self.config, '2026-01-01T12:00:01Z'))
+        failure = {**record, 'phase': 'failure'}
+        state = engine.retry_states([failure], self.config)['fixture']
+        self.assertFalse(engine.retry_ready(state, self.config, '2026-01-01T12:00:01Z'))
+        metadata = engine.retry_failure(engine.RetryableFailure('guard failed', 'writer-contention'),
+                                        {'failure': {'retryAttempt': 2}}, self.config,
+                                        {'at': '2026-01-01T12:00:00Z', 'phase': 'failure'})
+        self.assertTrue(metadata['retryExhausted'])
 
     def test_malformed_writer_metadata_and_helper_failures_remain_fatal(self):
         for index, writers in enumerate(([None], [{}], [{'role': 1}], [{'role': ''}])):

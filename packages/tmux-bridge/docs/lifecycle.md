@@ -413,18 +413,28 @@ corrupt native receipts must be reconciled, never deleted or fabricated.
 A successful, identity-matching writer-status response with a non-app-server
 writer refuses queueing before any delivery attempt. It records `phase: skipped`,
 `status: skipped`, `reasonCode: writer_contention`, and receipt-backed
-`retryClass: writer-contention` with the existing exponential delay and hard
-retry budget. Other selected actions may continue; a run containing only these
-safe refusals exits zero. The ordinary follow outbox deduplicates unchanged
+`retryClass: writer-contention` with the existing exponential delay capped by
+`retryMaxSeconds`. Semantic writer refusals remain retryable beyond `retryMaxAttempts`: no delivery was
+attempted and writer state can change without changing the native fingerprint. Other selected actions may continue; a run containing only
+these safe refusals exits zero. The ordinary follow outbox deduplicates unchanged
 semantic outcomes; polling time and retry count do not create failure alerts.
 No lock is bypassed, no second writer is launched, and no queued work is claimed.
 
 Due retries rerun current source, reset-window, native guard and writer checks.
 An optional configured retry guard also applies. A released CLI writer may allow
-native queueing after backoff; an exhausted budget remains held for reconciliation.
+native queueing after backoff, even after more than three writer refusals.
+Capacity, handoff and technical guard failures retain their existing hard budgets;
+the exception applies only to semantic writer-skip receipts.
 Only the exact legacy pre-delivery writer-contention failure can be normalized
 from old receipts, and only without any recorded mutation/delivery/acknowledgement.
 Malformed metadata (including absent/non-string writer roles), failed helpers,
 missing identity, native guard errors and ambiguous delivery remain fatal and
 stop the batch with nonzero status. This semantic path never changes archive
 attempt receipts or their independent eligibility/review requirements.
+
+Archive preparation stops once `maxArchives` eligible actions have been prepared,
+as well as respecting the separate `archiveMaxCandidates` hook-call budget.
+Semantic skips do not consume the eligible-action target. For example, a hook
+budget of 200 can process 100 refusals and then prepare ten eligible summaries;
+it stops before creating an eleventh summary or expanding the review pool.
+Existing larger frozen plans still retain the ten-confirmed-success apply cap.

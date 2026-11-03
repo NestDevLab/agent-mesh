@@ -96,7 +96,7 @@ def prepare(plan, inventory, config, run_dir, api, history_records=()):
                   if record.get('kind') == 'archive' and record.get('phase') == 'archive-considered'}
     ordered.sort(key=lambda session: considered.get(session, -1))
     for session in ordered:
-        if batch['prepareCalls'] >= batch['prepareLimit']:
+        if len(batch['prepared']) >= batch['successLimit'] or batch['prepareCalls'] >= batch['prepareLimit']:
             break
         row = rows.get(session)
         fingerprint = api.fingerprint(row) if row else None

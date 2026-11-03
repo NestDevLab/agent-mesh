@@ -584,7 +584,7 @@ def retry_states(records, config=None):
                     and not any(state.get(key) for key in ('attempted', 'deliveryStarted', 'acknowledged'))):
                 try:
                     record = {**record, 'phase': 'skipped', 'status': 'skipped', 'reasonCode': 'writer_contention',
-                              **retry_failure(ResumeSkipped(), state, config or {}, record)}
+                              **retry_failure(ResumeSkipped(), state, config or {}, {**record, 'phase': 'skipped'})}
                 except (ValueError, KeyError, TypeError):
                     pass
             if (record.get('reason') == 'new child ownership or native identity unavailable' and state.get('target')
@@ -593,6 +593,9 @@ def retry_states(records, config=None):
                     record = {**record, **retry_failure(RetryableFailure(record['reason'], 'handoff-proof'), None, config or {}, record)}
                 except (ValueError, KeyError, TypeError):
                     pass
+            if record.get('phase') == 'skipped' and record.get('retryClass') == 'writer-contention':
+                # Older semantic receipts may carry the former hard-cap flag.
+                record = {**record, 'retryExhausted': False}
             state['failure'] = record
     return states
 
@@ -607,7 +610,8 @@ def retry_ready(state, config, at):
         return False
     if failure.get('retryClass') not in ('handoff-proof', 'capacity', 'model-capacity', 'writer-contention'):
         return False
-    if failure.get('retryAttempt', 0) >= config.get('retryMaxAttempts', 3):
+    writer_skip = failure.get('phase') == 'skipped' and failure.get('retryClass') == 'writer-contention'
+    if not writer_skip and failure.get('retryAttempt', 0) >= config.get('retryMaxAttempts', 3):
         return False
     try:
         return instant(at) >= instant(failure['nextRetryAt'])
@@ -628,7 +632,7 @@ def retry_failure(error, context, config, base):
     delay = min(config.get('retryMaxSeconds', 3600), config.get('retryBaseSeconds', 300) * 2 ** min(count - 1, 10))
     return {'retryable': True, 'retryClass': error.retry_class, 'retryAttempt': count,
             'nextRetryAt': (instant(base['at']) + timedelta(seconds=delay)).isoformat().replace('+00:00', 'Z'),
-            'retryExhausted': count >= config.get('retryMaxAttempts', 3)}
+            'retryExhausted': not (error.retry_class == 'writer-contention' and base.get('phase') == 'skipped') and count >= config.get('retryMaxAttempts', 3)}
 
 
 def publish_outcomes(config, records, run_dir):
