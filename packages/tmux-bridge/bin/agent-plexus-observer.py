@@ -40,6 +40,11 @@ def save(path, value):
 
 
 def query(config, name, values):
+    graph_root = Path(config.get('graphState') or
+                      Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'agent-mesh/graph').expanduser()
+    event_file = graph_root / 'events.jsonl'
+    if event_file.exists() and event_file.stat().st_size > bound(config, 'maxEventBytes', 512 * 1024 * 1024, 8 * 1024 * 1024 * 1024):
+        raise RuntimeError('Plexus event log exceeds observer work bound')
     command = ['node', str(BIN / 'mesh-graph.mjs')]
     if config.get('graphState'):
         command += ['--state', str(Path(config['graphState']).expanduser())]
@@ -80,6 +85,7 @@ def validate(config):
     bound(config, 'maxPages', 2, 20)
     bound(config, 'pageSize', 100, 200)
     bound(config, 'maxCatalogPages', 25, 50)
+    bound(config, 'maxEventBytes', 512 * 1024 * 1024, 8 * 1024 * 1024 * 1024)
 
 
 def catalog(config, ask):

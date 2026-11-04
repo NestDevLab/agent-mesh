@@ -49,7 +49,13 @@ cursors are opaque; the consumer never parses, compares or constructs them.
 Each poll reads at most `maxPages` per subscription, default 2, maximum 20;
 `pageSize` defaults to 100, maximum 200. The catalog page bound defaults to 25,
 maximum 50, with 200 sessions per page. Work bounds limit pages/output; the native
-file-backed feed may still replay its retained graph internally per query.
+file-backed feed may still replay its retained graph internally per query. The
+quiet head reuses the existing native validated checkpoint; no consumer cache is
+added. Before each query `maxEventBytes` checks the event log size (default 512 MiB,
+maximum 8 GiB), and every subprocess has a 30 second timeout. Exceeding either
+fails closed with a visible source error and preserves pending state/cursors.
+This is a preflight size safeguard; concurrent appends can change the size during
+the query. Incremental feed replay optimization is separate future work.
 
 An immutable private report is written before atomic pending state. Pending owns
 candidate cursors and event IDs; the acknowledged cursors remain unchanged until

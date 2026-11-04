@@ -119,6 +119,18 @@ class ObserverTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             observer.catalog({'maxCatalogPages': 1}, lambda *args: {'sessions': [], 'cursor': 'more'})
 
+    def test_event_log_guard_and_query_timeout_fail_closed(self):
+        graph = Path(self.tmp.name) / 'graph'
+        graph.mkdir()
+        (graph / 'events.jsonl').write_bytes(b'too large')
+        with patch.object(observer.subprocess, 'run') as run:
+            with self.assertRaises(RuntimeError):
+                observer.query({'graphState': str(graph), 'maxEventBytes': 2}, 'changes', {})
+            run.assert_not_called()
+        with patch.object(observer.subprocess, 'run', side_effect=observer.subprocess.TimeoutExpired('node', 30)):
+            with self.assertRaises(RuntimeError):
+                observer.query({'graphState': str(graph)}, 'changes', {})
+
     def test_failed_state_save_does_not_ack_or_advance(self):
         self.tick()
         self.pages.append({'cursor': 'next', 'events': [{'eventId': 'one', 'type': 'session.updated', 'session': 'codex:x'}]})
