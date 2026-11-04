@@ -130,6 +130,10 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
         receipt = json.loads(result.stdout)
     except (ValueError, TypeError):
         receipt = None
+    bound = (isinstance(receipt, dict) and receipt.get("agent") == agent and
+             receipt.get("sessionId") == session and receipt.get("correlationId") == correlation)
+    if isinstance(receipt, dict) and receipt.get("status") == "queued" and not bound:
+        return 78
     # A comms hold can exit zero: process success is not native queue acceptance.
     if isinstance(receipt, dict) and receipt.get("held") is True:
         # The gate's delivered duplicate is a receipt for this exact frozen flight.

@@ -49,6 +49,16 @@ class NativeReceiptTest(unittest.TestCase):
                 self.assertEqual(len(saved['pending']), 1)
                 self.assertNotIn('lastDelivery', saved)
 
+    def test_queued_receipt_requires_every_recipient_and_correlation_binding(self):
+        base = {'status': 'queued', 'agent': 'codex', 'sessionId': SESSION, 'correlationId': 'flight'}
+        for key in ('agent', 'sessionId', 'correlationId'):
+            for invalid in ({k: v for k, v in base.items() if k != key}, {**base, key: 'wrong'}):
+                with self.subTest(key=key, invalid=invalid), patch.object(waker.subprocess, 'run',
+                        return_value=Mock(returncode=0, stdout=json.dumps(invalid))):
+                    self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), 78)
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(base))):
+            self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), 0)
+
     def test_result_mode_preserves_plain_result_exit_contract(self):
         with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=124, stdout='ordinary result')):
             self.assertEqual(waker.deliver('codex', SESSION, 'result', 'message', None), 124)
