@@ -22,7 +22,7 @@ for (const agent of ["codex", "claude"]) for (const [label, status, valid] of [
   const marker = join(root, "awk-called");
   await writeFile(join(bin, "awk"), '#!/bin/bash\nprintf called > "$FIXTURE_AWK_MARKER"\nexit 127\n', { mode: 0o755 });
   await writeFile(join(bin, "tmux"), '#!/bin/bash\nprintf "owned|11|%s|0|0\\n" "$FIXTURE_PROVIDER"\n', { mode: 0o755 });
-  const response = spawnSync("/bin/bash", [session, "--agent", agent, "target-status", "owned", "--writer-pid", "12", "--json"], { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: root, CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", AGENT_WRITER_PROC_ROOT: proc, FIXTURE_PROVIDER: agent, FIXTURE_AWK_MARKER: marker } });
+  const response = spawnSync("/bin/bash", [session, "--agent", agent, "target-status", "owned", "--writer-pid", "12", "--json"], { encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: root, MESH_COMMS_STATE: join(root, "comms"), AGENT_FALLBACK_STATE: join(root, "fallback"), CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", AGENT_WRITER_PROC_ROOT: proc, FIXTURE_PROVIDER: agent, FIXTURE_AWK_MARKER: marker } });
   if (valid) { assert.equal(response.status, 0, response.stderr); assert.equal(JSON.parse(response.stdout).writer_pid, 12); }
   else assert.notEqual(response.status, 0);
   await assert.rejects(access(marker));
@@ -68,7 +68,7 @@ test("Codex rejects a stale current token in scrollback before pasting", async t
   const marker = join(root, "pasted");
   await writeFile(join(root, "tmux"), '#!/bin/bash\ncase "$*" in *capture-pane*) printf "• [[R:0011223344556677]] stale [[/R:0011223344556677]]\\n›\\nGPT-6\\n";; *pane_current_command*) printf "codex\\n";; *load-buffer*|*paste-buffer*) printf pasted > "$FIXTURE_PASTE_MARKER";; esac\n', { mode: 0o755 });
   const send = fileURLToPath(new URL("../bin/agent-send.sh", import.meta.url));
-  const response = spawnSync("/bin/bash", [send, "--agent", "codex", "--correlation-id", "fixture-task", "--result-token", "0011223344556677", "owned", "fixture request", "5"], { encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root, CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", FIXTURE_PASTE_MARKER: marker } });
+  const response = spawnSync("/bin/bash", [send, "--agent", "codex", "--correlation-id", "fixture-task", "--result-token", "0011223344556677", "owned", "fixture request", "5"], { encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root, MESH_COMMS_STATE: join(root, "comms"), AGENT_FALLBACK_STATE: join(root, "fallback"), CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", FIXTURE_PASTE_MARKER: marker } });
   assert.equal(response.status, 66, response.stderr); await assert.rejects(access(marker));
 });
 
@@ -118,7 +118,7 @@ case "$*" in
 esac
 `, { mode: 0o755 });
   const send = fileURLToPath(new URL("../bin/agent-send.sh", import.meta.url));
-  const response = spawnSync("/bin/bash", [send, "--quiet", "--agent", "codex", "--correlation-id", "fixture-task", "--result-token", "0011223344556677", "owned", "fixture request", "5"], { encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root, CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", AGENT_POLL_INTERVAL: "0", AGENT_IDLE_ROUNDS: "1", FIXTURE_PHASE: phase, FIXTURE_REPLY: replyPath } });
+  const response = spawnSync("/bin/bash", [send, "--quiet", "--agent", "codex", "--correlation-id", "fixture-task", "--result-token", "0011223344556677", "owned", "fixture request", "5"], { encoding: "utf8", env: { ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root, MESH_COMMS_STATE: join(root, "comms"), AGENT_FALLBACK_STATE: join(root, "fallback"), CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1", AGENT_POLL_INTERVAL: "0", AGENT_IDLE_ROUNDS: "1", FIXTURE_PHASE: phase, FIXTURE_REPLY: replyPath } });
   assert.equal(await readFile(phase, "utf8"), "done\n", "fixture must submit and observe the current turn");
   if (valid) { assert.equal(response.status, 0, response.stderr); assert.equal(response.stdout.trim(), "verified result"); }
   else assert.notEqual(response.status, 0, response.stdout);

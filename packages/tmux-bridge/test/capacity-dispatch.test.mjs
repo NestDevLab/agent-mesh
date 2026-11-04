@@ -395,7 +395,7 @@ test("agent-session remains fail-open when Limen is unavailable before launch", 
   const codex = join(bin, "fake-codex");
   await writeFile(codex, `#!/bin/sh\nprintf '%s|%s\\n' "$*" "\${MESH_LIMEN_ROUTE:-}" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
   await chmod(codex, 0o700);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: join(bin, "missing-limen"), MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: join(bin, "missing-limen"), MESH_LIMEN_ROUTE: "", MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
   try {
     const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
     assert.equal(launched.code, 0, launched.stderr);

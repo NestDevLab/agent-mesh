@@ -165,6 +165,34 @@ class CommsTests(unittest.TestCase):
                 self.assertEqual(c.effective(db,'claude'),'on')
                 self.assertEqual(c.status(db)['counts'],{'delivered':1})
 
+    def test_queued_pre_enqueue_refusal_is_terminal(self):
+        c.change('queue','codex','test','test')
+        spec=self.spec(runtime='codex')
+        with c.locked() as (db,_): c.admit(db,spec)
+        sessions=self.home/'sessions';sessions.mkdir()
+        with patch.dict(os.environ, {'CODEX_SESSION_ROOT':str(sessions)}):
+            result=c.change('on','codex','resume','test')
+        self.assertEqual(result['counts'],{'refused':1})
+        with c.locked() as (db,_): self.assertEqual(c.admit(db,self.spec('next',runtime='codex'))['status'],'send')
+
+    def test_real_controller_role_run_is_exempt(self):
+        graph=self.home/'graph'
+        sid='codex:22222222-2222-4222-8222-222222222222'
+        def mesh(*args):
+            r=subprocess.run(['node',str(BIN/'mesh-graph.mjs'),'--state',str(graph),'--json',*args],capture_output=True,text=True,timeout=10)
+            self.assertEqual(r.returncode,0,r.stderr)
+            return json.loads(r.stdout)
+        mesh('add','--agent','codex','--runtime-uuid',sid.split(':')[1],'--tmux-target','test-controller')
+        mesh('migrate','--apply')
+        claim=mesh('role','claim','--session',sid,'--role','global-controller','--project','global')['claim']['id']
+        code=("import importlib.util,sys,json; s=importlib.util.spec_from_file_location('c',sys.argv[1]);"
+              "c=importlib.util.module_from_spec(s);s.loader.exec_module(c);"
+              "exec("with c.locked() as (db,fd): print(json.dumps(c.controller_origin({'kind':'native'},db)))")")
+        with patch.dict(os.environ, {'MESH_GRAPH_STATE':str(graph)}):
+            value=mesh('role','run','--session',sid,'--role','global-controller','--project','global','--claim-id',claim,
+                       '--input',json.dumps({'argv':[sys.executable,'-c',code,str(BIN/'mesh-comms.py')]}))
+        self.assertTrue(value)
+
     def test_mcp_control_surface(self):
         requests = [{'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05'}},
                     {'jsonrpc':'2.0','id':2,'method':'tools/list'},

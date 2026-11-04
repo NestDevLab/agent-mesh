@@ -16,7 +16,11 @@ export async function commsLease(spec) {
     if (checked.status !== 0) throw new Error(checked.stderr || 'invalid replay capability');
     const receipt = JSON.parse(checked.stdout);
     if (!receipt || receipt.status !== 'send') throw new Error('replay not authorized');
-    return { ...receipt, complete: async () => {} };
+    return { ...receipt, complete: async (accepted, rejected = false) => {
+      const done = spawnSync('python3', [join(dirname(fileURLToPath(import.meta.url)), 'mesh-comms.py'), 'complete',
+        '--request', JSON.stringify({ ...receipt, accepted, rejected })], { encoding: 'utf8', env: process.env });
+      if (done.status !== 0) throw new Error(done.stderr || 'replay completion failed');
+    }};
   }
   const child = spawn('python3', [join(dirname(fileURLToPath(import.meta.url)), 'mesh-comms.py'), 'lease', '--request', JSON.stringify(spec)], {
     stdio: ['pipe', 'pipe', 'pipe'], env: process.env

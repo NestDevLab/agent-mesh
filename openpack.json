@@ -74,6 +74,15 @@
         "claude"
       ],
       "required": false
+    },
+    {
+      "type": "mcp",
+      "path": "mcp/comms.json",
+      "runtimes": [
+        "codex",
+        "claude"
+      ],
+      "required": false
     }
   ]
 }
