@@ -59,6 +59,11 @@ class NativeReceiptTest(unittest.TestCase):
         with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(base))):
             self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), 0)
 
+    def test_result_mode_preserves_legal_json_body_with_queue_status(self):
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout='{"status":"queued"}')):
+            self.assertEqual(waker.deliver('codex', SESSION, 'result', 'message', None), 0)
+            self.assertEqual(waker.deliver('codex', SESSION, 'delivery', 'message', None, True), 78)
+
     def test_result_mode_preserves_plain_result_exit_contract(self):
         with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=124, stdout='ordinary result')):
             self.assertEqual(waker.deliver('codex', SESSION, 'result', 'message', None), 124)
