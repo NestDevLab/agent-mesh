@@ -1651,6 +1651,8 @@ function runQuery(statePath, name, options) {
   }
   const { scope = null, ...query } = input;
   if (name === "changes") {
+    // Quiet head uses the existing validated checkpoint, never a second cache.
+    if (query.initial !== undefined) return plexus.changes(loadGraph(statePath), [], query, scope);
     const snapshot = readSnapshot(statePath);
     const events = tailEvents([...readEvents(statePath)], snapshot?.lastEventId);
     return plexus.changes(snapshot?.graph || null, events, query, scope);

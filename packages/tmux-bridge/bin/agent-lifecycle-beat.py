@@ -385,7 +385,7 @@ def stage(root, state, config, epoch, immediate, cards, summary, candidate, inte
     return {'new': items, 'errors': [{'source': 'ledger', 'error': 'native ledger cursor conflict'}] if state['staged'].get('commitError') else []}
 
 
-def producer(config, root, full=False, epoch=None):
+def lifecycle_producer(config, root, full=False, epoch=None):
     epoch = time.time() if epoch is None else epoch
     if config.get('ownerNotify'):
         load('agent-owner-notify').tick(config['ownerNotify'])
@@ -511,6 +511,19 @@ def interview(config, root, output, inventory=None, full=False, consumer='lifecy
         if not commit_cursor(intent):
             raise RuntimeError('native interview cursor compare-and-swap failed')
     return {'output': str(output), 'decisions': len(cards), 'errors': errors}
+
+
+def producer(config, root, full=False, epoch=None):
+    result = lifecycle_producer(config, root, full, epoch)
+    if config.get('plexusObservers'):
+        observer_config = {**config['plexusObservers'], 'wakerState': config.get('wakerState')}
+        try:
+            observed = load('agent-plexus-observer').producer(observer_config, Path(root) / 'plexus-observer')
+            result['new'].extend(observed['new'])
+            result['errors'].extend(observed['errors'])
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            result['errors'].append({'source': 'plexus-observer', 'error': 'observer source or state failure'})
+    return result
 
 
 def main():

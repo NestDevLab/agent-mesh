@@ -542,6 +542,10 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
   const watermark = snapshotGraph?.lastSeq || 0;
   const limit = Math.min(Math.max(Number(input.limit) || 100, 1), 1000);
   const lastSeq = events.reduce((max, item) => Math.max(max, item.seq || 0), watermark);
+  if (input.initial !== undefined) {
+    if (input.initial !== "head" || input.sinceCursor !== undefined) throw new Error("initial must be head without sinceCursor");
+    return { reset: false, events: [], cursor: encodeCursor({ kind: "changes", host, seq: lastSeq }) };
+  }
   let since = watermark;
   if (input.sinceCursor) {
     const cursor = decodeCursor(input.sinceCursor, "changes");

@@ -15,6 +15,8 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import tempfile
+import uuid
 from typing import Any
 
 BIN = Path(__file__).resolve().parent
@@ -55,10 +57,21 @@ def load_state(path: Path) -> tuple[dict[str, Any], list[dict[str, str]]]:
 
 
 def save_state(path: Path, state: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n")
-    os.replace(temporary, path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".waker-", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(json.dumps(state, indent=2, ensure_ascii=False) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @contextmanager
@@ -101,14 +114,37 @@ def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False) -> int:
+def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False) -> int:
     command = ["node", str(BIN / "agent-native-call.mjs"), "--agent", agent, "--session", session,
                "--correlation-id", correlation, "--timeout", "5", "--message", message]
+    if resume:
+        if agent != "codex":
+            raise ValueError("waker resume is supported only for Codex")
+        command += ["--resume"]
     if delivery_only:
         command += ["--delivery-only"]
     if inbox_root:
         command += ["--managed-inbox-root", inbox_root]
-    return subprocess.run(command, text=True, capture_output=True).returncode
+    result = subprocess.run(command, text=True, capture_output=True)
+    try:
+        receipt = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        receipt = None
+    bound = (isinstance(receipt, dict) and receipt.get("agent") == agent and
+             receipt.get("sessionId") == session and receipt.get("correlationId") == correlation)
+    if delivery_only and isinstance(receipt, dict) and receipt.get("status") == "queued" and not bound:
+        return 78
+    # A comms hold can exit zero: process success is not native queue acceptance.
+    if isinstance(receipt, dict) and receipt.get("held") is True:
+        # The gate's delivered duplicate is a receipt for this exact frozen flight.
+        if (result.returncode == 0 and receipt.get("status") == "delivered" and
+                receipt.get("agent") == agent and receipt.get("sessionId") == session and
+                receipt.get("correlationId") == correlation):
+            return 0
+        return 78
+    if delivery_only and (not isinstance(receipt, dict) or receipt.get("status") != "queued"):
+        return 78
+    return result.returncode
 
 
 def record(job: str, outcome: str, session: str, note: str) -> None:
@@ -139,24 +175,38 @@ def run(args: argparse.Namespace) -> int:
         # Persist before delivering so a crash after the producer advanced its cursor keeps the items.
         save_state(path, state)
         summary = {"job": args.job, "new": len(new), "pending": len(state["pending"]), "errors": len(errors)}
-        if not state["pending"] and not wake_errors:
+        recipient = {"agent": args.agent, "session": args.session, "inboxRoot": args.managed_inbox_root,
+                     "deliveryOnly": args.delivery_only, "resume": args.resume}
+        flight = state.get("inFlight")
+        if flight and flight.get("recipient") != recipient:
+            print(json.dumps({**summary, "outcome": "blocked", "reason": "in-flight recipient/configuration changed"}))
+            return 3
+        if not state["pending"] and not wake_errors and not flight:
             record(args.job, "noop", args.session, "nothing new")
             print(json.dumps({**summary, "outcome": "noop"}))
             return 0
-        correlation = f"waker-{args.job}-{int(time.time())}"
-        code = deliver(args.agent, args.session, correlation, compose(args.job, state["pending"], wake_errors),
-                       args.managed_inbox_root, args.delivery_only)
+        if not flight:
+            flight = {"correlationId": f"waker-{args.job}-{uuid.uuid4()}", "recipient": recipient,
+                      "message": compose(args.job, state["pending"], wake_errors),
+                      "itemKeys": [entry["key"] for entry in state["pending"]], "errorSignature": signature}
+            state["inFlight"] = flight
+            save_state(path, state)
+        correlation = flight["correlationId"]
+        code = deliver(args.agent, args.session, correlation, flight["message"],
+                       args.managed_inbox_root, args.delivery_only, **({"resume": True} if args.resume else {}))
         if code not in QUEUED:
             record(args.job, "blocked", args.session, f"delivery refused rc={code}")
             print(json.dumps({**summary, "outcome": "blocked", "deliveryExit": code}))
             return 3
         state["lastDelivery"] = {"correlationId": correlation, "at": time.time(),
-                                 "itemKeys": [entry["key"] for entry in state["pending"]]}
-        state["pending"] = []
-        if signature:
-            state["errorSignature"] = signature
+                                 "itemKeys": flight["itemKeys"]}
+        accepted = set(flight["itemKeys"])
+        state["pending"] = [entry for entry in state["pending"] if entry["key"] not in accepted]
+        state.pop("inFlight", None)
+        if flight["errorSignature"]:
+            state["errorSignature"] = flight["errorSignature"]
         save_state(path, state)
-        record(args.job, "acted", args.session, f"delivered {summary['pending']} item(s), {len(wake_errors)} error(s)")
+        record(args.job, "acted", args.session, f"transport accepted {len(accepted)} item(s); actor response unverified")
         print(json.dumps({**summary, "outcome": "acted", "correlationId": correlation, "deliveryExit": code}))
         return 0
 
@@ -170,10 +220,13 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--session", required=True, help="owning session UUID")
     runner.add_argument("--managed-inbox-root", help="required for Claude sessions")
     runner.add_argument("--delivery-only", action="store_true", help="acknowledge the native queue, without waiting for a result")
+    runner.add_argument("--resume", action="store_true", help="opt in to native Codex resume when idle")
     runner.add_argument("--state", help="defaults to $XDG_STATE_HOME/agent-waker/<job>.json")
     runner.add_argument("--producer-timeout", type=int, default=280)
     runner.add_argument("producer", nargs=argparse.REMAINDER, help="-- command that prints the JSON report")
     args = parser.parse_args(argv)
+    if args.resume and args.agent != "codex":
+        parser.error("--resume requires --agent codex")
     if args.producer[:1] == ["--"]:
         args.producer = args.producer[1:]
     if not args.producer:
