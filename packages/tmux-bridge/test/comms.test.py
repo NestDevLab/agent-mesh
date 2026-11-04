@@ -175,6 +175,14 @@ class CommsTests(unittest.TestCase):
         self.assertEqual(result['counts'],{'refused':1})
         with c.locked() as (db,_): self.assertEqual(c.admit(db,self.spec('next',runtime='codex'))['status'],'send')
 
+    def test_queued_dead_inbox_owner_is_a_proven_refusal(self):
+        c.change('queue','claude','test','test')
+        spec={'kind':'inbox','runtime':'claude','destination':'test-session',
+              'batch':['AGENT_MESH_INBOX '+json.dumps({'prompt':'test'})], 'owner':{'pid':99999999,'start':'1'}}
+        with c.locked() as (db,_): c.admit(db,spec)
+        result=c.change('on','claude','resume','test')
+        self.assertEqual(result['counts'],{'refused':1})
+
     def test_real_controller_role_run_is_exempt(self):
         graph=self.home/'graph'
         sid='codex:22222222-2222-4222-8222-222222222222'

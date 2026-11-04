@@ -96,6 +96,9 @@ def status(db):
 
 
 def validate(spec):
+    spec = dict(spec)
+    if spec.get('kind') == 'native':
+        spec.setdefault('resume', False)
     if spec.get('kind') not in ('native', 'tmux', 'inbox') or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', str(spec.get('runtime', ''))):
         raise ValueError('unsupported comms transport/runtime')
     if not isinstance(spec.get('destination'), str) or not spec['destination']:
@@ -153,6 +156,7 @@ def process_start(pid):
 
 
 def replaying(spec):
+    spec = validate(spec)
     if 'MESH_COMMS_REPLAY_FD' not in os.environ:
         return None
     fd = int(os.environ['MESH_COMMS_REPLAY_FD'])
@@ -268,7 +272,7 @@ def flush(db, fd):
 
 
 def admit(db, spec):
-    validate(spec)
+    spec = validate(spec)
     ident, digest = identity(spec), hashlib.sha256(encode(spec).encode()).hexdigest()
     mode = effective(db, spec['runtime'])
     exempt = controller_origin(spec, db)
@@ -378,6 +382,7 @@ class Gate:
     def __init__(self, spec):
         self.spec = spec
         self.accepted = False
+        self.rejected = False
         self.process = None
         self.replay = False
 
@@ -400,10 +405,10 @@ class Gate:
 
     def __exit__(self, *_args):
         if self.replay:
-            replay_complete(self.receipt, self.accepted)
+            replay_complete(self.receipt, self.accepted, self.rejected)
         if self.process:
             try:
-                self.process.stdin.write(encode({'accepted': self.accepted})+'\n')
+                self.process.stdin.write(encode({'accepted': self.accepted, 'rejected': self.rejected})+'\n')
                 self.process.stdin.flush()
             except BrokenPipeError:
                 pass
