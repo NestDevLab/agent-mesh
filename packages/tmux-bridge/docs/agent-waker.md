@@ -35,3 +35,13 @@ Delivery-only acknowledgement requires native JSON `status: queued` without
 and the previous `lastDelivery`, even when the process exits zero. Result mode
 keeps its existing result/timeout exit contract; explicit held receipts still
 fail closed. This adapter check does not drain or bypass the communications gate.
+
+A durable `inFlight` envelope freezes the correlation, exact message, recipient,
+options and item keys before invoking transport. Held retries reuse that envelope
+across restarts; newly arriving items remain pending for a later batch. A gate
+`held: true, status: delivered` duplicate acknowledges only that frozen batch,
+and only with matching agent, session and correlation. It proves the prior gate
+replay reached transport, not actor response. Queued, unknown and refused status
+never acknowledge. Recipient/config changes block existing flights. Old state
+without `inFlight` keeps its pending items and creates a flight on the next send.
+State replacement fsyncs the private temporary file and containing directory.

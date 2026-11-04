@@ -55,6 +55,45 @@ class NativeReceiptTest(unittest.TestCase):
             self.assertEqual(waker.deliver('codex', SESSION, 'delivery', 'message', None, True), 78)
 
 
+class InFlightTest(unittest.TestCase):
+    def test_hold_restart_reuses_exact_envelope_and_delivered_ack_only_its_batch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'state.json'
+            # Existing pre-flight state upgrades without losing pending items.
+            state.write_text(json.dumps({'schema': waker.SCHEMA, 'pending': [], 'errorSignature': None}))
+            args = SimpleNamespace(state=str(state), job='observer', producer=['fixture'], producer_timeout=1,
+                                   agent='codex', session=SESSION, managed_inbox_root=None,
+                                   delivery_only=True, resume=True)
+            calls = []
+            def native(command, **kwargs):
+                values = {command[i]: command[i+1] for i in range(len(command)-1) if command[i] in
+                          ('--correlation-id', '--message', '--agent', '--session')}
+                calls.append(values)
+                return Mock(returncode=0, stdout=json.dumps({'held': True,
+                    'status': 'delivered' if len(calls) == 3 else 'queued',
+                    'agent': values['--agent'], 'sessionId': values['--session'],
+                    'correlationId': values['--correlation-id']}))
+            with patch.object(waker, 'record'), patch.object(waker.subprocess, 'run', side_effect=native), \
+                 contextlib.redirect_stdout(io.StringIO()):
+                for item in ({'id': 'first'}, {'id': 'later'}, {'id': 'later'}):
+                    with patch.object(waker, 'run_producer', return_value=([item], [])):
+                        code = waker.run(args)  # reloads disk each call, as after restart
+            self.assertEqual(code, 0)
+            self.assertEqual(calls[0], calls[1])
+            self.assertEqual(calls[1], calls[2])
+            saved = json.loads(state.read_text())
+            self.assertEqual(saved['lastDelivery']['itemKeys'], [waker.item_key({'id': 'first'})])
+            self.assertEqual([entry['item'] for entry in saved['pending']], [{'id': 'later'}])
+            self.assertNotIn('inFlight', saved)
+
+    def test_delivered_receipt_must_match_frozen_recipient_and_correlation(self):
+        base = {'held': True, 'status': 'delivered', 'agent': 'codex', 'sessionId': SESSION, 'correlationId': 'flight'}
+        for key in ('agent', 'sessionId', 'correlationId'):
+            with self.subTest(key=key), patch.object(waker.subprocess, 'run',
+                    return_value=Mock(returncode=0, stdout=json.dumps({**base, key: 'wrong'}))):
+                self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), 78)
+
+
 class AgentWakerTest(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
@@ -111,6 +150,9 @@ class AgentWakerTest(unittest.TestCase):
         code, result = self.tick({"new": [{"id": "m2"}, {"id": "m1"}], "errors": []})
         self.assertEqual((result["outcome"], result["pending"]), ("acted", 2))
         self.assertIn('"id": "m1"', self.sent[-1])
+        self.assertNotIn('"id": "m2"', self.sent[-1])
+        self.assertEqual(len(json.loads(self.state.read_text())["pending"]), 1)
+        self.tick({"new": [], "errors": []})
         self.assertIn('"id": "m2"', self.sent[-1])
 
     def test_same_error_wakes_only_once_until_it_changes(self):
