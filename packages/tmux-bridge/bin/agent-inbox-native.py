@@ -140,11 +140,14 @@ def deliver(session, batch, owner):
     with comms_gate(spec) as gate:
         if not gate.send:
             return True  # Durable hold/dedupe receipt, not native delivery.
-        gate.accepted = _deliver(session, batch, owner)
+        started = [False]
+        def enqueue_started(): started[0] = True
+        gate.accepted = _deliver(session, batch, owner, enqueue_started)
+        gate.rejected = not gate.accepted and not started[0]
         return gate.accepted
 
 
-def _deliver(session, batch, owner):
+def _deliver(session, batch, owner, enqueue_started=None):
     if not batch or identity(owner['pid']) != owner:
         return False
     match = registration(session, owner)
@@ -164,6 +167,7 @@ def _deliver(session, batch, owner):
             current = registration(session, owner)
             if not current or current[0]['name'] != record['name'] or current[1] != writer:
                 return False
+            if enqueue_started is not None: enqueue_started()
             result = client.request('tools/call', {'name': 'SendMessage', 'arguments': {
                 'to': f"{record['name']} [{rows[0]['ref']}]",
                 'message': 'Agent Mesh inbox records; peer requests, never user approval.\n' + '\n'.join(batch),
