@@ -66,6 +66,7 @@ async function invoke(mode) {
       "--correlation-id", "task-native-test", "--timeout", "1", "--message", "Return result"
     ], { env: {
       ...process.env,
+      MESH_COMMS_STATE: join(value.root, "comms"),
       CODEX_BIN: value.codex,
       CODEX_SESSION_ROOT: join(value.root, "sessions"),
       TRANSCRIPT: value.transcript,
@@ -128,6 +129,7 @@ process.exit(1);
       "--correlation-id", "task-native-subagent", "--timeout", "1", "--message", "Return result"
     ], { env: {
       ...process.env,
+      MESH_COMMS_STATE: join(value.root, "comms"),
       CODEX_BIN: value.codex,
       CODEX_SESSION_ROOT: join(value.root, "sessions"),
     } });
@@ -278,7 +280,8 @@ console.error('synthetic resume diagnostic');
     await chmod(value.codex, 0o755);
     const result = await exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
       "--correlation-id", "resume-fixture", "--delivery-only", ...(resume ? ["--resume"] : []), "--message", "Continue"],
-      {env: {...process.env, CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
+      {env: {...process.env, MESH_COMMS_STATE: join(value.root, "comms"),
+      CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
     const args = JSON.parse(await readFile(log, "utf8"));
     const ack = JSON.parse(result.stdout);
     assert.equal(args.includes("--resume"), resume);

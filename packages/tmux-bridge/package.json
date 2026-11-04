@@ -27,7 +27,8 @@
     "mesh-capacity-dispatch": "./bin/mesh-capacity-dispatch.mjs",
     "mesh-ledger": "./bin/mesh-ledger.py",
     "agent-lifecycle-beat": "./bin/agent-lifecycle-beat.py",
-    "agent-lifecycle": "./bin/agent-lifecycle.py"
+    "agent-lifecycle": "./bin/agent-lifecycle.py",
+    "agent-mesh": "./bin/agent-mesh"
   },
   "engines": {
     "node": ">=20"

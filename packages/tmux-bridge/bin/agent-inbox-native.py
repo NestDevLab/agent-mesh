@@ -127,7 +127,24 @@ def matches_reference(row, record):
     return any(hashlib.sha256(value.encode()).hexdigest().startswith(ref) for value in identities)
 
 
+def comms_gate(spec):
+    from importlib.util import spec_from_file_location, module_from_spec
+    loader = spec_from_file_location('mesh_comms', Path(__file__).with_name('mesh-comms.py'))
+    module = module_from_spec(loader); loader.loader.exec_module(module)
+    return module.Gate(spec)
+
+
 def deliver(session, batch, owner):
+    spec = {'kind': 'inbox', 'runtime': 'claude', 'destination': session,
+            'batch': batch, 'owner': owner}
+    with comms_gate(spec) as gate:
+        if not gate.send:
+            return True  # Durable hold/dedupe receipt, not native delivery.
+        gate.accepted = _deliver(session, batch, owner)
+        return gate.accepted
+
+
+def _deliver(session, batch, owner):
     if not batch or identity(owner['pid']) != owner:
         return False
     match = registration(session, owner)
@@ -155,3 +172,11 @@ def deliver(session, batch, owner):
             return tool_json(result).get('success') is True
     except (OSError, ValueError, TypeError, KeyError, StopIteration, TimeoutError):
         return False
+
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] != ['--replay']:
+        sys.exit('internal inbox replay only')
+    spec = json.load(sys.stdin)
+    sys.exit(0 if deliver(spec['destination'], spec['batch'], spec['owner']) else 1)
