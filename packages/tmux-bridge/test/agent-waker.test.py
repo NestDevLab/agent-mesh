@@ -9,6 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch, Mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "bin" / "agent-waker.py"
@@ -21,13 +22,37 @@ SESSION = "00000000-0000-4000-8000-000000000001"
 
 class ResumeFlagTest(unittest.TestCase):
     def test_native_resume_is_opt_in_and_codex_only(self):
-        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0)) as run:
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout='{"status":"queued"}')) as run:
             waker.deliver('codex', SESSION, 'test', 'message', None, True, resume=True)
             self.assertIn('--resume', run.call_args[0][0])
             waker.deliver('codex', SESSION, 'test', 'message', None, True)
             self.assertNotIn('--resume', run.call_args[0][0])
             with self.assertRaises(ValueError):
                 waker.deliver('claude', SESSION, 'test', 'message', None, resume=True)
+
+
+class NativeReceiptTest(unittest.TestCase):
+    def test_zero_exit_holds_and_invalid_receipts_keep_durable_pending(self):
+        for receipt in ({'status': 'queued', 'held': True}, {'status': 'refused', 'held': True},
+                        {'status': 'refused'}, None):
+            with self.subTest(receipt=receipt), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / 'state.json'
+                args = SimpleNamespace(state=str(state), job='observer', producer=['fixture'], producer_timeout=1,
+                                       agent='codex', session=SESSION, managed_inbox_root=None,
+                                       delivery_only=True, resume=True)
+                with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), \
+                     patch.object(waker, 'record'), \
+                     patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(receipt))), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(waker.run(args), 3)
+                saved = json.loads(state.read_text())
+                self.assertEqual(len(saved['pending']), 1)
+                self.assertNotIn('lastDelivery', saved)
+
+    def test_result_mode_preserves_plain_result_exit_contract(self):
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=124, stdout='ordinary result')):
+            self.assertEqual(waker.deliver('codex', SESSION, 'result', 'message', None), 124)
+            self.assertEqual(waker.deliver('codex', SESSION, 'delivery', 'message', None, True), 78)
 
 
 class AgentWakerTest(unittest.TestCase):

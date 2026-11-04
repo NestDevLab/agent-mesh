@@ -112,7 +112,17 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
         command += ["--delivery-only"]
     if inbox_root:
         command += ["--managed-inbox-root", inbox_root]
-    return subprocess.run(command, text=True, capture_output=True).returncode
+    result = subprocess.run(command, text=True, capture_output=True)
+    try:
+        receipt = json.loads(result.stdout)
+    except (ValueError, TypeError):
+        receipt = None
+    # A comms hold can exit zero: process success is not native queue acceptance.
+    if isinstance(receipt, dict) and receipt.get("held") is True:
+        return 78
+    if delivery_only and (not isinstance(receipt, dict) or receipt.get("status") != "queued"):
+        return 78
+    return result.returncode
 
 
 def record(job: str, outcome: str, session: str, note: str) -> None:
