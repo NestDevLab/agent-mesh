@@ -34,12 +34,14 @@ source "$SCRIPT_DIR/_mesh-launch-record.sh"
 
 AGENT_NAME="codex"
 QUIET="false"
+SUBMIT_ONLY=false
 CORRELATION_ID=""
 RESULT_TOKEN=""
 ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --agent) AGENT_NAME="$2"; shift 2 ;;
+        --submit-only) SUBMIT_ONLY=true; shift ;;
         --quiet) QUIET="true"; shift ;;
         --correlation-id) CORRELATION_ID="$2"; shift 2 ;;
         --result-token) RESULT_TOKEN="$2"; shift 2 ;;
@@ -60,6 +62,35 @@ STALL="${AGENT_STALL_TIMEOUT:-300}"
 
 [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_TARGET required" >&2; exit 1; }
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
+# The helper owns the gate lock through submit confirmation, not through the reply.
+COMMS_REQUEST="$(python3 - "$AGENT_NAME" "$TARGET" "$PROMPT" "$CORRELATION_ID" "$RESULT_TOKEN" "$TIMEOUT" "${MESH_TMUX_SOCKET:-mesh}" <<'PYCOMMS'
+import json,sys
+r,t,m,c,token,timeout,socket=sys.argv[1:]
+print(json.dumps(dict(kind='tmux',runtime=r,destination=t,message=m,correlation=c,result_token=token,timeout=int(timeout),socket=socket)))
+PYCOMMS
+)"
+coproc COMMS_GATE { exec python3 "$SCRIPT_DIR/mesh-comms.py" lease --request "$COMMS_REQUEST"; }
+COMMS_PID=$COMMS_GATE_PID
+COMMS_IN=${COMMS_GATE[1]}
+COMMS_OUT=${COMMS_GATE[0]}
+if ! IFS= read -r COMMS_RECEIPT <&"$COMMS_OUT"; then
+    wait "$COMMS_PID" || true
+    echo 'COMMS_OFF_OR_ERROR: delivery refused before tmux access' >&2
+    exit 78
+fi
+COMMS_STATUS="$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["status"])' "$COMMS_RECEIPT")"
+if [[ "$COMMS_STATUS" != send ]]; then
+    echo "$COMMS_RECEIPT"
+    wait "$COMMS_PID"
+    exit 4  # Accepted/held checkpoint, never a completed response.
+fi
+_comms_finish() {
+    printf '{"accepted":%s}\n' "$1" >&"$COMMS_IN" || true
+    exec {COMMS_IN}>&-
+    wait "$COMMS_PID" || true
+}
+trap '_comms_finish false' EXIT
+
 if [[ -n "$CORRELATION_ID" || -n "$RESULT_TOKEN" ]]; then
     [[ -n "$CORRELATION_ID" && "$CORRELATION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] \
         || { echo "ERROR: invalid or missing correlation ID" >&2; exit 1; }
@@ -203,13 +234,13 @@ if [[ "$AGENT_NAME" == codex && -n "$RESULT_TOKEN" ]]; then
 fi
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
-trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true' EXIT
+trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true; _comms_finish false' EXIT
 printf '%s' "$PROMPT" > "$TMPFILE"
 mtmux load-buffer -b "$BUFFER_NAME" "$TMPFILE"
 rm -f "$TMPFILE"
 mtmux paste-buffer -b "$BUFFER_NAME" -t "$TARGET"
 mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
-trap - EXIT
+trap '_comms_finish false' EXIT
 sleep 0.2
 
 # A large paste lands in several bracketed-paste chunks, each rendered
@@ -265,6 +296,13 @@ done
 if [[ "$submitted" -ne 1 ]]; then
     echo "NOT_SUBMITTED: prompt was pasted into '$TARGET', but the turn did not start" >&2
     exit 6
+fi
+
+_comms_finish true
+trap - EXIT
+if [[ "$SUBMIT_ONLY" == true ]]; then
+    printf '%s\n' '{"status":"submitted","completion":"unverified"}'
+    exit 0
 fi
 
 # A new Codex thread is durable once its first turn starts. Reconcile the launch

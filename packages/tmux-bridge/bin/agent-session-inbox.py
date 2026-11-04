@@ -379,8 +379,16 @@ def watch(args):
                             offset = acknowledged_offset
                             time.sleep(5)
                             continue
-                    elif not emit_batch(batch, owner):
-                        return
+                    else:
+                        from importlib.util import spec_from_file_location, module_from_spec
+                        loader = spec_from_file_location('inbox_delivery', Path(__file__).with_name('agent-inbox-native.py'))
+                        delivery = module_from_spec(loader); loader.loader.exec_module(delivery)
+                        spec = {'kind': 'inbox', 'runtime': 'claude', 'destination': args.session, 'batch': batch, 'owner': owner}
+                        with delivery.comms_gate(spec) as gate:
+                            if gate.send:
+                                gate.accepted = emit_batch(batch, owner)
+                                if not gate.accepted:
+                                    return
                     try:
                         atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox), 'offset': offset})
                         acknowledged_offset = offset

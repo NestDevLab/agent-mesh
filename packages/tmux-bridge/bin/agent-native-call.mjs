@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Queue a correlated turn through a provider's native active-session control. */
 
+import { commsLease } from "./comms-client.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { access, open, readdir, stat } from "node:fs/promises";
@@ -45,6 +46,20 @@ if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 
   fail("--timeout must be an integer from 1 to 600", 2);
 }
 
+const resultToken = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
+const anchor = `[MESH:${resultToken}]`;
+const resultBegin = `[[R:${resultToken}]]`;
+const resultEnd = `[[/R:${resultToken}]]`;
+const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
+  `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
+
+const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
+  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume });
+if (comms.status !== 'send') {
+  await comms.complete(false);
+  console.log(JSON.stringify({ status: comms.status, held: true, commsId: comms.id, agent, sessionId, correlationId }));
+  process.exit(0);
+}
 const claudeInbox = agent === "claude"
   ? await requireManagedClaudeInbox(sessionId, correlationId, values["managed-inbox-root"])
   : undefined;
@@ -53,14 +68,9 @@ const initialTranscripts = await resolveTranscripts(agent, sessionId);
 if (initialTranscripts.length === 0) fail(`no ${agent} transcript for session ${sessionId}`, 1);
 const offsets = new Map();
 for (const transcript of initialTranscripts) offsets.set(transcript, (await stat(transcript)).size);
-const resultToken = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
-const anchor = `[MESH:${resultToken}]`;
-const resultBegin = `[[R:${resultToken}]]`;
-const resultEnd = `[[/R:${resultToken}]]`;
-const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
-  `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
-
 let resumeDiagnostic = false;
+let transportAccepted = false;
+try {
 if (agent === "codex") {
   const queued = await run(process.env.CODEX_BIN || "codex", [
     "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
@@ -78,7 +88,13 @@ if (agent === "codex") {
     deliveryId: correlationId,
     meshId: correlationId,
     prompt: protocolMessage,
+    commsPermit: comms.id,
   });
+}
+
+  transportAccepted = true;
+} finally {
+  await comms.complete(transportAccepted);
 }
 
 // Queue acknowledgement is transport proof, never proof that the turn ran.
