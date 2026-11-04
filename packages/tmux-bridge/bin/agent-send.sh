@@ -85,11 +85,15 @@ if [[ "$COMMS_STATUS" != send ]]; then
     exit 4  # Accepted/held checkpoint, never a completed response.
 fi
 _comms_finish() {
-    printf '{"accepted":%s}\n' "$1" >&"$COMMS_IN" || true
+    printf '{"accepted":%s,"rejected":%s}\n' "$1" "${2:-false}" >&"$COMMS_IN" || true
     exec {COMMS_IN}>&-
     wait "$COMMS_PID" || true
 }
-trap '_comms_finish false' EXIT
+COMMS_TOUCHED=false
+_comms_abort() {
+    if [[ "$COMMS_TOUCHED" == true ]]; then _comms_finish false; else _comms_finish false true; fi
+}
+trap '_comms_abort' EXIT
 
 if [[ -n "$CORRELATION_ID" || -n "$RESULT_TOKEN" ]]; then
     [[ -n "$CORRELATION_ID" && "$CORRELATION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] \
@@ -234,13 +238,14 @@ if [[ "$AGENT_NAME" == codex && -n "$RESULT_TOKEN" ]]; then
 fi
 TMPFILE=$(mktemp)
 BUFFER_NAME="_agent_send_$$"
-trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true; _comms_finish false' EXIT
+trap 'rm -f "$TMPFILE"; mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true; _comms_abort' EXIT
 printf '%s' "$PROMPT" > "$TMPFILE"
 mtmux load-buffer -b "$BUFFER_NAME" "$TMPFILE"
 rm -f "$TMPFILE"
+COMMS_TOUCHED=true
 mtmux paste-buffer -b "$BUFFER_NAME" -t "$TARGET"
 mtmux delete-buffer -b "$BUFFER_NAME" 2>/dev/null || true
-trap '_comms_finish false' EXIT
+trap '_comms_abort' EXIT
 sleep 0.2
 
 # A large paste lands in several bracketed-paste chunks, each rendered

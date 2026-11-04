@@ -21,6 +21,7 @@ class CommsTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         env = patch.dict(os.environ, {'MESH_COMMS_STATE': str(self.home/'comms'), 'AGENT_FALLBACK_STATE': str(self.home/'fallback')})
         env.start(); self.addCleanup(env.stop)
+        self.control_original = c.controller_origin
         controller = patch.object(c, 'controller_origin', return_value=False)
         controller.start(); self.addCleanup(controller.stop)
 
@@ -116,6 +117,53 @@ class CommsTests(unittest.TestCase):
         lease.stdin.close(); lease.wait(timeout=5); lease.stdout.close()
         setter.communicate(timeout=5)
         with c.locked() as (db, _): self.assertEqual(c.status(db)['counts'], {'unknown': 1})
+
+    def test_read_only_lock_descriptor_cannot_authorize_replay(self):
+        c.change('off', 'all', 'test', 'test')
+        fd = os.open(c.root()/'delivery.lock', os.O_RDONLY)
+        try:
+            with patch.dict(os.environ, {'MESH_COMMS_REPLAY_FD':str(fd)}):
+                with self.assertRaisesRegex(ValueError, 'capability pipe'):
+                    c.replaying(self.spec())
+        finally: os.close(fd)
+
+    def test_parent_pid_and_claim_label_do_not_prove_controller_origin(self):
+        graph = self.home/'graph'; graph.mkdir(); (graph/'graph.lock').mkdir()
+        (graph/'graph.json').write_text(json.dumps({'roleClaims':[{'id':'fake','role':'global-controller',
+          'project':'global','status':'active','expiresAt':'2099-01-01T00:00:00Z'}]}))
+        original = self.control_original
+        with patch.dict(os.environ, {'MESH_GRAPH_STATE':str(graph), 'PROJECT_DIRECTOR_GUARD_PID':str(os.getppid()),
+                                    'PROJECT_DIRECTOR_GUARD_CLAIM':'fake', 'MESH_COMMS_GUARD_TOKEN':'forged'}):
+            with c.locked() as (db, _): self.assertFalse(original(self.spec(), db))
+
+    def test_replay_capability_is_payload_bound_and_single_use(self):
+        c.change('queue', 'claude', 'test', 'test')
+        with c.locked() as (db, _): c.admit(db, self.spec())
+        code = ("import importlib.util,json,sys; s=importlib.util.spec_from_file_location('c',sys.argv[1]);"
+                "c=importlib.util.module_from_spec(s);s.loader.exec_module(c);"
+                "p=json.loads(sys.argv[2]);assert c.replaying(p)['status']=='send';"
+                "print('accepted')")
+        with patch.object(c, 'command', return_value=[sys.executable,'-c',code,str(BIN/'mesh-comms.py'),c.encode(self.spec())]):
+            result = c.change('on', 'claude', 'resume', 'test')
+        self.assertEqual(result['counts'], {'delivered':1})
+
+    def test_off_rejects_previously_queued_duplicate(self):
+        c.change('queue', 'claude', 'test', 'test')
+        with c.locked() as (db, _): c.admit(db,self.spec())
+        c.change('off','all','test','test')
+        with c.locked() as (db, _):
+            with self.assertRaisesRegex(ValueError,'off'): c.admit(db,self.spec())
+
+    def test_fallback_return_restores_quota_linked_queue(self):
+        fallback=self.home/'fallback';fallback.mkdir();(fallback/'mode').write_text('codex')
+        c.change('queue','claude','test','test')
+        with c.locked() as (db, _): c.admit(db,self.spec())
+        (fallback/'mode').write_text('claude')
+        with patch.object(c.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'','')):
+            with c.locked() as (db,fd):
+                c.flush(db,fd)
+                self.assertEqual(c.effective(db,'claude'),'on')
+                self.assertEqual(c.status(db)['counts'],{'delivered':1})
 
     def test_mcp_control_surface(self):
         requests = [{'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05'}},

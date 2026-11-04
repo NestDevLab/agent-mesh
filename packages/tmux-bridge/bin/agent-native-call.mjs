@@ -11,6 +11,9 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 
+let activeComms;
+let enqueueStarted = false;
+try {
 const { values } = parseArgs({
   options: {
     agent: { type: "string" },
@@ -55,8 +58,10 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
   correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume });
+activeComms = comms;
 if (comms.status !== 'send') {
   await comms.complete(false);
+  activeComms = undefined;
   console.log(JSON.stringify({ status: comms.status, held: true, commsId: comms.id, agent, sessionId, correlationId }));
   process.exit(0);
 }
@@ -72,6 +77,7 @@ let resumeDiagnostic = false;
 let transportAccepted = false;
 try {
 if (agent === "codex") {
+  enqueueStarted = true;
   const queued = await run(process.env.CODEX_BIN || "codex", [
     "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
   ], (timeoutSeconds + 15) * 1000);
@@ -83,6 +89,7 @@ if (agent === "codex") {
   }
   resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
 } else {
+  enqueueStarted = true;
   await appendManagedInbox(claudeInbox, {
     schema: "agent-mesh.monitor-inbox.v1",
     deliveryId: correlationId,
@@ -94,7 +101,8 @@ if (agent === "codex") {
 
   transportAccepted = true;
 } finally {
-  await comms.complete(transportAccepted);
+  await comms.complete(transportAccepted, !enqueueStarted);
+  activeComms = undefined;
 }
 
 // Queue acknowledgement is transport proof, never proof that the turn ran.
@@ -338,8 +346,7 @@ function sleep(ms) {
 }
 
 function fail(message, code) {
-  process.stderr.write(`agent-native-call: ${message}\n`);
-  process.exit(code);
+  throw Object.assign(new Error(message), { exitCode: code });
 }
 
 function blockClaudeVisibleTurn(id, correlation, reasonOverride) {
@@ -372,5 +379,13 @@ function blockClaudeVisibleTurn(id, correlation, reasonOverride) {
     },
   };
   process.stdout.write(`${JSON.stringify(blocker)}\n`);
-  process.exit(78);
+  throw Object.assign(new Error(reasonOverride || "Claude native delivery unavailable"), { exitCode: 78 });
+}
+
+} catch (error) {
+  if (activeComms) {
+    await activeComms.complete(false, !enqueueStarted);
+  }
+  process.stderr.write(`agent-native-call: ${error.message}\n`);
+  process.exit(error.exitCode || 1);
 }
