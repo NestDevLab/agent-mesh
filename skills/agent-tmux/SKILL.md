@@ -116,6 +116,8 @@ An explicit off is preserved. Existing inbox records cross the gate at consumpti
 State defaults to the private XDG `agent-mesh/comms` directory (`MESH_COMMS_STATE` overrides).
 SQLite records policy changes with reason/by, dedupe receipts, payload expiry (24h default),
 and enqueue outcomes. Unknown outcomes block that runtime's queue; inspect rather than retry.
+A preserved legacy overlay may carry `comms-no-replay` beside the gate. It admits messages
+but leaves all queued records untouched for a full dispatcher, preserving FIFO and uncertainty.
 The standalone stdio MCP server is `bin/agent-mesh comms mcp`, exposing `mesh_comms` with
 action/scope/reason/by. Configure that command as a local MCP server through the owning fleet;
 it accepts no message-origin exemption argument. No gateway restart is needed for CLI use.

@@ -241,6 +241,9 @@ def flush(db, fd):
     """Ordered per runtime. Persist unknown outcomes before any irreversible enqueue."""
     refresh(db)
     expire(db)
+    # Legacy overlays can admit safely but must leave replay to a full dispatcher.
+    if (BIN/'comms-no-replay').exists():
+        return 0
     delivered = 0
     for seq, ident, runtime, payload in db.execute("SELECT seq,id,runtime,payload FROM deliveries WHERE status='queued' ORDER BY seq").fetchall():
         if effective(db, runtime) != 'on':

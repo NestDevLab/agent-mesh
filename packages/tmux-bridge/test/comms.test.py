@@ -201,6 +201,15 @@ class CommsTests(unittest.TestCase):
                        '--input',json.dumps({'argv':[sys.executable,'-c',code,str(BIN/'mesh-comms.py')]}))
         self.assertTrue(value)
 
+    def test_legacy_dispatcher_preserves_unsupported_records(self):
+        c.change('queue','claude','test','test')
+        with c.locked() as (db,_): c.admit(db,self.spec())
+        legacy=self.home/'legacy';legacy.mkdir();(legacy/'comms-no-replay').write_text('legacy overlay')
+        with patch.object(c,'BIN',legacy), patch.object(c.subprocess,'run') as send:
+            result=c.change('on','claude','resume','test')
+            send.assert_not_called()
+        self.assertEqual(result['counts'],{'queued':1})
+
     def test_mcp_control_surface(self):
         requests = [{'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2024-11-05'}},
                     {'jsonrpc':'2.0','id':2,'method':'tools/list'},
