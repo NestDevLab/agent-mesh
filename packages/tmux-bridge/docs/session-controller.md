@@ -94,3 +94,10 @@ old job definitions in the rollback receipt, but do not leave them active alongs
 the controller. Rollback stops the controller first, restores previous unit/config
 and schedules, then releases only its own exact Plexus claim. `--once --observe-only`
 collects and persists inputs without triage or delivery, but still requires the claim.
+
+Each normal controller cycle runs the installed `mesh-comms.py sync` once after
+acquiring the fallback mode guard, before the first Plexus `role run`. The gate
+owns fallback-mode/hold interpretation and scoped queue restoration. Sync and its
+replay never run under the Plexus graph lock. Sync failure stops the cycle before
+triage or enqueue. Observe-only cycles and explicit receipt reconciliation never
+run sync. Deploy the communications-switch module before enabling this hook.

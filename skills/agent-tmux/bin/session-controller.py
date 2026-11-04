@@ -385,6 +385,10 @@ def main():
             collect(config)
             argv = [sys.executable, str(Path(__file__).resolve()), '--config', str(args.config), '--guarded-step']
             with mode_guard(config):
+                if not args.observe_only:
+                    # Handover has completed; gate owns mode/hold reconciliation.
+                    # Keep sync outside role run: replay must not hold Plexus.
+                    command([sys.executable, str(mesh / 'mesh-comms.py'), 'sync'])
                 print(command(base + ['run'] + role + ['--input', json.dumps({'argv': argv + ['--observe-only']})], timeout=35), flush=True)
             if not args.observe_only:
                 triage_pending(config)  # no graph lock while a model is running
