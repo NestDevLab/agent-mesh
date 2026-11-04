@@ -187,7 +187,7 @@ class CommsTests(unittest.TestCase):
         claim=mesh('role','claim','--session',sid,'--role','global-controller','--project','global')['claim']['id']
         code=("import importlib.util,sys,json; s=importlib.util.spec_from_file_location('c',sys.argv[1]);"
               "c=importlib.util.module_from_spec(s);s.loader.exec_module(c);"
-              "exec("with c.locked() as (db,fd): print(json.dumps(c.controller_origin({'kind':'native'},db)))")")
+              "print(json.dumps(c.controller_origin({'kind':'native'},None)))")
         with patch.dict(os.environ, {'MESH_GRAPH_STATE':str(graph)}):
             value=mesh('role','run','--session',sid,'--role','global-controller','--project','global','--claim-id',claim,
                        '--input',json.dumps({'argv':[sys.executable,'-c',code,str(BIN/'mesh-comms.py')]}))
