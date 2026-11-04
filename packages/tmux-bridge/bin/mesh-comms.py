@@ -177,9 +177,24 @@ def replaying(spec):
         changed = db.execute('UPDATE deliveries SET cap_used=1 WHERE id=? AND cap_used=0', (cap['id'],)).rowcount
         db.commit()
         if changed != 1: raise ValueError('replay capability already consumed')
-        return {'status':'send', 'id':cap['id']}
+        return {'status':'send', 'id':cap['id'], 'completionToken':cap['token']}
     finally:
         db.close()
+
+
+def replay_complete(receipt, accepted=False, rejected=False):
+    db = sqlite3.connect(root()/'comms.sqlite')
+    try:
+        row = db.execute('SELECT cap_hash,cap_used,dispatcher_pid,dispatcher_start FROM deliveries WHERE id=?', (receipt['id'],)).fetchone()
+        if (not row or row[1] != 1 or process_start(row[2]) != row[3] or
+                not hmac.compare_digest(row[0] or '', hashlib.sha256(receipt['completionToken'].encode()).hexdigest())):
+            raise ValueError('invalid replay completion capability')
+        if accepted and rejected: raise ValueError('contradictory replay completion')
+        state = 'delivered' if accepted else 'refused' if rejected else 'unknown'
+        db.execute('UPDATE deliveries SET status=?,cap_used=2,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE id=?',
+                   (state, state != 'unknown', receipt['id']))
+        db.commit()
+    finally: db.close()
 
 
 def identity(spec):
@@ -242,7 +257,7 @@ def flush(db, fd):
                 db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail='transport accepted' WHERE id=?", (ident,))
                 db.commit()
                 delivered += 1
-            else:
+            elif db.execute('SELECT status FROM deliveries WHERE id=?', (ident,)).fetchone()[0] not in ('refused','delivered'):
                 break
         except (OSError, subprocess.SubprocessError):
             break
@@ -283,7 +298,8 @@ def lease(spec):
     replay = replaying(spec)
     if replay:
         print(encode(replay), flush=True)
-        sys.stdin.readline()
+        result = json.loads(sys.stdin.readline())
+        replay_complete(replay, result.get('accepted') is True, result.get('rejected') is True)
         return
     with locked() as (db, fd):
         flush(db, fd)
@@ -363,11 +379,13 @@ class Gate:
         self.spec = spec
         self.accepted = False
         self.process = None
+        self.replay = False
 
     def __enter__(self):
         replay = replaying(self.spec)
         if replay:
             self.receipt = replay
+            self.replay = True
         else:
             self.process = subprocess.Popen([sys.executable, str(BIN/'mesh-comms.py'), 'lease', '--request', encode(self.spec)],
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -381,6 +399,8 @@ class Gate:
         return self
 
     def __exit__(self, *_args):
+        if self.replay:
+            replay_complete(self.receipt, self.accepted)
         if self.process:
             try:
                 self.process.stdin.write(encode({'accepted': self.accepted})+'\n')
@@ -395,7 +415,7 @@ class Gate:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'on', 'queue', 'off', 'sync', 'lease', 'verify', 'mcp'])
+    parser.add_argument('action', choices=['status', 'on', 'queue', 'off', 'sync', 'lease', 'verify', 'complete', 'mcp'])
     parser.add_argument('--scope', choices=['all', 'claude', 'codex'], default='all')
     parser.add_argument('--reason')
     parser.add_argument('--by')
@@ -403,6 +423,9 @@ def main():
     args = parser.parse_args()
     if args.action == 'mcp':
         mcp()
+    elif args.action == 'complete':
+        result = json.loads(args.request)
+        replay_complete(result, result.get('accepted') is True, result.get('rejected') is True)
     elif args.action == 'verify':
         print(encode(replaying(json.loads(args.request))))
     elif args.action == 'lease':

@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "agent-mesh-comms": {"command": "agent-mesh", "args": ["comms", "mcp"]}
+  }
+}
