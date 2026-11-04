@@ -7,6 +7,9 @@ import { parseMeshV1Envelope, planMeshV1Dispatch } from "../packages/core/src/po
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checks = [];
 const agentTmuxBundleFiles = [
+  "bin/agent-mesh",
+  "bin/mesh-comms.py",
+  "bin/comms-client.mjs",
   "bin/_mesh-graph.sh",
   "bin/_mesh-result.sh",
   "bin/_mesh-tmux.sh",

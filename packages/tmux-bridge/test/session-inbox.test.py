@@ -37,6 +37,9 @@ class SessionInboxTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / 'inboxes'
         self.processes = []
+        env = patch.dict(os.environ, {'MESH_COMMS_STATE':str(Path(self.temp.name)/'comms'),
+                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback')})
+        env.start(); self.addCleanup(env.stop)
 
     def tearDown(self):
         for proc in self.processes:
@@ -548,6 +551,11 @@ for line in sys.stdin:
 
 class NativeDeliveryTest(unittest.TestCase):
     def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        env = patch.dict(os.environ, {'MESH_COMMS_STATE':str(Path(self.temp.name)/'comms'),
+                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback')})
+        env.start(); self.addCleanup(env.stop)
+        self.counter = 0
         spec = importlib.util.spec_from_file_location('native_delivery_test', SCRIPT.with_name('agent-inbox-native.py'))
         self.module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.module)
@@ -566,7 +574,8 @@ class NativeDeliveryTest(unittest.TestCase):
             {'name':'synthetic-peer', 'ref':ref or self.ref}]}]}), result]
         with patch.object(self.module, 'registration', return_value=(self.registration, self.owner)), patch.object(
                 self.module, 'NativeClient', return_value=native):
-            accepted = self.module.deliver(SESSION, ['real record'], self.owner)
+            self.counter += 1
+            accepted = self.module.deliver(SESSION, ['real record '+str(self.counter)], self.owner)
         return accepted, native
 
     def test_native_delivery_requires_explicit_success(self):

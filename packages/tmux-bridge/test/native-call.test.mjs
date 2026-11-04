@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, writeFile, appendFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile, appendFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,10 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+const commsTestRoot = await mkdtemp(join(tmpdir(), 'mesh-native-comms-'));
+process.env.MESH_COMMS_STATE = join(commsTestRoot, 'comms');
+process.env.AGENT_FALLBACK_STATE = join(commsTestRoot, 'fallback');
+test.after(() => rm(commsTestRoot, { recursive: true, force: true }));
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const nativeCall = join(packageRoot, "bin", "agent-native-call.mjs");
 const sessionId = "66666666-6666-4666-8666-666666666666";
@@ -66,6 +70,7 @@ async function invoke(mode) {
       "--correlation-id", "task-native-test", "--timeout", "1", "--message", "Return result"
     ], { env: {
       ...process.env,
+      MESH_COMMS_STATE: join(value.root, "comms"),
       CODEX_BIN: value.codex,
       CODEX_SESSION_ROOT: join(value.root, "sessions"),
       TRANSCRIPT: value.transcript,
@@ -128,6 +133,7 @@ process.exit(1);
       "--correlation-id", "task-native-subagent", "--timeout", "1", "--message", "Return result"
     ], { env: {
       ...process.env,
+      MESH_COMMS_STATE: join(value.root, "comms"),
       CODEX_BIN: value.codex,
       CODEX_SESSION_ROOT: join(value.root, "sessions"),
     } });
@@ -165,7 +171,8 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
       "--correlation-id", "task-claude-test", "--message", "Visible request",
     ], { env: {
       ...process.env,
-      CLAUDE_BIN: claude,
+      MESH_COMMS_STATE: join(root, "comms"),
+    CLAUDE_BIN: claude,
       CLAUDE_CALL_LOG: log,
       AGENT_WRITER_PROC_ROOT: procRoot,
     } });
@@ -222,6 +229,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     ...(deliveryOnly ? ["--delivery-only"] : []),
   ], { env: {
     ...process.env,
+    MESH_COMMS_STATE: join(root, "comms"),
     CLAUDE_BIN: claude,
     CLAUDE_SESSION_ROOT: join(root, "projects"),
     AGENT_WRITER_PROC_ROOT: procRoot,
@@ -278,7 +286,8 @@ console.error('synthetic resume diagnostic');
     await chmod(value.codex, 0o755);
     const result = await exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
       "--correlation-id", "resume-fixture", "--delivery-only", ...(resume ? ["--resume"] : []), "--message", "Continue"],
-      {env: {...process.env, CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
+      {env: {...process.env, MESH_COMMS_STATE: join(value.root, "comms"),
+      CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
     const args = JSON.parse(await readFile(log, "utf8"));
     const ack = JSON.parse(result.stdout);
     assert.equal(args.includes("--resume"), resume);

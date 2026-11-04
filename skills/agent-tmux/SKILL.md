@@ -97,6 +97,31 @@ timeout. Real records arrive through native cross-session messages; peer request
 never grant approval. See `packages/tmux-bridge/docs/session-inbox-hooks.md` in the
 source repository for delivery and rollout requirements.
 
+## Inter-session communications switch
+
+`bin/agent-mesh comms status|on|queue|off [--scope claude|codex] --reason TEXT --by ACTOR`
+controls the shared delivery gate. `queue` accepts durable held messages without waking a
+recipient; `off` rejects new messages without storing them. `on` flushes held messages in
+per-runtime order. A held receipt is never execution or task completion. Run `comms sync`
+from a deterministic controller cycle to observe fallback return and flush without models.
+Native user input in the runtime UI is outside inter-session delivery and stays available.
+Global-controller control deliveries require an active native Plexus role-run ancestor;
+message text and caller-supplied labels never confer an exemption.
+
+The gate reads the existing fallback mode/hold without modifying either. Codex mode or any
+hold queues Claude peer deliveries while Codex continues. A Claude-scoped queue set during
+fallback is quota-linked: `sync` restores on after mode returns to Claude and hold is cleared.
+An explicit off is preserved. Existing inbox records cross the gate at consumption too.
+
+State defaults to the private XDG `agent-mesh/comms` directory (`MESH_COMMS_STATE` overrides).
+SQLite records policy changes with reason/by, dedupe receipts, payload expiry (24h default),
+and enqueue outcomes. Unknown outcomes block that runtime's queue; inspect rather than retry.
+A preserved legacy overlay may carry `comms-no-replay` beside the gate. It admits messages
+but leaves all queued records untouched for a full dispatcher, preserving FIFO and uncertainty.
+The standalone stdio MCP server is `bin/agent-mesh comms mcp`, exposing `mesh_comms` with
+action/scope/reason/by. Configure that command as a local MCP server through the owning fleet;
+it accepts no message-origin exemption argument. No gateway restart is needed for CLI use.
+
 ## Commands
 
 Pick the target with `--agent codex` or `--agent claude` — everything else is
