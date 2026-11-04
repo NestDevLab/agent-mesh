@@ -1,4 +1,5 @@
 import copy
+import contextlib
 import datetime as dt
 import importlib.util
 import json
@@ -26,6 +27,62 @@ class ControllerTest(unittest.TestCase):
         self.project = {'id': 'example', 'ledger': [str(self.ledger)],
                         'event_files': [str(self.events)], 'director_state': str(self.director)}
         self.now = dt.datetime(2026, 11, 3, 11, tzinfo=dt.timezone.utc).timestamp()
+
+    def test_cycle_sync_after_handover_outside_plexus_and_observe_only_has_no_sync(self):
+        config = {'state': str(self.root / 'controller.json'), 'mesh_bin': str(self.root / 'installed-bin'),
+                  'session': 'codex:controller', 'claim_id': 'claim-test', 'owner_project': 'global',
+                  'projects': [self.project]}
+        config_path = self.root / 'config.json'
+        c.save(config_path, config)
+        for observe_only, sync_failure in [(False, False), (True, False), (False, True)]:
+            with self.subTest(observe_only=observe_only, sync_failure=sync_failure):
+                events = []
+                active_guard = False
+
+                @contextlib.contextmanager
+                def guard(_config):
+                    nonlocal active_guard
+                    events.append('handover-completed')
+                    active_guard = True
+                    try:
+                        yield
+                    finally:
+                        active_guard = False
+
+                def invoke(argv, **_kwargs):
+                    if argv[-1] == 'sync':
+                        self.assertTrue(active_guard)
+                        self.assertEqual(argv, [c.sys.executable, str(self.root / 'installed-bin/mesh-comms.py'), 'sync'])
+                        events.append('sync')
+                        if sync_failure:
+                            raise c.CommandError(78, 'sync refused')
+                    elif 'run' in argv:
+                        self.assertTrue(active_guard)
+                        events.append('role-run')
+                        payload = json.loads(argv[-1])
+                        self.assertNotIn('mesh-comms.py', ' '.join(payload['argv']))
+                    return '{}'
+
+                args = ['controller', '--config', str(config_path), '--once']
+                if observe_only:
+                    args += ['--observe-only']
+                with patch.object(c.sys, 'argv', args), patch.object(c, 'mode_guard', guard), \
+                        patch.object(c, 'command', side_effect=invoke), patch.object(c, 'collect'), \
+                        patch.object(c, 'triage_pending') as triage, contextlib.redirect_stdout(c.sys.stderr):
+                    if sync_failure:
+                        with self.assertRaises(c.CommandError):
+                            c.main()
+                        triage.assert_not_called()
+                        self.assertNotIn('role-run', events)
+                    else:
+                        c.main()
+                        if observe_only:
+                            self.assertNotIn('sync', events)
+                            triage.assert_not_called()
+                        else:
+                            self.assertEqual(events.count('sync'), 1)
+                            self.assertLess(events.index('handover-completed'), events.index('sync'))
+                            self.assertLess(events.index('sync'), events.index('role-run'))
 
     def test_baseline_partial_rows_and_replay(self):
         state = {}
