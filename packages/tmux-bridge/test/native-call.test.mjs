@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, writeFile, appendFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile, appendFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,10 @@ import test from "node:test";
 import { promisify } from "node:util";
 
 const exec = promisify(execFile);
+const commsTestRoot = await mkdtemp(join(tmpdir(), 'mesh-native-comms-'));
+process.env.MESH_COMMS_STATE = join(commsTestRoot, 'comms');
+process.env.AGENT_FALLBACK_STATE = join(commsTestRoot, 'fallback');
+test.after(() => rm(commsTestRoot, { recursive: true, force: true }));
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const nativeCall = join(packageRoot, "bin", "agent-native-call.mjs");
 const sessionId = "66666666-6666-4666-8666-666666666666";

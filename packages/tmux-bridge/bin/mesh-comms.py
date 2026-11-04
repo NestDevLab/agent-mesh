@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -46,7 +47,10 @@ def locked():
           CREATE TABLE IF NOT EXISTS auto_release(scope TEXT PRIMARY KEY);
           CREATE TABLE IF NOT EXISTS ledger(seq INTEGER PRIMARY KEY, at REAL, action TEXT, scope TEXT, reason TEXT, actor TEXT);
           CREATE TABLE IF NOT EXISTS deliveries(seq INTEGER PRIMARY KEY, id TEXT UNIQUE, runtime TEXT, digest TEXT,
-            payload TEXT, origin TEXT, created REAL, expires REAL, status TEXT, detail TEXT, destination TEXT, body_digest TEXT);''')
+            payload TEXT, origin TEXT, created REAL, expires REAL, status TEXT, detail TEXT, destination TEXT, body_digest TEXT, cap_hash TEXT, dispatcher_pid INTEGER, dispatcher_start TEXT, cap_used INTEGER);''')
+        columns = {r[1] for r in db.execute('PRAGMA table_info(deliveries)')}
+        for name, kind in [('cap_hash','TEXT'),('dispatcher_pid','INTEGER'),('dispatcher_start','TEXT'),('cap_used','INTEGER')]:
+            if name not in columns: db.execute(f'ALTER TABLE deliveries ADD COLUMN {name} {kind}')
         db.commit()
         yield db, fd
     finally:
@@ -129,8 +133,14 @@ def controller_origin(spec, db):
             return False
     else:
         return False
-    # Read the projection only: role-run already holds the journal lock.
+    # A nonce emitted by the actual role-run process binds this invocation.
     graph = Path(os.environ.get('MESH_GRAPH_STATE', str(Path(os.environ.get('XDG_STATE_HOME', str(Path.home()/'.local/state')))/'agent-mesh/graph')))/'graph.json'
+    proof = json.loads((graph.parent/'graph.lock/comms-guard.json').read_text()) if (graph.parent/'graph.lock/comms-guard.json').exists() else {}
+    token = os.environ.get('MESH_COMMS_GUARD_TOKEN', '')
+    if (proof.get('pid') != int(guard) or proof.get('start') != process_start(int(guard)) or
+            proof.get('claim') != claim or not token or
+            not hmac.compare_digest(proof.get('tokenHash', ''), hashlib.sha256(token.encode()).hexdigest())):
+        return False
     data = json.loads(graph.read_text())
     return any(c.get('id') == claim and c.get('role') == 'global-controller'
                and c.get('project') == 'global' and c.get('status') == 'active'
@@ -138,13 +148,38 @@ def controller_origin(spec, db):
                for c in data.get('roleClaims', []))
 
 
-def replaying():
+def process_start(pid):
+    return (Path('/proc')/str(pid)/'stat').read_text().rsplit(')', 1)[1].split()[19]
+
+
+def replaying(spec):
+    if 'MESH_COMMS_REPLAY_FD' not in os.environ:
+        return None
+    fd = int(os.environ['MESH_COMMS_REPLAY_FD'])
+    if not stat.S_ISFIFO(os.fstat(fd).st_mode):
+        raise ValueError('replay requires a dispatcher capability pipe')
+    cap = json.loads(os.read(fd, 2048))
+    db = sqlite3.connect(root()/'comms.sqlite')
     try:
-        fd = int(os.environ['MESH_COMMS_REPLAY_FD'])
-        a, b = os.fstat(fd), (root()/'delivery.lock').stat()
-        return a.st_dev == b.st_dev and a.st_ino == b.st_ino
-    except (KeyError, ValueError, OSError):
-        return False
+        row = db.execute('SELECT digest,status,cap_hash,dispatcher_pid,dispatcher_start,cap_used,expires FROM deliveries WHERE id=?', (cap.get('id'),)).fetchone()
+        if (not row or row[1] != 'unknown' or row[5] != 0 or row[6] <= time.time() or
+                row[0] != hashlib.sha256(encode(spec).encode()).hexdigest() or
+                not hmac.compare_digest(row[2] or '', hashlib.sha256(cap.get('token','').encode()).hexdigest()) or
+                process_start(row[3]) != row[4]):
+            raise ValueError('invalid or stale payload-bound replay capability')
+        current = os.getppid()
+        for _ in range(32):
+            if current == row[3]: break
+            current = int((Path('/proc')/str(current)/'stat').read_text().rsplit(')',1)[1].split()[1])
+            if current <= 1: raise ValueError('replay dispatcher is not an ancestor')
+        else:
+            raise ValueError('replay dispatcher is not an ancestor')
+        changed = db.execute('UPDATE deliveries SET cap_used=1 WHERE id=? AND cap_used=0', (cap['id'],)).rowcount
+        db.commit()
+        if changed != 1: raise ValueError('replay capability already consumed')
+        return {'status':'send', 'id':cap['id']}
+    finally:
+        db.close()
 
 
 def identity(spec):
@@ -192,12 +227,17 @@ def flush(db, fd):
         spec = json.loads(payload)
         db.execute("UPDATE deliveries SET status='unknown',detail='queued dispatch started; inspect before retry' WHERE id=?", (ident,))
         db.commit()
-        env = {**os.environ, 'MESH_COMMS_REPLAY_FD': str(fd), 'MESH_COMMS_PERMIT': ident}
+        token = os.urandom(32).hex()
+        reader, writer = os.pipe()
+        os.write(writer, encode({'id':ident, 'token':token}).encode()); os.close(writer)
+        db.execute('UPDATE deliveries SET cap_hash=?,dispatcher_pid=?,dispatcher_start=?,cap_used=0 WHERE id=?',
+                   (hashlib.sha256(token.encode()).hexdigest(), os.getpid(), process_start(os.getpid()), ident)); db.commit()
+        env = {**os.environ, 'MESH_COMMS_REPLAY_FD': str(reader)}
         if spec.get('socket'):
             env['MESH_TMUX_SOCKET'] = spec['socket']
         try:
             result = subprocess.run(command(spec), input=encode(spec) if spec['kind'] == 'inbox' else None,
-                                    text=True, capture_output=True, timeout=90, env=env, pass_fds=(fd,))
+                                    text=True, capture_output=True, timeout=90, env=env, pass_fds=(reader,))
             if result.returncode == 0:
                 db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail='transport accepted' WHERE id=?", (ident,))
                 db.commit()
@@ -206,12 +246,19 @@ def flush(db, fd):
                 break
         except (OSError, subprocess.SubprocessError):
             break
+        finally:
+            os.close(reader)
+            db.execute('UPDATE deliveries SET cap_hash=NULL WHERE id=?', (ident,)); db.commit()
     return delivered
 
 
 def admit(db, spec):
     validate(spec)
     ident, digest = identity(spec), hashlib.sha256(encode(spec).encode()).hexdigest()
+    mode = effective(db, spec['runtime'])
+    exempt = controller_origin(spec, db)
+    if mode == 'off' and not exempt:
+        raise ValueError('inter-session communications are off; message rejected, nothing stored')
     previous = db.execute('SELECT digest,status FROM deliveries WHERE id=?', (ident,)).fetchone()
     if previous:
         if previous[0] != digest:
@@ -219,10 +266,6 @@ def admit(db, spec):
         if previous[1] == 'unknown':
             raise ValueError('delivery outcome unknown; inspect, never retry blindly')
         return {'status': previous[1], 'id': ident, 'duplicate': True}
-    mode = effective(db, spec['runtime'])
-    exempt = controller_origin(spec, db)
-    if mode == 'off' and not exempt:
-        raise ValueError('inter-session communications are off; message rejected, nothing stored')
     if db.execute("SELECT count(*) FROM deliveries WHERE status IN ('queued','unknown')").fetchone()[0] >= 1000:
         raise ValueError('comms queue full')
     now = time.time()
@@ -237,8 +280,9 @@ def admit(db, spec):
 
 
 def lease(spec):
-    if replaying():
-        print(encode({'status': 'send', 'id': os.environ.get('MESH_COMMS_PERMIT')}), flush=True)
+    replay = replaying(spec)
+    if replay:
+        print(encode(replay), flush=True)
         sys.stdin.readline()
         return
     with locked() as (db, fd):
@@ -252,6 +296,8 @@ def lease(spec):
         except (ValueError, OSError):
             result = {}
         # Only explicit transport acceptance resolves uncertainty.
+        if result.get('rejected') is True:
+            db.execute("UPDATE deliveries SET status='refused',payload=NULL,detail='proven pre-enqueue refusal' WHERE id=?", (receipt['id'],)); db.commit()
         if result.get('accepted') is True:
             db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail='transport accepted' WHERE id=?", (receipt['id'],))
             db.commit()
@@ -319,8 +365,9 @@ class Gate:
         self.process = None
 
     def __enter__(self):
-        if replaying():
-            self.receipt = {'status': 'send', 'id': os.environ.get('MESH_COMMS_PERMIT')}
+        replay = replaying(self.spec)
+        if replay:
+            self.receipt = replay
         else:
             self.process = subprocess.Popen([sys.executable, str(BIN/'mesh-comms.py'), 'lease', '--request', encode(self.spec)],
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -348,7 +395,7 @@ class Gate:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['status', 'on', 'queue', 'off', 'sync', 'lease', 'mcp'])
+    parser.add_argument('action', choices=['status', 'on', 'queue', 'off', 'sync', 'lease', 'verify', 'mcp'])
     parser.add_argument('--scope', choices=['all', 'claude', 'codex'], default='all')
     parser.add_argument('--reason')
     parser.add_argument('--by')
@@ -356,6 +403,8 @@ def main():
     args = parser.parse_args()
     if args.action == 'mcp':
         mcp()
+    elif args.action == 'verify':
+        print(encode(replaying(json.loads(args.request))))
     elif args.action == 'lease':
         lease(json.loads(args.request))
     elif args.action in ('on', 'queue', 'off'):

@@ -26,7 +26,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -143,7 +143,7 @@ try {
           const checked = roleOperation(loadGraph(stateDir), "check", values, event).result.claim;
           const budget = Math.min(30000, Date.parse(checked.expiresAt) - Date.now());
           if (budget <= 0) throw new Error("claim expired before guarded execution");
-          result = await runGuardedChild(input, values["claim-id"], budget);
+          result = await runGuardedChild(input, values["claim-id"], budget, stateDir);
         } finally { release(); }
         if (result.stdout) process.stdout.write(result.stdout);
         if (result.stderr) process.stderr.write(result.stderr);
@@ -1263,10 +1263,15 @@ function withLock(statePath, callback) {
   try { return callback(); } finally { release(); }
 }
 
-function runGuardedChild(input, claimId, budget) {
+function runGuardedChild(input, claimId, budget, statePath) {
+  const token = randomUUID();
+  const start = process.platform === 'linux' ? readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ').slice(1).join(') ').split(' ')[19] : null;
+  const proofPath = join(statePath, 'graph.lock', 'comms-guard.json');
+  writeAtomic(proofPath, JSON.stringify({ pid: process.pid, start, claim: claimId,
+    tokenHash: createHash('sha256').update(token).digest('hex') }));
   return new Promise((resolveResult, reject) => {
     const child = spawn(input.argv[0], input.argv.slice(1), { detached: true, stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: claimId } });
+      env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: claimId, MESH_COMMS_GUARD_TOKEN: token } });
     let stdout = "", stderr = "", timedOut = false, failed = false;
     const killGroup = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; } } };
     const timer = setTimeout(() => { timedOut = true; killGroup(); }, budget);
@@ -1282,6 +1287,7 @@ function runGuardedChild(input, claimId, budget) {
     child.on("exit", killGroup);
     child.on("close", status => {
       clearTimeout(timer);
+      rmSync(proofPath, { force: true });
       resolveResult({ stdout, stderr: stderr + (timedOut ? "guarded writer deadline exceeded\n" : failed ? "guarded writer output limit exceeded\n" : ""), status: timedOut || failed ? 1 : status });
     });
     child.stdin.end(input.stdin || "");
