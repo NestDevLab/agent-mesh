@@ -6,4 +6,4 @@ import sys
 
 if len(sys.argv) < 2 or sys.argv[1] != 'comms':
     sys.exit('Usage: agent-mesh comms status|on|queue|off|sync|mcp [--scope claude|codex] [--reason TEXT --by ACTOR]')
-os.execv(sys.executable, [sys.executable, str(Path(__file__).with_name('mesh-comms.py')), *sys.argv[2:]])
+os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve().with_name('mesh-comms.py')), *sys.argv[2:]])
