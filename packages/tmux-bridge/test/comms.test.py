@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+sys.dont_write_bytecode = True
 BIN = Path(__file__).resolve().parents[1]/'bin'
 loader = importlib.util.spec_from_file_location('comms', BIN/'mesh-comms.py')
 c = importlib.util.module_from_spec(loader); loader.loader.exec_module(c)

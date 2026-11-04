@@ -167,7 +167,8 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
       "--correlation-id", "task-claude-test", "--message", "Visible request",
     ], { env: {
       ...process.env,
-      CLAUDE_BIN: claude,
+      MESH_COMMS_STATE: join(root, "comms"),
+    CLAUDE_BIN: claude,
       CLAUDE_CALL_LOG: log,
       AGENT_WRITER_PROC_ROOT: procRoot,
     } });
@@ -224,6 +225,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     ...(deliveryOnly ? ["--delivery-only"] : []),
   ], { env: {
     ...process.env,
+    MESH_COMMS_STATE: join(root, "comms"),
     CLAUDE_BIN: claude,
     CLAUDE_SESSION_ROOT: join(root, "projects"),
     AGENT_WRITER_PROC_ROOT: procRoot,

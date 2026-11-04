@@ -148,7 +148,7 @@ def replaying():
 
 
 def identity(spec):
-    destination = [spec['kind'], spec['runtime'], spec['destination'], spec.get('correlation') or encode(spec)]
+    destination = [spec['kind'], spec['runtime'], spec['destination'], spec.get('socket'), spec.get('correlation') or encode(spec)]
     return hashlib.sha256(encode(destination).encode()).hexdigest()
 
 
@@ -187,10 +187,10 @@ def flush(db, fd):
         if effective(db, runtime) != 'on':
             continue
         # An earlier uncertain send blocks that runtime; never retry it blindly.
-        if db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND seq<? AND status='unknown'", (runtime, seq)).fetchone():
+        if db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND seq<? AND status='unknown' AND detail LIKE 'queued dispatch%'", (runtime, seq)).fetchone():
             continue
         spec = json.loads(payload)
-        db.execute("UPDATE deliveries SET status='unknown',detail='dispatch started; inspect before retry' WHERE id=?", (ident,))
+        db.execute("UPDATE deliveries SET status='unknown',detail='queued dispatch started; inspect before retry' WHERE id=?", (ident,))
         db.commit()
         env = {**os.environ, 'MESH_COMMS_REPLAY_FD': str(fd), 'MESH_COMMS_PERMIT': ident}
         if spec.get('socket'):
@@ -226,7 +226,7 @@ def admit(db, spec):
     if db.execute("SELECT count(*) FROM deliveries WHERE status IN ('queued','unknown')").fetchone()[0] >= 1000:
         raise ValueError('comms queue full')
     now = time.time()
-    pending = db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND status IN ('queued','unknown')", (spec['runtime'],)).fetchone()
+    pending = db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND (status='queued' OR (status='unknown' AND detail LIKE 'queued dispatch%'))", (spec['runtime'],)).fetchone()
     state = 'unknown' if exempt or (mode == 'on' and not pending) else 'queued'
     db.execute('INSERT INTO deliveries(id,runtime,digest,payload,origin,created,expires,status,destination,body_digest) VALUES (?,?,?,?,?,?,?,?,?,?)',
                (ident, spec['runtime'], digest, encode(spec), 'controller' if exempt else 'peer', now,
