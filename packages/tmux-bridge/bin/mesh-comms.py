@@ -111,7 +111,12 @@ def validate(spec):
 def controller_origin(spec, db):
     if spec['kind'] == 'inbox':
         for line in spec['batch']:
-            record = json.loads(line.removeprefix('AGENT_MESH_INBOX '))
+            try:
+                record = json.loads(line.removeprefix('AGENT_MESH_INBOX '))
+            except ValueError:
+                return False
+            if not isinstance(record, dict) or not isinstance(record.get('prompt'), str):
+                return False
             permit = db.execute('SELECT destination,body_digest,origin,expires FROM deliveries WHERE id=?',
                                 (record.get('commsPermit'),)).fetchone()
             if not permit or permit[0] != spec['destination'] or permit[2] != 'controller' or permit[3] <= time.time():
@@ -392,12 +397,14 @@ class Gate:
             self.receipt = replay
             self.replay = True
         else:
-            self.process = subprocess.Popen([sys.executable, str(BIN/'mesh-comms.py'), 'lease', '--request', encode(self.spec)],
+            self.process = subprocess.Popen([sys.executable, str(BIN/'mesh-comms.py'), 'lease'],
                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.process.stdin.write(encode(self.spec)+'\n'); self.process.stdin.flush()
             line = self.process.stdout.readline()
             if not line:
                 error = self.process.stderr.read()
-                self.process.wait()
+                self.process.stdin.close(); self.process.wait()
+                self.process.stdout.close(); self.process.stderr.close()
                 raise ValueError(error or 'comms gate failed')
             self.receipt = json.loads(line)
         self.send = self.receipt['status'] == 'send'
@@ -432,9 +439,9 @@ def main():
         result = json.loads(args.request)
         replay_complete(result, result.get('accepted') is True, result.get('rejected') is True)
     elif args.action == 'verify':
-        print(encode(replaying(json.loads(args.request))))
+        print(encode(replaying(json.loads(args.request if args.request is not None else sys.stdin.readline()))))
     elif args.action == 'lease':
-        lease(json.loads(args.request))
+        lease(json.loads(args.request if args.request is not None else sys.stdin.readline()))
     elif args.action in ('on', 'queue', 'off'):
         print(encode(change(args.action, args.scope, args.reason, args.by)))
     else:

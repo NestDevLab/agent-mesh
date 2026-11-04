@@ -69,10 +69,11 @@ r,t,m,c,token,timeout,socket=sys.argv[1:]
 print(json.dumps(dict(kind='tmux',runtime=r,destination=t,message=m,correlation=c,result_token=token,timeout=int(timeout),socket=socket)))
 PYCOMMS
 )"
-coproc COMMS_GATE { exec python3 "$SCRIPT_DIR/mesh-comms.py" lease --request "$COMMS_REQUEST"; }
+coproc COMMS_GATE { exec python3 "$SCRIPT_DIR/mesh-comms.py" lease; }
 COMMS_PID=$COMMS_GATE_PID
 COMMS_IN=${COMMS_GATE[1]}
 COMMS_OUT=${COMMS_GATE[0]}
+printf '%s\n' "$COMMS_REQUEST" >&"$COMMS_IN"
 if ! IFS= read -r COMMS_RECEIPT <&"$COMMS_OUT"; then
     wait "$COMMS_PID" || true
     echo 'COMMS_OFF_OR_ERROR: delivery refused before tmux access' >&2
