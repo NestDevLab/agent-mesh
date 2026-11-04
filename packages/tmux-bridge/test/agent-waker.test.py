@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / "bin" / "agent-waker.py"
 spec = importlib.util.spec_from_file_location("agent_waker", SCRIPT)
@@ -17,6 +17,17 @@ waker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(waker)
 
 SESSION = "00000000-0000-4000-8000-000000000001"
+
+
+class ResumeFlagTest(unittest.TestCase):
+    def test_native_resume_is_opt_in_and_codex_only(self):
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0)) as run:
+            waker.deliver('codex', SESSION, 'test', 'message', None, True, resume=True)
+            self.assertIn('--resume', run.call_args[0][0])
+            waker.deliver('codex', SESSION, 'test', 'message', None, True)
+            self.assertNotIn('--resume', run.call_args[0][0])
+            with self.assertRaises(ValueError):
+                waker.deliver('claude', SESSION, 'test', 'message', None, resume=True)
 
 
 class AgentWakerTest(unittest.TestCase):

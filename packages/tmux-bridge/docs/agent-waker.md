@@ -25,3 +25,7 @@ collection remains the default. Successful delivery saves `lastDelivery.itemKeys
 SHA-256 of sorted-key JSON, UTF-8 with ensure_ascii=False, first 16 hex digits),
 `correlationId` and `at` in the waker state so a producer can retain its checkpoint until
 transport acknowledgement. Refused delivery keeps pending items and the previous acknowledgement.
+
+For an idle Codex owner, explicit `--agent codex --resume` forwards native
+`--resume` through the existing transport and communications gate. It is opt-in;
+Claude resume is rejected. A queue receipt still does not prove an actor response.

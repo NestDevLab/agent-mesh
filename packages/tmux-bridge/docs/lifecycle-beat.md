@@ -188,3 +188,12 @@ wiring, host policy and any recovery/migration remain separate validation.
 ## Host presentation and fallback locations
 
 Hosts may set `labels` and `questionTemplate` for source-language presentation. `nativeQuestionTemplate` applies only to native Codex/Claude question cards, retaining ledger-owned questions for adapter refs. A location without a URI scheme is explicitly marked `whereFallback:true`, `whereKind:local-source-fallback`, and a configurable `whereLabel`. The exact location and source sentence action values remain unchanged; no cloud URL or approval is inferred.
+
+## Optional scoped Plexus producer
+
+`plexusObservers` enables the generic scoped feed producer inside this existing
+beat. Its state, pending report and opaque cursors are independent of the lifecycle
+report. Both report item sets use the enclosing `wakerState` acknowledgement;
+there is still one waker recipient and one existing supervisor. See
+[plexus-observer.md](plexus-observer.md) for selectors, exact quiet baseline,
+backpressure, reset recovery and the separate actor-response evidence requirement.

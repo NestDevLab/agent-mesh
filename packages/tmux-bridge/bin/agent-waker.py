@@ -101,9 +101,13 @@ def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False) -> int:
+def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False) -> int:
     command = ["node", str(BIN / "agent-native-call.mjs"), "--agent", agent, "--session", session,
                "--correlation-id", correlation, "--timeout", "5", "--message", message]
+    if resume:
+        if agent != "codex":
+            raise ValueError("waker resume is supported only for Codex")
+        command += ["--resume"]
     if delivery_only:
         command += ["--delivery-only"]
     if inbox_root:
@@ -145,7 +149,7 @@ def run(args: argparse.Namespace) -> int:
             return 0
         correlation = f"waker-{args.job}-{int(time.time())}"
         code = deliver(args.agent, args.session, correlation, compose(args.job, state["pending"], wake_errors),
-                       args.managed_inbox_root, args.delivery_only)
+                       args.managed_inbox_root, args.delivery_only, **({"resume": True} if args.resume else {}))
         if code not in QUEUED:
             record(args.job, "blocked", args.session, f"delivery refused rc={code}")
             print(json.dumps({**summary, "outcome": "blocked", "deliveryExit": code}))
@@ -170,10 +174,13 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--session", required=True, help="owning session UUID")
     runner.add_argument("--managed-inbox-root", help="required for Claude sessions")
     runner.add_argument("--delivery-only", action="store_true", help="acknowledge the native queue, without waiting for a result")
+    runner.add_argument("--resume", action="store_true", help="opt in to native Codex resume when idle")
     runner.add_argument("--state", help="defaults to $XDG_STATE_HOME/agent-waker/<job>.json")
     runner.add_argument("--producer-timeout", type=int, default=280)
     runner.add_argument("producer", nargs=argparse.REMAINDER, help="-- command that prints the JSON report")
     args = parser.parse_args(argv)
+    if args.resume and args.agent != "codex":
+        parser.error("--resume requires --agent codex")
     if args.producer[:1] == ["--"]:
         args.producer = args.producer[1:]
     if not args.producer:

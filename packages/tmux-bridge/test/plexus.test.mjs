@@ -324,3 +324,20 @@ test("replacing a node identity invalidates the old identity using its previous 
     assert.ok(oldScope.events.every(item => !('lastKnown' in item)));
   } finally { await rm(state, { recursive: true, force: true }); }
 });
+
+test("changes explicit head baseline is quiet and retains later changes", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-head-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const baseline = await query(state, "changes", { initial: "head" });
+  assert.deepEqual(baseline.events, []);
+  assert.equal(baseline.reset, false);
+  await ok(state, ["add", "--agent", "codex", "--tmux-target", "head-later", "--runtime-uuid", RENEWED]);
+  const later = await query(state, "changes", { sinceCursor: baseline.cursor });
+  assert.ok(later.events.length > 0);
+  for (const input of [{ initial: "invalid" }, { initial: "head", sinceCursor: baseline.cursor }]) {
+    const invalid = await run(state, ["query", "changes", "--input", JSON.stringify(input)]);
+    assert.notEqual(invalid.code, 0);
+  }
+});
