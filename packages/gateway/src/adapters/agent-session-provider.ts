@@ -14,6 +14,11 @@ export type AgentSessionStatus = "discovered" | "busy" | "unavailable";
 export interface SessionCatalogMetadata {
   title?: string | null;
   title_source?: string;
+  catalog_status?: string | null;
+  catalog_status_source?: string;
+  activity_status?: string | null;
+  activity_status_source?: string;
+  activity_observed_at?: string | null;
   summary?: string | null;
   summary_source?: string;
   summary_freshness?: string;
@@ -698,6 +703,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       updated_at: session.updated_at,
       title: session.title ?? null,
       title_source: session.title_source ?? "unavailable",
+      catalog_status: session.catalog_status ?? null,
+      catalog_status_source: session.catalog_status_source ?? "unavailable",
+      activity_status: session.activity_status ?? null,
+      activity_status_source: session.activity_status_source ?? "unavailable",
+      activity_observed_at: session.activity_observed_at ?? null,
       summary: session.summary ?? null,
       summary_source: session.summary_source ?? "unavailable",
       summary_freshness: session.summary_freshness ?? "missing",
@@ -851,7 +861,7 @@ function parseBridgeSessions(value: string, expectedAgent: string): BridgeSessio
     throw new Error("Agent session bridge returned an unexpected agent type.");
   }
   for (const session of candidate.sessions) {
-    for (const field of ["title", "title_source", "summary", "summary_source", "summary_freshness", "summary_updated_at", "last_activity_at", "archive_source"] as const) {
+    for (const field of ["title", "title_source", "catalog_status", "catalog_status_source", "activity_status", "activity_status_source", "activity_observed_at", "summary", "summary_source", "summary_freshness", "summary_updated_at", "last_activity_at", "archive_source"] as const) {
       if (session[field] != null && typeof session[field] !== "string") throw new Error("Invalid session catalog metadata.");
     }
     if (session.archived != null && typeof session.archived !== "boolean") throw new Error("Invalid archive metadata.");

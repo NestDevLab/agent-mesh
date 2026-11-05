@@ -31,12 +31,17 @@ export function sessionMetadata(node) {
   return {
     title: node.catalogTitle || node.title || null,
     title_source: node.catalogTitle ? 'operator' : node.title ? 'native' : 'unavailable',
+    catalog_status: node.catalogStatus || node.status || null,
+    catalog_status_source: node.catalogStatus ? 'operator' : node.status ? 'graph-observation' : 'unavailable',
+    activity_status: node.status || null,
+    activity_status_source: node.status ? 'graph-observation' : 'unavailable',
+    activity_observed_at: node.lastSeenAt || null,
     summary: node.summary || null,
     summary_source: node.summary ? (node.summarySource || 'legacy') : 'unavailable',
     summary_updated_at: node.summaryUpdatedAt || null,
     summary_freshness: !node.summary ? 'missing' : !node.summaryUpdatedAt ? 'unknown' :
-      node.lastSeenAt && Date.parse(node.lastSeenAt) > Date.parse(node.summaryUpdatedAt) ? 'stale' : 'current',
-    last_activity_at: node.lastSeenAt || null,
+      node.lifecycle?.lastHumanAt && Date.parse(node.lifecycle.lastHumanAt) > Date.parse(node.summaryUpdatedAt) ? 'stale' : 'current',
+    last_activity_at: node.lastActivityAt || null,
     archived: typeof node.surface?.archived === 'boolean' ? node.surface.archived : null,
     archive_source: typeof node.surface?.archived === 'boolean' ? 'native' : 'unavailable',
   };
@@ -57,7 +62,7 @@ export function catalogList(graph, options = {}) {
   }
   const claims = graph.roleClaims || [];
   return { sessions: [...grouped].map(([session, node]) => ({
-    ...sessionMetadata(node), cwd: node.cwd || null, metadata_updated_at: node.updatedAt || null, sessionId: session, runtime: node.agent, title: node.catalogTitle || node.title || `${node.agent} session ${session.split(':')[1].slice(0, 8)}`,
+    ...sessionMetadata(node), cwd: node.cwd || null, metadata_updated_at: node.updatedAt || null, last_seen_at: node.lastSeenAt || null, sessionId: session, runtime: node.agent, title: node.catalogTitle || node.title || `${node.agent} session ${session.split(':')[1].slice(0, 8)}`,
     titleSource: node.catalogTitle ? 'operator' : node.title ? 'native' : 'unavailable',
     role: node.catalogRole || 'unclassified', project: node.catalogProject || null,
     status: node.catalogStatus || node.status,

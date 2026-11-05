@@ -20,8 +20,9 @@ claimed. Indexed metadata is a snapshot, not a live writer check.
 | `title`, `title_source` | Explicit operator title, native title, or unavailable |
 | `summary`, `summary_source` | Explicit session description or legacy graph summary; no raw transcript fallback |
 | `summary_updated_at` | Time the description changed; never a generic graph update |
-| `last_activity_at` | Last native observation recorded by discovery; independent from description edits |
-| `summary_freshness` | missing, unknown timestamp, current, or stale relative to last activity |
+| `last_activity_at` | Last native event timestamp collected by discovery; unknown for metadata-only records |
+| `summary_freshness` | missing, unknown timestamp, current, or stale when a newer human request follows the description |
+| `catalog_status`, `activity_status`, corresponding source/date | Explicit catalog label and existing graph observation; transport status stays discovered; no live writer proof |
 | `archived`, `archive_source` | Native true/false, or null/unavailable |
 
 Sessions publish `[[mesh-summary: one short current-work description]]` as an explicit

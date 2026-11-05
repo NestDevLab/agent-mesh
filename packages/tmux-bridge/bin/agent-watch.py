@@ -151,6 +151,8 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["last_speaker"] = "assistant"
                 facts["pending_question"] = str(item["reply"]).rstrip().endswith("?")
         if kind in {"human_message", "agent_message", "tool", "question", "turn_started", "turn_complete"}:
+            if timestamp:
+                facts["last_activity_at"] = timestamp
             facts["last_event_kind"] = kind
             facts["last_event_id"] = item.get("source_event_id")
 

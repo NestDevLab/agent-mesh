@@ -526,7 +526,7 @@ test("catalog filters archive and title after authorization and before paginatio
   const metadata = [
     {...sessions[2], title:"Cache private", archived:false},
     {...sessions[0], title:"Cache archived", archived:true},
-    {...sessions[1], title:"Cache unknown", archived:null, summary:"Reviewing cache", summary_source:"native-session", summary_updated_at:"2026-08-29T10:00:00Z"},
+    {...sessions[1], title:"Cache unknown", archived:null, summary:"Reviewing cache", activity_status:"quiet",activity_status_source:"graph-observation",activity_observed_at:"2026-08-29T12:00:00Z",summary_source:"native-session", summary_updated_at:"2026-08-29T10:00:00Z"},
     {...sessions[0], session_id:"visible", title:"Cache current", archived:false}
   ];
   const {instance} = provider({scanLimit:4,run:async()=>({code:0,stdout:JSON.stringify({agent_type:"codex",sessions:metadata}),stderr:""})});
@@ -534,6 +534,9 @@ test("catalog filters archive and title after authorization and before paginatio
   assert.equal(first.sessions[0].session_id,"session-old");
   assert.equal(first.sessions[0].archived,null);
   assert.equal(first.sessions[0].summary,"Reviewing cache");
+  assert.equal(first.sessions[0].status,"discovered");
+  assert.equal(first.sessions[0].activity_status,"quiet");
+  assert.equal(first.sessions[0].activity_status_source,"graph-observation");
   assert.equal(first.discovery_truncated,true);
   assert.equal('cwd' in first.sessions[0],false);
   const second=await instance.list({workspaceId:"workspace.allowed",title:"cache",limit:1,cursor:first.next_cursor});

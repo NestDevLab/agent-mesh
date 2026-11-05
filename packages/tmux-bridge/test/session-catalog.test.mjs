@@ -186,7 +186,7 @@ test('only a fenced global controller maintains active Director leases', () => f
 
 test('catalog archive is explicit and independent from activity; freshness uses summary evidence', () => {
  const graph={nodes:[
-  {agent:'codex',runtimeUuid:a.split(':')[1],title:'Quiet work',status:'quiet',surface:{archived:false},summary:'Testing',summarySource:'native-session',summaryUpdatedAt:'2026-09-01T10:00:00Z',lastSeenAt:'2026-09-01T11:00:00Z',updatedAt:'2026-09-02T12:00:00Z'},
+  {agent:'codex',runtimeUuid:a.split(':')[1],title:'Quiet work',status:'quiet',surface:{archived:false},summary:'Testing',summarySource:'native-session',summaryUpdatedAt:'2026-09-01T10:00:00Z',lastActivityAt:'2026-09-01T11:00:00Z',lifecycle:{lastHumanAt:'2026-09-01T11:00:00Z'},updatedAt:'2026-09-02T12:00:00Z'},
   {agent:'codex',runtimeUuid:b.split(':')[1],title:'Archived work',status:'active',surface:{archived:true}},
   {agent:'claude',runtimeUuid:b.split(':')[1],title:'Unknown work',status:'closed'},
  ]};
@@ -213,6 +213,8 @@ test('incremental discovery collects an explicit native summary without refreshi
   let rows=(await ok(state,'catalog','list')).sessions;
   assert.equal(rows[0].summary,'Testing the cache fix.');
   assert.equal(rows[0].summary_source,'native-session');
+  assert.equal(rows[0].last_activity_at,'2026-10-01T10:00:00Z');
+  assert.equal(rows[0].summary_freshness,'current');
   assert.equal(rows[0].summary_updated_at,'2026-10-01T10:00:00Z');
   await exec(process.execPath,[bin,'--state',state,'discover','--agent','codex'],{env});
   rows=(await ok(state,'catalog','list')).sessions;

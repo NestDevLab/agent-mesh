@@ -663,6 +663,7 @@ function factCreatedAt(fact, fallback) {
 }
 
 function collectSessionSummary(node, fact) {
+  if (Number.isFinite(Date.parse(fact.last_activity_at))) node.lastActivityAt = fact.last_activity_at;
   if (typeof fact.session_summary !== "string" || !fact.session_summary.trim() ||
       fact.session_summary.length > MAX_SUMMARY_LENGTH || !Number.isFinite(Date.parse(fact.session_summary_at))) return;
   if (node.summary === fact.session_summary && node.summarySource === "native-session") return;

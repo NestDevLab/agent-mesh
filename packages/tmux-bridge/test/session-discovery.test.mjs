@@ -276,7 +276,7 @@ test("session discovery returns an empty page when the provider store does not e
   const home = await mkdtemp(join(tmpdir(), "mesh-empty-discovery-"));
   const listed = await run(home, ["--agent", "codex", "list", "--json"]);
   assert.equal(listed.code, 0, listed.stderr);
-  assert.deepEqual(JSON.parse(listed.stdout), { agent_type: "codex", sessions: [] });
+  assert.deepEqual(JSON.parse(listed.stdout), { agent_type: "codex", sessions: [], discovery_truncated: false, metadata_available: true });
 });
 
 
