@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -182,3 +182,42 @@ test('only a fenced global controller maintains active Director leases', () => f
  await ok(state,'role','release','--session',b,'--role','global-controller','--project','global','--claim-id',ctl.id);
  assert.notEqual((await run(state,...args)).code,0);
 }));
+
+
+test('catalog archive is explicit and independent from activity; freshness uses summary evidence', () => {
+ const graph={nodes:[
+  {agent:'codex',runtimeUuid:a.split(':')[1],title:'Quiet work',status:'quiet',surface:{archived:false},summary:'Testing',summarySource:'native-session',summaryUpdatedAt:'2026-09-01T10:00:00Z',lastActivityAt:'2026-09-01T11:00:00Z',lifecycle:{lastHumanAt:'2026-09-01T11:00:00Z'},updatedAt:'2026-09-02T12:00:00Z'},
+  {agent:'codex',runtimeUuid:b.split(':')[1],title:'Archived work',status:'active',surface:{archived:true}},
+  {agent:'claude',runtimeUuid:b.split(':')[1],title:'Unknown work',status:'closed'},
+ ]};
+ const rows=catalogList(graph).sessions;
+ assert.equal(rows.length,2);
+ const quiet=rows.find(row=>row.title==='Quiet work');
+ assert.equal(quiet.archived,false); assert.equal(quiet.summary_freshness,'stale');
+ assert.equal(quiet.summary_updated_at,'2026-09-01T10:00:00Z');
+ assert.equal(rows.find(row=>row.title==='Unknown work').archived,null);
+ assert.equal(catalogList(graph,{archive:'include'}).sessions.length,3);
+ assert.deepEqual(catalogList(graph,{archive:'only'}).sessions.map(row=>row.title),['Archived work']);
+ assert.equal(catalogList(graph,{title:'quiet'}).sessions.length,1);
+});
+
+
+test('incremental discovery collects an explicit native summary without refreshing unchanged evidence', async () => {
+ const root=await mkdtemp(join(tmpdir(),'catalog-native-summary-'));
+ try {
+  const state=join(root,'graph'), id=a.split(':')[1];
+  const transcript=join(root,`rollout-${id}.jsonl`);
+  await writeFile(transcript,JSON.stringify({type:'session_meta',payload:{cwd:'/work/example'}})+'\n'+JSON.stringify({type:'event_msg',timestamp:'2026-10-01T10:00:00Z',payload:{type:'agent_message',message:'[[mesh-summary: Testing the cache fix.]]'}})+'\n');
+  const env={...process.env,CODEX_SESSION_ROOT:root,CODEX_STATE_DB:join(root,'none.db'),MESH_DOMAIN_ROOTS_FILE:''};
+  await exec(process.execPath,[bin,'--state',state,'discover','--agent','codex'],{env});
+  let rows=(await ok(state,'catalog','list')).sessions;
+  assert.equal(rows[0].summary,'Testing the cache fix.');
+  assert.equal(rows[0].summary_source,'native-session');
+  assert.equal(rows[0].last_activity_at,'2026-10-01T10:00:00Z');
+  assert.equal(rows[0].summary_freshness,'current');
+  assert.equal(rows[0].summary_updated_at,'2026-10-01T10:00:00Z');
+  await exec(process.execPath,[bin,'--state',state,'discover','--agent','codex'],{env});
+  rows=(await ok(state,'catalog','list')).sessions;
+  assert.equal(rows[0].summary_updated_at,'2026-10-01T10:00:00Z');
+ } finally {await rm(root,{recursive:true,force:true});}
+});

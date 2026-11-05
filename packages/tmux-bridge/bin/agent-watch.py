@@ -116,6 +116,11 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
             facts["last_turn_id"] = item.get("turn_id")
         elif kind == "agent_message":
             body = str(item.get("body") or "")
+            # Explicit machine-readable self-description, never raw transcript text.
+            marker = re.search(r"^\[\[mesh-summary: ([^\r\n]{1,240})\]\]$", body, re.MULTILINE)
+            if marker and timestamp and marker.group(1).strip() and marker.group(1).strip() != facts.get("session_summary"):
+                facts["session_summary"] = marker.group(1).strip()
+                facts["session_summary_at"] = timestamp
             facts["last_speaker"] = "assistant"
             if body != facts.get("_last_agent_body"):
                 facts["assistant_turns"] += 1
@@ -146,6 +151,8 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["last_speaker"] = "assistant"
                 facts["pending_question"] = str(item["reply"]).rstrip().endswith("?")
         if kind in {"human_message", "agent_message", "tool", "question", "turn_started", "turn_complete"}:
+            if timestamp:
+                facts["last_activity_at"] = timestamp
             facts["last_event_kind"] = kind
             facts["last_event_id"] = item.get("source_event_id")
 

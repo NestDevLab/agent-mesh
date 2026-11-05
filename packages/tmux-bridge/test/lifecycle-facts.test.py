@@ -34,6 +34,27 @@ class LifecycleFacts(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / f'{ID}.jsonl'
 
+    def test_summary_only_accepts_explicit_assistant_marker(self):
+        marker = '[[mesh-summary: Reviewing the cache fix.]]'
+        self.path.write_text(encoded(row('user_message', message=marker)))
+        first = watch.read_appended_facts('codex', ID, self.path, None)
+        self.assertNotIn('session_summary', first)
+        with self.path.open('a') as handle:
+            handle.write(encoded(row('agent_message', phase='final', message='Raw response, not a summary.')))
+        second = watch.read_appended_facts('codex', ID, self.path, first)
+        self.assertNotIn('session_summary', second)
+        with self.path.open('a') as handle:
+            handle.write(encoded(row('agent_message', phase='final', message=marker)))
+        third = watch.read_appended_facts('codex', ID, self.path, second)
+        self.assertEqual(third['session_summary'], 'Reviewing the cache fix.')
+        self.assertEqual(third['session_summary_at'], '2026-09-01T10:00:00Z')
+        repeated = row('agent_message', phase='final', message=marker)
+        repeated['timestamp'] = '2026-09-01T11:00:00Z'
+        with self.path.open('a') as handle:
+            handle.write(encoded(repeated))
+        fourth = watch.read_appended_facts('codex', ID, self.path, third)
+        self.assertEqual(fourth['session_summary_at'], third['session_summary_at'])
+
     def test_task_final_and_error_survive_incremental_discovery(self):
         self.path.write_text(encoded(row('task_started', turn_id='t1'), row('agent_message', phase='commentary', message='working')))
         first = watch.read_appended_facts('codex', ID, self.path, None)

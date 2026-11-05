@@ -59,6 +59,7 @@ const { values, positionals } = parseArgs({
     state: { type: "string" },
     session: { type: "string" },
     project: { type: "string" },
+    archive: { type: "string" },
     ttl: { type: "string" },
     "claim-id": { type: "string" },
     reason: { type: "string" },
@@ -383,6 +384,7 @@ function discoverNodes(statePath, options) {
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: factCreatedAt(fact, now()) };
       Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: factClass(fact, existing?.class), surface: factSurface(fact), origin: fact.origin || existing?.origin || "human" });
+      collectSessionSummary(node, fact);
       node.lifecycle = factLifecycle(fact);
       node.attention = factAttention(fact, node.refs || [], now());
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
@@ -433,6 +435,7 @@ function sweepNodes(statePath, options) {
         lastSeenAt: fact.updatedAt, class: factClass(fact, node.class),
         surface: factSurface(fact), origin: fact.origin || node.origin || "human",
       });
+      collectSessionSummary(node, fact);
       node.lifecycle = factLifecycle(fact);
       node.attention = factAttention(fact, node.refs || [], observedAt);
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
@@ -659,8 +662,18 @@ function factCreatedAt(fact, fallback) {
   return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toISOString() : fallback;
 }
 
+function collectSessionSummary(node, fact) {
+  if (Number.isFinite(Date.parse(fact.last_activity_at))) node.lastActivityAt = fact.last_activity_at;
+  if (typeof fact.session_summary !== "string" || !fact.session_summary.trim() ||
+      fact.session_summary.length > MAX_SUMMARY_LENGTH || !Number.isFinite(Date.parse(fact.session_summary_at))) return;
+  if (node.summary === fact.session_summary && node.summarySource === "native-session") return;
+  if (node.summaryUpdatedAt && Date.parse(node.summaryUpdatedAt) >= Date.parse(fact.session_summary_at)) return;
+  Object.assign(node, { summary: fact.session_summary, summarySource: "native-session",
+    summaryUpdatedAt: fact.session_summary_at });
+}
+
 function factSurface(fact) {
-  if (fact.agent === "codex") return { sidebar: fact.source === "vscode" ? "desktop" : "cli", archived: fact.archived === true, pinned: fact.pinned === true };
+  if (fact.agent === "codex") return { sidebar: fact.source === "vscode" ? "desktop" : "cli", archived: typeof fact.archived === "boolean" ? fact.archived : null, pinned: fact.pinned === true };
   return { sidebar: fact.entrypoint === "claude-desktop" ? "desktop" : "cli", hostId: fact.hostSessionId || null, archived: null };
 }
 
@@ -893,7 +906,8 @@ function updateSummary(statePath, options) {
   return mutate(statePath, (graph) => {
     const existing = graph.nodes.find((node) => node.id === id);
     if (!existing) throw new Error(`node not found: ${id}`);
-    const node = { ...existing, summary, updatedAt: now() };
+    const node = { ...existing, summary, updatedAt: now(),
+      ...(summary !== existing.summary ? { summaryUpdatedAt: now(), summarySource: "session" } : {}) };
     if (options.status !== undefined) {
       assertStatus(options.status);
       node.status = options.status;
@@ -1474,7 +1488,7 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug> --archive exclude|include|only --title <text>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 
 function pendingResolutions(graph, events) {

@@ -26,6 +26,32 @@ function members(graph, session) {
   if (!nodes.length) throw new Error(`session not registered: ${session}`);
   return nodes;
 }
+/** Public metadata contract. Unknown archive state is intentionally visible. */
+export function sessionMetadata(node) {
+  return {
+    title: node.catalogTitle || node.title || null,
+    title_source: node.catalogTitle ? 'operator' : node.title ? 'native' : 'unavailable',
+    catalog_status: node.catalogStatus || node.status || null,
+    catalog_status_source: node.catalogStatus ? 'operator' : node.status ? 'graph-observation' : 'unavailable',
+    activity_status: node.status || null,
+    activity_status_source: node.status ? 'graph-observation' : 'unavailable',
+    activity_observed_at: node.lastSeenAt || null,
+    summary: node.summary || null,
+    summary_source: node.summary ? (node.summarySource || 'legacy') : 'unavailable',
+    summary_updated_at: node.summaryUpdatedAt || null,
+    summary_freshness: !node.summary ? 'missing' : !node.summaryUpdatedAt ? 'unknown' :
+      node.lifecycle?.lastHumanAt && Date.parse(node.lifecycle.lastHumanAt) > Date.parse(node.summaryUpdatedAt) ? 'stale' : 'current',
+    last_activity_at: node.lastActivityAt || null,
+    archived: typeof node.surface?.archived === 'boolean' ? node.surface.archived : null,
+    archive_source: typeof node.surface?.archived === 'boolean' ? 'native' : 'unavailable',
+  };
+}
+export function catalogMatches(row, options = {}) {
+  const mode = options.archive || 'exclude';
+  if (!['exclude', 'include', 'only'].includes(mode)) throw new Error('invalid archive filter');
+  return (mode === 'include' || (mode === 'only' ? row.archived === true : row.archived !== true)) &&
+    (!options.title || String(row.title || '').toLowerCase().includes(options.title.toLowerCase()));
+}
 export function catalogList(graph, options = {}) {
   const grouped = new Map();
   for (const node of graph.nodes) {
@@ -36,18 +62,20 @@ export function catalogList(graph, options = {}) {
   }
   const claims = graph.roleClaims || [];
   return { sessions: [...grouped].map(([session, node]) => ({
-    sessionId: session, runtime: node.agent, title: node.catalogTitle || node.title || `${node.agent} session ${session.split(':')[1].slice(0, 8)}`,
+    ...sessionMetadata(node), cwd: node.cwd || null, metadata_updated_at: node.updatedAt || null, last_seen_at: node.lastSeenAt || null, sessionId: session, runtime: node.agent, title: node.catalogTitle || node.title || `${node.agent} session ${session.split(':')[1].slice(0, 8)}`,
     titleSource: node.catalogTitle ? 'operator' : node.title ? 'native' : 'unavailable',
     role: node.catalogRole || 'unclassified', project: node.catalogProject || null,
     status: node.catalogStatus || node.status,
     claims: claims.filter(c => c.session === session).map(c => ({ ...c, status: claimState(c) })),
-  })).filter(row => (!options.project || row.project === options.project) && (!options.role || row.role === options.role) && (!options.status || row.status === options.status)).sort((a,b) => a.sessionId.localeCompare(b.sessionId)) };
+  })).filter(row => catalogMatches(row, options) && (!options.project || row.project === options.project) && (!options.role || row.role === options.role) && (!options.status || row.status === options.status)).sort((a,b) => a.sessionId.localeCompare(b.sessionId)) };
 }
 export function catalogUpdate(graph, session, options, makeEvent) {
   session = parseSessionId(session);
   const nodes = members(graph, session);
   const role = options.role === undefined ? undefined : slug(options.role, 'role');
   const project = options.project === undefined ? undefined : slug(options.project, 'project');
+  const summary = options.summary === undefined ? undefined : text(options.summary, 'summary');
+  if (summary?.length > 240) throw new Error('summary must be at most 240 characters');
   const title = options.title === undefined ? undefined : text(options.title, 'title');
   if (options.status !== undefined && !['active','waiting','blocked','quiet','closed'].includes(options.status)) throw new Error('invalid catalog status');
   if (nodes.some(n => n.catalogStatus === 'superseded')) throw new Error('superseded sessions cannot be reclassified');
@@ -59,6 +87,7 @@ export function catalogUpdate(graph, session, options, makeEvent) {
   }
   const events = nodes.map(node => makeEvent('node.upserted', { node: { ...node,
     ...(role !== undefined ? { catalogRole: role } : {}), ...(project !== undefined ? { catalogProject: project } : {}),
+    ...(summary !== undefined && summary !== node.summary ? { summary, summarySource: 'session', summaryUpdatedAt: new Date().toISOString() } : {}),
     ...(title !== undefined ? { catalogTitle: title, title } : {}), ...(options.status !== undefined ? { catalogStatus: options.status } : {}), updatedAt: new Date().toISOString(),
   } }));
   return { events, result: { session, changed: true } };

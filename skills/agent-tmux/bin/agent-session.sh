@@ -519,7 +519,7 @@ for line in sys.stdin:
         "updated_at": timestamp.isoformat().replace("+00:00", "Z"),
     })
 print(json.dumps({"agent_type": agent_type, "sessions": sessions}))
-' "$AGENT_NAME"
+' "$AGENT_NAME" | node "$SCRIPT_DIR/session-metadata.mjs" "${CATALOG_INSPECT:-}" "${LIST_LIMIT:-0}"
 }
 
 # ── commands ──────────────────────────────────────────────────────────────────
@@ -827,7 +827,16 @@ case "$cmd" in
             esac
         done
         SESSION_FILE=$(_session_file "$SESSION_ID")
+        if [[ -z "$SESSION_FILE" && "$INSPECT_JSON" == "true" ]]; then
+            CATALOG_INSPECT="$SESSION_ID"
+            SESSION_JSON="$(printf '' | _session_rows_json)"
+            if node -e 'process.exit(JSON.parse(process.argv[1]).sessions.length ? 0 : 1)' "$SESSION_JSON"; then
+                printf '%s\n' "$SESSION_JSON"
+                exit 0
+            fi
+        fi
         [[ -n "$SESSION_FILE" ]] || { echo "ERROR: session not found: $SESSION_ID" >&2; exit 3; }
+        CATALOG_INSPECT="$SESSION_ID"
         SESSION_JSON="$(_session_row "$SESSION_FILE" | _session_rows_json)"
         if [[ -n "$GRAPH_TARGET" ]]; then
             GRAPH_CWD="$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.sessions[0]?.cwd || "");' "$SESSION_JSON")"
