@@ -520,3 +520,26 @@ test("concurrent tasks targeting one session are serialized before prompt captur
   assert.equal(maxActiveSends, 1);
   assert.deepEqual([first.reply, second.reply], ["A", "B"]);
 });
+
+
+test("catalog filters archive and title after authorization and before pagination", async () => {
+  const metadata = [
+    {...sessions[2], title:"Cache private", archived:false},
+    {...sessions[0], title:"Cache archived", archived:true},
+    {...sessions[1], title:"Cache unknown", archived:null, summary:"Reviewing cache", summary_source:"native-session", summary_updated_at:"2026-08-29T10:00:00Z"},
+    {...sessions[0], session_id:"visible", title:"Cache current", archived:false}
+  ];
+  const {instance} = provider({scanLimit:4,run:async()=>({code:0,stdout:JSON.stringify({agent_type:"codex",sessions:metadata}),stderr:""})});
+  const first=await instance.list({workspaceId:"workspace.allowed",title:"cache",limit:1});
+  assert.equal(first.sessions[0].session_id,"session-old");
+  assert.equal(first.sessions[0].archived,null);
+  assert.equal(first.sessions[0].summary,"Reviewing cache");
+  assert.equal(first.discovery_truncated,true);
+  assert.equal('cwd' in first.sessions[0],false);
+  const second=await instance.list({workspaceId:"workspace.allowed",title:"cache",limit:1,cursor:first.next_cursor});
+  assert.equal(second.sessions[0].session_id,"visible"); assert.equal(second.next_cursor,null);
+  const archived=await instance.list({workspaceId:"workspace.allowed",archive:"only",limit:10});
+  assert.deepEqual(archived.sessions.map(row=>row.title),["Cache archived"]);
+  const all=await instance.list({workspaceId:"workspace.allowed",archive:"include",limit:10});
+  assert.equal(all.sessions.length,3);
+});

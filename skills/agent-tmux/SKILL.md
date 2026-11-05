@@ -15,6 +15,17 @@ that an agent's own MCP server no longer tracks.
 This is the **tmux transport** for the mesh: any agent that can run these scripts
 can pilot supported CLI agents through persistent tmux sessions.
 
+## Session catalog participation
+
+Sessions using this integration belong to Agent Mesh. Publish a short current-work
+self-description when the work changes by adding one machine-readable assistant line:
+`[[mesh-summary: Reviewing the cache invalidation fix; tests pending.]]`
+Use at most 240 characters, no secrets, transcript quotations, host paths or private
+identifiers. The existing incremental watcher and sweep collect this explicit line
+with its native timestamp; repeated unchanged observations do not refresh it. Never
+maintain a session list or infer archive state from silence. For an immediate explicit
+update use `mesh-graph.mjs catalog update --session <agent:uuid> --summary "..."`.
+
 ## Use Policy
 
 - In Codex Desktop, use native task capabilities for Codex-to-Codex work when

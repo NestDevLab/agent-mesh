@@ -4,12 +4,30 @@ import { createHash } from "node:crypto";
 import { isAbsolute, relative, resolve } from "node:path";
 import { env as processEnv } from "node:process";
 
+import { catalogMatches } from "../../../tmux-bridge/bin/session-catalog.mjs";
+
 import { ShellTmuxSender, type ShellRun } from "./shell-tmux-sender.js";
 import type { TmuxSendResult } from "./tmux-transport-adapter.js";
 
 export type AgentSessionStatus = "discovered" | "busy" | "unavailable";
 
-export interface AgentSessionSummary {
+export interface SessionCatalogMetadata {
+  title?: string | null;
+  title_source?: string;
+  summary?: string | null;
+  summary_source?: string;
+  summary_freshness?: string;
+  summary_updated_at?: string | null;
+  last_activity_at?: string | null;
+  archived?: boolean | null;
+  archive_source?: string;
+}
+export interface SessionListInput {
+  workspaceId: string; cursor?: string; limit: number;
+  archive?: "exclude" | "include" | "only";
+  title?: string;
+}
+export interface AgentSessionSummary extends SessionCatalogMetadata {
   session_id: string;
   agent_id: string;
   provider: "codex" | "claude";
@@ -21,6 +39,8 @@ export interface AgentSessionSummary {
 export interface AgentSessionPage {
   sessions: readonly AgentSessionSummary[];
   next_cursor: string | null;
+  discovery_truncated?: boolean;
+  catalog_available?: boolean;
 }
 
 export interface AgentTranscriptEvent {
@@ -67,7 +87,7 @@ export type SessionAccessProfile = "read-only" | "full-access";
 export interface AgentSessionProvider {
   readonly agentId: string;
   readonly provider: "codex" | "claude";
-  list(input: { workspaceId: string; cursor?: string; limit: number }): Promise<AgentSessionPage>;
+  list(input: SessionListInput): Promise<AgentSessionPage>;
   get(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionSummary | undefined>;
   transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined>;
   search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
@@ -94,7 +114,7 @@ export class AgentSessionRegistry {
     return this.providers.has(agentId);
   }
 
-  list(agentId: string, input: { workspaceId: string; cursor?: string; limit: number }): Promise<AgentSessionPage> {
+  list(agentId: string, input: SessionListInput): Promise<AgentSessionPage> {
     return this.require(agentId).list(input);
   }
 
@@ -144,7 +164,7 @@ export class AgentSessionRegistry {
   }
 }
 
-interface BridgeSession {
+interface BridgeSession extends SessionCatalogMetadata {
   session_id: string;
   agent_type: string;
   cwd: string;
@@ -152,6 +172,8 @@ interface BridgeSession {
 }
 
 interface BridgeSessionResponse {
+  metadata_available?: boolean;
+  discovery_truncated?: boolean;
   agent_type: string;
   sessions: BridgeSession[];
 }
@@ -291,19 +313,22 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     });
   }
 
-  async list(input: { workspaceId: string; cursor?: string; limit: number }): Promise<AgentSessionPage> {
+  async list(input: SessionListInput): Promise<AgentSessionPage> {
     const roots = this.roots(input.workspaceId);
     const response = await this.command(["--agent", this.provider, "list", "--json", "--limit", String(this.scanLimit)]);
     const parsed = parseBridgeSessions(response.stdout, this.provider);
     const matching = parsed.sessions
       .filter((session) => roots.some((root) => isWithin(session.cwd, root)))
+      .filter((session) => catalogMatches(session, input))
       .map((session) => this.summary(session, input.workspaceId));
     const offset = decodeCursor(input.cursor);
     const sessions = matching.slice(offset, offset + input.limit);
     const next = offset + sessions.length;
     return {
       sessions,
-      next_cursor: next < matching.length ? encodeCursor(next) : null
+      next_cursor: next < matching.length ? encodeCursor(next) : null,
+      discovery_truncated: parsed.discovery_truncated ?? parsed.sessions.length >= this.scanLimit,
+      catalog_available: parsed.metadata_available === true
     };
   }
 
@@ -670,7 +695,16 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       // writer availability. The provider-specific resume command performs the
       // live writer check immediately before sending.
       status: "discovered",
-      updated_at: session.updated_at
+      updated_at: session.updated_at,
+      title: session.title ?? null,
+      title_source: session.title_source ?? "unavailable",
+      summary: session.summary ?? null,
+      summary_source: session.summary_source ?? "unavailable",
+      summary_freshness: session.summary_freshness ?? "missing",
+      summary_updated_at: session.summary_updated_at ?? null,
+      last_activity_at: session.last_activity_at ?? null,
+      archived: session.archived ?? null,
+      archive_source: session.archive_source ?? "unavailable"
     };
   }
 
@@ -817,6 +851,10 @@ function parseBridgeSessions(value: string, expectedAgent: string): BridgeSessio
     throw new Error("Agent session bridge returned an unexpected agent type.");
   }
   for (const session of candidate.sessions) {
+    for (const field of ["title", "title_source", "summary", "summary_source", "summary_freshness", "summary_updated_at", "last_activity_at", "archive_source"] as const) {
+      if (session[field] != null && typeof session[field] !== "string") throw new Error("Invalid session catalog metadata.");
+    }
+    if (session.archived != null && typeof session.archived !== "boolean") throw new Error("Invalid archive metadata.");
     if (
       typeof session.session_id !== "string" ||
       typeof session.cwd !== "string" ||

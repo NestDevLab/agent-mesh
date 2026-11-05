@@ -278,3 +278,28 @@ test("session discovery returns an empty page when the provider store does not e
   assert.equal(listed.code, 0, listed.stderr);
   assert.deepEqual(JSON.parse(listed.stdout), { agent_type: "codex", sessions: [] });
 });
+
+
+test("indexed native archived and database-only sessions survive active-tree enumeration", async () => {
+  const home=await mkdtemp(join(tmpdir(),"mesh-archived-catalog-"));
+  const state=join(home,"graph");
+  const db=join(home,"state.sqlite");
+  const id="11111111-1111-4111-8111-111111111111";
+  const dbOnly="22222222-2222-4222-8222-222222222222";
+  const archived=join(home,".codex","archived_sessions");
+  await mkdir(archived,{recursive:true});
+  await writeFile(join(archived,`rollout-${id}.jsonl`),JSON.stringify({type:"session_meta",payload:{cwd:"/workspace/archived"}})+"\n");
+  await exec("python3",["-c",`import sqlite3,sys
+c=sqlite3.connect(sys.argv[1]);c.execute('create table threads(id,name,title,cwd,source,thread_source,archived,is_pinned,updated_at_ms,created_at_ms)')
+for i in sys.argv[2:]: c.execute('insert into threads values(?,?,?,?,?,?,?,?,?,?)',(i,'Archived task','','/workspace/archived','vscode','cli',1,0,1790000000000,1790000000000))
+c.commit()`,db,id,dbOnly]);
+  const env={...process.env,HOME:home,CODEX_SESSION_ROOT:archived,CODEX_STATE_DB:db,MESH_DOMAIN_ROOTS_FILE:"",MESH_GRAPH_STATE:state,XDG_STATE_HOME:join(home,"state")};
+  await exec(process.execPath,[join(packageRoot,"bin","mesh-graph.mjs"),"--state",state,"discover","--agent","codex","--json"],{env});
+  const listed=await run(home,["--agent","codex","list","--json"],env);
+  assert.equal(listed.code,0,listed.stderr);
+  const rows=JSON.parse(listed.stdout).sessions;
+  assert.deepEqual(rows.map(row=>row.session_id).sort(),[id,dbOnly]);
+  assert.ok(rows.every(row=>row.archived===true && row.archive_source==='native'));
+  const get=await run(home,["--agent","codex","inspect",dbOnly,"--json"],env);
+  assert.equal(get.code,0,get.stderr); assert.equal(JSON.parse(get.stdout).sessions[0].archived,true);
+});

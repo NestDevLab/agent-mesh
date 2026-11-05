@@ -321,6 +321,8 @@ export class MeshMcpFacade {
     workspaceId?: string;
     cursor?: string;
     limit: number;
+    archive?: "exclude" | "include" | "only";
+    title?: string;
   }): Promise<AgentSessionPage> {
     this.assertAllowed("mesh_agent_sessions_list");
     const target = this.allowedTarget(input.targetAgentId);
@@ -328,7 +330,9 @@ export class MeshMcpFacade {
     return this.sessions(target.id).list(target.id, {
       workspaceId,
       cursor: input.cursor,
-      limit: input.limit
+      limit: input.limit,
+      archive: input.archive,
+      title: input.title
     });
   }
 
@@ -531,6 +535,8 @@ const taskCallInputSchema = taskDispatchInputSchema.extend({
 const taskIdSchema = z.object({ task_id: identifierSchema });
 const threadSchema = z.object({ context_id: identifierSchema });
 const agentSessionsListSchema = z.object({
+  archive: z.enum(["exclude", "include", "only"]).optional(),
+  title: z.string().min(1).max(512).optional(),
   target_agent_id: identifierSchema,
   workspace_id: identifierSchema.optional(),
   cursor: z.string().min(1).max(512).optional(),
@@ -731,7 +737,9 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
           targetAgentId: input.target_agent_id,
           workspaceId: input.workspace_id,
           cursor: input.cursor,
-          limit: input.limit ?? 25
+          limit: input.limit ?? 25,
+          archive: input.archive,
+          title: input.title
         }));
       } catch (error) { return errorResult(error); }
     }
