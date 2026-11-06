@@ -26,7 +26,7 @@ export interface MeshTaskExecutionResult {
 export interface MeshTaskExecutionHooks { bindSession(sessionId: string): Promise<void> }
 
 export type MeshTaskExecutor = (task: MeshTaskRecord, hooks: MeshTaskExecutionHooks) => Promise<MeshTaskExecutionResult>;
-export type MeshTaskReturnSender = (task: MeshTaskRecord) => Promise<"queued" | "delivered" | "read" | "uncertain">;
+export type MeshTaskReturnSender = (task: MeshTaskRecord) => Promise<"held" | "queued" | "delivered" | "read" | "uncertain">;
 
 export class MeshTaskCoordinator {
   private readonly store: MeshTaskStoreLike;
@@ -177,7 +177,7 @@ export class MeshTaskCoordinator {
 
   private scheduleReturn(task: MeshTaskRecord): void {
     if (this.deliverReturn === undefined || task.return_delivery === undefined ||
-        task.return_delivery.status === "read" || this.returns.has(task.task_id)) return;
+        ["delivered", "read"].includes(task.return_delivery.status) || this.returns.has(task.task_id)) return;
     const run = (async () => {
       const latest = await this.store.get(task.task_id);
       if (latest?.return_delivery === undefined || !TERMINAL.has(latest.status)) return;
@@ -195,7 +195,7 @@ export class MeshTaskCoordinator {
   }
 }
 
-type MeshTaskReturnDeliveryStatus = "queued" | "delivered" | "read" | "uncertain";
+type MeshTaskReturnDeliveryStatus = "held" | "queued" | "delivered" | "read" | "uncertain";
 
 function executionErrorCode(error: unknown): string {
   if (typeof error === "object" && error !== null && "code" in error) {

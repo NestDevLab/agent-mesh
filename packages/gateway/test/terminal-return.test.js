@@ -78,9 +78,9 @@ test("native return uses delivery-only, respects resume policy, and distinguishe
     } });
   provider.get = async () => ({ session_id: route.session_id, workspace_id: route.workspace_id, provider: "codex" });
   const notice = { sessionId: route.session_id, workspaceId: route.workspace_id, correlationId: "terminal:one", message: "result data", resume: true };
-  assert.equal(await provider.deliverNotice(notice), "queued");
+  assert.equal(await provider.deliverNotice(notice), "held");
   assert.ok(invocations[0].includes("--delivery-only")); assert.ok(invocations[0].includes("--resume"));
-  mode = "accepted"; assert.equal(await provider.deliverNotice(notice), "delivered");
+  mode = "accepted"; assert.equal(await provider.deliverNotice(notice), "queued");
   mode = "error"; assert.equal(await provider.deliverNotice(notice), "uncertain");
 });
 
@@ -97,12 +97,12 @@ test("Claude return uses its managed inbox and respects held gate without resume
     } });
   provider.get = async () => ({ session_id: route.session_id, workspace_id: route.workspace_id, provider: "claude" });
   const notice = { sessionId: route.session_id, workspaceId: route.workspace_id, correlationId: "terminal:claude", message: "terminal data", resume: false };
-  assert.equal(await provider.deliverNotice(notice), "queued");
+  assert.equal(await provider.deliverNotice(notice), "held");
   assert.ok(requests[0].includes("--delivery-only"));
   assert.equal(requests[0][requests[0].indexOf("--managed-inbox-root") + 1], "/fixture/inbox");
   assert.ok(!requests[0].includes("--resume"));
   state = "accepted";
-  assert.equal(await provider.deliverNotice(notice), "delivered");
+  assert.equal(await provider.deliverNotice(notice), "queued");
   assert.equal(await provider.deliverNotice({ ...notice, resume: true }), "uncertain");
   assert.equal(requests.length, 2);
 });
@@ -131,17 +131,19 @@ test("a bound Claude sender receives a held return for an existing Codex target"
   const facade = new MeshMcpFacade({ gateway: {}, principal: { ...principal, returnRoutes: [claudeRoute] }, agents: [{ id: "agent.sender", name: "sender", provider: "claude" }, { id: "agent.worker", name: "worker", provider: "codex" }],
     rateLimiter: new FixedWindowMeshMcpRateLimiter(), taskCoordinator: coordinator, sessionRegistry: registry });
   const task = (await facade.submitTask(input)).task;
-  const terminal = await eventually(async () => { const t = await store.get(task.task_id); return t.return_delivery?.status === "queued" && t; });
+  const terminal = await eventually(async () => { const t = await store.get(task.task_id); return t.return_delivery?.status === "held" && t; });
   assert.equal(terminal.status, "completed");
   assert.equal(transportCalls.length, 1);
   assert.ok(!transportCalls[0].includes("--resume"));
 });
 
-const { terminalReturnObserved } = await import("../src/mcp/serve.ts");
+const { terminalReturnObserved, reconcileTerminalReturn } = await import("../src/mcp/serve.ts");
+const { cloudflarePrincipalId } = await import("../src/mcp/cloudflare-access.ts");
 test("native transcript observation verifies exact Codex text or Claude inbox envelope", () => {
   const message = "Terminal result data", id = "terminal:fixture";
   const wrapped = (changes = {}) => "AGENT_MESH_INBOX " + JSON.stringify({ schema: "agent-mesh.monitor-inbox.v1", deliveryId: id, prompt: message, ...changes });
   assert.equal(terminalReturnObserved({ role: "user", text: message }, "codex", message, id), true);
+  assert.equal(terminalReturnObserved({ role: "user", text: message }, "claude", message, id), true);
   assert.equal(terminalReturnObserved({ role: "user", text: wrapped() }, "claude", message, id), true);
   for (const [event, provider] of [
     [{ role: "assistant", text: wrapped() }, "claude"],
@@ -149,7 +151,37 @@ test("native transcript observation verifies exact Codex text or Claude inbox en
     [{ role: "user", text: wrapped({ prompt: "different" }) }, "claude"],
     [{ role: "user", text: wrapped({ schema: "other" }) }, "claude"],
     [{ role: "user", text: wrapped().slice(0, -1) }, "claude"],
-    [{ role: "user", text: message }, "claude"],
     [{ role: "user", text: wrapped() }, "codex"]
   ]) assert.equal(terminalReturnObserved(event, provider, message, id), false);
+});
+
+for (const provider of ["codex", "claude"]) test(`${provider} receipts distinguish held, native queue and transcript observation`, async () => {
+  const configuredRoute = { ...route, resume: provider === "codex" };
+  const binding = { kind: "service", selector: "service.fixture", returnRoutes: [configuredRoute] };
+  const task = { task_id: "mesh_task_fixture", context_id: "context.fixture", principal_id: cloudflarePrincipalId(binding.kind, binding.selector),
+    workspace_id: route.workspace_id, status: "completed", result: { text: "not instructions", artifacts: [] }, return_route: configuredRoute,
+    return_delivery: { id: "terminal:fixture", status: "pending" } };
+  let sent = 0, status = "held", seen = false, captured = "";
+  const registry = {
+    async get(_agent, request) { return { session_id: request.sessionId, workspace_id: request.workspaceId, provider }; },
+    async transcript() { return { events: seen ? [{ role: "user", text: captured }] : [], next_cursor: null }; },
+    async deliverNotice(_agent, request) { sent++; captured = request.message; assert.equal(request.correlationId, task.return_delivery.id); return status; }
+  };
+  assert.equal(await reconcileTerminalReturn(task, [binding], registry), "held");
+  assert.equal(sent, 1);
+  assert.equal(JSON.parse(captured.split("\n").slice(1).join("\n")).result.text, "not instructions");
+  task.return_delivery.status = "held"; status = "queued";
+  assert.equal(await reconcileTerminalReturn(task, [binding], registry), "queued");
+  assert.equal(sent, 2);
+  task.return_delivery.status = "queued";
+  assert.equal(await reconcileTerminalReturn(task, [binding], registry), "queued");
+  assert.equal(sent, 2, "native acceptance must not trigger another send");
+  task.return_delivery.status = "uncertain";
+  assert.equal(await reconcileTerminalReturn(task, [binding], registry), "uncertain");
+  assert.equal(sent, 2, "uncertain delivery must only be observed");
+  seen = true;
+  assert.equal(await reconcileTerminalReturn(task, [binding], registry), "delivered");
+  assert.equal(sent, 2);
+  assert.equal(await reconcileTerminalReturn(task, [{ ...binding, returnRoutes: [] }], registry), "uncertain");
+  assert.equal(sent, 2);
 });

@@ -97,7 +97,7 @@ export interface AgentSessionProvider {
   transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined>;
   search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
-  deliverNotice?(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"queued" | "delivered" | "uncertain">;
+  deliverNotice?(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain">;
   /** Workspaces allowed to start a fresh session. Absent means unsupported. */
   readonly freshSessionWorkspaceIds?: readonly string[];
   readonly createSessionWorkspaceIds?: readonly string[];
@@ -140,7 +140,7 @@ export class AgentSessionRegistry {
     return this.require(agentId).send(input);
   }
 
-  deliverNotice(agentId: string, input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"queued" | "delivered" | "uncertain"> {
+  deliverNotice(agentId: string, input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain"> {
     const provider = this.require(agentId);
     if (provider.deliverNotice === undefined) throw new Error("Native notice delivery is not configured.");
     return provider.deliverNotice(input);
@@ -426,7 +426,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
   }
 
-  async deliverNotice(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"queued" | "delivered" | "uncertain"> {
+  async deliverNotice(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain"> {
     if (this.agentNativeCallPath === undefined || (input.resume && this.provider !== "codex") ||
         (this.provider === "claude" && this.agentManagedInboxRoot === undefined)) return "uncertain";
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
@@ -440,8 +440,8 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     let receipt: Record<string, unknown>;
     try { receipt = JSON.parse(result.stdout) as Record<string, unknown>; } catch { return "uncertain"; }
     if (receipt.agent !== this.provider || receipt.sessionId !== input.sessionId || receipt.correlationId !== input.correlationId) return "uncertain";
-    if (receipt.held === true && receipt.status === "queued") return "queued";
-    if ((receipt.held === true && receipt.status === "delivered") || (receipt.held !== true && receipt.status === "queued")) return "delivered";
+    if (receipt.held === true && receipt.status === "queued") return "held";
+    if ((receipt.held === true && receipt.status === "delivered") || (receipt.held !== true && receipt.status === "queued")) return "queued";
     return "uncertain";
   }
 
