@@ -11,7 +11,7 @@ const { MeshMcpFacade, FixedWindowMeshMcpRateLimiter } = await import("../src/mc
 
 const route = { agent_id: "agent.sender", session_id: "11111111-1111-4111-8111-111111111111", workspace_id: "workspace.demo", resume: true };
 const target = "22222222-2222-4222-8222-222222222222";
-const principal = { id: "principal.demo", kind: "service", requesterId: "agent.requester", allowedTools: ["mesh_submit", "mesh_task_get"],
+const principal = { id: "principal.demo", kind: "service", requesterId: "agent.requester", allowedTools: ["mesh_submit", "mesh_task_get", "mesh_task_cancel"],
   allowedAgentIds: ["agent.sender", "agent.worker"], allowedWorkspaceIds: ["workspace.demo"], allowedDomainIds: ["domain.demo"], returnRoutes: [route] };
 const input = { targetAgentId: "agent.worker", sessionId: target, message: "Do the work.", idempotencyKey: "task-one", returnRoute: { agentId: route.agent_id, sessionId: route.session_id } };
 const sessionRegistry = { has: () => true, async get(agent, { sessionId, workspaceId }) { return { agent_id: agent, session_id: sessionId, workspace_id: workspaceId, provider: "codex" }; } };
@@ -187,4 +187,107 @@ for (const provider of ["codex", "claude"]) test(`${provider} receipts distingui
   assert.equal(sent, 2);
   assert.equal(await reconcileTerminalReturn(task, [{ ...binding, returnRoutes: [] }], registry), "uncertain");
   assert.equal(sent, 2);
+});
+
+test("cancel wins a paused completion and publishes exactly its stored terminal outcome", async () => {
+  let release, intercepted, notified;
+  const held = new Promise((resolve) => { release = resolve; });
+  const atCompletion = new Promise((resolve) => { intercepted = resolve; });
+  const callback = new Promise((resolve) => { notified = resolve; });
+  const calls = [];
+  const { facade, store } = await setup(async () => ({ text: "late result" }), async (task) => { calls.push({ status: task.status, result: task.result, error: task.error, id: task.return_delivery.id }); notified(); return "queued"; });
+  const transition = store.transition.bind(store);
+  store.transition = async (taskId, action) => {
+    if (action.kind === "complete") { intercepted(); await held; }
+    return transition(taskId, action);
+  };
+  const { task } = await facade.submitTask(input);
+  await atCompletion;
+  const cancelled = await facade.cancelTask(task.task_id);
+  await callback;
+  release();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  const final = await store.get(task.task_id);
+  assert.equal(final.status, "cancelled");
+  assert.equal(final.result, undefined);
+  assert.equal(cancelled.return_delivery.id, `terminal:${task.task_id}`);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { status: final.status, result: final.result, error: final.error, id: final.return_delivery.id });
+});
+
+test("terminal choices and old snapshots cannot overwrite the winning outcome", async () => {
+  const { store, facade } = await setup(async () => new Promise(() => {}), async () => "queued");
+  const { task } = await facade.submitTask(input);
+  const working = await eventually(async () => { const t = await store.get(task.task_id); return t.status === "working" && t; });
+  const won = await store.transition(task.task_id, { kind: "complete", result: { text: "winner", artifacts: [] } });
+  assert.equal(won.changed, true);
+  for (const action of [{ kind: "cancel", principalId: principal.id }, { kind: "fail", error: { code: "error", message: "late" } }, { kind: "start" }]) {
+    const lost = await store.transition(task.task_id, action);
+    assert.equal(lost.changed, false);
+    assert.equal(lost.task.status, "completed");
+  }
+  await assert.rejects(store.update({ ...working, status: "cancelled" }), /stale/);
+  const current = await store.get(task.task_id);
+  await assert.rejects(store.update({ ...current, status: "working" }), /immutable/);
+  assert.equal((await store.get(task.task_id)).result.text, "winner");
+});
+
+test("receipt writes cannot regress newer receipts or overwrite a terminal outcome", async () => {
+  const { store } = await setup(async () => ({ text: "unused" }));
+  const { task } = await store.create({ principalId: principal.id, principalKind: "service", requesterId: principal.requesterId, targetAgentId: "agent.worker", workspaceId: "workspace.demo", domainId: "domain.demo", message: "work", labels: [], idempotencyKey: "receipt", returnRoute: route });
+  await store.transition(task.task_id, { kind: "start" });
+  const done = (await store.transition(task.task_id, { kind: "complete", result: { text: "result", artifacts: [] } })).task;
+  const id = done.return_delivery.id;
+  assert.equal((await store.transition(task.task_id, { kind: "receipt", id, expected: "pending", status: "delivered" })).changed, true);
+  assert.equal((await store.transition(task.task_id, { kind: "receipt", id, expected: "pending", status: "held" })).changed, false);
+  assert.equal((await store.transition(task.task_id, { kind: "receipt", id, expected: "delivered", status: "queued" })).changed, false);
+  const final = await store.get(task.task_id);
+  assert.equal(final.return_delivery.status, "delivered");
+  assert.equal(final.status, "completed");
+  assert.equal(final.result.text, "result");
+  await assert.rejects(store.update({ ...done, return_delivery: { id, status: "held" } }), /stale/);
+});
+
+test("store instances sharing a state directory serialize competing terminal choices", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "mesh-terminal-writers-"));
+  const a = new MeshTaskStore({ stateDir }), b = new MeshTaskStore({ stateDir });
+  const { task } = await a.create({ principalId: principal.id, principalKind: "service", requesterId: principal.requesterId, targetAgentId: "agent.worker", workspaceId: "workspace.demo", domainId: "domain.demo", message: "work", labels: [], idempotencyKey: "writers", returnRoute: route });
+  await a.transition(task.task_id, { kind: "start" });
+  const outcomes = await Promise.all([
+    a.transition(task.task_id, { kind: "complete", result: { text: "done", artifacts: [] } }),
+    b.transition(task.task_id, { kind: "cancel", principalId: principal.id })
+  ]);
+  assert.equal(outcomes.filter((result) => result.changed).length, 1);
+  const final = await b.get(task.task_id);
+  assert.equal(final.status, outcomes.find((result) => result.changed).task.status);
+  assert.equal(final.return_delivery.id, `terminal:${task.task_id}`);
+});
+
+test("completion wins before cancel and emits only the completed result", async () => {
+  let notified; const callback = new Promise((resolve) => { notified = resolve; });
+  const calls = [];
+  const { facade, store } = await setup(async () => ({ text: "finished" }), async (task) => { calls.push(task.status); notified(); return "queued"; });
+  const { task } = await facade.submitTask(input);
+  await callback;
+  const afterCancel = await facade.cancelTask(task.task_id);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(afterCancel.status, "completed");
+  assert.equal((await store.get(task.task_id)).result.text, "finished");
+  assert.deepEqual(calls, ["completed"]);
+});
+
+test("cancel wins a paused failure and emits no failure callback", async () => {
+  let release, intercepted, notified;
+  const held = new Promise((resolve) => { release = resolve; });
+  const atFailure = new Promise((resolve) => { intercepted = resolve; });
+  const callback = new Promise((resolve) => { notified = resolve; });
+  const calls = [];
+  const { facade, store } = await setup(async () => { throw new Error("late failure"); }, async (task) => { calls.push(task.status); notified(); return "queued"; });
+  const transition = store.transition.bind(store);
+  store.transition = async (taskId, action) => { if (action.kind === "fail") { intercepted(); await held; } return transition(taskId, action); };
+  const { task } = await facade.submitTask(input);
+  await atFailure; await facade.cancelTask(task.task_id); await callback; release();
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const final = await store.get(task.task_id);
+  assert.equal(final.status, "cancelled"); assert.equal(final.error.code, "cancelled"); assert.deepEqual(calls, ["cancelled"]);
 });
