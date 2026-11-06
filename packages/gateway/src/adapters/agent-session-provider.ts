@@ -427,7 +427,8 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   async deliverNotice(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"queued" | "delivered" | "uncertain"> {
-    if (this.agentNativeCallPath === undefined || (input.resume && this.provider !== "codex")) return "uncertain";
+    if (this.agentNativeCallPath === undefined || (input.resume && this.provider !== "codex") ||
+        (this.provider === "claude" && this.agentManagedInboxRoot === undefined)) return "uncertain";
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined || session.archived === true) return "uncertain";
     const args = [this.agentNativeCallPath, "--agent", this.provider, "--session", input.sessionId,

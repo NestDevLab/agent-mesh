@@ -640,6 +640,7 @@ function validateBinding(
       typeof route !== "object" || route === null || typeof route.agent_id !== "string" ||
       !binding.allowedAgentIds.includes(route.agent_id) || typeof route.workspace_id !== "string" ||
       !binding.allowedWorkspaceIds.includes(route.workspace_id) || typeof route.resume !== "boolean" ||
+      (route.resume && agents.find((agent) => agent.id === route.agent_id)?.provider !== "codex") ||
       typeof route.session_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(route.session_id)))) ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
