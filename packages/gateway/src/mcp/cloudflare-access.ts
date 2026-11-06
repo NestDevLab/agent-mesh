@@ -27,6 +27,8 @@ export interface CloudflareAccessBinding {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  /** Explicit operator-configured principal-to-session bindings. */
+  returnRoutes?: readonly import("./mesh-task-store.js").MeshTaskReturnRoute[];
   allowedGoogleAccounts?: readonly GoogleWorkspaceAccountAlias[];
 }
 
@@ -168,7 +170,8 @@ export function resolveCloudflareAccessPrincipal(
     allowedTools: [...binding.allowedTools],
     allowedAgentIds: [...binding.allowedAgentIds],
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
-    allowedDomainIds: [...binding.allowedDomainIds]
+    allowedDomainIds: [...binding.allowedDomainIds],
+    ...(binding.returnRoutes === undefined ? {} : { returnRoutes: binding.returnRoutes.map((route) => ({ ...route })) })
   };
 }
 

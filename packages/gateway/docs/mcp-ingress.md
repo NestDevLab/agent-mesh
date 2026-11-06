@@ -40,6 +40,23 @@ workspace before creating the task. The task then preserves `session_id`,
 `task_id`, `message_id`, and `context_id` through delivery, audit, and result
 capture. A session ID is a routing coordinate, not an authorization grant.
 
+For an existing target session, `mesh_submit` may also specify `return_route`
+with `agent_id` and `session_id`. The authenticated principal must have exactly
+one matching `returnRoutes` binding with `agent_id`, `session_id`, `workspace_id`
+and `resume` in trusted runtime configuration. The route must resolve in the
+same workspace and differ from the target session. The binding is checked again
+before delivery; callers cannot grant themselves a route. Omit it to preserve
+the existing polling behavior. `mesh_call` does not accept a return route.
+
+On a terminal outcome the task record contains a stable `return_delivery` ID.
+Its states are `pending`, `queued` (held by the comms gate), `delivered`
+(native transport accepted), `read` (the exact user turn appears in the native
+transcript), or `uncertain`. Transcript observation is not proof that a human
+read the result. Recovery uses the same correlation and the comms gate's
+deduplication; an unknown delivery is never blindly resent. Task reads and
+gateway restart reconcile the receipt, without a new monitor. The result is
+serialized as data; the native delivery-only path never waits for a response.
+
 They also accept `session_mode: "fresh"`, which starts a new provider session
 instead of continuing one; see [Fresh sessions](#fresh-sessions). Omitting both
 fields keeps the static route. When `context_id` is omitted the gateway mints

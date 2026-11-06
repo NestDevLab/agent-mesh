@@ -35,6 +35,19 @@ export interface MeshTaskError {
   message: string;
 }
 
+/** A route bound to the authenticated principal by trusted configuration. */
+export interface MeshTaskReturnRoute {
+  agent_id: string;
+  session_id: string;
+  workspace_id: string;
+  resume: boolean;
+}
+
+export interface MeshTaskReturnDelivery {
+  id: string;
+  status: "pending" | "queued" | "delivered" | "read" | "uncertain";
+}
+
 /** model/effort stay "unknown" unless the provider reports them, never guess them from the agent id */
 export interface MeshTaskSessionProvenance {
   origin: "fresh";
@@ -71,6 +84,8 @@ export interface MeshTaskRecord {
   updated_at: string;
   result?: MeshTaskResult;
   error?: MeshTaskError;
+  return_route?: MeshTaskReturnRoute;
+  return_delivery?: MeshTaskReturnDelivery;
 }
 
 export interface CreateMeshTaskInput {
@@ -92,6 +107,7 @@ export interface CreateMeshTaskInput {
   message: string;
   labels: readonly string[];
   idempotencyKey: string;
+  returnRoute?: MeshTaskReturnRoute;
 }
 
 export interface MeshTaskStoreLike {
@@ -131,6 +147,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       domain_id: input.domainId,
       message: input.message,
       labels: [...input.labels],
+      ...(input.returnRoute === undefined ? {} : { return_route: { ...input.returnRoute } }),
       idempotency_key: input.idempotencyKey
     };
     const inputHash = canonicalInputHash(normalized);
@@ -173,6 +190,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       domain_id: input.domainId,
       message: input.message,
       labels: [...input.labels],
+      ...(input.returnRoute === undefined ? {} : { return_route: { ...input.returnRoute } }),
       idempotency_key: input.idempotencyKey,
       input_hash: inputHash,
       status: "submitted",
