@@ -45,7 +45,7 @@ export interface MeshTaskReturnRoute {
 
 export interface MeshTaskReturnDelivery {
   id: string;
-  status: "pending" | "queued" | "delivered" | "read" | "uncertain";
+  status: "pending" | "held" | "queued" | "delivered" | "read" | "uncertain";
 }
 
 /** model/effort stay "unknown" unless the provider reports them, never guess them from the agent id */

@@ -49,11 +49,11 @@ before delivery; callers cannot grant themselves a route. Omit it to preserve
 the existing polling behavior. `mesh_call` does not accept a return route.
 
 On a terminal outcome the task record contains a stable `return_delivery` ID.
-Its states are `pending`, `queued` (held by the comms gate), `delivered`
-(native transport accepted), `read` (the exact user turn appears in the native
-transcript), or `uncertain`. Transcript observation is not proof that a human
-read the result. Recovery uses the same correlation and the comms gate's
-deduplication; an unknown delivery is never blindly resent. Task reads and
+Its states are `pending`, `held` (comms gate), `queued` (native queue or inbox
+accepted), `delivered` (the exact user turn appears in the native transcript),
+or `uncertain`. The native queue receipt does not prove session execution or
+human reading. Recovery uses the same correlation and the comms gate's
+deduplication; an uncertain delivery is observed but never automatically resent. Task reads and
 gateway restart reconcile the receipt, without a new monitor. The result is
 serialized as data; the native delivery-only path never waits for a response.
 For Claude, configure the existing managed inbox and set `resume` to `false`;

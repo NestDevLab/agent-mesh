@@ -59,6 +59,8 @@ export function terminalReturnObserved(event: { role: string; text: string }, pr
   if (event.role !== "user") return false;
   if (provider === "codex") return event.text === message;
   if (provider !== "claude") return false;
+  // The provider normally unwraps monitor-inbox events to their prompt.
+  if (event.text === message) return true;
   for (const line of event.text.split("\n")) {
     const prefix = "AGENT_MESH_INBOX ";
     if (!line.startsWith(prefix)) continue;
@@ -71,6 +73,41 @@ export function terminalReturnObserved(event: { role: string; text: string }, pr
     } catch { /* Partial or clipped transcript records are not proof. */ }
   }
   return false;
+}
+
+export async function reconcileTerminalReturn(
+  task: MeshTaskRecord,
+  bindings: readonly CloudflareAccessBinding[],
+  sessionRegistry: AgentSessionRegistry | undefined
+): Promise<"held" | "queued" | "delivered" | "read" | "uncertain"> {
+  const route = task.return_route;
+  const receipt = task.return_delivery;
+  if (route === undefined || receipt === undefined || sessionRegistry === undefined) return "uncertain";
+  const bindingsForPrincipal = bindings.filter((binding) => cloudflarePrincipalId(binding.kind, binding.selector) === task.principal_id);
+  const candidates = bindingsForPrincipal.length === 1
+    ? (bindingsForPrincipal[0]!.returnRoutes ?? []).filter((candidate) => candidate.workspace_id === task.workspace_id) : [];
+  const authorized = candidates.length === 1 && candidates[0]!.agent_id === route.agent_id &&
+    candidates[0]!.session_id === route.session_id && route.workspace_id === task.workspace_id && candidates[0]!.resume === route.resume;
+  if (!authorized) return "uncertain";
+  const session = await sessionRegistry.get(route.agent_id, { sessionId: route.session_id, workspaceId: route.workspace_id });
+  if (session === undefined || session.session_id !== route.session_id || session.workspace_id !== route.workspace_id || session.archived === true) return "uncertain";
+  const message = terminalReturnMessage(task);
+  if (receipt.status !== "pending") {
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const transcript = await sessionRegistry.transcript(route.agent_id, { workspaceId: route.workspace_id, sessionId: route.session_id, cursor, limit: 200 });
+      if (transcript === undefined) break;
+      if (transcript.events.some((event) => terminalReturnObserved(event, session.provider, message, receipt.id))) return "delivered";
+      if (transcript.next_cursor === null) break;
+      cursor = transcript.next_cursor;
+    }
+  }
+  // Native queue acceptance is final until transcript evidence appears. Unknown
+  // delivery is observation-only. A held gate owns its deferred dispatch.
+  if (receipt.status === "queued" || receipt.status === "uncertain") return receipt.status;
+  if (receipt.status === "delivered" || receipt.status === "read") return receipt.status;
+  return sessionRegistry.deliverNotice(route.agent_id, { sessionId: route.session_id, workspaceId: route.workspace_id,
+    correlationId: receipt.id, message, resume: route.resume });
 }
 
 interface RuntimeAgent extends MeshAgentRecord {
@@ -173,32 +210,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
     execute: (task, hooks) => task.worker_id === undefined
       ? executeMeshTask(gateway, task, undefined, { bindSession: hooks.bindSession })
       : workspaceWorkers === undefined ? Promise.reject(new Error("workspace_worker_unavailable")) : workspaceWorkers.execute(task, hooks),
-    deliverReturn: async (task) => {
-      const route = task.return_route;
-      const receipt = task.return_delivery;
-      if (route === undefined || receipt === undefined || sessionRegistry === undefined) return "uncertain";
-      const bindingsForPrincipal = bindings.filter((binding) => cloudflarePrincipalId(binding.kind, binding.selector) === task.principal_id);
-      const candidates = bindingsForPrincipal.length === 1
-        ? (bindingsForPrincipal[0]!.returnRoutes ?? []).filter((candidate) => candidate.workspace_id === task.workspace_id) : [];
-      const authorized = candidates.length === 1 && candidates[0]!.agent_id === route.agent_id &&
-        candidates[0]!.session_id === route.session_id && route.workspace_id === task.workspace_id && candidates[0]!.resume === route.resume;
-      if (!authorized) return "uncertain";
-      const session = await sessionRegistry.get(route.agent_id, { sessionId: route.session_id, workspaceId: route.workspace_id });
-      if (session === undefined || session.session_id !== route.session_id || session.workspace_id !== route.workspace_id || session.archived === true) return "uncertain";
-      const message = terminalReturnMessage(task);
-      if (receipt.status === "delivered" || receipt.status === "queued" || receipt.status === "uncertain") {
-        let cursor: string | undefined;
-        for (let page = 0; page < 10; page++) {
-          const transcript = await sessionRegistry.transcript(route.agent_id, { workspaceId: route.workspace_id, sessionId: route.session_id, cursor, limit: 200 });
-          if (transcript === undefined) break;
-          if (transcript.events.some((event) => terminalReturnObserved(event, session.provider, message, receipt.id))) return "read";
-          if (transcript.next_cursor === null) break;
-          cursor = transcript.next_cursor;
-        }
-      }
-      return sessionRegistry.deliverNotice(route.agent_id, { sessionId: route.session_id, workspaceId: route.workspace_id,
-        correlationId: receipt.id, message, resume: route.resume });
-    }
+    deliverReturn: (task) => reconcileTerminalReturn(task, bindings, sessionRegistry)
   });
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
   const meshHandler = requireCloudflareAccess(
