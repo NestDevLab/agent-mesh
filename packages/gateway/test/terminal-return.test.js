@@ -83,3 +83,56 @@ test("native return uses delivery-only, respects resume policy, and distinguishe
   mode = "accepted"; assert.equal(await provider.deliverNotice(notice), "delivered");
   mode = "error"; assert.equal(await provider.deliverNotice(notice), "uncertain");
 });
+
+test("Claude return uses its managed inbox and respects held gate without resume", async () => {
+  const requests = [];
+  let state = "held";
+  const provider = new ShellAgentSessionProvider({ agentId: "agent.sender", agentType: "claude", agentSessionPath: "/fixture/session", agentSendPath: "/fixture/send", agentNativeCallPath: "/fixture/native", agentManagedInboxRoot: "/fixture/inbox", workspaceRoots: { "workspace.demo": ["/fixture"] },
+    run: async (_command, args) => {
+      requests.push(args);
+      const receipt = { agent: "claude", sessionId: route.session_id, correlationId: "terminal:claude" };
+      return { code: 0, stderr: "", stdout: JSON.stringify(state === "held"
+        ? { ...receipt, status: "queued", held: true }
+        : { ...receipt, status: "queued" }) };
+    } });
+  provider.get = async () => ({ session_id: route.session_id, workspace_id: route.workspace_id, provider: "claude" });
+  const notice = { sessionId: route.session_id, workspaceId: route.workspace_id, correlationId: "terminal:claude", message: "terminal data", resume: false };
+  assert.equal(await provider.deliverNotice(notice), "queued");
+  assert.ok(requests[0].includes("--delivery-only"));
+  assert.equal(requests[0][requests[0].indexOf("--managed-inbox-root") + 1], "/fixture/inbox");
+  assert.ok(!requests[0].includes("--resume"));
+  state = "accepted";
+  assert.equal(await provider.deliverNotice(notice), "delivered");
+  assert.equal(await provider.deliverNotice({ ...notice, resume: true }), "uncertain");
+  assert.equal(requests.length, 2);
+});
+
+test("Claude return fails closed without a configured managed inbox", async () => {
+  let calls = 0;
+  const provider = new ShellAgentSessionProvider({ agentId: "agent.sender", agentType: "claude", agentSessionPath: "/fixture/session", agentSendPath: "/fixture/send", agentNativeCallPath: "/fixture/native", workspaceRoots: { "workspace.demo": ["/fixture"] },
+    run: async () => { calls++; throw new Error("must not send"); } });
+  assert.equal(await provider.deliverNotice({ sessionId: route.session_id, workspaceId: route.workspace_id, correlationId: "terminal:claude", message: "result", resume: false }), "uncertain");
+  assert.equal(calls, 0);
+});
+
+test("a bound Claude sender receives a held return for an existing Codex target", async () => {
+  const stateDir = await mkdtemp(join(tmpdir(), "mesh-claude-return-"));
+  const store = new MeshTaskStore({ stateDir });
+  const claudeRoute = { ...route, resume: false };
+  const transportCalls = [];
+  const provider = new ShellAgentSessionProvider({ agentId: route.agent_id, agentType: "claude", agentSessionPath: "/fixture/session", agentSendPath: "/fixture/send", agentNativeCallPath: "/fixture/native", agentManagedInboxRoot: "/fixture/inbox", workspaceRoots: { "workspace.demo": ["/fixture"] },
+    run: async (_command, args) => {
+      transportCalls.push(args);
+      return { code: 0, stderr: "", stdout: JSON.stringify({ agent: "claude", sessionId: route.session_id, correlationId: args[args.indexOf("--correlation-id") + 1], held: true, status: "queued" }) };
+    } });
+  provider.get = async () => ({ session_id: route.session_id, workspace_id: route.workspace_id, provider: "claude" });
+  const coordinator = new MeshTaskCoordinator({ store, execute: async () => ({ text: "terminal result" }), deliverReturn: async (task) => provider.deliverNotice({ sessionId: task.return_route.session_id, workspaceId: task.return_route.workspace_id, correlationId: task.return_delivery.id, message: task.result.text, resume: task.return_route.resume }) });
+  const registry = { has: () => true, async get(agent, { sessionId, workspaceId }) { return { agent_id: agent, session_id: sessionId, workspace_id: workspaceId, provider: agent === route.agent_id ? "claude" : "codex" }; } };
+  const facade = new MeshMcpFacade({ gateway: {}, principal: { ...principal, returnRoutes: [claudeRoute] }, agents: [{ id: "agent.sender", name: "sender", provider: "claude" }, { id: "agent.worker", name: "worker", provider: "codex" }],
+    rateLimiter: new FixedWindowMeshMcpRateLimiter(), taskCoordinator: coordinator, sessionRegistry: registry });
+  const task = (await facade.submitTask(input)).task;
+  const terminal = await eventually(async () => { const t = await store.get(task.task_id); return t.return_delivery?.status === "queued" && t; });
+  assert.equal(terminal.status, "completed");
+  assert.equal(transportCalls.length, 1);
+  assert.ok(!transportCalls[0].includes("--resume"));
+});

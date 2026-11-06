@@ -56,6 +56,9 @@ read the result. Recovery uses the same correlation and the comms gate's
 deduplication; an unknown delivery is never blindly resent. Task reads and
 gateway restart reconcile the receipt, without a new monitor. The result is
 serialized as data; the native delivery-only path never waits for a response.
+For Claude, configure the existing managed inbox and set `resume` to `false`;
+the gate can hold the return without waking the session. Codex may opt in to
+native resume. The direct `codex queue` fallback applies only to Codex.
 
 They also accept `session_mode: "fresh"`, which starts a new provider session
 instead of continuing one; see [Fresh sessions](#fresh-sessions). Omitting both
