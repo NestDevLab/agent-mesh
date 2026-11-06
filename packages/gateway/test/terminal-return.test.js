@@ -151,6 +151,9 @@ test("native transcript observation verifies exact Codex text or Claude inbox en
     [{ role: "user", text: wrapped({ prompt: "different" }) }, "claude"],
     [{ role: "user", text: wrapped({ schema: "other" }) }, "claude"],
     [{ role: "user", text: wrapped().slice(0, -1) }, "claude"],
+    [{ role: "user", text: `${message} extra` }, "claude"],
+    [{ role: "user", text: `prefix ${message}` }, "claude"],
+    [{ role: "user", text: wrapped({ prompt: `${message} extra` }) }, "claude"],
     [{ role: "user", text: wrapped() }, "codex"]
   ]) assert.equal(terminalReturnObserved(event, provider, message, id), false);
 });
