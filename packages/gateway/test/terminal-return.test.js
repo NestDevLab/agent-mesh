@@ -228,7 +228,9 @@ test("terminal choices and old snapshots cannot overwrite the winning outcome", 
   }
   await assert.rejects(store.update({ ...working, status: "cancelled" }), /stale/);
   const current = await store.get(task.task_id);
-  await assert.rejects(store.update({ ...current, status: "working" }), /immutable/);
+  const { return_delivery: _delivery, ...withoutDelivery } = current;
+  await assert.rejects(store.update({ ...withoutDelivery, status: "working" }), /immutable/);
+  await assert.rejects(store.update({ ...current, result: { text: "rewritten", artifacts: [] } }), /immutable/);
   assert.equal((await store.get(task.task_id)).result.text, "winner");
 });
 
@@ -246,6 +248,7 @@ test("receipt writes cannot regress newer receipts or overwrite a terminal outco
   assert.equal(final.status, "completed");
   assert.equal(final.result.text, "result");
   await assert.rejects(store.update({ ...done, return_delivery: { id, status: "held" } }), /stale/);
+  await assert.rejects(store.update({ ...final, return_delivery: { id, status: "queued" } }), /regress/);
 });
 
 test("store instances sharing a state directory serialize competing terminal choices", async () => {
