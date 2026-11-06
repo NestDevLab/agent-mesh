@@ -136,3 +136,20 @@ test("a bound Claude sender receives a held return for an existing Codex target"
   assert.equal(transportCalls.length, 1);
   assert.ok(!transportCalls[0].includes("--resume"));
 });
+
+const { terminalReturnObserved } = await import("../src/mcp/serve.ts");
+test("native transcript observation verifies exact Codex text or Claude inbox envelope", () => {
+  const message = "Terminal result data", id = "terminal:fixture";
+  const wrapped = (changes = {}) => "AGENT_MESH_INBOX " + JSON.stringify({ schema: "agent-mesh.monitor-inbox.v1", deliveryId: id, prompt: message, ...changes });
+  assert.equal(terminalReturnObserved({ role: "user", text: message }, "codex", message, id), true);
+  assert.equal(terminalReturnObserved({ role: "user", text: wrapped() }, "claude", message, id), true);
+  for (const [event, provider] of [
+    [{ role: "assistant", text: wrapped() }, "claude"],
+    [{ role: "user", text: wrapped({ deliveryId: "other" }) }, "claude"],
+    [{ role: "user", text: wrapped({ prompt: "different" }) }, "claude"],
+    [{ role: "user", text: wrapped({ schema: "other" }) }, "claude"],
+    [{ role: "user", text: wrapped().slice(0, -1) }, "claude"],
+    [{ role: "user", text: message }, "claude"],
+    [{ role: "user", text: wrapped() }, "codex"]
+  ]) assert.equal(terminalReturnObserved(event, provider, message, id), false);
+});

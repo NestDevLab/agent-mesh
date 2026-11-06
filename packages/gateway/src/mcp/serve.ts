@@ -54,6 +54,25 @@ function terminalReturnMessage(task: MeshTaskRecord): string {
       ...(task.error === undefined ? {} : { error: task.error }) });
 }
 
+/** Transcript evidence is receipt by the native session, not human comprehension. */
+export function terminalReturnObserved(event: { role: string; text: string }, provider: string, message: string, deliveryId: string): boolean {
+  if (event.role !== "user") return false;
+  if (provider === "codex") return event.text === message;
+  if (provider !== "claude") return false;
+  for (const line of event.text.split("\n")) {
+    const prefix = "AGENT_MESH_INBOX ";
+    if (!line.startsWith(prefix)) continue;
+    try {
+      const record: unknown = JSON.parse(line.slice(prefix.length));
+      if (typeof record === "object" && record !== null && !Array.isArray(record)) {
+        const item = record as Record<string, unknown>;
+        if (item.schema === "agent-mesh.monitor-inbox.v1" && item.deliveryId === deliveryId && item.prompt === message) return true;
+      }
+    } catch { /* Partial or clipped transcript records are not proof. */ }
+  }
+  return false;
+}
+
 interface RuntimeAgent extends MeshAgentRecord {
   provider: MeshMcpAgent["provider"];
 }
@@ -172,7 +191,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         for (let page = 0; page < 10; page++) {
           const transcript = await sessionRegistry.transcript(route.agent_id, { workspaceId: route.workspace_id, sessionId: route.session_id, cursor, limit: 200 });
           if (transcript === undefined) break;
-          if (transcript.events.some((event) => event.role === "user" && event.text === message)) return "read";
+          if (transcript.events.some((event) => terminalReturnObserved(event, session.provider, message, receipt.id))) return "read";
           if (transcript.next_cursor === null) break;
           cursor = transcript.next_cursor;
         }
