@@ -21,7 +21,7 @@ import type {
 } from "../adapters/agent-session-provider.js";
 import type { SessionAccessProfile } from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
-import type { MeshTaskRecord } from "./mesh-task-store.js";
+import type { MeshTaskRecord, MeshTaskReturnRoute } from "./mesh-task-store.js";
 
 const MAX_IDENTIFIER_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 16_384;
@@ -86,6 +86,8 @@ export interface MeshMcpPrincipal {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  /** Trusted bindings, never supplied by tool arguments. */
+  returnRoutes?: readonly MeshTaskReturnRoute[];
 }
 
 export interface MeshMcpRateLimiter {
@@ -174,6 +176,7 @@ export interface MeshTaskDispatchInput {
   message: string;
   idempotencyKey: string;
   labels?: string[];
+  returnRoute?: { agentId: string; sessionId: string };
 }
 
 export const CREATE_SESSION_CAPABILITY = "create_session";
@@ -298,6 +301,7 @@ export class MeshMcpFacade {
 
   async callTask(input: MeshTaskDispatchInput, waitMs: number): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
     this.assertAllowed("mesh_call");
+    if (input.returnRoute !== undefined) throw new Error("Return routes are supported only for mesh_submit.");
     return this.coordinator().call(await this.taskInput(input), waitMs);
   }
 
@@ -413,6 +417,22 @@ export class MeshMcpFacade {
   private async taskInput(input: MeshTaskDispatchInput) {
     const target = this.allowedTarget(input.targetAgentId);
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    let returnRoute: MeshTaskReturnRoute | undefined;
+    if (input.returnRoute !== undefined) {
+      if (input.sessionId === undefined || input.sessionMode !== undefined) throw new Error("Return routes require an existing target session.");
+      const matches = (this.options.principal.returnRoutes ?? []).filter((route) => route.workspace_id === workspaceId);
+      if (matches.length !== 1 || matches[0]!.agent_id !== input.returnRoute.agentId || matches[0]!.session_id !== input.returnRoute.sessionId) {
+        throw new Error("Return session is not uniquely bound to the authenticated principal and workspace.");
+      }
+      const route = matches[0]!;
+      if (route.agent_id === target.id && route.session_id === input.sessionId) throw new Error("Return session cannot be the target session.");
+      this.allowedTarget(route.agent_id);
+      const session = await this.sessions(route.agent_id).get(route.agent_id, { workspaceId, sessionId: route.session_id });
+      if (session === undefined || session.session_id !== route.session_id || session.workspace_id !== workspaceId || session.archived === true) {
+        throw new Error("Return session is not available in the authenticated workspace.");
+      }
+      returnRoute = { ...route };
+    }
     const binding = input.sessionId === undefined ? undefined : await this.options.taskCoordinator?.sessionBinding(input.sessionId);
     if (binding !== undefined && (binding.principal_id !== this.options.principal.id || binding.target_agent_id !== target.id || binding.workspace_id !== workspaceId)) {
       throw new Error("Session access denied: principal, agent or workspace mismatch.");
@@ -465,6 +485,7 @@ export class MeshMcpFacade {
       domainId: resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds),
       message: input.message,
       labels: input.labels ?? [],
+      ...(returnRoute === undefined ? {} : { returnRoute }),
       idempotencyKey: `${this.options.principal.id}:${input.idempotencyKey}`
     };
   }
@@ -525,7 +546,8 @@ const taskDispatchInputSchema = z.object({
   context_id: identifierSchema.optional(),
   message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
   idempotency_key: z.string().min(1).max(MAX_IDEMPOTENCY_KEY_LENGTH),
-  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(20).optional()
+  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(20).optional(),
+  return_route: z.object({ agent_id: identifierSchema, session_id: identifierSchema }).strict().optional()
 });
 
 const taskCallInputSchema = taskDispatchInputSchema.extend({
@@ -840,7 +862,8 @@ function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDisp
     contextId: input.context_id,
     message: input.message,
     idempotencyKey: input.idempotency_key,
-    labels: input.labels
+    labels: input.labels,
+    returnRoute: input.return_route === undefined ? undefined : { agentId: input.return_route.agent_id, sessionId: input.return_route.session_id }
   };
 }
 
@@ -860,7 +883,8 @@ export function publicTask(task: MeshTaskRecord) {
     updated_at: task.updated_at,
     message: task.message,
     ...(task.result === undefined ? {} : { result: task.result }),
-    ...(task.error === undefined ? {} : { error: task.error })
+    ...(task.error === undefined ? {} : { error: task.error }),
+    ...(task.return_delivery === undefined ? {} : { return_delivery: task.return_delivery })
   };
 }
 

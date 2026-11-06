@@ -99,6 +99,21 @@ class CommsTests(unittest.TestCase):
         self.assertEqual(result.returncode, 4, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'queued')
 
+    def test_claude_terminal_return_is_held_and_deduplicated_before_inbox_access(self):
+        c.change('queue', 'claude', 'test', 'test')
+        inbox_root = self.home/'missing-inbox'
+        args = ['node', str(BIN/'agent-native-call.mjs'), '--agent', 'claude', '--session',
+                self.spec()['destination'], '--correlation-id', 'terminal:fixture', '--message', 'Terminal result data',
+                '--delivery-only', '--managed-inbox-root', str(inbox_root)]
+        for _ in range(2):
+            result = subprocess.run(args, capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads(result.stdout)
+            self.assertEqual((receipt['status'], receipt['held'], receipt['agent']), ('queued', True, 'claude'))
+        self.assertFalse(inbox_root.exists())
+        with c.locked() as (db, _):
+            self.assertEqual(c.status(db)['counts'], {'queued': 1})
+
     def test_inbox_pending_records_are_held_not_delivered(self):
         c.change('queue', 'claude', 'test', 'test')
         spec = importlib.util.spec_from_file_location('inbox', BIN/'agent-inbox-native.py')

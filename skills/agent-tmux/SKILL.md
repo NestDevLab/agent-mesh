@@ -588,6 +588,10 @@ tmux session ends. `resume` checks before creating any tmux state:
 | Loaded by a Codex app-server (`writer-status` role `app-server`) | exit 4 | `codex queue --thread <id> --message <text>` |
 | Idle, but listed in Desktop (Desktop source, pinned, or filed) | exit 6 | `codex queue`; or `--allow-desktop-thread`, then `release` right after use |
 
+For direct Codex queue delegation, include the verified sender thread and task
+reference. Send that sender one terminal result via `codex queue --resume`;
+never send progress callbacks or return a callback to a return message.
+
 `AGENT_DESKTOP_THREAD_SOURCES` in `codex.conf` sets which thread sources count as
 Desktop-listed. If the Codex state database can't be read, `resume` warns and
 continues; the writer check still applies.

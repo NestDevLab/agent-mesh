@@ -33,12 +33,36 @@ Task state is append-only NDJSON and survives gateway restarts. Idempotency is
 scoped to the principal, and tasks targeting the same agent are serialized.
 Cancellation is cooperative: it makes the task terminal but does not terminate
 an already-running agent process.
+Lifecycle decisions and their return intent are appended atomically within the
+gateway's shared store exclusion. Terminal outcomes are immutable, and receipt
+updates cannot overwrite a newer state. One gateway owns a state directory via
+its admission socket; independent processes must not write that task store.
 
 `mesh_call` and `mesh_submit` accept an optional `session_id`. When present,
 the gateway verifies the session against the target agent and authenticated
 workspace before creating the task. The task then preserves `session_id`,
 `task_id`, `message_id`, and `context_id` through delivery, audit, and result
 capture. A session ID is a routing coordinate, not an authorization grant.
+
+For an existing target session, `mesh_submit` may also specify `return_route`
+with `agent_id` and `session_id`. The authenticated principal must have exactly
+one matching `returnRoutes` binding with `agent_id`, `session_id`, `workspace_id`
+and `resume` in trusted runtime configuration. The route must resolve in the
+same workspace and differ from the target session. The binding is checked again
+before delivery; callers cannot grant themselves a route. Omit it to preserve
+the existing polling behavior. `mesh_call` does not accept a return route.
+
+On a terminal outcome the task record contains a stable `return_delivery` ID.
+Its states are `pending`, `held` (comms gate), `queued` (native queue or inbox
+accepted), `delivered` (the exact user turn appears in the native transcript),
+or `uncertain`. The native queue receipt does not prove session execution or
+human reading. Recovery uses the same correlation and the comms gate's
+deduplication; an uncertain delivery is observed but never automatically resent. Task reads and
+gateway restart reconcile the receipt, without a new monitor. The result is
+serialized as data; the native delivery-only path never waits for a response.
+For Claude, configure the existing managed inbox and set `resume` to `false`;
+the gate can hold the return without waking the session. Codex may opt in to
+native resume. The direct `codex queue` fallback applies only to Codex.
 
 They also accept `session_mode: "fresh"`, which starts a new provider session
 instead of continuing one; see [Fresh sessions](#fresh-sessions). Omitting both
