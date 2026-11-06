@@ -73,11 +73,10 @@ export class MeshTaskCoordinator {
   }
 
   async cancel(taskId: string, principalId: string): Promise<MeshTaskRecord> {
-    const task = await this.getOwned(taskId, principalId);
-    if (TERMINAL.has(task.status)) return task;
-    const cancelled = await this.store.update(this.withReturn({ ...task, status: "cancelled", error: { code: "cancelled", message: "Cancellation requested by the MCP principal." } }));
-    this.scheduleReturn(cancelled);
-    return cancelled;
+    const outcome = await this.store.transition(taskId, { kind: "cancel", principalId });
+    if (outcome.task === undefined) throw new Error("Task is not owned by the authenticated MCP principal.");
+    if (outcome.changed) this.scheduleReturn(outcome.task);
+    return outcome.task;
   }
 
   async thread(contextId: string, principalId: string): Promise<MeshTaskRecord[]> {
@@ -126,53 +125,39 @@ export class MeshTaskCoordinator {
     if (task === undefined || TERMINAL.has(task.status)) return;
     if (task.status === "working" && task.session_mode === "fresh") {
       // still working after a restart: the session and prompt may already exist, don't risk doing either twice
-      const failed = await this.store.update(this.withReturn({
-        ...task,
-        status: "failed",
+      const failed = await this.store.transition(taskId, {
+        kind: "fail",
         error: {
           code: "delivery_uncertain",
           message: "Fresh session task was interrupted; session creation or delivery may have happened and is not retried."
         }
-      }));
-      this.scheduleReturn(failed);
+      });
+      if (failed.changed && failed.task !== undefined) this.scheduleReturn(failed.task);
       return;
     }
-    task = await this.store.update({ ...task, status: "working" });
+    const started = await this.store.transition(taskId, { kind: "start" });
+    if (started.task === undefined || TERMINAL.has(started.task.status)) return;
+    task = started.task;
     try {
       const execution = await this.execute(task, { bindSession: async (sessionId) => {
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(sessionId)) throw new Error("Invalid native session ID.");
-        const latest = await this.store.get(taskId);
-        if (latest === undefined || TERMINAL.has(latest.status) || latest.session_mode !== "fresh") return;
-        await this.store.update({ ...latest, session_id: sessionId,
-          ...(latest.session_provenance === undefined ? {} : { session_provenance: { ...latest.session_provenance, session_id: sessionId } }) });
+        await this.store.transition(taskId, { kind: "bind", sessionId });
       } });
-      const latest = await this.store.get(taskId);
-      if (latest === undefined || latest.status === "cancelled") return;
-      const completed = await this.store.update(this.withReturn({
-        ...latest,
-        status: "completed",
+      const completed = await this.store.transition(taskId, {
+        kind: "complete",
         result: { text: execution.text, artifacts: execution.artifacts ?? [] }
-      }));
-      this.scheduleReturn(completed);
+      });
+      if (completed.changed && completed.task !== undefined) this.scheduleReturn(completed.task);
     } catch (error) {
-      const latest = await this.store.get(taskId);
-      if (latest === undefined || latest.status === "cancelled") return;
-      const failed = await this.store.update(this.withReturn({
-        ...latest,
-        status: "failed",
+      const failed = await this.store.transition(taskId, {
+        kind: "fail",
         error: {
           code: executionErrorCode(error),
           message: error instanceof Error ? error.message : String(error)
         }
-      }));
-      this.scheduleReturn(failed);
+      });
+      if (failed.changed && failed.task !== undefined) this.scheduleReturn(failed.task);
     }
-  }
-
-  private withReturn(task: MeshTaskRecord): MeshTaskRecord {
-    return task.return_route === undefined || task.return_delivery !== undefined ? task : {
-      ...task, return_delivery: { id: `terminal:${task.task_id}`, status: "pending" }
-    };
   }
 
   private scheduleReturn(task: MeshTaskRecord): void {
@@ -184,11 +169,8 @@ export class MeshTaskCoordinator {
       let status: MeshTaskReturnDeliveryStatus;
       try { status = await this.deliverReturn!(latest); }
       catch { status = "uncertain"; }
-      const current = await this.store.get(task.task_id);
-      if (current?.return_delivery?.id !== latest.return_delivery.id) return;
-      if (current.return_delivery.status !== status) await this.store.update({
-        ...current, return_delivery: { ...current.return_delivery, status }
-      });
+      await this.store.transition(task.task_id, { kind: "receipt", id: latest.return_delivery.id,
+        expected: latest.return_delivery.status, status });
     })();
     this.returns.set(task.task_id, run);
     void run.finally(() => this.returns.delete(task.task_id)).catch(() => undefined);

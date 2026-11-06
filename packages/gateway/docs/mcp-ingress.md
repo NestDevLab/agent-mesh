@@ -33,6 +33,10 @@ Task state is append-only NDJSON and survives gateway restarts. Idempotency is
 scoped to the principal, and tasks targeting the same agent are serialized.
 Cancellation is cooperative: it makes the task terminal but does not terminate
 an already-running agent process.
+Lifecycle decisions and their return intent are appended atomically within the
+gateway's shared store exclusion. Terminal outcomes are immutable, and receipt
+updates cannot overwrite a newer state. One gateway owns a state directory via
+its admission socket; independent processes must not write that task store.
 
 `mesh_call` and `mesh_submit` accept an optional `session_id`. When present,
 the gateway verifies the session against the target agent and authenticated
