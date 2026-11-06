@@ -190,15 +190,19 @@ for (const provider of ["codex", "claude"]) test(`${provider} receipts distingui
 });
 
 test("cancel wins a paused completion and publishes exactly its stored terminal outcome", async () => {
-  let release, intercepted, notified;
+  let release, intercepted, notified, writerSettled;
   const held = new Promise((resolve) => { release = resolve; });
   const atCompletion = new Promise((resolve) => { intercepted = resolve; });
   const callback = new Promise((resolve) => { notified = resolve; });
+  const lateWriter = new Promise((resolve) => { writerSettled = resolve; });
   const calls = [];
   const { facade, store } = await setup(async () => ({ text: "late result" }), async (task) => { calls.push({ status: task.status, result: task.result, error: task.error, id: task.return_delivery.id }); notified(); return "queued"; });
   const transition = store.transition.bind(store);
   store.transition = async (taskId, action) => {
-    if (action.kind === "complete") { intercepted(); await held; }
+    if (action.kind === "complete") {
+      intercepted(); await held;
+      try { return await transition(taskId, action); } finally { writerSettled(); }
+    }
     return transition(taskId, action);
   };
   const { task } = await facade.submitTask(input);
@@ -206,7 +210,7 @@ test("cancel wins a paused completion and publishes exactly its stored terminal 
   const cancelled = await facade.cancelTask(task.task_id);
   await callback;
   release();
-  await new Promise((resolve) => setTimeout(resolve, 40));
+  await lateWriter;
   const final = await store.get(task.task_id);
   assert.equal(final.status, "cancelled");
   assert.equal(final.result, undefined);
@@ -273,24 +277,31 @@ test("completion wins before cancel and emits only the completed result", async 
   const { task } = await facade.submitTask(input);
   await callback;
   const afterCancel = await facade.cancelTask(task.task_id);
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await eventually(async () => (await store.get(task.task_id)).return_delivery?.status === "queued");
   assert.equal(afterCancel.status, "completed");
   assert.equal((await store.get(task.task_id)).result.text, "finished");
   assert.deepEqual(calls, ["completed"]);
 });
 
 test("cancel wins a paused failure and emits no failure callback", async () => {
-  let release, intercepted, notified;
+  let release, intercepted, notified, writerSettled;
   const held = new Promise((resolve) => { release = resolve; });
   const atFailure = new Promise((resolve) => { intercepted = resolve; });
   const callback = new Promise((resolve) => { notified = resolve; });
+  const lateWriter = new Promise((resolve) => { writerSettled = resolve; });
   const calls = [];
   const { facade, store } = await setup(async () => { throw new Error("late failure"); }, async (task) => { calls.push(task.status); notified(); return "queued"; });
   const transition = store.transition.bind(store);
-  store.transition = async (taskId, action) => { if (action.kind === "fail") { intercepted(); await held; } return transition(taskId, action); };
+  store.transition = async (taskId, action) => {
+    if (action.kind === "fail") {
+      intercepted(); await held;
+      try { return await transition(taskId, action); } finally { writerSettled(); }
+    }
+    return transition(taskId, action);
+  };
   const { task } = await facade.submitTask(input);
   await atFailure; await facade.cancelTask(task.task_id); await callback; release();
-  await new Promise((resolve) => setTimeout(resolve, 30));
+  await lateWriter;
   const final = await store.get(task.task_id);
   assert.equal(final.status, "cancelled"); assert.equal(final.error.code, "cancelled"); assert.deepEqual(calls, ["cancelled"]);
 });
