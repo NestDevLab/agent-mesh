@@ -405,7 +405,7 @@ agent-session.sh --agent claude goal set SESSION_ID --objective "All checks pass
 agent-session.sh --agent claude goal clear SESSION_ID
 ```
 
-Codex connects to the existing app-server through `codex app-server proxy`, using
+Codex connects to the existing app-server over its WebSocket control socket, using
 the remote socket discovery described below (or `CODEX_REMOTE_SOCK`); it never
 starts a server. It resumes the thread before calling `thread/goal/set|get|clear`.
 Set requires a nonempty objective; an optional token budget must be a positive
@@ -416,6 +416,28 @@ starts work immediately, as described in the [Claude goal documentation](https:/
 Claude results report process completion, not verified persistent goal state.
 Both providers time out after 30 seconds (`AGENT_GOAL_TIMEOUT_MS`, maximum
 600000); timeout exits 124 with an unknown outcome, so inspect before retrying.
+
+## Steering a running turn
+
+```bash
+agent-session.sh --agent codex steer SESSION_ID --message "Stop, read this first" --json
+```
+
+Use steer for anything urgent: the text lands in the turn that is already running.
+Use `codex queue` for what can wait until the turn ends. The command reads the
+thread's latest turn and calls `turn/steer` with that turn as `expectedTurnId`, so
+it can't land in a later turn.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | app-server accepted the input; check the transcript to see the agent act on it |
+| 1 | invalid input or app-server refusal, for example a review or compact turn |
+| 3 | no active turn, nothing was sent; use `codex queue` |
+| 124 | timed out with an unknown outcome; inspect before retrying |
+
+The timeout is 30 seconds (`AGENT_STEER_TIMEOUT_MS`, maximum 600000). Ephemeral
+threads can't be steered because the app-server doesn't list their turns. Claude
+has no API to inject into a running turn, so `--agent claude` is refused.
 
 ## Codex Desktop visibility (remote mode)
 
