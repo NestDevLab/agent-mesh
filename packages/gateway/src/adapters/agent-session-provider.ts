@@ -97,6 +97,7 @@ export interface AgentSessionProvider {
   transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined>;
   search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
+  deliverNotice?(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain">;
   /** Workspaces allowed to start a fresh session. Absent means unsupported. */
   readonly freshSessionWorkspaceIds?: readonly string[];
   readonly createSessionWorkspaceIds?: readonly string[];
@@ -137,6 +138,12 @@ export class AgentSessionRegistry {
 
   send(agentId: string, input: AgentSessionSendInput): Promise<TmuxSendResult> {
     return this.require(agentId).send(input);
+  }
+
+  deliverNotice(agentId: string, input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain"> {
+    const provider = this.require(agentId);
+    if (provider.deliverNotice === undefined) throw new Error("Native notice delivery is not configured.");
+    return provider.deliverNotice(input);
   }
 
   supportsFreshSession(agentId: string): boolean {
@@ -417,6 +424,25 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       release();
       if (this.sendQueues.get(queueKey) === tail) this.sendQueues.delete(queueKey);
     }
+  }
+
+  async deliverNotice(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain"> {
+    if (this.agentNativeCallPath === undefined || (input.resume && this.provider !== "codex") ||
+        (this.provider === "claude" && this.agentManagedInboxRoot === undefined)) return "uncertain";
+    const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
+    if (session === undefined || session.archived === true) return "uncertain";
+    const args = [this.agentNativeCallPath, "--agent", this.provider, "--session", input.sessionId,
+      "--correlation-id", input.correlationId, "--timeout", String(this.timeoutSeconds),
+      "--message", input.message, "--delivery-only", ...(input.resume ? ["--resume"] : [])];
+    if (this.provider === "claude" && this.agentManagedInboxRoot !== undefined) args.push("--managed-inbox-root", this.agentManagedInboxRoot);
+    const result = await this.run(process.execPath, args, { env: { ...processEnv }, timeoutMs: (this.timeoutSeconds + 20) * 1000 });
+    if (result.code !== 0) return "uncertain";
+    let receipt: Record<string, unknown>;
+    try { receipt = JSON.parse(result.stdout) as Record<string, unknown>; } catch { return "uncertain"; }
+    if (receipt.agent !== this.provider || receipt.sessionId !== input.sessionId || receipt.correlationId !== input.correlationId) return "uncertain";
+    if (receipt.held === true && receipt.status === "queued") return "held";
+    if ((receipt.held === true && receipt.status === "delivered") || (receipt.held !== true && receipt.status === "queued")) return "queued";
+    return "uncertain";
   }
 
   async create(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
