@@ -11,6 +11,7 @@
 #   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
 #   agent-session.sh --agent <codex|claude> goal set|get|clear <SESSION_ID> [--objective TEXT] [--token-budget N] [--json]
+#   agent-session.sh --agent codex steer <SESSION_ID> --message TEXT [--json]
 #   agent-session.sh --agent claude target-status <TMUX_NAME> --writer-pid <PID> --json
 #   agent-session.sh --agent codex target-session <TMUX_NAME>
 #   agent-session.sh --agent codex socket-status <CWD>
@@ -659,6 +660,10 @@ fi
 case "$cmd" in
     goal)
         exec node "$SCRIPT_DIR/agent-goal.mjs" --agent "$AGENT_NAME" "$@"
+        ;;
+
+    steer)
+        exec node "$SCRIPT_DIR/agent-steer.mjs" --agent "$AGENT_NAME" "$@"
         ;;
 
     resume)

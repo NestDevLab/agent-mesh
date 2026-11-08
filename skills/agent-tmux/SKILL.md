@@ -587,6 +587,14 @@ mobile over the remote-control tunnel. No env var to remember.
 For already-created sessions only, DB rename is a fallback with a Desktop restart
 caveat; see `docs/codex-session-titles.md`.
 
+### Steering a running Codex turn
+
+Urgent messages use `agent-session.sh --agent codex steer <SESSION_ID> --message <text>`,
+which adds the text to the running turn. Exit 3 means there's no active turn and
+nothing was sent, so fall back to `codex queue`. Exit 124 is an unknown outcome:
+inspect before retrying. Exit 0 proves acceptance only, confirm in the transcript.
+Claude sessions have no steer.
+
 ### Codex threads that belong to Desktop
 
 A tmux CLI attached to a thread keeps Codex Desktop from driving it until the

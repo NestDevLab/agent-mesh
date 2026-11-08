@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { createAppServer } from "./fixtures/fake-app-server.mjs";
 
 const session = "22222222-2222-4222-8222-222222222222";
 const bridge = fileURLToPath(new URL("../bin/agent-session.sh", import.meta.url));
@@ -26,14 +25,6 @@ async function fixture(t) {
     await writeFile(path, `#!${process.execPath}\n${body}\n`);
     await chmod(path, 0o755);
   };
-  await executable("codex", `
-const net = require('node:net');
-const args = process.argv.slice(2);
-if (JSON.stringify(args.slice(0, 3)) !== JSON.stringify(['app-server', 'proxy', '--sock'])) process.exit(90);
-const socket = net.createConnection(args[3]);
-process.stdin.pipe(socket).pipe(process.stdout);
-socket.on('error', () => process.exit(91));
-`);
   await executable("claude", `
 const fs = require('node:fs');
 const args = process.argv.slice(2);
@@ -49,7 +40,7 @@ if (args[0] === 'agents') {
 `);
   const env = {
     ...process.env, PATH: `${root}:${process.env.PATH}`, HOME: root,
-    CODEX_HOME: join(root, ".codex"), CODEX_BIN: join(root, "codex"), CLAUDE_BIN: join(root, "claude"),
+    CODEX_HOME: join(root, ".codex"), CLAUDE_BIN: join(root, "claude"),
     CLAUDE_CONFIG_DIR: join(root, ".claude"), CLAUDE_SESSION_ROOT: "",
     CODEX_REMOTE_SOCK: join(root, "server.sock"), CODEX_NO_REMOTE: "",
     AGENT_WRITER_PROC_ROOT: join(root, "proc"), GOAL_ARGS: join(root, "args.json"),
@@ -74,18 +65,15 @@ for (const action of ["set", "get", "clear"]) {
     const f = await fixture(t);
     const requests = [];
     const result = action === "clear" ? { cleared: true } : { goal: { objective: "Ship it", status: "active" } };
-    const server = createServer((socket) => {
-      createInterface({ input: socket }).on("line", (line) => {
-        const message = JSON.parse(line);
-        requests.push(message);
-        if (message.id) {
-          socket.write(`${JSON.stringify({ method: "thread/status/changed", params: {} })}\n`);
-          socket.write(`${JSON.stringify({ id: message.id, result: message.method === `thread/goal/${action}` ? result : {} })}\n`);
-        }
-      });
+    const server = createAppServer((message, peer) => {
+      requests.push(message);
+      if (message.id) {
+        peer.send({ method: "thread/status/changed", params: {} });
+        peer.send({ id: message.id, result: message.method === `thread/goal/${action}` ? result : {} });
+      }
     });
     await new Promise((resolve) => server.listen(f.env.CODEX_REMOTE_SOCK, resolve));
-    t.after(() => new Promise((resolve) => server.close(resolve)));
+    t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections?.(); }));
     const args = action === "set" ? ["--objective", "Ship it", "--token-budget", "123"] : [];
     const response = await f.run("codex", action, [...args, "--json"]);
     assert.equal(response.code, 0, response.stderr);
@@ -102,18 +90,15 @@ for (const action of ["set", "get", "clear"]) {
 test("Codex set omits an unspecified token budget and stops on resume errors", async (t) => {
   const f = await fixture(t);
   const requests = [];
-  const server = createServer((socket) => {
-    createInterface({ input: socket }).on("line", (line) => {
-      const message = JSON.parse(line);
-      requests.push(message);
-      if (!message.id) return;
-      socket.write(`${JSON.stringify({ id: message.id, ...(processResumeError
-        && message.method === "thread/resume" ? { error: { code: -1, message: "resume denied" } } : { result: {} }) })}\n`);
-    });
+  const server = createAppServer((message, peer) => {
+    requests.push(message);
+    if (!message.id) return;
+    peer.send({ id: message.id, ...(processResumeError
+      && message.method === "thread/resume" ? { error: { code: -1, message: "resume denied" } } : { result: {} }) });
   });
   let processResumeError = false;
   await new Promise((resolve) => server.listen(f.env.CODEX_REMOTE_SOCK, resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections?.(); }));
   const response = await f.run("codex", "set", ["--objective", "Ship it"]);
   assert.equal(response.code, 0, response.stderr);
   assert.equal(Object.hasOwn(requests.at(-1).params, "tokenBudget"), false);

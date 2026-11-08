@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -7,6 +7,7 @@ import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
+import { withCodexAppServer } from "./codex-app-server.mjs";
 
 try {
   const { values, positionals } = parseArgs({
@@ -48,67 +49,12 @@ try {
   process.exitCode = error.exitCode || 1;
 }
 
-function codexSocket() {
-  if (process.env.CODEX_NO_REMOTE === "1") throw new Error("CODEX_NO_REMOTE disables app-server goal calls");
-  if (process.env.CODEX_REMOTE_SOCK !== undefined) {
-    if (!process.env.CODEX_REMOTE_SOCK) throw new Error("CODEX_REMOTE_SOCK is empty; no app-server selected");
-    return process.env.CODEX_REMOTE_SOCK;
-  }
-  const listening = spawnSync("ss", ["-lx"], { encoding: "utf8", timeout: 5000 });
-  const home = process.env.CODEX_HOME || join(homedir(), ".codex");
-  for (const name of ["desktop-ssh-websocket-v0.sock", "app-server-control.sock"]) {
-    const path = join(home, "app-server-control", name);
-    if (listening.status === 0 && listening.stdout.includes(path)) return path;
-  }
-  throw new Error("no listening Codex app-server socket found; set CODEX_REMOTE_SOCK");
-}
-
 async function codexGoal(action, threadId, objective, budget, timeout) {
-  const child = spawn(process.env.CODEX_BIN || "codex", ["app-server", "proxy", "--sock", codexSocket()], {
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const lines = createInterface({ input: child.stdout });
-  const pending = new Map();
-  let nextId = 0;
-  let failure;
-  let stderr = "";
-  const rejectAll = (error) => {
-    failure = error;
-    for (const { reject } of pending.values()) reject(error);
-    pending.clear();
-  };
-  child.stderr.on("data", (data) => { stderr = (stderr + data).slice(-4096); });
-  child.on("error", rejectAll);
-  child.stdin.on("error", rejectAll);
-  child.on("close", (code) => rejectAll(new Error(`app-server proxy closed (${code}): ${stderr.trim()}`)));
-  lines.on("line", (line) => {
-    let message;
-    try { message = JSON.parse(line); }
-    catch { rejectAll(new Error("invalid JSON from app-server proxy")); return; }
-    if (message.method) return;
-    const waiter = pending.get(message.id);
-    if (!waiter) return;
-    pending.delete(message.id);
-    if (message.error) waiter.reject(new Error(`app-server: ${message.error.message || JSON.stringify(message.error)}`));
-    else if (Object.hasOwn(message, "result")) waiter.resolve(message.result);
-    else waiter.reject(new Error("invalid app-server response"));
-  });
-  const timer = setTimeout(() => {
-    rejectAll(Object.assign(new Error("app-server goal call timed out; outcome unknown; inspect before retrying"), { exitCode: 124 }));
-    child.kill("SIGKILL");
-  }, timeout);
-  const request = (method, params) => new Promise((resolve, reject) => {
-    if (failure) return reject(failure);
-    const id = ++nextId;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
-  });
-  try {
-    await request("initialize", {
-      clientInfo: { name: "agent-mesh-goal", version: "1.0.0" },
-      capabilities: { experimentalApi: true },
-    });
-    child.stdin.write(`${JSON.stringify({ method: "initialized" })}\n`);
+  return withCodexAppServer({
+    clientName: "agent-mesh-goal",
+    timeout,
+    timeoutMessage: "app-server goal call timed out; outcome unknown; inspect before retrying",
+  }, async (request) => {
     await request("thread/resume", { threadId });
     const params = { threadId };
     if (action === "set") {
@@ -117,12 +63,7 @@ async function codexGoal(action, threadId, objective, budget, timeout) {
     }
     if (action === "clear") params.origin = "user";
     return await request(`thread/goal/${action}`, params);
-  } finally {
-    clearTimeout(timer);
-    lines.close();
-    child.stdin.destroy();
-    child.kill("SIGKILL");
-  }
+  });
 }
 
 async function claudeSessionCwd(sessionId) {
