@@ -23,6 +23,8 @@ BIN = Path(__file__).resolve().parent
 SCHEMA = "agent-mesh.waker-state.v1"
 # agent-native-call exit codes that mean the turn was queued: result seen, empty result, wait timed out.
 QUEUED = {0, 65, 124}
+# The comms row for this correlation is terminal and undelivered; retrying it can never succeed.
+DEAD_FLIGHT = 79
 MAX_LISTED = 40
 MAX_LINE = 400
 
@@ -103,12 +105,12 @@ def run_producer(command: list[str], timeout: int) -> tuple[list[Any], list[Any]
 
 
 def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
-    lines = [f"agent-waker {job}: {len(pending)} new item(s), {len(errors)} source error(s). "
+    lines = [f"agent-waker {job}: {min(len(pending), MAX_LISTED)} new item(s), {len(errors)} source error(s). "
              "Act on these; the waker already advanced the cursor and will not resend them."]
     for entry in pending[:MAX_LISTED]:
         lines.append("NEW " + json.dumps(entry["item"], ensure_ascii=False)[:MAX_LINE])
     if len(pending) > MAX_LISTED:
-        lines.append(f"... {len(pending) - MAX_LISTED} more; rerun the producer with --peek to list them.")
+        lines.append(f"... {len(pending) - MAX_LISTED} more stay queued for the next wake.")
     for error in errors:
         lines.append("ERROR " + json.dumps(error, ensure_ascii=False)[:MAX_LINE])
     return "\n".join(lines)
@@ -141,6 +143,9 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
                 receipt.get("agent") == agent and receipt.get("sessionId") == session and
                 receipt.get("correlationId") == correlation):
             return 0
+        if (receipt.get("status") in ("expired", "refused") and receipt.get("agent") == agent and
+                receipt.get("sessionId") == session and receipt.get("correlationId") == correlation):
+            return DEAD_FLIGHT
         return 78
     if delivery_only and (not isinstance(receipt, dict) or receipt.get("status") != "queued"):
         return 78
@@ -188,12 +193,15 @@ def run(args: argparse.Namespace) -> int:
         if not flight:
             flight = {"correlationId": f"waker-{args.job}-{uuid.uuid4()}", "recipient": recipient,
                       "message": compose(args.job, state["pending"], wake_errors),
-                      "itemKeys": [entry["key"] for entry in state["pending"]], "errorSignature": signature}
+                      "itemKeys": [entry["key"] for entry in state["pending"][:MAX_LISTED]], "errorSignature": signature}
             state["inFlight"] = flight
             save_state(path, state)
         correlation = flight["correlationId"]
         code = deliver(args.agent, args.session, correlation, flight["message"],
                        args.managed_inbox_root, args.delivery_only, **({"resume": True} if args.resume else {}))
+        if code == DEAD_FLIGHT:
+            state.pop("inFlight", None)
+            save_state(path, state)
         if code not in QUEUED:
             record(args.job, "blocked", args.session, f"delivery refused rc={code}")
             print(json.dumps({**summary, "outcome": "blocked", "deliveryExit": code}))

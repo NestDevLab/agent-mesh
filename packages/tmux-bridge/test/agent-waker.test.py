@@ -108,6 +108,62 @@ class InFlightTest(unittest.TestCase):
                     return_value=Mock(returncode=0, stdout=json.dumps({**base, key: 'wrong'}))):
                 self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), 78)
 
+    def test_terminal_flight_is_retired_and_next_run_sends_a_new_correlation(self):
+        for status in ('expired', 'refused'):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                state = Path(directory) / 'state.json'
+                args = SimpleNamespace(state=str(state), job='observer', producer=['fixture'], producer_timeout=1,
+                                       agent='codex', session=SESSION, managed_inbox_root=None,
+                                       delivery_only=True, resume=True)
+                correlations = []
+                def native(command, **kwargs):
+                    correlation = command[command.index('--correlation-id') + 1]
+                    correlations.append(correlation)
+                    receipt = {'agent': 'codex', 'sessionId': SESSION, 'correlationId': correlation}
+                    if len(correlations) == 1:
+                        return Mock(returncode=0, stdout=json.dumps({**receipt, 'held': True, 'status': status}))
+                    return Mock(returncode=0, stdout=json.dumps({**receipt, 'status': 'queued'}))
+                with patch.object(waker, 'record'), patch.object(waker.subprocess, 'run', side_effect=native), \
+                     contextlib.redirect_stdout(io.StringIO()):
+                    with patch.object(waker, 'run_producer', return_value=([{'id': 'first'}], [])):
+                        self.assertEqual(waker.run(args), 3)
+                    saved = json.loads(state.read_text())
+                    self.assertNotIn('inFlight', saved)
+                    self.assertEqual(len(saved['pending']), 1)
+                    with patch.object(waker, 'run_producer', return_value=([{'id': 'later'}], [])):
+                        self.assertEqual(waker.run(args), 0)
+                self.assertNotEqual(correlations[0], correlations[1])
+                saved = json.loads(state.read_text())
+                self.assertEqual(saved['pending'], [])
+                self.assertEqual(len(saved['lastDelivery']['itemKeys']), 2)
+
+    def test_terminal_error_only_flight_is_noop_once_the_error_clears(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'state.json'
+            args = SimpleNamespace(state=str(state), job='observer', producer=['fixture'], producer_timeout=1,
+                                   agent='codex', session=SESSION, managed_inbox_root=None,
+                                   delivery_only=True, resume=True)
+            def native(command, **kwargs):
+                return Mock(returncode=0, stdout=json.dumps({'held': True, 'status': 'expired', 'agent': 'codex',
+                    'sessionId': SESSION, 'correlationId': command[command.index('--correlation-id') + 1]}))
+            with patch.object(waker, 'record'), patch.object(waker.subprocess, 'run', side_effect=native) as call, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                with patch.object(waker, 'run_producer', return_value=([], [{'source': 'mail', 'error': 'down'}])):
+                    self.assertEqual(waker.run(args), 3)
+                with patch.object(waker, 'run_producer', return_value=([], [])):
+                    self.assertEqual(waker.run(args), 0)
+            self.assertEqual(call.call_count, 1)
+            self.assertNotIn('inFlight', json.loads(state.read_text()))
+
+    def test_terminal_receipt_must_match_frozen_recipient_and_correlation(self):
+        base = {'held': True, 'status': 'expired', 'agent': 'codex', 'sessionId': SESSION, 'correlationId': 'flight'}
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(base))):
+            self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), waker.DEAD_FLIGHT)
+        for key in ('agent', 'sessionId', 'correlationId'):
+            with self.subTest(key=key), patch.object(waker.subprocess, 'run',
+                    return_value=Mock(returncode=0, stdout=json.dumps({**base, key: 'wrong'}))):
+                self.assertEqual(waker.deliver('codex', SESSION, 'flight', 'message', None, True), 78)
+
 
 class AgentWakerTest(unittest.TestCase):
     def setUp(self):
@@ -169,6 +225,20 @@ class AgentWakerTest(unittest.TestCase):
         self.assertEqual(len(json.loads(self.state.read_text())["pending"]), 1)
         self.tick({"new": [], "errors": []})
         self.assertIn('"id": "m2"', self.sent[-1])
+
+    def test_items_past_the_listing_limit_stay_pending_for_the_next_wake(self):
+        items = [{"id": f"m{index}"} for index in range(waker.MAX_LISTED + 5)]
+        code, result = self.tick({"new": items, "errors": []})
+        self.assertEqual((code, result["outcome"]), (0, "acted"))
+        self.assertIn(f'"id": "m{waker.MAX_LISTED - 1}"', self.sent[0])
+        self.assertNotIn(f'"id": "m{waker.MAX_LISTED}"', self.sent[0])
+        self.assertNotIn("--peek", self.sent[0])
+        saved = json.loads(self.state.read_text())
+        self.assertEqual(len(saved["pending"]), 5)
+        self.assertEqual(len(saved["lastDelivery"]["itemKeys"]), waker.MAX_LISTED)
+        self.tick({"new": [], "errors": []})
+        self.assertIn(f'"id": "m{waker.MAX_LISTED + 4}"', self.sent[1])
+        self.assertEqual(json.loads(self.state.read_text())["pending"], [])
 
     def test_same_error_wakes_only_once_until_it_changes(self):
         error = {"source": "linkedin", "error": "login redirect"}

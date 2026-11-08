@@ -43,6 +43,10 @@ across restarts; newly arriving items remain pending for a later batch. A gate
 `held: true, status: delivered` duplicate acknowledges only that frozen batch,
 and only with matching agent, session and correlation. It proves the prior gate
 replay reached transport, not actor response. Queued, unknown and refused status
-never acknowledge. Recipient/config changes block existing flights. Old state
-without `inFlight` keeps its pending items and creates a flight on the next send.
+never acknowledge. A hold bound to this flight with status `expired` or `refused`
+is terminal for that correlation: the run reports blocked and retires the flight,
+pending items stay, and the next run sends them under a new correlation.
+Recipient/config changes block existing flights. Old state without `inFlight`
+keeps its pending items and creates a flight on the next send.
+A flight carries at most 40 items; the rest stay pending for the following wake.
 State replacement fsyncs the private temporary file and containing directory.
