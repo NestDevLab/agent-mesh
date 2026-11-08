@@ -69,6 +69,20 @@ export PATH="$WORKDIR:$PATH"
     [[ "${AGENT_EFFORT_PASSTHRU_PATTERNS[*]:-}" == "--effort --effort=*" ]] \
         || { echo "FAIL: Claude raw effort override patterns are incorrect" >&2; exit 1; }
 
+    # Exercise both real command strings as argv, preserving the JSON as one
+    # argument. Native auto-connect must not be turned into an explicit reopen.
+    python3 - "$AGENT_NEW_CMD" "$AGENT_RESUME_CMD" <<'PY_REMOTE'
+import json
+import shlex
+import sys
+for command in sys.argv[1:]:
+    argv = shlex.split(command)
+    settings = json.loads(argv[argv.index("--settings") + 1])
+    assert settings["remoteControlAtStartup"] is True, "Claude mesh auto-connect disabled"
+    assert not any(arg in ("--remote-control", "--rc") or arg.startswith("--remote-control=") for arg in argv), "forced Remote Control can reopen an archived session"
+assert "--resume" in shlex.split(sys.argv[2]), "resume identity missing"
+PY_REMOTE
+
     claude_session_dir="$WORKDIR/-srv-workspace-acme-app"
     claude_session_file="$claude_session_dir/11111111-1111-4111-8111-111111111111.jsonl"
     mkdir -p "$claude_session_dir"
@@ -373,7 +387,7 @@ first_class_target="launch-options-first-class-$$"
 TARGETS+=("$first_class_target")
 assert_argv "--new --model model-one --effort high "
 
-# Claude Remote Control is an explicit passthrough option. Both supported spellings
+# Explicit caller-supplied Remote Control options remain passthrough. Both spellings
 # must remain one argv element, after the bridge's configured launch options.
 for remote_flag in --remote-control --rc; do
     : > "$LOG_FILE"

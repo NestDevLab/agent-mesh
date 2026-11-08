@@ -47,6 +47,16 @@ update use `mesh-graph.mjs catalog update --session <agent:uuid> --summary "..."
 - Never emulate a missing native capability by editing Codex state or calling an
   undocumented app-server protocol method.
 
+## Claude Remote Control lifecycle
+
+Active Claude mesh launches use native Remote Control auto-connect through a
+per-invocation settings override. Archived or ended remote sessions stay
+disconnected on native resume; never add `--remote-control`/`--rc` or a reconnect
+loop to revive them automatically. Claude owns archive-triggered disconnection.
+An idle process is not archive evidence. Verify native archive state and exact
+session/process identity before closing an archived session's residual link;
+never stop a shared server that also serves active sessions.
+
 ## Setup
 
 ```bash

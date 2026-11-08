@@ -69,7 +69,7 @@ BIN="packages/tmux-bridge/bin"   # relative to repo root
 TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
 $BIN/agent-send.sh --agent codex "$TARGET" "describe the project state"
 
-# Start a local Claude Code session (Remote Control is opt-in)
+# Start an active Claude Code session with native Remote Control auto-connect
 TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
 reply=$($BIN/agent-send.sh --agent claude "$TARGET" "review for security issues" 300)
 echo "$reply"
@@ -477,20 +477,32 @@ its own arguments, so no passthrough state is shared between spawns.
 
 ## Claude Remote Control visibility
 
-Bridge Claude sessions start and resume locally by default. Enable Remote Control
-from the first command when Desktop, browser, or mobile visibility is needed. A
-named tmux target still gives the session a readable mesh identity:
+Bridge Claude sessions enable native Remote Control auto-connect through a
+per-invocation `--settings '{"remoteControlAtStartup":true}'` override. Global
+user settings remain unchanged. A named tmux target gives an active session a
+readable mesh identity:
 
 ```bash
 TARGET=$($BIN/agent-session.sh --agent claude \
-  new /path/to/project mesh-claude-review -- --remote-control)
+  new /path/to/project mesh-claude-review)
 ```
 
-Claude also accepts `--rc` as the shorter equivalent. The bridge forwards either
-flag verbatim after `--`, so Remote Control is active when the session starts.
+Claude owns the Remote Control lifecycle. Archiving or ending a remote session
+must disconnect its connection while leaving the local conversation intact.
+On resume, native auto-connect uses the recorded connection and leaves Remote
+Control off when that remote session was ended or archived. The bridge never
+runs a reconnect loop and does not add `--remote-control` or `--rc` to resume:
+those explicit requests can reopen an archived remote session. Do not use them
+for automatic recovery of archived sessions.
 
-Anything after `--` is still forwarded to Claude Code, so per-session flags can
-be layered on top without bypassing the bridge.
+See the [native Remote Control connection lifecycle](https://code.claude.com/docs/en/remote-control#check-connection-status).
+Process liveness alone does not prove a connected tunnel, and an idle session is
+not necessarily archived. Archive audits require native archive state and exact
+session-to-process identity; do not stop a shared server based on an idle child.
+
+Anything after `--` is still forwarded to Claude Code for explicit per-session
+options. Existing folder trust, account eligibility, and authentication gates
+continue to apply.
 
 For an existing Desktop-owned conversation, check ownership with
 `agent-session.sh --agent claude writer-status <SESSION_ID> --json`. Do not
@@ -550,7 +562,7 @@ runs immediately after `new-session`. Regression test:
 | Resume command | `codex resume <UUID>` | `claude --resume <UUID>` |
 | Session dir | `~/.codex/sessions/` | `~/.claude/projects/` |
 | CWD picker on resume | yes | no |
-| Remote visibility | auto-detected Codex app-server | explicit `--remote-control` opt-in |
+| Remote visibility | auto-detected Codex app-server | native auto-connect; archived sessions stay disconnected |
 | Approval-dialog detection | footer "Press enter to confirm" | not wired yet |
 | `--approval-policy` | `-a/--ask-for-approval` | unsupported (hard error) |
 
