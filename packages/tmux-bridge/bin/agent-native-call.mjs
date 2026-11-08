@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /** Queue a correlated turn through a provider's native active-session control. */
 
+import { commsLease } from "./comms-client.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { access, open, readdir, stat } from "node:fs/promises";
@@ -10,6 +11,9 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 
+let activeComms;
+let enqueueStarted = false;
+try {
 const { values } = parseArgs({
   options: {
     agent: { type: "string" },
@@ -17,6 +21,7 @@ const { values } = parseArgs({
     "correlation-id": { type: "string" },
     timeout: { type: "string", default: "120" },
     "delivery-only": { type: "boolean", default: false },
+    resume: { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
@@ -25,7 +30,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)]");
   process.exit(0);
 }
 
@@ -35,6 +40,7 @@ const correlationId = required(values["correlation-id"], "--correlation-id");
 const message = required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
+if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
 if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
   fail("--session must be a complete UUID", 2);
@@ -43,6 +49,22 @@ if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 
   fail("--timeout must be an integer from 1 to 600", 2);
 }
 
+const resultToken = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
+const anchor = `[MESH:${resultToken}]`;
+const resultBegin = `[[R:${resultToken}]]`;
+const resultEnd = `[[/R:${resultToken}]]`;
+const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
+  `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
+
+const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
+  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume });
+activeComms = comms;
+if (comms.status !== 'send') {
+  await comms.complete(false);
+  activeComms = undefined;
+  console.log(JSON.stringify({ status: comms.status, held: true, commsId: comms.id, agent, sessionId, correlationId }));
+  process.exit(0);
+}
 const claudeInbox = agent === "claude"
   ? await requireManagedClaudeInbox(sessionId, correlationId, values["managed-inbox-root"])
   : undefined;
@@ -51,16 +73,13 @@ const initialTranscripts = await resolveTranscripts(agent, sessionId);
 if (initialTranscripts.length === 0) fail(`no ${agent} transcript for session ${sessionId}`, 1);
 const offsets = new Map();
 for (const transcript of initialTranscripts) offsets.set(transcript, (await stat(transcript)).size);
-const resultToken = createHash("sha256").update(correlationId).digest("hex").slice(0, 16);
-const anchor = `[MESH:${resultToken}]`;
-const resultBegin = `[[R:${resultToken}]]`;
-const resultEnd = `[[/R:${resultToken}]]`;
-const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
-  `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
-
+let resumeDiagnostic = false;
+let transportAccepted = false;
+try {
 if (agent === "codex") {
+  enqueueStarted = true;
   const queued = await run(process.env.CODEX_BIN || "codex", [
-    "queue", "--thread", sessionId, "--message", protocolMessage
+    "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
   ], (timeoutSeconds + 15) * 1000);
   if (queued.code !== 0) {
     if (codexSessionIsNotDirectlyWritable(queued)) {
@@ -68,18 +87,28 @@ if (agent === "codex") {
     }
     fail(safeError("Codex native queue failed", queued), 1);
   }
+  resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
 } else {
+  enqueueStarted = true;
   await appendManagedInbox(claudeInbox, {
     schema: "agent-mesh.monitor-inbox.v1",
     deliveryId: correlationId,
     meshId: correlationId,
     prompt: protocolMessage,
+    commsPermit: comms.id,
   });
+}
+
+  transportAccepted = true;
+} finally {
+  await comms.complete(transportAccepted, !enqueueStarted);
+  activeComms = undefined;
 }
 
 // Queue acknowledgement is transport proof, never proof that the turn ran.
 if (values["delivery-only"]) {
-  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId }));
+  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId,
+    ...(values.resume ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
   process.exit(0);
 }
 
@@ -317,8 +346,7 @@ function sleep(ms) {
 }
 
 function fail(message, code) {
-  process.stderr.write(`agent-native-call: ${message}\n`);
-  process.exit(code);
+  throw Object.assign(new Error(message), { exitCode: code });
 }
 
 function blockClaudeVisibleTurn(id, correlation, reasonOverride) {
@@ -351,5 +379,13 @@ function blockClaudeVisibleTurn(id, correlation, reasonOverride) {
     },
   };
   process.stdout.write(`${JSON.stringify(blocker)}\n`);
-  process.exit(78);
+  throw Object.assign(new Error(reasonOverride || "Claude native delivery unavailable"), { exitCode: 78 });
+}
+
+} catch (error) {
+  if (activeComms) {
+    await activeComms.complete(false, !enqueueStarted);
+  }
+  process.stderr.write(`agent-native-call: ${error.message}\n`);
+  process.exit(error.exitCode || 1);
 }

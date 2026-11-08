@@ -57,9 +57,12 @@ cd "$BRIDGE_DIR"
 node --test test/*.test.mjs
 scripts/agent-result-test.sh
 python3 test/bridge-launch-record.test.py
+python3 test/comms.test.py
 python3 test/session-inbox.test.py
 python3 test/run-receipt.test.py
 python3 test/agent-waker.test.py
+python3 test/session-controller.test.py
+python3 test/owner-notify.test.py
 scripts/socket-isolation-test.sh
 scripts/smoke-test.sh
 scripts/agent-send-readiness-test.sh
@@ -67,7 +70,14 @@ python3 scripts/idle-expiry-test.py
 scripts/launch-options-test.sh
 scripts/mesh-cli-smoke.sh
 scripts/session-writer-test.sh
+python3 test/mesh-ledger.test.py
+python3 test/decision-cards.test.py
 scripts/session-watch-test.sh
+python3 test/lifecycle-facts.test.py
+python3 test/lifecycle-beat.test.py
+python3 test/plexus-observer.test.py
+node --test test/plexus.test.mjs
+python3 test/lifecycle-engine.test.py
 scripts/session-link-test.sh
 scripts/desktop-session-link-test.sh
 

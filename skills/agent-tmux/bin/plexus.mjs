@@ -12,7 +12,7 @@ export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operat
 export const ROLE_WEIGHTS = { owns: 1, "works-on": 1, coordinates: 0.8, reviews: 0.7, discusses: 0.6, observes: 0.3, mentioned: 0.2 };
 export const HALF_LIFE_DAYS = 7;
 export const TOUCH_COALESCE_MS = 10 * 60 * 1000;
-export const PLEXUS_EVENTS = new Set(["link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated"]);
+export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated"]);
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -53,6 +53,27 @@ export function applyPlexusEvent(state, item) {
   const effects = [];
   const openLinks = () => [...state.links.values()].filter((link) => link.until === null);
   switch (item.type) {
+    case "role.changed":
+      if (!state.roleClaims) state.roleClaims = new Map();
+      if (item.previous) state.roleClaims.set(item.previous.id, item.previous);
+      state.roleClaims.set(item.claim.id, item.claim);
+      for (const node of item.nodes) {
+        const previous = state.nodes.get(node.id);
+        const id = sessionIdOf(node);
+        if (id) effects.push({ kind: "session.updated", session: id, lastKnown: previous ? { cwd: previous.cwd, domains: previous.domains, harness: previous.agent } : null });
+        state.nodes.set(node.id, node);
+      }
+      for (const link of item.links) {
+        const prior = state.links.get(link.id);
+        state.links.set(link.id, link);
+        if (link.until !== null && prior?.until === null) effects.push({ kind: "link.ended", link });
+        else if (link.until === null) effects.push({ kind: "link.added", link });
+      }
+      for (const edge of item.edges) {
+        state.edges.set(edge.id, edge);
+        effects.push({ kind: edge.endedAt ? "edge.ended" : "edge.added", edge });
+      }
+      break;
     case "link.opened":
       validateLink(item.link);
       state.links.set(item.link.id, item.link);
@@ -174,9 +195,13 @@ export function sessionIndex(graph) {
       nativeId: newest.runtimeUuid.toLowerCase(),
       nodeIds: nodes.map((node) => node.id).sort(),
       cwd: newest.cwd,
-      title: newest.title,
+      title: newest.catalogTitle || newest.title,
+      role: newest.catalogRole || "unclassified", project: newest.catalogProject || null,
+      catalogStatus: newest.catalogStatus || newest.status,
       status: newest.status,
       attention: nodes.map((node) => node.attention).find((item) => item && LIVE_ATTENTION.includes(item.state)) || newest.attention || null,
+      lifecycle: newest.lifecycle || null,
+      class: newest.class, origin: newest.origin, surface: newest.surface || {},
       domains: [...new Set(nodes.flatMap((node) => node.domains || []))].sort(),
       lastSeenAt: newest.lastSeenAt || newest.updatedAt,
       archived: nodes.some((node) => node.surface?.archived === true),
@@ -230,7 +255,12 @@ function sessionView(view, session, sessionId) {
   return {
     sessionId: session.sessionId, harness: session.harness, nativeId: session.nativeId, host: hostLabel(),
     title: session.title, cwd: session.cwd, status: session.status, attention: session.attention?.state || null,
-    lastSeenAt: session.lastSeenAt, domains: session.domains, ...(target ? { target } : {}),
+    lastSeenAt: session.lastSeenAt, domains: session.domains,
+    // Detailed transcript facts remain local; scoped gateway queries keep their existing DTO.
+    ...(!view.scoped ? { lifecycle: session.lifecycle, archived: session.archived,
+      resumable: session.resumable, resumabilityReasons: session.resumabilityReasons,
+      role: session.role, project: session.project, catalogStatus: session.catalogStatus,
+      class: session.class, origin: session.origin, surface: session.surface, nodeIds: session.nodeIds } : {}), ...(target ? { target } : {}),
   };
 }
 
@@ -478,7 +508,9 @@ export function searchSessions(graph, input = {}, scope = null) {
     .filter((session) => !after || session.sessionId > after);
   const page = matches.slice(0, limit);
   return {
-    sessions: page.map((session) => sessionView(ctx.view, session, session.sessionId)),
+    sessions: page.map((session) => ({ ...sessionView(ctx.view, session, session.sessionId),
+      ...(!ctx.view.scoped ? { links: ctx.links.filter(link => link.session === session.sessionId && link.until === null).map(linkView) } : {}) })),
+    ...(!ctx.view.scoped ? { linkCoverage: graph.migrated === true && graph.unnumbered !== true } : {}),
     cursor: matches.length > limit ? encodeCursor({ kind: "search", after: page.at(-1).sessionId }) : null,
   };
 }
@@ -510,6 +542,10 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
   const watermark = snapshotGraph?.lastSeq || 0;
   const limit = Math.min(Math.max(Number(input.limit) || 100, 1), 1000);
   const lastSeq = events.reduce((max, item) => Math.max(max, item.seq || 0), watermark);
+  if (input.initial !== undefined) {
+    if (input.initial !== "head" || input.sinceCursor !== undefined) throw new Error("initial must be head without sinceCursor");
+    return { reset: false, events: [], cursor: encodeCursor({ kind: "changes", host, seq: lastSeq }) };
+  }
   let since = watermark;
   if (input.sinceCursor) {
     const cursor = decodeCursor(input.sinceCursor, "changes");
@@ -547,8 +583,8 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
     for (const feed of emitted) {
       if (!admitted(feed, view, sessions, state, refsFilter, scope)) continue;
       const subject = counts.get(feed.type) > 1 ? `:${feed.subject}` : "";
-      const { subject: _subject, ...payload } = feed;
-      output.push({ eventId: `${item.id}:${feed.type}${subject}`, seq: item.seq, at: item.at, host, ...payload });
+      const { subject: _subject, lastKnown: _lastKnown, ...payload } = feed;
+      output.push({ eventId: `${item.id}${item.type === "node.purged" ? `:${item.seq}` : ""}:${feed.type}${subject}`, seq: item.seq, at: item.at, host, ...payload });
     }
   }
   return { reset: false, events: output, cursor: encodeCursor({ kind: "changes", host, seq: scanned }) };
@@ -575,11 +611,23 @@ function feedFor(state, seen, item) {
   const out = [];
   if (item.type === "node.upserted") {
     const id = sessionIdOf(item.node);
-    if (!id) return out;
     const previous = state.nodes.get(item.node.id);
+    const previousId = sessionIdOf(previous);
+    if (previousId && previousId !== id) {
+      const aliasesRemain = [...state.nodes.values()].some(node => node.id !== item.node.id && sessionIdOf(node) === previousId);
+      const prior = sessionIndex({ nodes: [...state.nodes.values()] }).get(previousId);
+      out.push({ type: aliasesRemain ? "session.updated" : "session.removed", session: previousId, subject: previousId,
+        lastKnown: { cwd: prior.cwd, domains: prior.domains, harness: prior.harness } });
+    }
+    if (!id) return out;
     if (!seen.has(id)) {
       seen.add(id);
       out.push({ type: "session.created", session: id, subject: id });
+    }
+    if (seen.has(id) && (!previous || JSON.stringify(previous) !== JSON.stringify(item.node)) && !out.some(entry => entry.type === "session.created")) {
+      const prior = sessionIndex({ nodes: [...state.nodes.values()] }).get(id);
+      out.push({ type: "session.updated", session: id, subject: id,
+        lastKnown: prior ? { cwd: prior.cwd, domains: prior.domains, harness: prior.harness } : null });
     }
     if (previous) {
       if (previous.status !== item.node.status || previous.attention?.state !== item.node.attention?.state) {
@@ -594,6 +642,16 @@ function feedFor(state, seen, item) {
     }
     return out;
   }
+  if (item.type === "node.purged") {
+    const previous = state.nodes.get(item.id);
+    const id = sessionIdOf(previous);
+    if (!id) return out;
+    const remaining = [...state.nodes.values()].some(node => node.id !== item.id && sessionIdOf(node) === id);
+    const prior = sessionIndex({ nodes: [...state.nodes.values()] }).get(id);
+    out.push({ type: remaining ? "session.updated" : "session.removed", session: id, subject: id,
+      lastKnown: { cwd: prior.cwd, domains: prior.domains, harness: prior.harness } });
+    return out;
+  }
   if (item.type === "edge.added") {
     const from = sessionIdOf(state.nodes.get(item.edge.from)), to = sessionIdOf(state.nodes.get(item.edge.to));
     if (from && to) out.push({ type: "edge.added", edgeId: item.edge.id, kind: item.edge.type, from, to, subject: item.edge.id });
@@ -604,9 +662,11 @@ function feedFor(state, seen, item) {
     if (effect.kind === "link.added" || effect.kind === "link.ended") {
       if (effect.link.session.startsWith("pending:")) continue;
       out.push({ type: effect.kind === "link.added" ? "edge.added" : "edge.ended", edgeId: effect.link.id, kind: effect.link.role, from: effect.link.session, to: effect.link.ref, ref: effect.link.ref, subject: effect.link.id });
-    } else if (effect.kind === "edge.ended") {
+    } else if (effect.kind === "session.updated") {
+      out.push({ type: "session.updated", session: effect.session, subject: effect.session, lastKnown: effect.lastKnown });
+    } else if (effect.kind === "edge.ended" || effect.kind === "edge.added") {
       const from = sessionIdOf(state.nodes.get(effect.edge.from)), to = sessionIdOf(state.nodes.get(effect.edge.to));
-      if (from && to) out.push({ type: "edge.ended", edgeId: effect.edge.id, kind: effect.edge.type, from, to, subject: effect.edge.id });
+      if (from && to) out.push({ type: effect.kind, edgeId: effect.edge.id, kind: effect.edge.type, from, to, subject: effect.edge.id });
     } else if (effect.kind === "session.renewed") {
       out.push({ type: "session.renewed", from: effect.from, to: effect.to, subject: effect.to });
     }
@@ -620,7 +680,7 @@ function admitted(feed, view, sessions, state, refsFilter, scope) {
     if (refsFilter && !refsFilter.has(feed.ref)) return false;
   }
   const subjects = feed.ref !== undefined ? [feed.from] : [feed.session, feed.from, feed.to].filter(Boolean);
-  if (scope && subjects.some((id) => !visible(view, sessions.get(id)))) return false;
+  if (scope && subjects.some((id) => !visible(view, sessions.get(id)) && !(["session.removed", "session.updated"].includes(feed.type) && id === feed.session && feed.lastKnown && visible(view, feed.lastKnown)))) return false;
   if (refsFilter && feed.ref === undefined) {
     const linked = [...state.links.values()].some((link) => link.until === null && refsFilter.has(link.ref) && subjects.includes(link.session));
     if (!linked) return false;
@@ -648,4 +708,47 @@ function minTime(left, right) {
 
 function round(value) {
   return Math.round(value * 1e6) / 1e6;
+}
+
+/** Plan a ledger-owned link reconciliation; the graph lock owns application. */
+export function ledgerSyncEvents(graph, items, at = new Date().toISOString()) {
+  if (!Array.isArray(items) || items.length > 200) throw new Error('ledger sync requires at most 200 items');
+  const sessions = [...sessionIndex(graph).keys()];
+  const events = [], unresolved = [], refs = new Set();
+  for (const item of items) {
+    if (!item || typeof item.ref !== 'string' || !/^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(item.ref) || refs.has(item.ref)) throw new Error('invalid or duplicate ledger ref');
+    refs.add(item.ref);
+    if (typeof item.title !== 'string' || item.title.length > 512 || /[\r\n]/.test(item.title) || !['open', 'active', 'waiting', 'blocked', 'done', 'cancelled', 'deleted'].includes(item.status)) throw new Error('invalid ledger item');
+    const terminal = ['done', 'cancelled', 'deleted'].includes(item.status);
+    const desired = new Map();
+    if (!terminal) {
+      // Omission is not evidence of removal; only a present sessions array asserts links.
+      if (item.sessions === undefined) continue;
+      if (!Array.isArray(item.sessions) || item.sessions.length > 200) throw new Error('invalid ledger sessions');
+      for (const row of item.sessions) {
+        if (!row || typeof row.session !== 'string') throw new Error('invalid ledger session');
+        const role = row.role === undefined ? 'works-on' : row.role;
+        if (!LINK_ROLES.has(role)) throw new Error('invalid ledger session role');
+        const match = /^(?:(codex|claude):)?([0-9a-f-]{8,36})$/i.exec(row.session);
+        if (!match) throw new Error('invalid ledger session prefix');
+        const prefix = match[2].toLowerCase();
+        const matches = sessions.filter(id => (!match[1] || id.startsWith(match[1].toLowerCase() + ':')) && id.split(':')[1].startsWith(prefix));
+        if (matches.length !== 1) { unresolved.push({ ref: item.ref, session: row.session, reason: matches.length ? 'ambiguous' : 'not-found' }); continue; }
+        desired.set(matches[0] + '/' + role, { session: matches[0], role });
+      }
+    }
+    const open = (graph.links || []).filter(link => link.ref === item.ref && link.until === null);
+    for (const link of open) {
+      if (link.source !== 'ledger-write') continue;
+      if (!desired.has(link.session + '/' + link.role)) events.push({ type: 'link.closed', linkId: link.id, closedBy: 'ledger-write' });
+      else if (!link.lastActivityAt || Date.parse(at) - Date.parse(link.lastActivityAt) >= TOUCH_COALESCE_MS) events.push({ type: 'link.touched', linkId: link.id, evidence: item.updatedAt ? [item.ref + '@' + item.updatedAt] : [] });
+    }
+    for (const value of desired.values()) {
+      // The existing unique link may belong to an operator or bridge; do not adopt it.
+      if (open.some(link => link.session === value.session && link.role === value.role)) continue;
+      events.push({ type: 'link.opened', link: newLink({ ...value, ref: item.ref, source: 'ledger-write', title: item.title, at }) });
+    }
+  }
+  // An unresolved identity cannot justify closing any link or advancing this page.
+  return { events: unresolved.length ? [] : events, unresolved };
 }

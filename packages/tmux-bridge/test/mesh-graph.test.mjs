@@ -663,3 +663,18 @@ test("sweep joins real bridge launch records, keeps resume origin and publishes 
     assert.equal(graph.nodes.find((node) => node.runtimeUuid === ids[0]).launches[0].kind, "spawn");
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("metadata-only native records cannot establish never-started or finished history", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mesh-graph-metadata-only-"));
+  try {
+    const db = join(root, "native.sqlite");
+    const id = "11111111-1111-4111-8111-111111111111";
+    await exec("python3", ["-c", "import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute('create table threads(id,name,title,cwd,source,thread_source,archived,is_pinned,updated_at_ms,created_at_ms)'); c.execute('insert into threads values(?,?,?,?,?,?,?,?,?,?)',(sys.argv[2],'Metadata only','','/work','vscode','cli',0,0,int(sys.argv[3]),int(sys.argv[3]))); c.commit()", db, id, String(Date.now() - 7_200_000)]);
+    const result = await run(join(root, "graph"), ["discover", "--agent", "codex", "--json"], { CODEX_SESSION_ROOT: join(root, "absent"), CODEX_STATE_DB: db, MESH_DOMAIN_ROOTS_FILE: "" });
+    assert.equal(result.code, 0, result.stderr);
+    const node = JSON.parse(result.stdout).nodes[0];
+    assert.equal(node.lifecycle.metadataOnly, true);
+    assert.equal(node.lifecycle.historyComplete, false);
+    assert.equal(node.attention.state, "idle");
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

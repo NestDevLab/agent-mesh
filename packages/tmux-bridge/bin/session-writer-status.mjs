@@ -185,7 +185,8 @@ function detectMonitorInboxWatchers(inbox) {
     // supervisor must also descend from this session's own child or it may belong to a replaced one.
     const bound = (writer) => record.owner?.pid === writer.pid
       || (writer.parentPid !== undefined && record.owner?.pid === writer.parentPid
-        && descendsFrom(record.supervisor?.pid, writer.pid));
+        && (descendsFrom(record.supervisor?.pid, writer.pid)
+          || record.receiver?.pid === writer.pid && processStartTicks(writer.pid) === record.receiver?.start));
     if (record && writers.some(bound)) {
       watchers.push(record.supervisor.pid);
     }
@@ -210,6 +211,13 @@ function detectMonitorInboxWatchers(inbox) {
     watchers.push(Number(entry.name));
   }
   return watchers.sort((left, right) => left - right);
+}
+
+function processStartTicks(pid) {
+  try {
+    const fields = readFileSync(`${procRoot}/${pid}/stat`, 'utf8').split(')').slice(1).join(')').trim().split(/\s+/);
+    return fields[0] === 'Z' ? undefined : fields[19];
+  } catch { return undefined; }
 }
 
 function descendsFrom(pid, ancestor) {

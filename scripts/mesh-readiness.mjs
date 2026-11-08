@@ -7,6 +7,9 @@ import { parseMeshV1Envelope, planMeshV1Dispatch } from "../packages/core/src/po
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checks = [];
 const agentTmuxBundleFiles = [
+  "bin/agent-mesh",
+  "bin/mesh-comms.py",
+  "bin/comms-client.mjs",
   "bin/_mesh-graph.sh",
   "bin/_mesh-result.sh",
   "bin/_mesh-tmux.sh",
@@ -17,6 +20,8 @@ const agentTmuxBundleFiles = [
   "bin/agent-spawn.sh",
   "bin/agent-session.sh",
   "bin/agent-native-call.mjs",
+  "bin/agent-session-inbox.py",
+  "bin/agent-inbox-native.py",
   "bin/codex-resume-options.py",
   "bin/claude-session-ownership.mjs",
   "bin/codex-owned-pane.mjs",
@@ -25,6 +30,14 @@ const agentTmuxBundleFiles = [
   "bin/mesh-capacity-dispatch.mjs",
   "bin/mesh-graph.mjs",
   "bin/plexus.mjs",
+  "bin/session-catalog.mjs",
+  "bin/session-metadata.mjs",
+  "bin/session-controller.py",
+  "bin/mesh-ledger.py",
+  "bin/agent-decisions.py",
+  "bin/agent-lifecycle-beat.py",
+  "bin/agent-plexus-observer.py",
+  "bin/agent-lifecycle.py",
   "bin/mesh-models.sh",
   "bin/mesh-send.sh",
   "bin/session-writer-status.mjs",

@@ -15,7 +15,7 @@ import threading
 from types import SimpleNamespace
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'bin' / 'agent-session-inbox.py'
 SESSION = 'synthetic-session'
@@ -37,6 +37,9 @@ class SessionInboxTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / 'inboxes'
         self.processes = []
+        env = patch.dict(os.environ, {'MESH_COMMS_STATE':str(Path(self.temp.name)/'comms'),
+                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback')})
+        env.start(); self.addCleanup(env.stop)
 
     def tearDown(self):
         for proc in self.processes:
@@ -74,15 +77,103 @@ class SessionInboxTest(unittest.TestCase):
         with (self.root / (SESSION + '.jsonl')).open('a') as stream:
             stream.write(text)
 
+    def test_refused_batch_rolls_back_without_rereading_cursor(self):
+        spec = importlib.util.spec_from_file_location('checkpoint_inbox_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.prepare(self.root, SESSION)
+        inbox = self.root / (SESSION + '.jsonl')
+        self.append(record('refused-A'))
+        delivered = []
+        def send(_session, batch, _owner):
+            delivered.append(list(batch))
+            if len(delivered)==1:
+                self.append(record('later-B'))
+                return False
+            return True
+        helper = SimpleNamespace(deliver=send)
+        fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module:None))
+        real_load = module.load_cursor
+        reads = []
+        def load(*args):
+            reads.append(True)
+            if len(reads)>1: raise OSError('transient cursor read failure')
+            return real_load(*args)
+        args = SimpleNamespace(root=self.root, session=SESSION, owner_pid=os.getpid(), owner_start=None,
+                               mode='serve', batch_seconds=0, retry_seconds=0.01)
+        with patch.object(module,'load_cursor',side_effect=load), patch.object(module,'alive',side_effect=lambda _owner:len(delivered)<2), patch.object(
+                module.time,'sleep'), patch('importlib.util.spec_from_file_location',return_value=fake_spec), patch(
+                'importlib.util.module_from_spec',return_value=helper):
+            module.watch(args)
+        self.assertEqual(len(reads),1)
+        self.assertIn('refused-A',str(delivered[1]))
+        self.assertIn('later-B',str(delivered[1]))
+        self.assertEqual(json.loads(inbox.with_suffix('.cursor.json').read_text())['offset'],inbox.stat().st_size)
+
+    def test_detached_service_survives_hook_exit_and_delivers_only_real_batches(self):
+        owner = subprocess.Popen(['sleep', '30'])
+        self.processes.append(owner)
+        config = Path(self.temp.name) / 'claude'
+        (config / 'sessions').mkdir(parents=True)
+        (config / 'sessions' / 'owner.json').write_text(json.dumps({
+            'pid': owner.pid, 'sessionId': SESSION, 'procStart': identity(owner.pid)['start'],
+            'name': 'synthetic-peer', 'messagingSocketPath':'/synthetic/peer.sock'}))
+        calls = Path(self.temp.name) / 'native-calls.jsonl'
+        native = Path(self.temp.name) / 'claude-native'
+        native.write_text('#!' + sys.executable + '\n' + """
+import json, os, sys
+for line in sys.stdin:
+    r=json.loads(line)
+    if 'id' not in r: continue
+    if r['method']=='initialize': result={}
+    elif r['params']['name']=='ListAgents':
+        result={'content':[{'type':'text','text':json.dumps({'sections':[{'kind':'sessions','rows':[{'name':'synthetic-peer','ref':__import__('hashlib').sha256(b'session:/synthetic/peer.sock').hexdigest()[:6]}]}]})}]}
+    else:
+        with open(os.environ['NATIVE_CALL_LOG'],'a') as f: f.write(json.dumps(r['params']['arguments'])+'\\n')
+        result={'content':[{'type':'text','text':json.dumps({'success':True})}]}
+    print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
+""")
+        native.chmod(0o700)
+        result = self.hook(owner=owner.pid, extra_env={'CLAUDE_CONFIG_DIR':str(config),
+                           'CLAUDE_BIN':str(native), 'NATIVE_CALL_LOG':str(calls)})
+        self.assertNotIn('run_in_background=true', result.stdout)
+        metadata = self.ready()
+        daemon = metadata['supervisor']['pid']
+        try:
+            self.assertEqual(metadata['receiver'], identity(owner.pid))
+            time.sleep(0.3)
+            self.assertFalse(calls.exists(), 'idle service must never call the native sender')
+            for text in ('first real record', 'second real record'):
+                self.append(record(text))
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline and (not calls.exists() or text not in calls.read_text()):
+                    time.sleep(0.02)
+                self.assertIn(text, calls.read_text())
+            self.assertEqual(len(calls.read_text().splitlines()), 2)
+            self.assertEqual(self.ready()['supervisor']['pid'], daemon)
+            self.assertEqual(self.hook(event='Stop', owner=owner.pid).stdout, '')
+            owner.terminate()
+            owner.wait(timeout=2)
+            deadline=time.monotonic()+2
+            while time.monotonic()<deadline:
+                try:
+                    if Path(f'/proc/{daemon}/stat').read_text().rsplit(')',1)[1].split()[0]=='Z': break
+                except FileNotFoundError: break
+                time.sleep(0.02)
+            else: self.fail('service outlived its owner')
+        finally:
+            try: os.kill(daemon, 15)
+            except ProcessLookupError: pass
+
     def test_hook_resume_context_permissions_and_authority(self):
         for _ in range(2):
             context = json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext']
-            self.assertIn('run_in_background=true', context)
+            self.assertIn('Do not launch or rearm', context)
             self.assertIn('never user approval', context)
             self.assertIn('do not expand permissions', context)
-            self.assertIn('--owner-pid', context)
-            self.assertIn('AGENT_MESH_INBOX_DUPLICATE do-not-relaunch', context)
-            self.assertIn('do not relaunch it', context)
+            self.assertIn('owner-bound detached', context)
+            self.assertIn('native cross-session messages', context)
+            self.assertIn('after an old background task times out', context)
         inbox = self.root / (SESSION + '.jsonl')
         inbox.write_text('retained\n')
         inbox.chmod(0o644)
@@ -116,7 +207,7 @@ class SessionInboxTest(unittest.TestCase):
                  (['-np'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}))
         for flags, env in cases:
             context = json.loads(self.hook(owner=self.fake_owner(*flags), extra_env=env).stdout)
-            self.assertIn('run_in_background=true', context['hookSpecificOutput']['additionalContext'])
+            self.assertIn('Do not launch or rearm', context['hookSpecificOutput']['additionalContext'])
 
     def test_codex_and_automation_disabled_without_side_effects(self):
         self.assertEqual(self.hook(agent='codex').stdout, '')
@@ -168,7 +259,7 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(result['hookEventName'], 'UserPromptSubmit')
         self.assertEqual(result['additionalContext'], json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext'])
         (self.root / (SESSION + '.watch.lock')).touch(mode=0o600)
-        self.assertIn('Start', self.hook(event='UserPromptSubmit').stdout)
+        self.assertIn('Session mailbox', self.hook(event='UserPromptSubmit').stdout)
 
     def test_live_prompt_probe_is_silent_read_only_and_session_specific(self):
         self.hook()
@@ -182,7 +273,7 @@ class SessionInboxTest(unittest.TestCase):
             self.assertEqual((result.stdout, result.stderr), ('', ''))
         for name, info in before.items():
             self.assertEqual(((self.root/name).stat().st_mtime_ns, (self.root/name).stat().st_mode), info)
-        self.assertIn('Start', self.hook(session='other-session', event='UserPromptSubmit').stdout)
+        self.assertIn('Session mailbox', self.hook(session='other-session', event='UserPromptSubmit').stdout)
         self.assertEqual(self.watcher().communicate(timeout=2), ('AGENT_MESH_INBOX_DUPLICATE do-not-relaunch\n', ''))
 
     def test_owner_exit_releases_lock_and_new_owner_takes_over(self):
@@ -398,7 +489,7 @@ class SessionInboxTest(unittest.TestCase):
         declaration = declarations[0]
         self.assertEqual(declaration['runtimes'], ['claude'])
         config = json.loads((repo / declaration['path']).read_text())
-        self.assertEqual(set(config['hooks']), {'SessionStart', 'UserPromptSubmit'})
+        self.assertEqual(set(config['hooks']), {'SessionStart', 'UserPromptSubmit', 'Stop'})
         env = {**os.environ, 'HOME': self.temp.name, 'CLAUDE_CONFIG_DIR': str(Path(self.temp.name) / '.claude'),
                'CLAUDE_PROJECT_DIR': str(Path(self.temp.name) / 'project'),
                'AGENT_MESH_HARNESS_PID': str(os.getpid()), 'AGENT_MESH_INBOX_ROOT': str(self.root)}
@@ -456,6 +547,58 @@ class SessionInboxTest(unittest.TestCase):
                                 text=True, capture_output=True, timeout=2)
         self.assertEqual((result.returncode, result.stderr), (0, ''))
         self.assertEqual(json.loads(result.stdout)['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
+
+
+class NativeDeliveryTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
+        env = patch.dict(os.environ, {'MESH_COMMS_STATE':str(Path(self.temp.name)/'comms'),
+                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback')})
+        env.start(); self.addCleanup(env.stop)
+        self.counter = 0
+        spec = importlib.util.spec_from_file_location('native_delivery_test', SCRIPT.with_name('agent-inbox-native.py'))
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.owner = identity(os.getpid())
+        self.registration = {'name':'synthetic-peer', 'sessionId':SESSION,
+                             'messagingSocketPath':'/synthetic/peer.sock'}
+        self.ref = __import__('hashlib').sha256(b'session:/synthetic/peer.sock').hexdigest()[:6]
+
+    def native_result(self, value):
+        return {'content':[{'type':'text','text':json.dumps(value)}]}
+
+    def deliver(self, result, ref=None):
+        native = MagicMock()
+        native.__enter__.return_value = native
+        native.request.side_effect = [self.native_result({'sections':[{'kind':'sessions','rows':[
+            {'name':'synthetic-peer', 'ref':ref or self.ref}]}]}), result]
+        with patch.object(self.module, 'registration', return_value=(self.registration, self.owner)), patch.object(
+                self.module, 'NativeClient', return_value=native):
+            self.counter += 1
+            accepted = self.module.deliver(SESSION, ['real record '+str(self.counter)], self.owner)
+        return accepted, native
+
+    def test_native_delivery_requires_explicit_success(self):
+        for value in ({'success':False}, {}, {'status':'sent'}):
+            self.assertFalse(self.deliver(self.native_result(value))[0])
+        self.assertFalse(self.deliver({'isError':True,'content':[]})[0])
+        self.assertTrue(self.deliver(self.native_result({'success':True}))[0])
+
+    def test_same_name_with_another_ref_never_receives_records(self):
+        accepted, native = self.deliver(self.native_result({'success':True}), ref='abcdef')
+        self.assertFalse(accepted)
+        self.assertEqual(native.request.call_count, 1)
+
+    def test_initialization_failure_reaps_native_child(self):
+        process = MagicMock()
+        with patch.object(self.module.subprocess, 'Popen', return_value=process), patch.object(
+                self.module.NativeClient, 'request', side_effect=TimeoutError('synthetic timeout')):
+            with self.assertRaises(TimeoutError):
+                self.module.NativeClient().__enter__()
+        process.terminate.assert_called_once()
+        process.wait.assert_called_once()
+        process.stdin.close.assert_called_once()
+        process.stdout.close.assert_called_once()
 
 
 if __name__ == '__main__':

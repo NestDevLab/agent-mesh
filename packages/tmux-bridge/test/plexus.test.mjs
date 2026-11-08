@@ -177,7 +177,7 @@ test("Q7 replays from an old cursor with identical event ids and resets past the
     await ok(state, ["link", "close", "--agent", "codex", "--runtime-uuid", CODEX, "--ref", item]);
 
     const first = await query(state, "changes", { sinceCursor: start, scope: scopeA });
-    assert.deepEqual(first.events.map((entry) => entry.type), ["edge.added", "session.state_changed", "edge.ended"]);
+    assert.deepEqual(first.events.map((entry) => entry.type), ["edge.added", "session.updated", "session.state_changed", "edge.ended"]);
     assert.ok(first.events.every((entry) => entry.host === "test-host"));
     const again = await query(state, "changes", { sinceCursor: start, scope: scopeA });
     assert.deepEqual(again.events.map((entry) => entry.eventId), first.events.map((entry) => entry.eventId));
@@ -238,5 +238,106 @@ test("Q7 resets a cursor ahead of the stream; scope roots compare normalized pat
     assert.deepEqual(search.sessions.map((session) => session.sessionId), [`codex:${CODEX}`]);
   } finally {
     await rm(state, { recursive: true, force: true });
+  }
+});
+
+// Metadata-only changes and purge must invalidate incremental inventory consumers.
+test("Q7 invalidates metadata and alias removal without leaking removed scope facts", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-inventory-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    let start = (await query(state, "changes", {})).cursor;
+    const first = (await ok(state, ["show", "--json"])).nodes.find(node => node.runtimeUuid === CODEX);
+    await ok(state, ["add", "--id", first.id, "--agent", "codex", "--tmux-target", first.tmuxTarget, "--cwd", first.cwd, "--runtime-uuid", CODEX, "--title", "Renamed session"]);
+    const renamed = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.equal(renamed.events.filter(item => item.type === "session.updated").length, 1);
+    assert.deepEqual((await query(state, "changes", { sinceCursor: start, scope: scopeA })).events, renamed.events);
+    start = renamed.cursor;
+    await ok(state, ["purge", "--id", first.id]);
+    const removed = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.equal(removed.events.filter(item => item.type === "session.removed").length, 1);
+    assert.ok(removed.events.every(item => !('lastKnown' in item) && !('cwd' in item)));
+    assert.equal((await query(state, "changes", { sinceCursor: start, scope: { ...scopeA, targets: [] } })).events.length, 0);
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
+
+test("local search includes canonical lifecycle metadata while scoped search preserves its DTO", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-local-inventory-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const local = await query(state, "search", { harness: "codex" });
+    assert.equal(local.linkCoverage, true);
+    assert.ok(local.sessions.every(item => Array.isArray(item.links) && Array.isArray(item.nodeIds)));
+    const scoped = await query(state, "search", { harness: "codex", scope: scopeA });
+    assert.ok(scoped.sessions.every(item => !('lifecycle' in item) && !('surface' in item) && !('links' in item)));
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
+
+test("a metadata move out of scope still invalidates the previously visible identity", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-scope-invalidation-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const start = (await query(state, "changes", {})).cursor;
+    const node = (await ok(state, ["show", "--json"])).nodes.find(item => item.runtimeUuid === CODEX);
+    await ok(state, ["add", "--id", node.id, "--agent", "codex", "--tmux-target", node.tmuxTarget, "--cwd", "/work/space-b/app", "--runtime-uuid", CODEX]);
+    const feed = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.deepEqual(feed.events.map(item => item.type), ["session.updated"]);
+    assert.ok(feed.events.every(item => !('lastKnown' in item) && !('cwd' in item)));
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
+
+test("removing one alias invalidates the identity; only the final alias emits removed", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-alias-invalidation-"));
+  try {
+    await seed(state);
+    const alias = await ok(state, ["add", "--agent", "codex", "--tmux-target", "alias-codex", "--cwd", "/work/space-a/app", "--runtime-uuid", CODEX]);
+    await ok(state, ["migrate", "--apply"]);
+    const aliases = (await ok(state, ["show", "--json"])).nodes.filter(node => node.runtimeUuid === CODEX);
+    assert.equal(aliases.length, 2);
+    const start = (await query(state, "changes", {})).cursor;
+    await ok(state, ["purge", "--id", aliases[0].id]);
+    const first = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.deepEqual(first.events.map(item => item.type), ["session.updated"]);
+    await ok(state, ["purge", "--id", aliases[1].id]);
+    const last = await query(state, "changes", { sinceCursor: first.cursor, scope: scopeA });
+    assert.deepEqual(last.events.map(item => item.type), ["session.removed"]);
+    assert.notEqual(first.events[0].eventId, last.events[0].eventId);
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
+
+test("replacing a node identity invalidates the old identity using its previous scope", async () => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-identity-change-"));
+  try {
+    await seed(state);
+    await ok(state, ["migrate", "--apply"]);
+    const start = (await query(state, "changes", {})).cursor;
+    const node = (await ok(state, ["show", "--json"])).nodes.find(item => item.runtimeUuid === CODEX);
+    await ok(state, ["add", "--id", node.id, "--agent", "codex", "--tmux-target", node.tmuxTarget, "--cwd", "/work/space-b/app", "--runtime-uuid", RENEWED]);
+    const local = await query(state, "changes", { sinceCursor: start });
+    assert.ok(local.events.some(item => item.type === "session.removed" && item.session === `codex:${CODEX}`));
+    assert.ok(local.events.some(item => item.type === "session.created" && item.session === `codex:${RENEWED}`));
+    const oldScope = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+    assert.deepEqual(oldScope.events.map(item => [item.type, item.session]), [["session.removed", `codex:${CODEX}`]]);
+    assert.ok(oldScope.events.every(item => !('lastKnown' in item)));
+  } finally { await rm(state, { recursive: true, force: true }); }
+});
+
+test("changes explicit head baseline is quiet and retains later changes", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-head-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const baseline = await query(state, "changes", { initial: "head" });
+  assert.deepEqual(baseline.events, []);
+  assert.equal(baseline.reset, false);
+  await ok(state, ["add", "--agent", "codex", "--tmux-target", "head-later", "--runtime-uuid", RENEWED]);
+  const later = await query(state, "changes", { sinceCursor: baseline.cursor });
+  assert.ok(later.events.length > 0);
+  for (const input of [{ initial: "invalid" }, { initial: "head", sinceCursor: baseline.cursor }]) {
+    const invalid = await run(state, ["query", "changes", "--input", JSON.stringify(input)]);
+    assert.notEqual(invalid.code, 0);
   }
 });

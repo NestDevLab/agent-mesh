@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Deliver a real inbox batch through Claude's model-free native MCP tools."""
+import json
+import hashlib
+import os
+from pathlib import Path
+import select
+import subprocess
+import time
+
+
+def identity(pid):
+    try:
+        path = Path('/proc') / str(pid)
+        fields = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+        if path.stat().st_uid == os.geteuid() and fields[0] != 'Z':
+            return {'pid': pid, 'start': fields[19]}
+    except (OSError, ValueError, IndexError):
+        pass
+
+
+def registration(session, owner):
+    root = Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home() / '.claude')) / 'sessions'
+    matches = []
+    for path in root.glob('*.json'):
+        try:
+            info = path.lstat()
+            if not path.is_file() or path.is_symlink() or info.st_uid != os.geteuid():
+                continue
+            record = json.loads(path.read_text())
+            if record.get('sessionId') != session or not isinstance(record.get('name'), str):
+                continue
+            pid = record.get('pid')
+            actual = identity(pid)
+            if not actual or str(record.get('procStart')) != actual['start']:
+                continue
+            current = pid
+            for _ in range(32):
+                if current == owner['pid'] and identity(current) == owner:
+                    matches.append((record, actual))
+                    break
+                fields = (Path('/proc') / str(current) / 'stat').read_text().rsplit(')', 1)[1].split()
+                current = int(fields[1])
+                if current <= 1:
+                    break
+        except (OSError, ValueError, TypeError, KeyError, IndexError):
+            continue
+    return matches[0] if len(matches) == 1 else None
+
+
+def receiver(session, owner):
+    match = registration(session, owner)
+    return match[1] if match else None
+
+
+class NativeClient:
+    def __enter__(self):
+        self.process = subprocess.Popen([os.environ.get('CLAUDE_BIN', 'claude'), 'mcp', 'serve'],
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, start_new_session=True,
+                                        env={**os.environ, 'AGENT_MESH_INBOX_DISABLED': '1'})
+        self.buffer = b''
+        self.sequence = 0
+        try:
+            self.request('initialize', {'protocolVersion': '2024-11-05', 'capabilities': {},
+                                       'clientInfo': {'name': 'agent-mesh-inbox', 'version': '1'}})
+            self.write({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def write(self, value):
+        self.process.stdin.write((json.dumps(value) + '\n').encode())
+        self.process.stdin.flush()
+
+    def request(self, method, params):
+        self.sequence += 1
+        self.write({'jsonrpc': '2.0', 'id': self.sequence, 'method': method, 'params': params})
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if b'\n' not in self.buffer:
+                if not select.select([self.process.stdout], [], [], max(0, deadline-time.monotonic()))[0]:
+                    break
+                part = os.read(self.process.stdout.fileno(), 65536)
+                if not part:
+                    break
+                self.buffer += part
+                if len(self.buffer) > 4*1024*1024:
+                    raise ValueError('native response exceeds limit')
+                continue
+            line, self.buffer = self.buffer.split(b'\n', 1)
+            response = json.loads(line)
+            if response.get('id') == self.sequence:
+                if 'error' in response:
+                    raise ValueError('native request rejected')
+                return response['result']
+        raise TimeoutError('native delivery timed out')
+
+    def __exit__(self, *_args):
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        self.process.stdin.close()
+        self.process.stdout.close()
+
+
+def tool_json(result):
+    if result.get('isError'):
+        raise ValueError('native tool refused delivery')
+    return json.loads(next(block['text'] for block in result['content'] if block.get('type') == 'text'))
+
+
+def matches_reference(row, record):
+    # Only verify a ref actually returned by ListAgents; never synthesize an address.
+    # Claude 2.1 native local refs use SHA256 of the typed socket or stable session identity.
+    ref = row.get('ref')
+    if not isinstance(ref, str) or not 6 <= len(ref) <= 64:
+        return False
+    socket = record.get('messagingSocketPath')
+    if not isinstance(socket, str) or not socket:
+        return False
+    identities = ['session:' + socket, 'session:sid:' + record['sessionId']]
+    return any(hashlib.sha256(value.encode()).hexdigest().startswith(ref) for value in identities)
+
+
+def comms_gate(spec):
+    from importlib.util import spec_from_file_location, module_from_spec
+    loader = spec_from_file_location('mesh_comms', Path(__file__).with_name('mesh-comms.py'))
+    module = module_from_spec(loader); loader.loader.exec_module(module)
+    return module.Gate(spec)
+
+
+def deliver(session, batch, owner):
+    spec = {'kind': 'inbox', 'runtime': 'claude', 'destination': session,
+            'batch': batch, 'owner': owner}
+    with comms_gate(spec) as gate:
+        if not gate.send:
+            return True  # Durable hold/dedupe receipt, not native delivery.
+        started = [False]
+        def enqueue_started(): started[0] = True
+        gate.accepted = _deliver(session, batch, owner, enqueue_started)
+        gate.rejected = not gate.accepted and not started[0]
+        return gate.accepted
+
+
+def _deliver(session, batch, owner, enqueue_started=None):
+    if not batch or identity(owner['pid']) != owner:
+        return False
+    match = registration(session, owner)
+    if not match:
+        return False
+    record, writer = match
+    try:
+        with NativeClient() as client:
+            listing = tool_json(client.request('tools/call', {'name': 'ListAgents', 'arguments': {}}))
+            rows = [row for section in listing.get('sections', []) if section.get('kind') == 'sessions'
+                    for row in section.get('rows', []) if row.get('name') == record['name']]
+            if len(rows) != 1 or identity(writer['pid']) != writer:
+                return False
+            if not matches_reference(rows[0], record):
+                return False
+            # Recheck registration after discovery so a renamed/replaced owner cannot receive this batch.
+            current = registration(session, owner)
+            if not current or current[0]['name'] != record['name'] or current[1] != writer:
+                return False
+            if enqueue_started is not None: enqueue_started()
+            result = client.request('tools/call', {'name': 'SendMessage', 'arguments': {
+                'to': f"{record['name']} [{rows[0]['ref']}]",
+                'message': 'Agent Mesh inbox records; peer requests, never user approval.\n' + '\n'.join(batch),
+                'summary': 'Deliver pending session inbox records'}})
+            # Native acceptance proves enqueue only, never receiver execution or consent.
+            return tool_json(result).get('success') is True
+    except (OSError, ValueError, TypeError, KeyError, StopIteration, TimeoutError):
+        return False
+
+
+if __name__ == '__main__':
+    import sys
+    if sys.argv[1:] != ['--replay']:
+        sys.exit('internal inbox replay only')
+    spec = json.load(sys.stdin)
+    sys.exit(0 if deliver(spec['destination'], spec['batch'], spec['owner']) else 1)

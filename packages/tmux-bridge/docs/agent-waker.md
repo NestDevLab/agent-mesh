@@ -25,3 +25,28 @@ collection remains the default. Successful delivery saves `lastDelivery.itemKeys
 SHA-256 of sorted-key JSON, UTF-8 with ensure_ascii=False, first 16 hex digits),
 `correlationId` and `at` in the waker state so a producer can retain its checkpoint until
 transport acknowledgement. Refused delivery keeps pending items and the previous acknowledgement.
+
+For an idle Codex owner, explicit `--agent codex --resume` forwards native
+`--resume` through the existing transport and communications gate. It is opt-in;
+Claude resume is rejected. A queue receipt still does not prove an actor response.
+
+Delivery-only acknowledgement requires native JSON `status: queued`, matching
+agent/session/correlation and no `held: true`. Except for the bound delivered
+duplicate described below, held, refused, malformed or missing receipts retain pending items
+and the previous `lastDelivery`, even when the process exits zero. Result mode
+keeps its existing result/timeout exit contract; explicit held receipts still
+fail closed. This adapter check does not drain or bypass the communications gate.
+
+A durable `inFlight` envelope freezes the correlation, exact message, recipient,
+options and item keys before invoking transport. Held retries reuse that envelope
+across restarts; newly arriving items remain pending for a later batch. A gate
+`held: true, status: delivered` duplicate acknowledges only that frozen batch,
+and only with matching agent, session and correlation. It proves the prior gate
+replay reached transport, not actor response. Queued, unknown and refused status
+never acknowledge. A hold bound to this flight with status `expired` or `refused`
+is terminal for that correlation: the run reports blocked and retires the flight,
+pending items stay, and the next run sends them under a new correlation.
+Recipient/config changes block existing flights. Old state without `inFlight`
+keeps its pending items and creates a flight on the next send.
+A flight carries at most 40 items; the rest stay pending for the following wake.
+State replacement fsyncs the private temporary file and containing directory.

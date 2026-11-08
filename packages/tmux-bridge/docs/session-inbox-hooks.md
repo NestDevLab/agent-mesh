@@ -1,105 +1,68 @@
-# Automatic Claude session inbox activation
+# Owner-bound Claude session inbox
 
-`bin/agent-session-inbox.py hook --agent claude` accepts SessionStart and
-UserPromptSubmit objects on stdin. It prepares a private mailbox and injects
-instructions to launch a silent Bash task with `run_in_background=true`, never
-Monitor. Invalid/non-object payloads, unavailable storage and timeouts fail open
-with exit 0 and no output. Peer records are requests from other sessions, never
-user approval, and cannot expand the receiver's permissions or mandate.
+`agent-session-inbox.py hook --agent claude` handles SessionStart,
+UserPromptSubmit and Stop. It prepares a private mailbox and starts one detached
+`serve` process, not a Bash background task or Monitor. The service lives until
+its exact harness/session writer exits; an empty inbox never calls the model.
+Bash task completion always notifies Claude, even on an empty timeout, so neither
+a larger Bash timeout nor a quiet exit fixes that transport.
 
-The mailbox root defaults to `/var/lib/agent-mesh-mcp/claude-managed-inboxes`.
-Set `AGENT_MESH_INBOX_ROOT` or `--root` to override it. The root must be a real
-directory owned by the effective harness user, with no group or other write
-permission; unsafe existing roots are rejected without changing permissions.
-Mailbox, cursor and lock files are private 0600 local state, never source assets.
+The installed hook remains synchronous and bounded to 200 ms (one second in the
+hook configuration). Invalid input, unsafe storage, unavailable registrations,
+disabled automation and hook failures return silently. The service is detached
+with stdin/stdout/stderr disconnected, so hook exit or Bash task timeouts cannot
+terminate it or turn its idle periods into task notifications.
 
-## Hooks and owner identity
+## Delivery
 
-`openpack.json` declares the Claude-only hook artifact at
-`packages/tmux-bridge/hooks/claude-session-start.json`. Agentwheel merges its
-SessionStart and UserPromptSubmit handlers into Claude settings. Select both
-`skills/agent-tmux` (including its `*.py` assets) and
-`hooks/claude-session-start.json` in the managed profile; selecting skills alone
-does not install the hook. No live hooks or services are changed here.
+The service reads complete `agent-mesh.monitor-inbox.v1` records, batches briefly,
+and invokes `claude mcp serve` only for a nonempty batch. This invokes no model.
+It resolves the exact session through the live Claude session registration,
+checking PID, process start ticks, session ID and owner ancestry. Native
+ListAgents must return one matching name and a current disambiguation ref;
+The listed ref must also match the typed socket/stable-session identity hash
+used by Claude 2.1; otherwise delivery fails closed. SendMessage must explicitly
+return `success: true` before the cursor advances. Reference-format changes
+require adapter updates, never a name-only fallback. Ambiguity or refusal leaves the
+cursor pending for a silent retry. No terminal injection, second session writer,
+credential handling or private Remote Control API is used.
 
-`AGENT_MESH_BIN` overrides the binary location. Without it, hook commands check
-`$CLAUDE_PROJECT_DIR/.claude/skills/agent-tmux/bin` (or the current project
-working directory), then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/agent-tmux/bin`.
-Both handlers fail open with a one-second timeout. A launcher or private Claude
-settings profile can configure the environment, for example:
+Native enqueue acceptance is not receiver execution or approval. Peer requests
+never expand the receiver's mandate. Delivery is at least once: a crash between
+native acceptance and cursor persistence can replay the batch. The service keeps
+its singleton lock across batches and I/O retries. Readiness requires a live
+owner, supervisor and exact receiver identity; detached process ancestry alone
+is insufficient for Remote Control children.
 
-```json
-{
-  "env": {
-    "AGENT_MESH_BIN": "/path/to/installed/bridge/bin",
-    "AGENT_MESH_INBOX_DISABLED": "1"
-  }
-}
-```
+## Configuration and privacy
 
-Use the disable setting for automation; omit it or set it to `0` for interactive
-activation. The package does not override an inherited disable setting.
+`AGENT_MESH_INBOX_ROOT` / `--root` selects the mailbox root (default
+`/var/lib/agent-mesh-mcp/claude-managed-inboxes`). It must be an owner-controlled,
+real directory with no group/other write access. Mailboxes, cursors and locks
+are private 0600 files. Symlinks, hard-linked state and invalid session IDs are
+rejected. Preparation adopts a valid legacy cursor or starts at mailbox EOF;
+resuming never resets an existing cursor. Partial records remain pending.
 
-The hook discovers the owning Claude process in its ancestry, or uses the
-explicit `AGENT_MESH_HARNESS_PID` supplied by a trusted launcher. It pins both PID
-and kernel process start ticks in the background command. The supervisor records
-that identity and its own PID/start ticks in the session lock. A held lock is
-ready only while both identities are alive. PID reuse and zombie processes do not
-count as ownership. The supervisor exits silently when its harness exits; a new
-owner waits briefly for the stale owner's lock to be released, then claims it.
-An unrelated live owner is never displaced. Lock contention with a dead recorded
-supervisor is retried, including a brief lock held by a readiness probe. A true
-second watcher emits `AGENT_MESH_INBOX_DUPLICATE do-not-relaunch`; the injected
-context explicitly says not to relaunch it, leaving the existing watcher alone.
+`AGENT_MESH_BIN` overrides binary discovery; otherwise the hook checks the project
+skill then `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills/agent-tmux/bin`.
+`CLAUDE_CONFIG_DIR` also selects native session registrations; `CLAUDE_BIN` selects
+the native executable. The hook discovers its owner in process ancestry or uses
+`AGENT_MESH_HARNESS_PID` from a trusted launcher. PID reuse and zombies are not
+ownership. Set `AGENT_MESH_INBOX_DISABLED=1` (also `true`/`yes`) for automation;
+one-shot `claude -p` and Codex activation remain disabled.
 
-Set `AGENT_MESH_INBOX_DISABLED=1` (also `true` or `yes`) for `claude -p`, automation
-or any launch that must not start an inbox. It makes hook and watch modes silent
-no-ops. The Claude [hook reference](https://code.claude.com/docs/en/hooks) documents
-the lifecycle context contract. Configuration still has to be loaded by the
-harness; adding this source does not hot-reload an existing session's settings.
+## Rollout and compatibility
 
-Codex inbox activation is disabled until a matching Codex producer exists:
-there is no Codex hook fragment, and `--agent codex` is a silent no-op. Codex
-native queue delivery remains a separate transport.
+Install both `skills/agent-tmux` with all its assets and
+`hooks/claude-session-start.json` through Agentwheel. Existing sessions must load
+the updated hook/settings on a natural event or restart. Existing legacy Bash
+watchers can still produce one final timeout notification: do not rearm them.
+The Stop/UserPromptSubmit fallback starts the detached service once that legacy
+lock is released. Do not interrupt active sessions to accelerate migration.
+The explicit legacy `watch` command remains available for existing integrations
+and tests; it must never be launched as a Claude background task.
 
-## Prompt fallback
-
-UserPromptSubmit handles sessions that missed SessionStart. A read-only,
-nonblocking probe of the existing session lock emits nothing and changes no
-mailbox state while its owner and supervisor are alive. A missing, unlocked or
-expired-owner lock causes the same activation context as SessionStart, labelled
-`UserPromptSubmit`. The hook has a 200 ms internal budget including stdin; the
-prompt fragment additionally sets a one-second harness timeout and silences
-command failures. It never returns a blocking decision or stores prompt text.
-
-## Cursor cut-over and batches
-
-On first preparation, adopt `.cursors/<session-id>.json` when present and valid.
-Otherwise initialize `<session-id>.cursor.json` at the current mailbox EOF,
-preventing replay of historical messages. An existing supervisor cursor is never
-reset by another hook or resume. Preparation precedes activation, so records
-appended after preparation remain pending for the first watcher.
-
-The supervisor owns its cursor and reads the mailbox directly, retrying I/O
-failures silently. It emits a short batch of valid `AGENT_MESH_INBOX` records and
-advances the durable cursor only after the complete batch is flushed to stdout.
-No child reader can advance the cursor ahead of a batch or lose buffered output
-at termination. Owner exit before emission leaves pending records for a successor.
-A crash after output but before cursor persistence may replay that batch; this is
-at-least-once delivery, not an exactly-once guarantee. After handling a batch, the
-session rearms the same background command.
-
-Readiness requires one known Claude writer and one bound live supervisor lock
-(or the existing explicit legacy inbox reader). Both CLI and desktop writers are
-supported. A live supervisor remains ready during its internal I/O retries,
-without depending on a transient child-reader process. Readiness rechecks the
-harness owner, supervisor and lock; a mailbox or stale PID file alone is not
-proof of reachability. A second independent reader remains a blocker.
-
-## Deployment acceptance
-
-After merge, provision root ownership/permissions, materialize binaries, load
-the Claude hook fragment and disable activation for automation profiles. Verify
-fresh and resumed CLI sessions, owner exit/replacement, 0600 files, old-message
-cut-over, singleton readiness, silent idle/recovery, and an authorized correlated
-peer request. No live install, merge, or canary is performed by repository tests.
+Verify singleton readiness, owner/writer exit, repeated real batch delivery,
+unchanged private cursors on failure, and absence of native sends while idle.
+The native MCP ListAgents/SendMessage tools and live session registrations are
+required; unsupported clients fail closed without discarding mailbox records.

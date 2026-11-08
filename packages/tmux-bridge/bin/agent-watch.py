@@ -33,6 +33,8 @@ ROOT_ENV = {
 }
 MAX_BODY = 4096
 MAX_REASONING = 300
+CURSOR_ANCHOR_BYTES = 256
+DISCOVERY_BOOTSTRAP_BYTES = 262144
 # Codex mints v7 UUIDs, Claude v4. Don't pin the version nibble.
 SESSION_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 
@@ -50,51 +52,9 @@ def resolve_transcript(agent: str, session_id: str) -> Path | None:
 
 
 def transcript_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
-    """Read objective transcript facts without creating a cursor or waking a session."""
-    cwd = ""
-    title = ""
-    last_assistant = ""
-    assistant_turns = 0
-    first_timestamp = None
-    for raw_line in transcript.read_text(encoding="utf-8", errors="replace").splitlines():
-        try:
-            record = json.loads(raw_line)
-        except (TypeError, ValueError):
-            continue
-        if not isinstance(record, dict):
-            continue
-        first_timestamp = first_timestamp or record.get("timestamp")
-        if agent == "codex":
-            payload = record.get("payload") or {}
-            if record.get("type") == "session_meta":
-                cwd = str(payload.get("cwd") or cwd)
-            elif record.get("type") == "turn_context":
-                cwd = str(payload.get("cwd") or cwd)
-            for item in codex_events(record, session_id):
-                if item["kind"] == "human_message" and not title:
-                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
-                elif item["kind"] == "agent_message":
-                    assistant_turns += 1
-                    last_assistant = str(item["body"])
-        else:
-            cwd = str(record.get("cwd") or cwd)
-            for item in claude_events(record, session_id):
-                if item["kind"] == "human_message" and not title:
-                    title = next((line.strip() for line in str(item["body"]).splitlines() if line.strip()), "")[:240]
-                elif item["kind"] == "agent_message":
-                    assistant_turns += 1
-                    last_assistant = str(item["body"])
-    return {
-        "agent": agent,
-        "runtime_uuid": session_id,
-        "path": str(transcript),
-        "cwd": cwd,
-        "title": title,
-        "last_assistant": last_assistant,
-        "assistant_turns": assistant_turns,
-        "updated_at": transcript.stat().st_mtime_ns,
-        "createdAt": transcript_created_at(agent, transcript, first_timestamp),
-    }
+    """Read the same normalized facts as cached discovery, without persisting state."""
+    facts = read_appended_facts(agent, session_id, transcript, None, full=True)
+    return {key: value for key, value in facts.items() if not key.startswith("_")}
 
 
 def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
@@ -118,7 +78,11 @@ def transcript_candidates(agent: str) -> list[tuple[str, Path]]:
 
 
 def first_real_prompt(body: str) -> str:
-    text = body.split("My request for Codex:", 1)[-1] if "My request for Codex:" in body else body
+    if body.lstrip().startswith("# AGENTS.md"):
+        return ""
+    # Claude launch wrappers put the actual brief after the closing note.
+    text = body.split("</note>", 1)[-1] if "</note>" in body else body
+    text = text.split("My request for Codex:", 1)[-1] if "My request for Codex:" in text else text
     return next((line.strip() for line in text.splitlines() if line.strip() and not line.lstrip().startswith(("<", "# AGENTS.md"))), "")[:240]
 
 
@@ -133,8 +97,10 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
         timestamp = item.get("timestamp")
         if kind == "human_message":
             body = str(item.get("body") or "")
-            if body == facts.get("_last_human_body"):
+            if body == facts.get("_last_human_body") and (agent != "claude" or facts.get("turn_active") is True):
                 continue
+            facts["last_speaker"] = "user"
+            facts["last_question"] = None
             facts["_last_human_body"] = body
             facts["human_turns"] += 1
             facts["last_human_at"] = timestamp
@@ -142,8 +108,20 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["first_real_prompt"] = first_real_prompt(body)
             facts["pending_question"] = False
             facts["turn_active"] = True
+            facts["last_error"] = None
+        elif kind == "turn_started":
+            facts.pop("_last_human_body", None)
+            facts["turn_active"] = True
+            facts["last_error"] = None
+            facts["last_turn_id"] = item.get("turn_id")
         elif kind == "agent_message":
             body = str(item.get("body") or "")
+            # Explicit machine-readable self-description, never raw transcript text.
+            marker = re.search(r"^\[\[mesh-summary: ([^\r\n]{1,240})\]\]$", body, re.MULTILINE)
+            if marker and timestamp and marker.group(1).strip() and marker.group(1).strip() != facts.get("session_summary"):
+                facts["session_summary"] = marker.group(1).strip()
+                facts["session_summary_at"] = timestamp
+            facts["last_speaker"] = "assistant"
             if body != facts.get("_last_agent_body"):
                 facts["assistant_turns"] += 1
             facts["_last_agent_body"] = body
@@ -159,10 +137,24 @@ def update_facts(facts: dict[str, Any], agent: str, session_id: str, record: dic
                 facts["pending_question"] = True
         elif kind == "question":
             facts["pending_question"] = True
+            facts["last_question"] = str(item.get("body") or "")
         elif kind == "turn_complete":
             facts["turn_active"] = False
-        if kind in {"human_message", "agent_message", "tool", "question", "turn_complete"}:
+            facts["last_outcome"] = item.get("outcome")
+            facts["last_error"] = item.get("error")
+            facts["last_turn_id"] = item.get("turn_id")
+            facts["last_complete_at"] = timestamp
+            facts["last_completion"] = item.get("completion", "turn")
+            if item.get("reply"):
+                facts["last_assistant"] = str(item["reply"])
+                facts["last_final_at"] = timestamp
+                facts["last_speaker"] = "assistant"
+                facts["pending_question"] = str(item["reply"]).rstrip().endswith("?")
+        if kind in {"human_message", "agent_message", "tool", "question", "turn_started", "turn_complete"}:
+            if timestamp:
+                facts["last_activity_at"] = timestamp
             facts["last_event_kind"] = kind
+            facts["last_event_id"] = item.get("source_event_id")
 
 
 def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]:
@@ -170,8 +162,11 @@ def empty_facts(agent: str, session_id: str, transcript: Path) -> dict[str, Any]
         "agent": agent, "runtime_uuid": session_id, "path": str(transcript), "cwd": "", "title": "",
         "last_assistant": "", "assistant_turns": 0, "human_turns": 0,
         "mutating_tool_calls": 0, "last_human_at": None, "last_final_at": None,
-        "last_event_kind": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
+        "last_event_kind": None, "last_event_id": None, "pending_question": False, "first_real_prompt": "", "turn_active": False,
         "createdAt": None, "origin": "human", "parent": None,
+        "last_outcome": None, "last_error": None, "last_turn_id": None,
+        "last_complete_at": None, "last_completion": None,
+        "last_speaker": None, "last_question": None,
     }
 
 
@@ -183,15 +178,42 @@ def transcript_created_at(agent: str, transcript: Path, first_timestamp: Any = N
     return str(first_timestamp) if isinstance(first_timestamp, str) and first_timestamp else None
 
 
-def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None) -> dict[str, Any]:
+def cursor_stamp(handle: Any, offset: int, stat: Any) -> dict[str, Any]:
+    """Bound a cursor to its file and a small prefix/tail anchor, without rescanning."""
+    position = handle.tell()
+    handle.seek(0)
+    prefix = handle.read(min(offset, CURSOR_ANCHOR_BYTES))
+    handle.seek(max(0, offset - CURSOR_ANCHOR_BYTES))
+    anchor = handle.read(min(offset, CURSOR_ANCHOR_BYTES))
+    handle.seek(position)
+    return {"dev": stat.st_dev, "ino": stat.st_ino,
+            "prefix": hashlib.sha256(prefix).hexdigest(), "anchor": hashlib.sha256(anchor).hexdigest()}
+
+
+def cursor_matches(handle: Any, cursor: dict[str, Any], stat: Any) -> bool:
+    offset = cursor.get("offset", 0)
+    if not isinstance(offset, int) or offset < 0 or offset > stat.st_size:
+        return False
+    stamp = cursor.get("stamp")
+    # Old cursors remain readable. Their first read upgrades them in place.
+    return not stamp or stamp == cursor_stamp(handle, offset, stat)
+
+
+def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: dict[str, Any] | None, *, full: bool = False) -> dict[str, Any]:
     stat = transcript.stat()
-    reusable = (prior is not None and prior.get("path") == str(transcript)
+    reusable = (not full and prior is not None and prior.get("path") == str(transcript)
                 and isinstance(prior.get("offset"), int) and prior["offset"] <= stat.st_size
                 and (prior["offset"] < stat.st_size or prior.get("mtime_ns") == stat.st_mtime_ns))
-    facts = dict(prior) if reusable else empty_facts(agent, session_id, transcript)
-    offset = int(facts.get("offset", 0))
     with transcript.open("rb") as handle:
+        reusable = reusable and cursor_matches(handle, prior, stat)
+        facts = dict(prior) if reusable else empty_facts(agent, session_id, transcript)
+        offset = int(facts.get("offset", 0)) if reusable else (0 if full else max(0, stat.st_size - DISCOVERY_BOOTSTRAP_BYTES))
+        facts["history_complete"] = facts.get("history_complete", True) if reusable else offset == 0
         handle.seek(offset)
+        if not reusable and offset:
+            # The first bounded record is incomplete; never interpret its suffix.
+            handle.readline(stat.st_size - handle.tell())
+            offset = handle.tell()
         while handle.tell() < stat.st_size:
             line = handle.readline(stat.st_size - handle.tell())
             if not line.endswith(b"\n"):
@@ -202,9 +224,10 @@ def read_appended_facts(agent: str, session_id: str, transcript: Path, prior: di
             except ValueError:
                 continue
             if isinstance(record, dict):
-                if not facts.get("createdAt"):
+                if not facts.get("createdAt") and facts["history_complete"]:
                     facts["createdAt"] = transcript_created_at(agent, transcript, record.get("timestamp"))
                 update_facts(facts, agent, session_id, record)
+        facts["stamp"] = cursor_stamp(handle, offset, stat)
     facts.update(offset=offset, mtime_ns=stat.st_mtime_ns, size=stat.st_size, updated_at=stat.st_mtime_ns)
     facts["title"] = facts.get("title") or facts["first_real_prompt"]
     return facts
@@ -311,7 +334,7 @@ def session_origin(agent: str, item: dict[str, Any], parent: str | None) -> str:
     return "human"
 
 
-def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+def discover_transcripts(agent: str, cache_path: Path | None = None, *, full: bool = False) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     root = session_root(agent)
     cached = load_state(cache_path) if cache_path else {}
     entries = cached.get(agent, {}) if cached.get("version") == 1 else {}
@@ -319,19 +342,24 @@ def discover_transcripts(agent: str, cache_path: Path | None = None) -> tuple[li
     parents = bridge_parents()
     facts = []
     for session_id, path in transcript_candidates(agent):
-        item = read_appended_facts(agent, session_id, path, entries.get(session_id)) if cache_path else transcript_facts(agent, session_id, path)
+        prior = entries.get(session_id) if cache_path else None
+        if prior:
+            # Migrate old mixed caches: native metadata is refreshed separately.
+            metadata_keys = {"name", "source", "thread_source", "archived", "pinned", "metadata_updated_at_ns", "created_at_ms", "status", "waitingFor", "hostSessionId", "entrypoint", "kind", "startedAt", "updatedAt", "live_writer", "parent", "origin"}
+            prior = {key: value for key, value in prior.items() if key not in metadata_keys}
+        item = read_appended_facts(agent, session_id, path, prior, full=full)
+        if cache_path:
+            entries[session_id] = dict(item)
         item.update(metadata.get(session_id, {}))
         item["parent"] = parents.get(session_id)
         item["origin"] = session_origin(agent, item, item["parent"])
         if item.get("name"):
             item["title"] = str(item["name"])
-        if cache_path:
-            entries[session_id] = item
         facts.append({key: value for key, value in item.items() if not key.startswith("_")})
     if agent == "codex":
         present = {item["runtime_uuid"] for item in facts}
         for session_id, entry in metadata.items():
-            if session_id in present or entry["archived"] or not re.fullmatch(SESSION_UUID, session_id, re.I):
+            if session_id in present or not re.fullmatch(SESSION_UUID, session_id, re.I):
                 continue
             item = empty_facts(agent, session_id, Path(""))
             item.update(entry)
@@ -497,6 +525,7 @@ def event(
     outcome: str | None = None,
     reply: str | None = None,
     error: dict[str, str] | None = None,
+    completion: str | None = None,
 ) -> dict[str, Any]:
     return {
         "schema": "agent-mesh.event.v2",
@@ -511,6 +540,7 @@ def event(
         **({"outcome": outcome} if outcome else {}),
         **({"reply": reply} if reply is not None else {}),
         **({"error": error} if error else {}),
+        **({"completion": completion} if completion else {}),
     }
 
 
@@ -525,10 +555,10 @@ def question_text(value: Any) -> str:
         questions = value.get("questions")
         if isinstance(questions, list):
             return clipped("\n".join(
-                str(item.get("question") or item.get("header") or "")
+                str(item.get("question") or item.get("title") or item.get("header") or "")
                 for item in questions if isinstance(item, dict)
             ))
-        return clipped(value.get("question") or value.get("prompt") or "")
+        return clipped(value.get("question") or value.get("title") or value.get("prompt") or "")
     return ""
 
 
@@ -560,6 +590,17 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             body = clipped(payload.get("text"), MAX_REASONING)
             if body:
                 yield event(timestamp=timestamp, agent="codex", session_id=session_id, kind="reasoning", body=body)
+        elif payload_type == "task_started":
+            yield event(timestamp=timestamp, agent="codex", session_id=session_id,
+                        kind="turn_started", turn_id=str(payload.get("turn_id") or "") or None)
+        elif payload_type in {"error", "turn_aborted"}:
+            failure = payload.get("error")
+            failure = failure if isinstance(failure, dict) else {}
+            yield event(timestamp=timestamp, agent="codex", session_id=session_id,
+                        kind="turn_complete", turn_id=str(payload.get("turn_id") or "") or None,
+                        outcome="error", completion="task", error={
+                            "message": clipped(failure.get("message") or payload.get("message") or payload.get("reason") or payload_type),
+                            "code": str(failure.get("codex_error_info") or payload.get("codex_error_info") or payload_type)})
         elif payload_type == "task_complete":
             reply = payload.get("last_agent_message")
             failure = payload.get("error")
@@ -572,8 +613,29 @@ def codex_events(record: dict[str, Any], session_id: str) -> Iterable[dict[str, 
             yield event(
                 timestamp=timestamp, agent="codex", session_id=session_id,
                 kind="turn_complete", turn_id=str(payload.get("turn_id") or "") or None,
-                outcome=outcome, reply=reply if isinstance(reply, str) else None, error=error,
+                outcome=outcome, reply=clipped(reply) if isinstance(reply, str) else None, error=error,
+                completion="task",
             )
+        return
+
+    if record_type == "response_item" and payload_type in {"custom_tool_call_output", "function_call_output"}:
+        # Native goal receipts are structured tool results, not assistant prose.
+        output = payload.get("output")
+        parts = output if isinstance(output, list) else [{"text": output}]
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if not isinstance(text, str):
+                continue
+            for line in text.splitlines():
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                goal = value.get("goal") if isinstance(value, dict) else None
+                if isinstance(goal, dict) and goal.get("threadId") == session_id and goal.get("status") in {
+                    "active", "complete", "blocked", "budget_limited", "usage_limited"}:
+                    yield event(timestamp=timestamp, agent="codex", session_id=session_id,
+                                kind="goal_status", body=goal["status"])
         return
 
     if record_type == "response_item" and payload_type == "message":
@@ -666,6 +728,21 @@ def claude_events(
     inbox: Path | None = None,
 ) -> Iterable[dict[str, Any]]:
     record_type = record.get("type")
+    if record_type == "result":
+        reply = clipped(record.get("result"))
+        failed = record.get("is_error") or str(record.get("subtype") or "").startswith("error")
+        if failed or reply:
+            yield event(timestamp=record.get("timestamp"), agent="claude", session_id=session_id,
+                        kind="turn_complete", completion="thread",
+                        outcome="error" if failed else "replied", reply=reply,
+                        error={"message": reply or "thread failed", "code": str(record.get("subtype") or "error")} if failed else None)
+        return
+    if record.get("isApiErrorMessage") or record.get("error"):
+        failure = record.get("error")
+        message = str(failure.get("message") or "") if isinstance(failure, dict) else str(failure or "")
+        yield event(timestamp=record.get("timestamp"), agent="claude", session_id=session_id,
+                    kind="turn_complete", outcome="error", error={"message": clipped(message or message_text((record.get("message") or {}).get("content")) or "session error"), "code": "session_error"})
+        return
     if record_type == "attachment":
         attachment = record.get("attachment") or {}
         if attachment.get("type") != "queued_command" or attachment.get("commandMode") != "task-notification":
@@ -801,18 +878,18 @@ def consume(
 ) -> tuple[int, bool]:
     path = Path(str(state["path"]))
     try:
-        size = path.stat().st_size
+        stat = path.stat()
+        size = stat.st_size
     except OSError:
         return 0, False
 
     offset = int(state.get("offset", 0))
-    if size < offset:
-        offset = 0
-        state["offset"] = 0
-    if size <= offset:
-        return 0, offset != int(state.get("offset", 0))
-
     with path.open("rb") as handle:
+        if not cursor_matches(handle, state, stat):
+            offset = 0
+        if size <= offset:
+            state["stamp"] = cursor_stamp(handle, offset, stat)
+            return 0, True
         handle.seek(offset)
         chunk = handle.read(size - offset)
 
@@ -821,6 +898,8 @@ def consume(
         return 0, False
 
     state["offset"] = offset + newline + 1
+    with path.open("rb") as handle:
+        state["stamp"] = cursor_stamp(handle, state["offset"], stat)
     count = 0
     for raw_line in chunk[: newline + 1].decode("utf-8", "replace").splitlines():
         try:
@@ -863,6 +942,7 @@ def main() -> int:
     mode.add_argument("--transcript", action="store_true", help="read a bounded page of visible user and assistant turns")
     mode.add_argument("--search", metavar="QUERY", help="search visible turns across persisted transcripts")
     parser.add_argument("--report-skipped", action="store_true", help="with --discover, report transcript files skipped for an unrecognized session id")
+    parser.add_argument("--full", action="store_true", help="with --discover, explicitly rebuild full transcript history instead of bounded bootstrap and appended bytes")
     parser.add_argument("--cache", type=Path, help="with --discover, retain incremental transcript facts in this file")
     args = parser.parse_args()
 
@@ -872,6 +952,8 @@ def main() -> int:
         parser.error("session_id cannot be combined with --discover or --search")
     if args.report_skipped and not args.discover:
         parser.error("--report-skipped requires --discover")
+    if args.full and not args.discover:
+        parser.error("--full requires --discover")
     if args.cache and not args.discover:
         parser.error("--cache requires --discover")
     if args.session_id is not None and not valid_session_id(args.session_id):
@@ -892,7 +974,7 @@ def main() -> int:
         parser.error(f"inbox does not exist: {args.inbox}")
 
     if args.discover:
-        facts, skipped = discover_transcripts(args.agent, args.cache)
+        facts, skipped = discover_transcripts(args.agent, args.cache, full=args.full)
         report: Any = {"transcripts": facts, "skipped": skipped} if args.report_skipped else facts
         print(json.dumps(report, ensure_ascii=False, sort_keys=True) if args.format == "jsonl" else json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
         return 0

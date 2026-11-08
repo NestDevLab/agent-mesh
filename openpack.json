@@ -15,7 +15,8 @@
           "from": "packages/tmux-bridge/bin",
           "into": "bin",
           "include": [
-            "*.sh"
+            "*.sh",
+            "agent-mesh"
           ],
           "mode": "preserve"
         },
@@ -70,6 +71,15 @@
       "type": "hooks",
       "path": "packages/tmux-bridge/hooks/claude-session-start.json",
       "runtimes": [
+        "claude"
+      ],
+      "required": false
+    },
+    {
+      "type": "mcp",
+      "path": "mcp/comms.json",
+      "runtimes": [
+        "codex",
         "claude"
       ],
       "required": false

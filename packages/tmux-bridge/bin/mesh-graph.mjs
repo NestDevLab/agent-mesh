@@ -26,11 +26,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { randomUUID, createHash } from "node:crypto";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import * as plexus from "./plexus.mjs";
+import { catalogList, catalogUpdate, roleOperation } from "./session-catalog.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation"]);
@@ -56,6 +57,12 @@ const QUERIES = {
 const { values, positionals } = parseArgs({
   options: {
     state: { type: "string" },
+    session: { type: "string" },
+    project: { type: "string" },
+    archive: { type: "string" },
+    ttl: { type: "string" },
+    "claim-id": { type: "string" },
+    reason: { type: "string" },
     agent: { type: "string" },
     "tmux-target": { type: "string" },
     cwd: { type: "string" },
@@ -88,6 +95,7 @@ const { values, positionals } = parseArgs({
     json: { type: "boolean", default: false },
     tree: { type: "boolean", default: false },
     compact: { type: "boolean", default: false },
+    full: { type: "boolean", default: false },
     help: { type: "boolean", short: "h", default: false },
   },
   allowPositionals: true,
@@ -100,7 +108,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -112,6 +120,40 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "catalog":
+      if (subcommand === "list") printResult(catalogList(loadGraph(stateDir), values), { json: true });
+      else if (subcommand === "backfill") {
+        printResult(discoverNodes(stateDir, { ...values, full: true }), { json: true });
+      } else if (["register", "update"].includes(subcommand)) {
+        const id = plexus.parseSessionId(values.session);
+        if (subcommand === "register" && !loadGraph(stateDir).nodes.some(n => plexus.sessionIdOf(n) === id)) {
+          const [agent, uuid] = id.split(":");
+          adoptNode(stateDir, { agent, "runtime-uuid": uuid, class: "unclassified" });
+        }
+        printResult(mutate(stateDir, graph => ({ graph, ...catalogUpdate(graph, values.session, values, event) })), { json: true });
+      } else throw new Error("unknown catalog operation");
+      break;
+    case "role":
+      if (subcommand === "run") {
+        const input = JSON.parse(values.input === "-" ? readFileSync(0, "utf8") : values.input || "{}");
+        if (!Array.isArray(input.argv) || !input.argv.length || input.argv.some(v => typeof v !== "string" || v.includes("\0")) || (input.stdin !== undefined && typeof input.stdin !== "string")) throw new Error("role run needs argv strings and optional stdin text");
+        ensureStateDir(stateDir);
+        const release = acquireLock(stateDir);
+        let result;
+        try {
+          const checked = roleOperation(loadGraph(stateDir), "check", values, event).result.claim;
+          const budget = Math.min(30000, Date.parse(checked.expiresAt) - Date.now());
+          if (budget <= 0) throw new Error("claim expired before guarded execution");
+          result = await runGuardedChild(input, values["claim-id"], budget, stateDir);
+        } finally { release(); }
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        if (result.error) throw result.error;
+        process.exitCode = result.status ?? 1;
+        break;
+      }
+      printResult(mutate(stateDir, graph => ({ graph, ...roleOperation(graph, subcommand, values, event) })), { json: true });
+      break;
     case "add":
       printResult(addNode(stateDir, values), values);
       break;
@@ -141,6 +183,10 @@ try {
       break;
     case "migrate":
       printResult(migrateStore(stateDir, values), { ...values, json: true });
+      break;
+    case "ledger":
+      if (subcommand !== "sync") throw new Error("ledger operation must be sync");
+      printResult(syncLedgerLinks(stateDir, values), { ...values, json: true });
       break;
     case "query":
       process.stdout.write(`${JSON.stringify(runQuery(stateDir, subcommand, values))}\n`);
@@ -304,8 +350,8 @@ function inspectTranscript(agent, runtimeUuid) {
   return { ...facts, updatedAt: new Date(Number(facts.updated_at) / 1_000_000).toISOString() };
 }
 
-function inspectTranscripts(agent, statePath) {
-  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--report-skipped", "--cache", join(statePath, `facts-${agent}.json`), "--format", "jsonl"]);
+function inspectTranscripts(agent, statePath, options = {}) {
+  const result = runWatcher([watcherPath(), "--agent", agent, "--discover", "--report-skipped", "--cache", join(statePath, `facts-${agent}.json`), "--format", "jsonl", ...(options.full ? ["--full"] : [])]);
   if (result.error) throw new Error(`could not discover transcripts: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`transcript discovery failed: ${(result.stderr || result.stdout || "unknown error").trim()}`);
   let report;
@@ -330,14 +376,16 @@ function inspectTranscripts(agent, statePath) {
 function discoverNodes(statePath, options) {
   const agent = requiredAdoptAgent(options.agent);
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const { facts, skipped } = inspectTranscripts(agent, statePath);
+  const { facts, skipped } = inspectTranscripts(agent, statePath, options);
   return mutate(statePath, (graph) => {
     const events = [], nodes = [];
     for (const fact of facts) {
-      const existing = graph.nodes.find((node) => String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
+      const existing = graph.nodes.find((node) => node.agent === agent && String(node.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       const node = existing ? { ...existing } : { id: `node-${randomUUID()}`, tmuxTarget: "", roleProfile: "", summary: "", refs: [], primaryDomains: [], domainPredecessors: {}, domainsExplicit: false, createdAt: factCreatedAt(fact, now()) };
       Object.assign(node, { agent, cwd: fact.cwd, title: fact.title, runtimeUuid: fact.runtimeUuid, lastSeenAt: fact.updatedAt, class: factClass(fact, existing?.class), surface: factSurface(fact), origin: fact.origin || existing?.origin || "human" });
+      collectSessionSummary(node, fact);
+      node.lifecycle = factLifecycle(fact);
       node.attention = factAttention(fact, node.refs || [], now());
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!existing || ["active", "quiet"].includes(existing.status)) node.status = observedStatus;
@@ -362,7 +410,7 @@ function sweepNodes(statePath, options) {
   optionalPositiveInteger(options["open-window-days"], "--open-window-days");
   const agents = options.agent === undefined ? ["codex", "claude"] : [requiredAdoptAgent(options.agent)];
   const quietAfter = optionalPositiveInteger(options["quiet-after"], "--quiet-after") || Number(process.env.MESH_GRAPH_QUIET_AFTER_SECONDS || 3600);
-  const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent, statePath) }));
+  const transcriptReports = agents.map((agent) => ({ agent, ...inspectTranscripts(agent, statePath, options) }));
   const transcriptFacts = transcriptReports.flatMap(({ agent, facts }) => facts.map((fact) => ({ ...fact, agent })));
   const skippedTranscripts = transcriptReports.flatMap(({ agent, skipped }) => skipped.map((item) => ({ agent, ...item })));
   const tmuxSessions = inspectTmuxSessions();
@@ -373,7 +421,7 @@ function sweepNodes(statePath, options) {
     const original = new Map(graph.nodes.map((node) => [node.id, node]));
 
     for (const fact of transcriptFacts) {
-      let node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
+      let node = desired.find((item) => item.agent === fact.agent && String(item.runtimeUuid || "").toLowerCase() === fact.runtimeUuid);
       const observedStatus = Date.now() - Date.parse(fact.updatedAt) >= quietAfter * 1000 ? "quiet" : "active";
       if (!node) {
         node = {
@@ -387,6 +435,8 @@ function sweepNodes(statePath, options) {
         lastSeenAt: fact.updatedAt, class: factClass(fact, node.class),
         surface: factSurface(fact), origin: fact.origin || node.origin || "human",
       });
+      collectSessionSummary(node, fact);
+      node.lifecycle = factLifecycle(fact);
       node.attention = factAttention(fact, node.refs || [], observedAt);
       if (!node.domainsExplicit) node.domains = domainsFor(fact.cwd, {});
       if (!original.has(node.id) || (!node.tmuxTarget && ["active", "quiet"].includes(node.status))) node.status = observedStatus;
@@ -397,7 +447,7 @@ function sweepNodes(statePath, options) {
     for (const session of tmuxSessions) {
       liveTargets.add(session.tmuxTarget);
       let node = desired.find((item) => item.tmuxTarget === session.tmuxTarget);
-      if (!node && session.runtimeUuid) node = desired.find((item) => String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
+      if (!node && session.runtimeUuid) node = desired.find((item) => item.agent === session.agent && String(item.runtimeUuid || "").toLowerCase() === session.runtimeUuid);
       if (!node) {
         node = {
           id: `node-${randomUUID()}`, roleProfile: "", title: "", summary: "", status: "quiet",
@@ -612,9 +662,33 @@ function factCreatedAt(fact, fallback) {
   return Number.isFinite(timestamp) && timestamp > 0 ? new Date(timestamp).toISOString() : fallback;
 }
 
+function collectSessionSummary(node, fact) {
+  if (Number.isFinite(Date.parse(fact.last_activity_at))) node.lastActivityAt = fact.last_activity_at;
+  if (typeof fact.session_summary !== "string" || !fact.session_summary.trim() ||
+      fact.session_summary.length > MAX_SUMMARY_LENGTH || !Number.isFinite(Date.parse(fact.session_summary_at))) return;
+  if (node.summary === fact.session_summary && node.summarySource === "native-session") return;
+  if (node.summaryUpdatedAt && Date.parse(node.summaryUpdatedAt) >= Date.parse(fact.session_summary_at)) return;
+  Object.assign(node, { summary: fact.session_summary, summarySource: "native-session",
+    summaryUpdatedAt: fact.session_summary_at });
+}
+
 function factSurface(fact) {
-  if (fact.agent === "codex") return { sidebar: fact.source === "vscode" ? "desktop" : "cli", archived: fact.archived === true, pinned: fact.pinned === true };
+  if (fact.agent === "codex") return { sidebar: fact.source === "vscode" ? "desktop" : "cli", archived: typeof fact.archived === "boolean" ? fact.archived : null, pinned: fact.pinned === true };
   return { sidebar: fact.entrypoint === "claude-desktop" ? "desktop" : "cli", hostId: fact.hostSessionId || null, archived: null };
+}
+
+function factLifecycle(fact) {
+  return {
+    path: fact.path || null, metadataOnly: fact.metadata_only === true,
+    historyComplete: fact.history_complete === true,
+    lastSpeaker: fact.last_speaker || null, lastEventKind: fact.last_event_kind || null,
+    turnActive: fact.turn_active === true, turnId: fact.last_turn_id || null,
+    lastEventId: fact.last_event_id || null, lastHumanAt: fact.last_human_at || null,
+    outcome: fact.last_outcome || null, completion: fact.last_completion || null,
+    completedAt: fact.last_complete_at || null, question: fact.last_question || null,
+    pendingQuestion: fact.pending_question === true, error: fact.last_error || null,
+    detail: String(fact.last_error?.message || fact.last_assistant || "").slice(0, 4096),
+  };
 }
 
 function factAttention(fact, refs, observedAt) {
@@ -626,11 +700,13 @@ function factAttention(fact, refs, observedAt) {
   else if (active && age >= 30 * 60_000) { state = "stalled-hung"; evidence = ["active-writer", "stale-transcript"]; }
   else if (status === "waiting" || fact.waitingFor === "input needed" || fact.pending_question) {
     state = "waiting-user"; since = fact.last_final_at || fact.updatedAt; evidence = ["pending-question"];
-  } else if (Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
+  } else if (fact.last_error) {
+    state = "stalled-error"; since = fact.last_complete_at || fact.updatedAt; evidence = ["runtime-error"];
+  } else if (fact.history_complete === true && Number(fact.human_turns) === 0 && age >= 60 * 60_000) {
     state = "never-started"; evidence = ["no-human-turns"];
-  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && Number(fact.mutating_tool_calls) === 0) {
+  } else if ((fact.last_event_kind === "turn_complete" || fact.agent === "claude" && fact.last_final_at) && !fact.pending_question && age >= 24 * 60 * 60_000 && refs.length === 0 && fact.history_complete === true && Number(fact.mutating_tool_calls) === 0) {
     state = "finished"; evidence = ["completed-turn", "unlinked-read-only"];
-  } else if (["human_message", "tool"].includes(fact.last_event_kind) && age >= 2 * 60 * 60_000) {
+  } else if (["human_message", "tool", "turn_started"].includes(fact.last_event_kind) && age >= 2 * 60 * 60_000) {
     state = "stalled-abandoned"; evidence = ["unfinished-turn", "idle-writer"];
   }
   return { state, since, evidence };
@@ -830,7 +906,8 @@ function updateSummary(statePath, options) {
   return mutate(statePath, (graph) => {
     const existing = graph.nodes.find((node) => node.id === id);
     if (!existing) throw new Error(`node not found: ${id}`);
-    const node = { ...existing, summary, updatedAt: now() };
+    const node = { ...existing, summary, updatedAt: now(),
+      ...(summary !== existing.summary ? { summaryUpdatedAt: now(), summarySource: "session" } : {}) };
     if (options.status !== undefined) {
       assertStatus(options.status);
       node.status = options.status;
@@ -950,7 +1027,7 @@ function readCheckpoint(statePath) {
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
       // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
-      !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
+      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1039,7 +1116,7 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
-  const state = { links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const state = { nodes, roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
   let unnumbered = base?.unnumbered === true;
@@ -1082,6 +1159,7 @@ function deriveGraph(events, base = null) {
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
     links,
     renewals: state.renewals,
+    roleClaims: [...state.roleClaims.values()],
     migrated: state.migrated,
     lastSeq,
     ...(unnumbered ? { unnumbered: true } : {}),
@@ -1173,7 +1251,7 @@ function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
 }
 
-function withLock(statePath, callback) {
+function acquireLock(statePath) {
   const lock = join(statePath, "graph.lock");
   const deadline = Date.now() + 5_000;
   while (true) {
@@ -1191,11 +1269,43 @@ function withLock(statePath, callback) {
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
     }
   }
-  try {
-    return callback();
-  } finally {
-    rmSync(lock, { recursive: true, force: true });
-  }
+  return () => rmSync(lock, { recursive: true, force: true });
+}
+
+function withLock(statePath, callback) {
+  const release = acquireLock(statePath);
+  try { return callback(); } finally { release(); }
+}
+
+function runGuardedChild(input, claimId, budget, statePath) {
+  const token = randomUUID();
+  const start = process.platform === 'linux' ? readFileSync(`/proc/${process.pid}/stat`, 'utf8').split(') ').slice(1).join(') ').split(' ')[19] : null;
+  const proofPath = join(statePath, 'graph.lock', 'comms-guard.json');
+  writeAtomic(proofPath, JSON.stringify({ pid: process.pid, start, claim: claimId,
+    tokenHash: createHash('sha256').update(token).digest('hex') }));
+  return new Promise((resolveResult, reject) => {
+    const child = spawn(input.argv[0], input.argv.slice(1), { detached: true, stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, PROJECT_DIRECTOR_GUARD_PID: String(process.pid), PROJECT_DIRECTOR_GUARD_CLAIM: claimId, MESH_COMMS_GUARD_TOKEN: token } });
+    let stdout = "", stderr = "", timedOut = false, failed = false;
+    const killGroup = () => { if (child.pid) { try { process.kill(-child.pid, "SIGKILL"); } catch (e) { if (e.code !== "ESRCH") throw e; } } };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, budget);
+    const output = (channel, data) => {
+      if (channel === "stdout") stdout += data; else stderr += data;
+      if (Buffer.byteLength(stdout) + Buffer.byteLength(stderr) > 16 * 1024 * 1024) { failed = true; killGroup(); }
+    };
+    child.stdout.on("data", data => output("stdout", data));
+    child.stderr.on("data", data => output("stderr", data));
+    child.stdin.on("error", () => {}); // Early child exit may close stdin.
+    child.on("error", error => { clearTimeout(timer); reject(error); });
+    // Kill remaining descendants before releasing the graph lock, including on successful exit.
+    child.on("exit", killGroup);
+    child.on("close", status => {
+      clearTimeout(timer);
+      rmSync(proofPath, { force: true });
+      resolveResult({ stdout, stderr: stderr + (timedOut ? "guarded writer deadline exceeded\n" : failed ? "guarded writer output limit exceeded\n" : ""), status: timedOut || failed ? 1 : status });
+    });
+    child.stdin.end(input.stdin || "");
+  });
 }
 
 function renderCompact(graph) {
@@ -1378,7 +1488,7 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage:\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug> --archive exclude|include|only --title <text>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 
 function pendingResolutions(graph, events) {
@@ -1392,6 +1502,29 @@ function pendingResolutions(graph, events) {
     }
   }
   return resolutions;
+}
+
+function syncLedgerLinks(statePath, options) {
+  let raw = options.input;
+  if (raw === "-") {
+    const chunks = []; let size = 0;
+    while (size <= 1024 * 1024) {
+      const buffer = Buffer.alloc(Math.min(65536, 1024 * 1024 + 1 - size));
+      const count = readSync(0, buffer, 0, buffer.length, null);
+      if (!count) break;
+      chunks.push(buffer.subarray(0, count)); size += count;
+    }
+    raw = Buffer.concat(chunks).toString("utf8");
+  }
+  if (typeof raw !== "string" || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("ledger input must be bounded JSON");
+  let input;
+  try { input = JSON.parse(raw); } catch { throw new Error("ledger input must be JSON"); }
+  return mutate(statePath, graph => {
+    if (!graph.migrated || graph.unnumbered) throw new Error("ledger sync needs a migrated store with compatible writers");
+    const result = plexus.ledgerSyncEvents(graph, input?.items);
+    const events = result.events.map(({ type, ...payload }) => event(type, payload));
+    return { graph, events, result: { changed: events.length > 0, events: events.length, unresolved: result.unresolved } };
+  });
 }
 
 function sourceOption(options) {
@@ -1538,6 +1671,8 @@ function runQuery(statePath, name, options) {
   }
   const { scope = null, ...query } = input;
   if (name === "changes") {
+    // Quiet head uses the existing validated checkpoint, never a second cache.
+    if (query.initial !== undefined) return plexus.changes(loadGraph(statePath), [], query, scope);
     const snapshot = readSnapshot(statePath);
     const events = tailEvents([...readEvents(statePath)], snapshot?.lastEventId);
     return plexus.changes(snapshot?.graph || null, events, query, scope);
