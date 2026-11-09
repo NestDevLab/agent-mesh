@@ -178,7 +178,21 @@ for (const scenario of [
   ...Array.from({ length: 4 }, (_, uidSlot) => ({ name: `lock owner in Uid slot ${uidSlot}`, uidSlot })),
   ...Array.from({ length: 4 }, (_, rootSlot) => ({ name: `root in Uid slot ${rootSlot}`, rootSlot })),
   { name: "effective capabilities", caps: "0000000000000001" },
-  { name: "group-writable lock", mode: 0o664 },
+  { name: "group-writable lock outside the group without ACL", mode: 0o664, allowed: true, aclCalls: 1 },
+  { name: "group-writable lock with empty supplementary groups", mode: 0o664, groups: "", allowed: true, aclCalls: 1 },
+  ...Array.from({ length: 4 }, (_, gidSlot) => ({ name: `lock group in Gid slot ${gidSlot}`, gidSlot, mode: 0o664 })),
+  { name: "lock group in supplementary groups", member: true, mode: 0o664 },
+  ...["user:fixture:rw-", "group:fixture:rw-", "mask::rw-"].map(acl => ({ name: `extended ACL ${acl}`, acl, mode: 0o664, aclCalls: 1 })),
+  { name: "ACL check failure", aclError: true, mode: 0o664, aclCalls: 1 },
+  { name: "malformed Gid", gids: "1 2 3", mode: 0o664 },
+  { name: "missing Gid", missingGid: true, mode: 0o664 },
+  { name: "duplicate Gid", duplicateGid: true, mode: 0o664 },
+  { name: "malformed Groups", groups: "invalid", mode: 0o664 },
+  { name: "missing Groups", missingGroups: true, mode: 0o664 },
+  { name: "duplicate Groups", duplicateGroups: true, mode: 0o664 },
+  { name: "other-write on lock 666", mode: 0o666 },
+  { name: "one ACL check for multiple unobservable processes", multiple: true, mode: 0o664, allowed: true, aclCalls: 1 },
+  { name: "no ACL check without unobservable processes", observable: true, mode: 0o664, allowed: true },
   { name: "other-writable lock", mode: 0o646 },
   { name: "unreadable status", unreadable: true },
   { name: "missing status", missing: true },
@@ -196,13 +210,33 @@ for (const scenario of [
   const uids = Array(4).fill(foreign);
   if (scenario.uidSlot !== undefined) uids[scenario.uidSlot] = owner;
   if (scenario.rootSlot !== undefined) uids[scenario.rootSlot] = 0;
+  const lockGid = fs.lstatSync(lockPath).gid, foreignGid = lockGid === 1001 ? 1002 : 1001;
+  const gids = Array(4).fill(foreignGid);
+  if (scenario.gidSlot !== undefined) gids[scenario.gidSlot] = lockGid;
   const statusPath = join(f.procRoot, String(pid), "status");
-  const status = `Uid:\t${uids.join("\t")}\nCapEff:\t${scenario.caps ?? "0000000000000000"}\n`;
+  const gidLine = `Gid:\t${scenario.gids ?? gids.join("\t")}\n`;
+  const groupLine = `Groups:\t${scenario.groups ?? (scenario.member ? lockGid : foreignGid)}\n`;
+  const status = `Uid:\t${uids.join("\t")}\nCapEff:\t${scenario.caps ?? "0000000000000000"}\n` +
+    (scenario.missingGid ? "" : gidLine.repeat(scenario.duplicateGid ? 2 : 1)) +
+    (scenario.missingGroups ? "" : groupLine.repeat(scenario.duplicateGroups ? 2 : 1));
   if (!scenario.missing) await writeFile(statusPath, scenario.malformed ?? status.repeat(scenario.duplicate ? 2 : 1));
+  const fdPaths = new Set([join(f.procRoot, String(pid), "fd")]);
+  if (scenario.multiple) {
+    await f.process(pid + 1, 1);
+    await writeFile(join(f.procRoot, String(pid + 1), "status"), status);
+    fdPaths.add(join(f.procRoot, String(pid + 1), "fd"));
+  }
+  let aclCalls = 0;
+  const options = { ...f.options, readAcl: path => {
+    aclCalls++;
+    assert.equal(path, lockPath);
+    if (scenario.aclError) throw new Error("fixture ACL check failed");
+    return scenario.acl ?? "user::rw-\ngroup::rw-\nother::r--\n";
+  } };
   const readdir = fs.readdirSync, read = fs.readFileSync;
   const accessDenied = () => { throw Object.assign(new Error("fixture access denied"), { code: "EACCES" }); };
   const mocks = [
-    t.mock.method(fs, "readdirSync", (path, ...args) => path === join(f.procRoot, String(pid), "fd") ? accessDenied() : readdir(path, ...args)),
+    t.mock.method(fs, "readdirSync", (path, ...args) => !scenario.observable && fdPaths.has(path) ? accessDenied() : readdir(path, ...args)),
     t.mock.method(fs, "readFileSync", (path, ...args) => {
       if (path === statusPath) {
         if (scenario.exited) fs.rmSync(join(f.procRoot, String(pid)), { recursive: true });
@@ -213,8 +247,9 @@ for (const scenario of [
   ];
   syncBuiltinESMExports();
   try {
-    if (scenario.allowed) assert.equal(discoverOwnedCodexThread(f.options).sessionId, id);
-    else assert.throws(() => discoverOwnedCodexThread(f.options), error => error.proofStage === "inventory.fds" && error.proofCode === "EACCES");
+    if (scenario.allowed) assert.equal(discoverOwnedCodexThread(options).sessionId, id);
+    else assert.throws(() => discoverOwnedCodexThread(options), error => error.proofStage === "inventory.fds" && error.proofCode === "EACCES");
+    assert.equal(aclCalls, scenario.aclCalls ?? 0);
   } finally {
     for (const mock of mocks) mock.mock.restore();
     syncBuiltinESMExports();

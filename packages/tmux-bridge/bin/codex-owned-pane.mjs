@@ -1,6 +1,7 @@
 /** Resolve a not-yet-persisted native thread only from its exact owned live pane. */
 import { readdirSync, readFileSync, readlinkSync, lstatSync, statSync } from "node:fs";
 import { basename, isAbsolute, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -17,7 +18,12 @@ function processIdentity(procRoot, pid) {
     return { ppid, start: fields[19] };
 }
 
-export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", codexHome }) {
+function readLockAcl(path) {
+  return execFileSync("getfacl", ["--omit-header", "--absolute-names", "--", path],
+    { encoding: "utf8", timeout: 1000, maxBuffer: 64 * 1024 });
+}
+
+export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", codexHome, readAcl = readLockAcl }) {
   if (!Number.isSafeInteger(panePid) || panePid <= 0 || !isAbsolute(cwd) || resolve(cwd) !== cwd || !isAbsolute(codexHome)) throw denied();
   const processInfo = pid => processIdentity(procRoot, pid);
   const gone = pid => {
@@ -101,7 +107,8 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
   if (candidates.size !== 1) throw denied();
   const candidate = [...candidates.values()][0];
   if ([...lockHolders.values()].filter(holder => holder.id === candidate.id).length !== 1) throw denied();
-  // Exclude an unobservable foreign writer only when it cannot write this exact lock.
+  // Exclude an unobservable foreign writer only when identity, groups and ACL rule out writing this lock.
+  let noExtendedAcl;
   for (const pid of unobservable) {
     try {
       const status = readFileSync(`${procRoot}/${pid}/status`, "utf8");
@@ -110,7 +117,21 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
       const uids = uidLines.length === 1 ? /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(uidLines[0])?.slice(1).map(Number) : undefined;
       const caps = capLines.length === 1 ? /^CapEff:\s+([0-9a-fA-F]+)\s*$/.exec(capLines[0]) : undefined;
       if (!uids || uids.some(uid => !Number.isSafeInteger(uid) || uid === 0 || uid === candidate.lock.uid) ||
-          !caps || !/^0+$/.test(caps[1]) || (candidate.lock.mode & 0o022) !== 0) throw denied("inventory.fds", "EACCES");
+          !caps || !/^0+$/.test(caps[1]) || (candidate.lock.mode & 0o002) !== 0) throw denied("inventory.fds", "EACCES");
+      if ((candidate.lock.mode & 0o020) !== 0) {
+        const gidLines = status.match(/^Gid:[^\n]*$/gm) ?? [];
+        const groupLines = status.match(/^Groups:[^\n]*$/gm) ?? [];
+        const gids = gidLines.length === 1 ? /^Gid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(gidLines[0])?.slice(1).map(Number) : undefined;
+        const values = groupLines.length === 1 ? groupLines[0].slice(7).trim().split(/\s+/).filter(Boolean) : undefined;
+        const groups = values?.every(value => /^\d+$/.test(value)) ? values.map(Number) : undefined;
+        if (!gids || !groups || [...gids, ...groups].some(gid => !Number.isSafeInteger(gid) || gid === candidate.lock.gid)) throw denied("inventory.fds", "EACCES");
+        if (noExtendedAcl === undefined) {
+          noExtendedAcl = false;
+          const acl = readAcl(`${lockRoot}/${candidate.id}.lock`);
+          noExtendedAcl = typeof acl === "string" && !acl.split("\n").some(line => /^(?:user:[^:]+:|group:[^:]+:|mask::)/.test(line.trim()));
+        }
+        if (!noExtendedAcl) throw denied("inventory.fds", "EACCES");
+      }
     } catch {
       if (gone(pid)) continue;
       throw denied("inventory.fds", "EACCES");
