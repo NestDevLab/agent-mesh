@@ -1,0 +1,42 @@
+# Claude cloud queue delivery
+
+The native transport supports a single follow-up to an existing Claude cloud session:
+
+```sh
+agent-native-call --agent claude --cloud --delivery-only \
+  --session session_Example123 --correlation-id request-example \
+  --message 'Synthetic follow-up'
+```
+
+Use an exact `session_` or `cse_` identifier. Descriptions, URLs and local UUIDs are
+rejected in cloud mode, preventing accidental cloud-session creation. Cloud mode
+requires `--delivery-only` and forbids native resume and managed local inboxes.
+It neither discovers recipients nor grants a role based on a title or opaque graph
+reference. The caller must independently verify the intended recipient.
+
+The transport invokes the [official Claude cloud follow-up CLI](https://code.claude.com/docs/en/claude-code-on-the-web#send-follow-ups-from-the-cli)
+with JSON output, sends the message on stdin, and accepts only exit zero with
+`ok: true` and the exact requested `session_id`. It needs the CLI's existing
+account configuration; it does not change authentication or permission settings.
+No local transcript is required. The optional `CLAUDE_BIN` selects the CLI executable.
+
+The existing Claude communications gate owns durable admission, FIFO ordering,
+expiry, correlation/payload deduplication, serialized sends, and capability-bound
+queue replay. Held cloud records retain their transport discriminator during replay.
+An off gate rejects before invoking the provider. Preserve the same correlation
+when observing an uncertain operation; never invent a new correlation to retry it.
+
+A successful result has `status: "queued"`, `transport: "claude-cloud"`,
+`readBack: false`, and `responseObserved: false`. It proves provider acceptance only.
+The comms store's legacy `delivered` status also means transport acceptance, not
+transcript observation or human reading. A repeated accepted correlation returns
+the existing gate receipt without sending again. Changed content with the same
+correlation is rejected. Timeout, nonzero exit, malformed output or mismatched
+session identity retain an unknown receipt and cannot be automatically resent.
+Even a provider error is treated conservatively as uncertain after invocation.
+
+This is outbound queue delivery only. It does not collect a cloud response, create
+a bidirectional session link, install a relay, poll sessions, or configure a return
+route. Verify any response separately with a matching correlation and trustworthy
+sender evidence. A cloud sender may use an existing authorized MCP session ingress
+for a local recipient; its actual principal and session scope must be checked first.

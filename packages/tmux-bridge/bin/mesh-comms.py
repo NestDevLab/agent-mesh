@@ -103,6 +103,10 @@ def validate(spec):
         raise ValueError('unsupported comms transport/runtime')
     if not isinstance(spec.get('destination'), str) or not spec['destination']:
         raise ValueError('destination required')
+    if 'cloud' in spec and (spec['cloud'] is not True or spec['kind'] != 'native' or spec['runtime'] != 'claude' or
+                            not re.fullmatch(r'(session|cse)_[A-Za-z0-9]{1,128}', spec['destination']) or
+                            spec.get('resume') or spec.get('inbox_root')):
+        raise ValueError('invalid Claude cloud destination')
     if len(encode(spec).encode()) > 1048576:
         raise ValueError('comms message exceeds one MiB')
     return spec
@@ -215,6 +219,8 @@ def command(spec):
     if spec['kind'] == 'native':
         args = ['node', str(BIN/'agent-native-call.mjs'), '--agent', spec['runtime'], '--session', spec['destination'],
                 '--correlation-id', spec['correlation'], '--message', spec['message'], '--delivery-only']
+        if spec.get('cloud'):
+            args += ['--cloud']
         if spec.get('inbox_root'):
             args += ['--managed-inbox-root', spec['inbox_root']]
         if spec.get('resume'):
