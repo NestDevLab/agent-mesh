@@ -72,6 +72,7 @@ scripts/mesh-cli-smoke.sh
 scripts/session-writer-test.sh
 python3 test/mesh-ledger.test.py
 python3 test/decision-cards.test.py
+python3 test/decision-request.test.py
 scripts/session-watch-test.sh
 python3 test/lifecycle-facts.test.py
 python3 test/lifecycle-beat.test.py

@@ -11,12 +11,17 @@ from __future__ import annotations
 from datetime import datetime, time, timedelta, timezone as dt_timezone
 import hashlib
 import json
+import re
 from zoneinfo import ZoneInfo
 from urllib.parse import urlsplit
 
 
 WAITING_STATUSES = frozenset({"waiting", "blocked"})
-DEFAULT_LABELS = {"recommended": "Recommended", "continue": "Use source sentence", "open": "Open source", "discuss": "Discuss at source", "fallback": "Local source fallback"}
+DEFAULT_LABELS = {"recommended": "Recommended", "continue": "Use source sentence", "open": "Open source", "discuss": "Discuss at source", "fallback": "Local source fallback",
+                  "other": "Other: I'll write it", "discussConsequence": "Nothing moves until you've talked it through", "otherConsequence": "You answer in your own words"}
+REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,79}")
+RESERVED_OPTIONS = frozenset({"discuss", "other"})
+MAX_REAL_OPTIONS = 2
 
 
 def _text(value):
@@ -79,6 +84,66 @@ def make_decision(item, *, project=None, where=None, guard_sentence=None,
     if not urlsplit(location).scheme:
         card.update(whereFallback=True, whereKind="local-source-fallback", whereLabel=wording["fallback"])
     return card
+
+
+def make_request_card(request, *, labels=None):
+    """Return a card from a session's own options, plus the discuss and write-in exits.
+
+    Required: id, question, where, waitingSince and one or two options, each with
+    id, label and consequence. Exactly one option is recommended, with a reason.
+    Answers match on option id, never on the label.
+    """
+    if not isinstance(request, dict):
+        raise ValueError("a decision request must be an object")
+    if not isinstance(request.get("id"), str) or not REQUEST_ID.fullmatch(request["id"]):
+        raise ValueError("decision id must be 1-80 safe characters")
+    for key in ("question", "where", "waitingSince"):
+        if not _text(request.get(key)):
+            raise ValueError(f"missing required field: {key}")
+    waiting_since = _stamp(_instant(request["waitingSince"]))
+    options = request.get("options")
+    if not isinstance(options, list) or not 1 <= len(options) <= MAX_REAL_OPTIONS:
+        raise ValueError(f"a decision needs 1 to {MAX_REAL_OPTIONS} real options")
+    for option in options:
+        if not isinstance(option, dict):
+            raise ValueError("each option must be an object")
+        for key in ("id", "label", "consequence"):
+            if not _text(option.get(key)):
+                raise ValueError(f"option missing required field: {key}")
+        if option["id"] in RESERVED_OPTIONS:
+            raise ValueError(f"reserved option id: {option['id']}")
+    if len({option["id"] for option in options}) != len(options):
+        raise ValueError("option ids must be unique")
+    picks = [option for option in options if option.get("recommended") is True]
+    if len(picks) != 1 or not _text(picks[0].get("reason")):
+        raise ValueError("exactly one option must be recommended, with a reason")
+    wording = {**DEFAULT_LABELS, **(labels or {})}
+
+    def real(option):
+        base = {"id": option["id"], "label": option["label"], "consequence": option["consequence"],
+                "recommended": option is picks[0], "action": {"kind": "relay-choice", "value": option["id"]}}
+        return {**base, "marker": wording["recommended"], "reason": option["reason"]} if option is picks[0] else base
+
+    exits = [{"id": name, "label": wording[name], "consequence": wording[name + "Consequence"], "recommended": False,
+              "action": {"kind": "relay-choice", "value": name}} for name in ("discuss", "other")]
+    location = request["where"]
+    card = {"id": request["id"], "kind": "decision-request", "project": request.get("project"),
+            "question": " ".join(request["question"].split()),
+            "options": [real(option) for option in sorted(options, key=lambda o: o is not picks[0])] + exits,
+            "discuss": True, "where": location, "sourceGap": False, "waitingSince": waiting_since}
+    if not urlsplit(location).scheme:
+        card.update(whereFallback=True, whereKind="local-source-fallback", whereLabel=wording["fallback"])
+    return card
+
+
+def resolve_answer(card, option_id, text=None):
+    """Return the chosen option; free text belongs to the write-in exit alone."""
+    option = next((item for item in card["options"] if item["id"] == option_id), None)
+    if option is None:
+        raise ValueError(f"unknown option: {option_id}")
+    if (option_id == "other") != _text(text):
+        raise ValueError("free text goes with the write-in option, and only there")
+    return option
 
 
 def semantic_hash(card):
