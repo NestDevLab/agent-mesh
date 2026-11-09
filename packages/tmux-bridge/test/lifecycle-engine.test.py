@@ -454,6 +454,37 @@ class LifecycleEngine(unittest.TestCase):
         self.assertTrue(any('--owned-cwd' in call for call in calls))
         self.assertFalse(any('kill' in call or 'resume' in call for call in calls))
 
+    def test_handoff_idle_limit_keeps_old_sessions_and_caps_recent_selection(self):
+        inventory, config = self.handoff_fixture()
+        inventory['at'] = '2026-01-15T00:00:00Z'
+        old = inventory['sessions'][0]
+        old['lastSeenAt'] = '2026-01-07T23:59:59Z'
+        recent = []
+        for number in range(2, 7):
+            row = self.row(number, harness='claude', lastSeenAt='2026-01-14T00:00:00Z')
+            row['sessionId'] = 'claude:' + row['nativeId']
+            recent.append(row)
+        # The inclusive boundary remains eligible, while one second older is kept.
+        recent[0]['lastSeenAt'] = '2026-01-08T00:00:00Z'
+        inventory['sessions'] = [old, *recent]
+        config['handoffMaxIdleSeconds'] = 604800
+        engine.validate_config(config)
+        plan = engine.build_plan(inventory, config)
+        self.assertEqual(plan['entries'][0]['classification'], 'keep-handoff-too-old')
+        self.assertIn('too old for automatic handoff', plan['entries'][0]['reason'])
+        self.assertTrue(all(entry['classification'] == 'handoff-candidate' for entry in plan['entries'][1:]))
+        self.assertEqual([action['session'] for action in plan['actions']], [row['sessionId'] for row in recent[:3]])
+        self.assertTrue(all(action['kind'] == 'handoff' for action in plan['actions']))
+        del config['handoffMaxIdleSeconds']
+        self.assertEqual(engine.build_plan(inventory, config)['actions'][0]['session'], old['sessionId'])
+        config['handoffMaxIdleSeconds'] = 0
+        self.assertEqual(engine.build_plan(inventory, config)['actions'], [])
+
+    def test_handoff_idle_limit_rejects_invalid_configuration(self):
+        for value in (None, True, -1, 1.5, '604800', 31536001):
+            with self.subTest(value=value), self.assertRaises(engine.LifecycleError):
+                engine.validate_config({**self.config, 'handoffMaxIdleSeconds': value})
+
     def test_existing_or_unresolved_handoff_target_never_launches(self):
         source = self.row(harness='claude')
         source['sessionId'] = 'claude:' + source['nativeId']

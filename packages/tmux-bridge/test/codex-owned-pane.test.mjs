@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mkdtemp, mkdir, writeFile, symlink, rm, unlink, readFile, readdir } from "node:fs/promises";
@@ -143,4 +145,30 @@ test("bounded readiness can observe a native lock appearing on the same pinned p
   let clock = 0;
   const proof = await waitForOwnedCodexThread(f.options, { timeoutMs: 500, now: () => clock, wait: async ms => { clock += ms; await f.lock(12); } });
   assert.equal(proof.sessionId, id);
+});
+
+for (const [name, argv, expectedStage] of [
+  ["non-Codex argv is skipped", "/usr/bin/service\0", null],
+  ["Codex argv with unreadable fds denies", "/usr/bin/node\0/opt/bin/codex\0", "inventory.fds"],
+  ["empty argv denies", "", "inventory.cmdline"],
+  ["unreadable argv denies", null, "inventory.cmdline"]
+]) test(`EACCES executable: ${name}`, async t => {
+  const f = await fixture(t);
+  await f.process(90, 1, "service");
+  if (argv !== null) await writeFile(join(f.procRoot, "90/cmdline"), argv);
+  const readlink = fs.readlinkSync, readdir = fs.readdirSync, read = fs.readFileSync;
+  const inaccessible = () => { throw Object.assign(new Error("fixture access denied"), { code: "EACCES" }); };
+  const mocks = [
+    t.mock.method(fs, "readlinkSync", (path, ...args) => path === join(f.procRoot, "90/exe") ? inaccessible() : readlink(path, ...args)),
+    t.mock.method(fs, "readdirSync", (path, ...args) => path === join(f.procRoot, "90/fd") ? inaccessible() : readdir(path, ...args)),
+    t.mock.method(fs, "readFileSync", (path, ...args) => argv === null && path === join(f.procRoot, "90/cmdline") ? inaccessible() : read(path, ...args))
+  ];
+  syncBuiltinESMExports();
+  try {
+    if (expectedStage) assert.throws(() => discoverOwnedCodexThread(f.options), error => error.proofStage === expectedStage && error.proofCode === "EACCES");
+    else assert.equal(discoverOwnedCodexThread(f.options).sessionId, id);
+  } finally {
+    for (const mock of mocks) mock.mock.restore();
+    syncBuiltinESMExports();
+  }
 });

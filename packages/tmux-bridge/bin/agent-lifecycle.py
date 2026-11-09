@@ -72,6 +72,8 @@ def validate_config(config):
         value = config.get(field, default)
         if type(value) is not int or not 0 <= value <= maximum:
             raise LifecycleError('invalid ' + field)
+    if 'handoffMaxIdleSeconds' in config and (type(config['handoffMaxIdleSeconds']) is not int or not 0 <= config['handoffMaxIdleSeconds'] <= 31536000):
+        raise LifecycleError('invalid handoffMaxIdleSeconds')
     if config.get('retryBaseSeconds', 300) < 1 or config.get('retryMaxSeconds', 3600) < config.get('retryBaseSeconds', 300):
         raise LifecycleError('retry delays require positive base and maximum >= base')
     for field in ('permanentRefs', 'permanentPrefixes', 'permanentPatterns', 'excludeRefs', 'excludePatterns',
@@ -320,6 +322,8 @@ def classify(row, config, at):
         if result.get('retryability') and instant(at) < instant(result['retryability']['nextRetryAt']):
             return finish('keep-retry-backoff', 'native model capacity rejection waiting for backoff')
         if row.get('harness') == 'claude':
+            if 'handoffMaxIdleSeconds' in config and idle > config['handoffMaxIdleSeconds']:
+                return finish('keep-handoff-too-old', 'native activity is too old for automatic handoff')
             return finish('handoff-candidate', 'Codex child handoff uses governed launcher and new-target ownership proof')
         if row.get('harness') != 'codex':
             return finish('keep-source-gap', 'operative runtime unsupported')
