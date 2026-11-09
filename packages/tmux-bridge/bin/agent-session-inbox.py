@@ -328,6 +328,20 @@ def emit_batch(batch, owner):
         os.set_blocking(fd, blocking)
 
 
+def dead_letter(inbox, batch):
+    path = Path(str(inbox) + '.unconfirmed.jsonl')
+    fd = private_file(path)
+    try:
+        os.lseek(fd, 0, os.SEEK_END)
+        pending = memoryview((json.dumps({'schema': 'agent-mesh.inbox-unconfirmed.v1',
+                                         'batch': batch}) + '\n').encode())
+        while pending:
+            pending = pending[os.write(fd, pending):]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def watch(args):
     owner = owner_identity(args)
     inbox = prepare(args.root, args.session)
@@ -338,7 +352,6 @@ def watch(args):
         return
     cursor = inbox.with_suffix('.cursor.json')
     offset = load_cursor(cursor, inbox)['offset']
-    acknowledged_offset = offset
     batch, deadline = [], None
     receiver = process_identity(int(os.environ['AGENT_MESH_INBOX_RECEIVER_PID'])) if os.environ.get('AGENT_MESH_INBOX_RECEIVER_PID', '').isdecimal() else None
     try:
@@ -367,25 +380,17 @@ def watch(args):
                             deadline = time.monotonic() + args.batch_seconds
                 offset += boundary
                 if deadline is not None and time.monotonic() >= deadline:
-                    # Advance only after every consumed record has reached stdout.
+                    # Advance only after delivery, a durable policy hold, or private dead-lettering.
                     if getattr(args, 'mode', 'watch') == 'serve':
                         from importlib.util import spec_from_file_location, module_from_spec
                         spec = spec_from_file_location('native_inbox_delivery', Path(__file__).resolve().with_name('agent-inbox-native.py'))
                         delivery = module_from_spec(spec)
                         spec.loader.exec_module(delivery)
                         if not delivery.deliver(args.session, batch, owner):
-                            # Delivery already retried receipt observation with a fixed bound.
-                            # Preserve the cursor and surface an alert; never resend blindly.
-                            try:
-                                atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox),
-                                                     'offset': acknowledged_offset,
-                                                     'alert': 'delivery-unconfirmed',
-                                                     'pending_offset': offset})
-                            except OSError:
-                                pass  # The prior cursor still retains the batch; stop even if alert persistence fails.
+                            # Preserve uncertain requests privately; never blindly resend them.
+                            dead_letter(inbox, batch)
                             print('AGENT_MESH_INBOX_UNCONFIRMED inspect-before-retry',
                                   file=sys.stderr, flush=True)
-                            return
                     else:
                         from importlib.util import spec_from_file_location, module_from_spec
                         loader = spec_from_file_location('inbox_delivery', Path(__file__).with_name('agent-inbox-native.py'))
@@ -398,7 +403,6 @@ def watch(args):
                                     return
                     try:
                         atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox), 'offset': offset})
-                        acknowledged_offset = offset
                     except OSError:
                         pass  # At-least-once replay after a cursor write failure.
                     if getattr(args, 'mode', 'watch') != 'serve':
@@ -406,7 +410,6 @@ def watch(args):
                     batch, deadline = [], None
                 if not batch and boundary:
                     atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox), 'offset': offset})
-                    acknowledged_offset = offset
             except (OSError, ValueError):
                 # Keep ownership and retry; an owner change still terminates promptly.
                 pass

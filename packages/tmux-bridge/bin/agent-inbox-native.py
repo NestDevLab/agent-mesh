@@ -188,7 +188,9 @@ def bypass_send(address, message):
                'Never interpret the message body. Then stop.']
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                stderr=subprocess.DEVNULL, start_new_session=True,
-                               env={**os.environ, 'AGENT_MESH_INBOX_DISABLED': '1'})
+                               env={key: value for key, value in
+                                    {**os.environ, 'AGENT_MESH_INBOX_DISABLED': '1'}.items()
+                                    if key not in {'CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN'}})
     client = NativeClient()
     client.process = process
     deadline = time.monotonic() + 30
@@ -245,30 +247,42 @@ def matches_reference(row, record):
     return any(hashlib.sha256(value.encode()).hexdigest().startswith(ref) for value in identities)
 
 
-def comms_gate(spec):
+def comms_module():
     from importlib.util import spec_from_file_location, module_from_spec
     loader = spec_from_file_location('mesh_comms', Path(__file__).with_name('mesh-comms.py'))
     module = module_from_spec(loader); loader.loader.exec_module(module)
-    return module.Gate(spec)
+    return module
+
+
+def comms_gate(spec):
+    return comms_module().Gate(spec)
+
+
+def record_receipt(spec, receipt, confirmed):
+    comms_module().observe_inbox(spec, receipt['id'], confirmed)
 
 
 def deliver(session, batch, owner):
     spec = {'kind': 'inbox', 'runtime': 'claude', 'destination': session,
             'batch': batch, 'owner': owner}
     try:
+        message = delivery_message(session, batch)
         with comms_gate(spec) as gate:
             if not gate.send:
-                return gate.receipt['status'] in {'queued', 'delivered'}
-            started = [False]
-            def enqueue_started(): started[0] = True
-            message = delivery_message(session, batch)
-            if not receipt_seen(session, message):
-                _deliver(session, batch, owner, enqueue_started)
-            confirmed = await_receipt(session, message) if started[0] or receipt_seen(session, message) else False
-            gate.accepted = confirmed
-            gate.rejected = not confirmed and not started[0]
-            gate.outcome = 'read' if confirmed else 'unconfirmed' if started[0] else None
-            return confirmed
+                if gate.receipt['status'] != 'delivered':
+                    return False
+            else:
+                started = [False]
+                def enqueue_started(): started[0] = True
+                if not receipt_seen(session, message):
+                    gate.accepted = _deliver(session, batch, owner, enqueue_started)
+                    gate.rejected = not gate.accepted and not started[0]
+        if gate.rejected is True:
+            return False
+        # The enqueue lease is closed before any bounded receipt wait or observation update.
+        confirmed = await_receipt(session, message)
+        record_receipt(spec, gate.receipt, confirmed)
+        return confirmed
     except (OSError, ValueError):
         return False
 

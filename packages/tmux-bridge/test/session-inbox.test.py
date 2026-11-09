@@ -78,27 +78,80 @@ class SessionInboxTest(unittest.TestCase):
         with (self.root / (SESSION + '.jsonl')).open('a') as stream:
             stream.write(text)
 
-    def test_unconfirmed_batch_keeps_cursor_and_surfaces_alert(self):
+    def assert_dead_letter_continues(self, failure=None):
         spec = importlib.util.spec_from_file_location('checkpoint_inbox_test', SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         inbox = module.prepare(self.root, SESSION)
-        before = json.loads(inbox.with_suffix('.cursor.json').read_text())['offset']
         self.append(record('pending-request'))
-        helper = SimpleNamespace(deliver=MagicMock(return_value=False))
+        delivered = []
+        def send(_session, batch, _owner):
+            delivered.append(list(batch))
+            if len(delivered) == 1:
+                self.append(record('later-request'))
+                return failure(batch) if failure else False
+            return True
+        helper = SimpleNamespace(deliver=send)
         fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None))
         args = SimpleNamespace(root=self.root, session=SESSION, owner_pid=os.getpid(),
                                owner_start=None, mode='serve', batch_seconds=0, retry_seconds=0.01)
-        with patch.object(module, 'alive', return_value=True), patch(
+        with patch.object(module, 'alive', side_effect=lambda _owner: len(delivered) < 2), patch(
                 'importlib.util.spec_from_file_location', return_value=fake_spec), patch(
                 'importlib.util.module_from_spec', return_value=helper), patch.object(module.sys, 'stderr') as stderr:
             module.watch(args)
-        helper.deliver.assert_called_once()
+        self.assertEqual(len(delivered), 2)
+        self.assertIn('later-request', str(delivered[1]))
+        self.assertNotIn('pending-request', str(delivered[1]))
         cursor = json.loads(inbox.with_suffix('.cursor.json').read_text())
-        self.assertEqual(cursor['offset'], before)
-        self.assertEqual(cursor['alert'], 'delivery-unconfirmed')
-        self.assertEqual(cursor['pending_offset'], inbox.stat().st_size)
+        self.assertEqual(cursor['offset'], inbox.stat().st_size)
+        self.assertNotIn('alert', cursor)
+        self.assertNotIn('pending_offset', cursor)
+        dead = Path(str(inbox) + '.unconfirmed.jsonl')
+        self.assertEqual(json.loads(dead.read_text())['batch'], delivered[0])
+        self.assertEqual(dead.stat().st_mode & 0o777, 0o600)
         self.assertIn('AGENT_MESH_INBOX_UNCONFIRMED', str(stderr.write.call_args_list))
+
+    def test_unconfirmed_batch_is_dead_lettered_and_next_batch_delivered(self):
+        self.assert_dead_letter_continues()
+
+    def test_unknown_refused_and_raising_readmissions_are_dead_lettered(self):
+        spec = importlib.util.spec_from_file_location('readmission_native_test',
+                                                     SCRIPT.with_name('agent-inbox-native.py'))
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        original_root = self.root
+        for status in ('unknown', 'refused', 'queued', 'raises'):
+            with self.subTest(status=status):
+                self.root = original_root / status
+                gate = MagicMock()
+                gate.__enter__.return_value = gate
+                gate.send = False
+                gate.receipt = {'id': 'synthetic-receipt', 'status': status}
+                def fail(batch):
+                    with patch.object(native, 'comms_gate', return_value=gate,
+                            side_effect=ValueError('unknown') if status == 'raises' else None), patch.object(
+                            native, '_deliver') as send:
+                        result = native.deliver(SESSION, batch, identity(os.getpid()))
+                        send.assert_not_called()
+                        return result
+                self.assert_dead_letter_continues(fail)
+        self.root = original_root
+
+    def test_dead_letter_refuses_symlinks_and_preserves_existing_batches(self):
+        spec = importlib.util.spec_from_file_location('dead_letter_inbox_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        inbox = module.prepare(self.root, SESSION)
+        module.dead_letter(inbox, ['first'])
+        module.dead_letter(inbox, ['second'])
+        dead = Path(str(inbox) + '.unconfirmed.jsonl')
+        self.assertEqual([json.loads(line)['batch'] for line in dead.read_text().splitlines()],
+                         [['first'], ['second']])
+        other = self.root / 'other.jsonl'
+        Path(str(other) + '.unconfirmed.jsonl').symlink_to(dead)
+        with self.assertRaises(OSError):
+            module.dead_letter(other, ['unwanted'])
+        self.assertNotIn('unwanted', dead.read_text())
 
     def test_detached_service_survives_hook_exit_and_delivers_only_real_batches(self):
         owner = subprocess.Popen(['sleep', '30'])
@@ -614,6 +667,44 @@ class NativeDeliveryTest(unittest.TestCase):
         self.assertEqual(db.execute('SELECT status,detail FROM deliveries').fetchone(),
                          ('delivered', 'read'))
 
+    def test_receipt_wait_and_outcome_update_happen_after_gate_closes(self):
+        gate = MagicMock()
+        gate.send = True
+        gate.receipt = {'id': 'synthetic-receipt'}
+        gate.__enter__.return_value = gate
+        opened = []
+        gate.__enter__.side_effect = lambda: opened.append(True) or gate
+        def close(*_args):
+            self.assertTrue(gate.accepted)
+            opened.clear()
+        gate.__exit__.side_effect = close
+        def wait(*_args):
+            self.assertFalse(opened, 'receipt wait must not hold the enqueue lock')
+            return True
+        def observe(*_args):
+            self.assertFalse(opened, 'observation must use a separate short update')
+        with patch.object(self.module, 'comms_gate', return_value=gate), patch.object(
+                self.module, 'receipt_seen', return_value=False), patch.object(
+                self.module, '_deliver', return_value=True), patch.object(
+                self.module, 'await_receipt', side_effect=wait), patch.object(
+                self.module, 'record_receipt', side_effect=observe) as update:
+            self.assertTrue(self.module.deliver(SESSION, ['data'], self.owner))
+        update.assert_called_once()
+
+    def test_unknown_and_refused_readmission_do_not_resend_or_wait(self):
+        for status in ('unknown', 'refused', 'queued', 'raises'):
+            gate = MagicMock()
+            gate.__enter__.return_value = gate
+            gate.send = False
+            gate.receipt = {'id': 'synthetic-receipt', 'status': status}
+            with self.subTest(status=status), patch.object(self.module, 'comms_gate',
+                    side_effect=ValueError('delivery outcome unknown') if status == 'raises' else None,
+                    return_value=gate), patch.object(self.module, '_deliver') as native, patch.object(
+                    self.module, 'await_receipt') as wait:
+                self.assertFalse(self.module.deliver(SESSION, ['data'], self.owner))
+                native.assert_not_called()
+                wait.assert_not_called()
+
     def test_latest_permission_mode_selects_class_and_unknown_fails_closed(self):
         for modes, expected in [([], 'unknown'), (['bypassPermissions'], 'bypass'),
                                 (['bypassPermissions', 'default'], 'prompting'),
@@ -666,7 +757,9 @@ class NativeDeliveryTest(unittest.TestCase):
             events = b''.join((json.dumps(event) + '\n').encode() for event in [
                 {'type': 'system', 'subtype': 'init', 'tools': tools},
                 {'type': 'result', 'is_error': False}, {'type': 'result', 'is_error': False}])
-            with self.subTest(tools=tools), patch.object(self.module.subprocess, 'Popen',
+            with self.subTest(tools=tools), patch.dict(os.environ, {
+                    'CLAUDE_CODE_MESSAGING_SOCKET': 'synthetic-owner-socket',
+                    'CLAUDE_CODE_MESSAGING_TOKEN': 'synthetic-owner-token'}), patch.object(self.module.subprocess, 'Popen',
                     return_value=process) as launch, patch.object(self.module.select, 'select',
                     return_value=([process.stdout], [], [])), patch.object(
                     self.module.os, 'read', side_effect=[events, b'']):
@@ -688,6 +781,8 @@ class NativeDeliveryTest(unittest.TestCase):
                 self.assertIn('--strict-mcp-config', command)
                 self.assertIn('--no-session-persistence', command)
                 self.assertEqual(launch.call_args.kwargs['env']['AGENT_MESH_INBOX_DISABLED'], '1')
+                self.assertNotIn('CLAUDE_CODE_MESSAGING_SOCKET', launch.call_args.kwargs['env'])
+                self.assertNotIn('CLAUDE_CODE_MESSAGING_TOKEN', launch.call_args.kwargs['env'])
                 process.terminate.assert_called_once()
 
     def test_bypass_child_without_verified_init_never_receives_peer_data(self):

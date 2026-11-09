@@ -42,6 +42,58 @@ class CommsTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 c.record_outcome(db, receipt['id'], 'read', False)
 
+    def test_inbox_observation_updates_transport_acceptance_separately(self):
+        spec = {'kind': 'inbox', 'runtime': 'claude', 'destination': 'synthetic-session',
+                'batch': ['synthetic record'], 'owner': {'pid': 1, 'start': '1'}}
+        with c.locked() as (db, _):
+            receipt = c.admit(db, spec)
+            db.execute("UPDATE deliveries SET status='delivered',payload=NULL WHERE id=?", (receipt['id'],))
+            db.commit()
+        c.observe_inbox(spec, receipt['id'], False)
+        with c.locked() as (db, _):
+            state, detail, payload = db.execute('SELECT status,detail,payload FROM deliveries').fetchone()
+            self.assertEqual((state, detail), ('unknown', 'unconfirmed'))
+            self.assertEqual(json.loads(payload), spec)
+            with self.assertRaisesRegex(ValueError, 'unknown'):
+                c.admit(db, spec)
+            self.assertEqual(c.admit(db, {**spec, 'batch': ['later record']})['status'], 'send')
+        c.observe_inbox(spec, receipt['id'], True)
+        with c.locked() as (db, _):
+            self.assertEqual(db.execute('SELECT status,detail,payload FROM deliveries WHERE id=?',
+                                       (receipt['id'],)).fetchone(), ('delivered', 'read', None))
+        with self.assertRaisesRegex(ValueError, 'does not match'):
+            c.observe_inbox({**spec, 'batch': ['different']}, receipt['id'], True)
+
+    def test_queued_inbox_releases_dispatcher_lock_before_receipt_observation(self):
+        spec = {'kind': 'inbox', 'runtime': 'claude', 'destination': 'synthetic-session',
+                'batch': ['synthetic record'], 'owner': {'pid': 1, 'start': '1'}}
+        c.change('queue', 'claude', 'test hold', 'test')
+        with c.locked() as (db, _):
+            c.admit(db, spec)
+        code = """
+import fcntl, importlib.util, json, os, sys
+loader = importlib.util.spec_from_file_location('replay_test', sys.argv[1])
+c = importlib.util.module_from_spec(loader)
+loader.loader.exec_module(c)
+spec = json.loads(sys.argv[2])
+with c.Gate(spec) as gate:
+    assert gate.send
+    gate.accepted = True
+# A separate descriptor must acquire the lock after enqueue, while the dispatcher waits.
+fd = os.open(c.root() / 'delivery.lock', os.O_RDWR)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+finally:
+    os.close(fd)
+c.observe_inbox(spec, gate.receipt['id'], True)
+"""
+        with patch.object(c, 'command', return_value=[sys.executable, '-c', code,
+                          str(BIN / 'mesh-comms.py'), c.encode(spec)]):
+            result = c.change('on', 'claude', 'resume test', 'test')
+        self.assertEqual(result['counts'], {'delivered': 1})
+        with c.locked() as (db, _):
+            self.assertEqual(db.execute('SELECT detail FROM deliveries').fetchone()[0], 'read')
+
     def test_steer_queue_validation_and_replay_command(self):
         spec = {**self.spec(runtime='codex'), 'steer_first': True}
         self.assertIn('--steer-or-queue', c.command(spec))
@@ -133,7 +185,7 @@ class CommsTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('inbox', BIN/'agent-inbox-native.py')
         inbox = importlib.util.module_from_spec(spec); spec.loader.exec_module(inbox)
         with patch.object(inbox, '_deliver') as native:
-            self.assertTrue(inbox.deliver('test-session', ['AGENT_MESH_INBOX '+json.dumps({'prompt':'test'})], {'pid':1,'start':'1'}))
+            self.assertFalse(inbox.deliver('test-session', ['AGENT_MESH_INBOX '+json.dumps({'prompt':'test'})], {'pid':1,'start':'1'}))
             native.assert_not_called()
 
     def test_set_waits_for_inflight_enqueue_and_crash_is_uncertain(self):

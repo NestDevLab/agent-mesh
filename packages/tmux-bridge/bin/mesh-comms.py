@@ -218,8 +218,23 @@ def record_outcome(db, ident, outcome, accepted):
     if outcome not in (None, 'read', 'unconfirmed') or (outcome == 'read' and not accepted):
         raise ValueError('invalid receiver outcome')
     if outcome is not None:
-        db.execute("UPDATE deliveries SET detail=CASE WHEN ?='unconfirmed' AND detail LIKE 'queued dispatch%' "
-                   "THEN 'queued dispatch: unconfirmed' ELSE ? END WHERE id=?", (outcome, outcome, ident))
+        db.execute('UPDATE deliveries SET detail=? WHERE id=?', (outcome, ident))
+
+
+def observe_inbox(spec, ident, confirmed):
+    """Record receiver evidence in a short lock, after the enqueue gate is closed."""
+    spec = validate(spec)
+    with locked() as (db, _):
+        row = db.execute('SELECT digest,status FROM deliveries WHERE id=?', (ident,)).fetchone()
+        if (spec['kind'] != 'inbox' or not row or
+                row[0] != hashlib.sha256(encode(spec).encode()).hexdigest()):
+            raise ValueError('receipt does not match inbox delivery')
+        # An uncertain enqueue must remain unknown, even when transport accepted it.
+        state = 'delivered' if confirmed else 'unknown'
+        db.execute('UPDATE deliveries SET status=?,payload=? WHERE id=?',
+                   (state, None if confirmed else encode(spec), ident))
+        record_outcome(db, ident, 'read' if confirmed else 'unconfirmed', confirmed)
+        db.commit()
 
 
 def identity(spec):
@@ -271,6 +286,8 @@ def flush(db, fd):
         # An earlier uncertain send blocks that runtime; never retry it blindly.
         if db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND seq<? AND status='unknown' AND detail LIKE 'queued dispatch%'", (runtime, seq)).fetchone():
             continue
+        if db.execute('SELECT status FROM deliveries WHERE id=?', (ident,)).fetchone()[0] != 'queued':
+            continue  # Another dispatcher may have handled this row while our lock was released.
         spec = json.loads(payload)
         db.execute("UPDATE deliveries SET status='unknown',detail='queued dispatch started; inspect before retry' WHERE id=?", (ident,))
         db.commit()
@@ -282,9 +299,15 @@ def flush(db, fd):
         env = {**os.environ, 'MESH_COMMS_REPLAY_FD': str(reader)}
         if spec.get('socket'):
             env['MESH_TMUX_SOCKET'] = spec['socket']
+        # The replay gate reacquires this lock for enqueue, then releases it before observation.
+        observe_outside_lock = spec['kind'] == 'inbox'
+        if observe_outside_lock:
+            fcntl.flock(fd, fcntl.LOCK_UN)
         try:
             result = subprocess.run(command(spec), input=encode(spec) if spec['kind'] == 'inbox' else None,
                                     text=True, capture_output=True, timeout=90, env=env, pass_fds=(reader,))
+            if observe_outside_lock:
+                fcntl.flock(fd, fcntl.LOCK_EX)
             if result.returncode == 0:
                 db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail=CASE WHEN detail='read' THEN detail ELSE 'transport accepted' END WHERE id=?", (ident,))
                 db.commit()
@@ -294,6 +317,8 @@ def flush(db, fd):
         except (OSError, subprocess.SubprocessError):
             break
         finally:
+            if observe_outside_lock:
+                fcntl.flock(fd, fcntl.LOCK_EX)
             os.close(reader)
             db.execute('UPDATE deliveries SET cap_hash=NULL WHERE id=?', (ident,)); db.commit()
     return delivered
@@ -416,9 +441,21 @@ class Gate:
         self.outcome = None
         self.process = None
         self.replay = False
+        self.replay_lock = None
 
     def __enter__(self):
-        replay = replaying(self.spec)
+        if 'MESH_COMMS_REPLAY_FD' in os.environ and self.spec['kind'] == 'inbox':
+            self.replay_lock = locked()
+            replay_db, _ = self.replay_lock.__enter__()
+        try:
+            if (self.replay_lock and effective(replay_db, self.spec['runtime']) != 'on'
+                    and not controller_origin(self.spec, replay_db)):
+                raise ValueError('inbox replay policy changed before enqueue')
+            replay = replaying(self.spec)
+        except BaseException:
+            if self.replay_lock:
+                self.replay_lock.__exit__(*sys.exc_info())
+            raise
         if replay:
             self.receipt = replay
             self.replay = True
@@ -438,7 +475,11 @@ class Gate:
 
     def __exit__(self, *_args):
         if self.replay:
-            replay_complete(self.receipt, self.accepted, self.rejected, self.outcome)
+            try:
+                replay_complete(self.receipt, self.accepted, self.rejected, self.outcome)
+            finally:
+                if self.replay_lock:
+                    self.replay_lock.__exit__(None, None, None)
         if self.process:
             try:
                 self.process.stdin.write(encode({'accepted': self.accepted, 'rejected': self.rejected, 'outcome': self.outcome})+'\n')
