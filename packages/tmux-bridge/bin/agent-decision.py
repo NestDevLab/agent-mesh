@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 
@@ -77,12 +78,24 @@ def delivery_key(decision, phase, detail):
     return 'decision-' + hashlib.sha256(f'{decision}:{phase}:{detail}'.encode()).hexdigest()[:32]
 
 
-def request_message(record, config):
-    card = record['card']
+def card_token(record):
+    return record['hash'][:16]
+
+
+def answer_command(record, args):
+    command = [str(BIN / 'agent-decision.py')]
+    if args.config:
+        command += ['--config', str(args.config.resolve())]
+    if args.state:
+        command += ['--state', str(args.state.expanduser().resolve())]
+    return shlex.join(command + ['answer', record['card']['id'], '--card-hash', card_token(record)])
+
+
+def request_message(record, config, args):
     return (config.get('messagePrefix', '') + "Decision request for the owner. Show it once as one card with these "
             "options and keep the option ids. Silence isn't an answer.\n" +
-            json.dumps({'card': card, 'from': record['from']}, ensure_ascii=False) +
-            f"\nOnce the owner picks: agent-decision.py answer {card['id']} --option <option id> "
+            json.dumps({'card': record['card'], 'from': record['from']}, ensure_ascii=False) +
+            f"\nOnce the owner picks: {answer_command(record, args)} --option <option id> "
             '--by <owner> --card <card message id> [--text "<their words, for the write-in option>"]')
 
 
@@ -120,7 +133,7 @@ def send(args, config):
             return finish(root, record, 'request-already-sent')
         record['to'] = target
         follow.atomic_json(path, record)
-        if not transmit(target, delivery_key(card['id'], 'request', digest), request_message(record, config), config):
+        if not transmit(target, delivery_key(card['id'], 'request', digest), request_message(record, config, args), config):
             return finish(root, record, 'request-pending')
         record['sentAt'] = now()
         follow.atomic_json(path, record)
@@ -130,12 +143,16 @@ def send(args, config):
 def answer(args, config):
     if not decisions.REQUEST_ID.fullmatch(args.id):
         raise ValueError('decision id must be 1-80 safe characters')
+    if not (decisions._text(args.by) and decisions._text(args.card)):
+        raise ValueError('--by and --card must not be blank')
     root = state_root(args, config)
     path = root / (args.id + '.json')
     with follow.locked(root / (args.id + '.lock')):
         record = notify.read(path, None)
         if not record or not record['sentAt']:
             raise ValueError(f'no sent decision with id {args.id}')
+        if args.card_hash != card_token(record):
+            raise ValueError(f'this answer belongs to a different card than decision {args.id}')
         option = decisions.resolve_answer(record['card'], args.option, args.text)
         at = decisions._stamp(decisions._instant(args.at)) if args.at else now()
         previous = record['answer']
@@ -165,6 +182,7 @@ def main(argv=None):
     sending.add_argument('--to', help='Director session ref; defaults to the config target')
     answering = commands.add_parser('answer')
     answering.add_argument('id')
+    answering.add_argument('--card-hash', required=True, help='the value printed in the request message')
     answering.add_argument('--option', required=True)
     answering.add_argument('--by', required=True)
     answering.add_argument('--card', required=True, help='id of the card message the owner answered')

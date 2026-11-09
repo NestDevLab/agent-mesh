@@ -7,8 +7,12 @@ tracks delivery.
 
 ```sh
 agent-decision.py --config host.json send --request request.json --from codex:<uuid>
-agent-decision.py --config host.json answer <id> --option <option id> --by <owner> --card <message id>
+agent-decision.py --config host.json answer <id> --card-hash <hash> --option <option id> --by <owner> --card <message id>
 ```
+
+The request message carries the exact `answer` command, with the same `--config`
+and `--state` and a hash tying it to that card. An answer with another card's hash
+is refused.
 
 ## Request
 
@@ -27,7 +31,7 @@ agent-decision.py --config host.json answer <id> --option <option id> --by <owne
 ```
 
 A request has one or two real options and exactly one recommendation with its
-reason. The card always appends two exits, `discuss` and `other`, so it never
+reason. Option ids are plain tokens, letters and digits first. The card always appends two exits, `discuss` and `other`, so it never
 exceeds four options. `other` is the only option that takes `--text`.
 
 ## Host configuration

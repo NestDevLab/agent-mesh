@@ -110,6 +110,8 @@ def make_request_card(request, *, labels=None):
         for key in ("id", "label", "consequence"):
             if not _text(option.get(key)):
                 raise ValueError(f"option missing required field: {key}")
+        if not REQUEST_ID.fullmatch(option["id"]):
+            raise ValueError("option id must be 1-80 safe characters")
         if option["id"] in RESERVED_OPTIONS:
             raise ValueError(f"reserved option id: {option['id']}")
     if len({option["id"] for option in options}) != len(options):

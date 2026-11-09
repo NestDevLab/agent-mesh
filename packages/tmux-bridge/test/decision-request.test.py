@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import shlex
 import stat
 import subprocess
 import tempfile
@@ -29,6 +30,9 @@ def request(**changes):
                  ]}, **changes)
 
 
+TOKEN = cli.decisions.semantic_hash(cli.decisions.make_request_card(request()))[:16]
+
+
 class Cards(unittest.TestCase):
     def test_recommended_first_and_fixed_exits_last(self):
         card = cli.decisions.make_request_card(request())
@@ -48,6 +52,7 @@ class Cards(unittest.TestCase):
                     request(options=[plain]), request(options=[option, {**option, 'id': 'b'}]),
                     request(options=[{**option, 'reason': ' '}]), request(options=[{**option, 'id': 'other'}]),
                     request(options=[option, {**plain, 'id': 'a'}]), request(options=[{**option, 'consequence': ''}]),
+                    request(options=[{**option, 'id': '--flag'}]), request(options=[{**option, 'id': 'a b'}]),
                     request(id='../escape'), request(question=' '), request(where=''),
                     request(waitingSince='2026-03-27T12:00:00')):
             with self.assertRaises(ValueError):
@@ -75,17 +80,28 @@ class Delivery(unittest.TestCase):
         self.addCleanup(cloud.stop)
         self.addCleanup(native.stop)
 
-    def run_cli(self, *argv):
+    def main(self, argv):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = cli.main(['--state', str(self.root), *argv])
+            code = cli.main(argv)
         return code, json.loads(out.getvalue() or err.getvalue())
+
+    def run_cli(self, *argv):
+        return self.main(['--state', str(self.root), *argv])
 
     def send(self, *extra):
         return self.run_cli('send', '--request', str(self.request_file), '--from', ORIGIN, '--to', CLOUD, *extra)
 
     def answer(self, *extra):
-        return self.run_cli('answer', 'WORK-1', '--by', 'Owner', '--card', 'msg-1', *extra)
+        return self.run_cli('answer', 'WORK-1', '--card-hash', TOKEN, '--by', 'Owner', '--card', 'msg-1', *extra)
+
+    def crash_when(self, stamped):
+        real = cli.follow.atomic_json
+        def write(path, record):
+            if stamped(record):
+                raise RuntimeError('crashed')
+            real(path, record)
+        return mock.patch.object(cli.follow, 'atomic_json', side_effect=write)
 
     def record(self):
         return json.loads((self.root / 'WORK-1.json').read_text())
@@ -150,6 +166,43 @@ class Delivery(unittest.TestCase):
         self.assertEqual(self.record()['answer']['at'], '2026-03-27T13:00:00Z')
         self.assertEqual(self.answer('--option', 'ship')[1]['outcome'], 'answer-already-returned')
         self.assertEqual(self.native.call_count, 2)
+
+    def test_another_cards_answer_is_refused(self):
+        self.send()
+        code, _ = self.run_cli('answer', 'WORK-1', '--card-hash', '0' * 16, '--option', 'ship', '--by', 'Owner', '--card', 'msg-2')
+        self.assertEqual(code, cli.INVALID)
+        self.assertIsNone(self.record()['answer'])
+        self.native.assert_not_called()
+
+    def test_blank_owner_or_card_is_refused(self):
+        self.send()
+        for by, card in ((' ', 'msg-1'), ('Owner', '')):
+            code, _ = self.run_cli('answer', 'WORK-1', '--card-hash', TOKEN, '--option', 'ship', '--by', by, '--card', card)
+            self.assertEqual(code, cli.INVALID)
+        self.assertIsNone(self.record()['answer'])
+
+    def test_delivered_answer_command_finds_custom_state_and_config(self):
+        config = self.root.parent / 'host config.json'
+        config.write_text(json.dumps({'target': CLOUD, 'labels': {'other': 'Custom'}}))
+        self.assertEqual(self.run_cli('--config', str(config), 'send', '--request', str(self.request_file), '--from', ORIGIN)[0], 0)
+        line = self.cloud.call_args.args[0][4].splitlines()[-1].split('Once the owner picks: ')[1]
+        command = shlex.split(line.split(' --option')[0])
+        self.assertEqual(Path(command[0]).name, 'agent-decision.py')
+        self.assertEqual(command[1:5], ['--config', str(config.resolve()), '--state', str(self.root.resolve())])
+        self.assertEqual(self.main(command[1:] + ['--option', 'ship', '--by', 'Owner', '--card', 'msg-1'])[0], 0)
+
+    def test_crash_after_delivery_retries_with_the_same_key(self):
+        send = ('send', '--request', str(self.request_file), '--from', ORIGIN, '--to', ORIGIN)
+        with self.crash_when(lambda record: record['sentAt']), self.assertRaises(RuntimeError):
+            self.run_cli(*send)
+        self.assertIsNone(self.record()['sentAt'])
+        self.assertEqual(self.run_cli(*send)[1]['outcome'], 'request-sent')
+        with self.crash_when(lambda record: record['answer'] and record['answer']['returnedAt']), self.assertRaises(RuntimeError):
+            self.answer('--option', 'ship')
+        self.assertEqual(self.answer('--option', 'ship')[1]['outcome'], 'answer-returned')
+        keys = [call.args[2] for call in self.native.call_args_list]
+        self.assertEqual(len(keys), 4)
+        self.assertEqual((keys[0], keys[2]), (keys[1], keys[3]))
 
     def test_claude_target_needs_a_live_inbox(self):
         target = 'claude:22222222-2222-4222-8222-222222222222'
