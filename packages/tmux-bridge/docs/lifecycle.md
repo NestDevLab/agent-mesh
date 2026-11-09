@@ -46,6 +46,7 @@ Configuration is a private JSON object. No host policy is embedded here.
 | `timezone` | Passed to the host resume-window guard; default `UTC` |
 | `workItemCommand` | Optional argv for an owned open work item lookup; 10-second timeout |
 | `resumeWindowCommand` | Required JSON guard argv before each operative action |
+| `handoffMaxIdleSeconds` | Optional maximum native inactivity for Claude handoff; older sessions are kept. Omit for no upper limit |
 | `handoffProfile` | Must be `developer` to enable governed Codex child handoffs |
 | `limenConfig` | Host-owned explicit policy path for those handoffs |
 

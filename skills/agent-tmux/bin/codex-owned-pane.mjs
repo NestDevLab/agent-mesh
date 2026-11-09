@@ -51,12 +51,19 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
   for (const pid of inventory.keys()) {
     let stage = "inventory.exe";
     try {
-      const executable = readlinkSync(`${procRoot}/${pid}/exe`);
+      let executable;
+      try { executable = readlinkSync(`${procRoot}/${pid}/exe`); }
+      catch (error) {
+        if (error.code !== "EACCES") throw error;
+        // Readable argv can exclude a non-Codex process even when exe is protected.
+        // Empty or unreadable argv cannot exclude a potential writer.
+      }
       // A non-Codex executable can still be a wrapper with Codex argv.
       // Without its cmdline it cannot safely be excluded from writer discovery.
       stage = "inventory.cmdline";
       const argv = readFileSync(`${procRoot}/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
-      if (basename(executable) !== "codex" && !argv.some(value => basename(value) === "codex")) continue;
+      if (executable === undefined && argv.length === 0) throw denied(stage, "EACCES");
+      if (basename(executable ?? "") !== "codex" && !argv.some(value => basename(value) === "codex")) continue;
       const chain = ancestors(pid);
       stage = "inventory.fds";
       for (const fd of readdirSync(`${procRoot}/${pid}/fd`)) {
