@@ -120,7 +120,7 @@ class SessionInboxTest(unittest.TestCase):
         native = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(native)
         original_root = self.root
-        for status in ('unknown', 'refused', 'queued', 'raises'):
+        for status in ('unknown', 'refused', 'raises'):
             with self.subTest(status=status):
                 self.root = original_root / status
                 gate = MagicMock()
@@ -691,8 +691,21 @@ class NativeDeliveryTest(unittest.TestCase):
             self.assertTrue(self.module.deliver(SESSION, ['data'], self.owner))
         update.assert_called_once()
 
+    def test_queued_hold_is_acknowledged_without_send_or_receipt_wait(self):
+        gate = MagicMock()
+        gate.__enter__.return_value = gate
+        gate.send = False
+        gate.receipt = {'id': 'synthetic-receipt', 'status': 'queued'}
+        with patch.object(self.module, 'comms_gate', return_value=gate), patch.object(
+                self.module, '_deliver') as send, patch.object(self.module, 'await_receipt') as wait, patch.object(
+                self.module, 'record_receipt') as observe:
+            self.assertTrue(self.module.deliver(SESSION, ['data'], self.owner))
+        send.assert_not_called()
+        wait.assert_not_called()
+        observe.assert_not_called()
+
     def test_unknown_and_refused_readmission_do_not_resend_or_wait(self):
-        for status in ('unknown', 'refused', 'queued', 'raises'):
+        for status in ('unknown', 'refused', 'raises'):
             gate = MagicMock()
             gate.__enter__.return_value = gate
             gate.send = False

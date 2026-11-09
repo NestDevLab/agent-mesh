@@ -185,7 +185,7 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         spec = importlib.util.spec_from_file_location('inbox', BIN/'agent-inbox-native.py')
         inbox = importlib.util.module_from_spec(spec); spec.loader.exec_module(inbox)
         with patch.object(inbox, '_deliver') as native:
-            self.assertFalse(inbox.deliver('test-session', ['AGENT_MESH_INBOX '+json.dumps({'prompt':'test'})], {'pid':1,'start':'1'}))
+            self.assertTrue(inbox.deliver('test-session', ['AGENT_MESH_INBOX '+json.dumps({'prompt':'test'})], {'pid':1,'start':'1'}))
             native.assert_not_called()
 
     def test_set_waits_for_inflight_enqueue_and_crash_is_uncertain(self):

@@ -269,6 +269,8 @@ def deliver(session, batch, owner):
         message = delivery_message(session, batch)
         with comms_gate(spec) as gate:
             if not gate.send:
+                if gate.receipt['status'] == 'queued':
+                    return True  # Durable comms hold; the dispatcher owns delivery, not the dead letter queue.
                 if gate.receipt['status'] != 'delivered':
                     return False
             else:
