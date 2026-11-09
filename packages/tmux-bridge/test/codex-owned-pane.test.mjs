@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, mkdir, writeFile, symlink, rm, unlink, readFile, readdir } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, symlink, rm, unlink, readFile, readdir, chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -167,6 +167,54 @@ for (const [name, argv, expectedStage] of [
   try {
     if (expectedStage) assert.throws(() => discoverOwnedCodexThread(f.options), error => error.proofStage === expectedStage && error.proofCode === "EACCES");
     else assert.equal(discoverOwnedCodexThread(f.options).sessionId, id);
+  } finally {
+    for (const mock of mocks) mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+for (const scenario of [
+  { name: "foreign uid without capabilities and lock 644", allowed: true },
+  ...Array.from({ length: 4 }, (_, uidSlot) => ({ name: `lock owner in Uid slot ${uidSlot}`, uidSlot })),
+  ...Array.from({ length: 4 }, (_, rootSlot) => ({ name: `root in Uid slot ${rootSlot}`, rootSlot })),
+  { name: "effective capabilities", caps: "0000000000000001" },
+  { name: "group-writable lock", mode: 0o664 },
+  { name: "other-writable lock", mode: 0o646 },
+  { name: "unreadable status", unreadable: true },
+  { name: "missing status", missing: true },
+  { name: "malformed Uid", malformed: "Uid:\t1 2 3\nCapEff:\t0\n" },
+  { name: "malformed CapEff", caps: "not-hex" },
+  { name: "duplicate status fields", duplicate: true },
+  { name: "unobservable process inside the pane", inPane: true },
+  { name: "process exits before the permission check", exited: true, allowed: true }
+]) test(`unobservable descriptor inventory: ${scenario.name}`, async t => {
+  const f = await fixture(t), pid = 90;
+  await f.process(pid, scenario.inPane ? 10 : 1);
+  const lockPath = join(f.codexHome, "thread-writer-locks", id + ".lock");
+  await chmod(lockPath, scenario.mode ?? 0o644);
+  const owner = fs.lstatSync(lockPath).uid, foreign = owner === 1001 ? 1002 : 1001;
+  const uids = Array(4).fill(foreign);
+  if (scenario.uidSlot !== undefined) uids[scenario.uidSlot] = owner;
+  if (scenario.rootSlot !== undefined) uids[scenario.rootSlot] = 0;
+  const statusPath = join(f.procRoot, String(pid), "status");
+  const status = `Uid:\t${uids.join("\t")}\nCapEff:\t${scenario.caps ?? "0000000000000000"}\n`;
+  if (!scenario.missing) await writeFile(statusPath, scenario.malformed ?? status.repeat(scenario.duplicate ? 2 : 1));
+  const readdir = fs.readdirSync, read = fs.readFileSync;
+  const accessDenied = () => { throw Object.assign(new Error("fixture access denied"), { code: "EACCES" }); };
+  const mocks = [
+    t.mock.method(fs, "readdirSync", (path, ...args) => path === join(f.procRoot, String(pid), "fd") ? accessDenied() : readdir(path, ...args)),
+    t.mock.method(fs, "readFileSync", (path, ...args) => {
+      if (path === statusPath) {
+        if (scenario.exited) fs.rmSync(join(f.procRoot, String(pid)), { recursive: true });
+        if (scenario.unreadable) return accessDenied();
+      }
+      return read(path, ...args);
+    })
+  ];
+  syncBuiltinESMExports();
+  try {
+    if (scenario.allowed) assert.equal(discoverOwnedCodexThread(f.options).sessionId, id);
+    else assert.throws(() => discoverOwnedCodexThread(f.options), error => error.proofStage === "inventory.fds" && error.proofCode === "EACCES");
   } finally {
     for (const mock of mocks) mock.mock.restore();
     syncBuiltinESMExports();

@@ -46,10 +46,11 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
   const lockRoot = resolve(codexHome, "thread-writer-locks");
   const candidates = new Map();
   const lockHolders = new Map();
+  const unobservable = [];
   // Inventory potential writers globally, including processes outside the pane.
   // A filtered/unreadable process must never turn shared ownership into "unique".
   for (const pid of inventory.keys()) {
-    let stage = "inventory.exe";
+    let stage = "inventory.exe", chain;
     try {
       let executable;
       try { executable = readlinkSync(`${procRoot}/${pid}/exe`); }
@@ -64,7 +65,7 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
       const argv = readFileSync(`${procRoot}/${pid}/cmdline`, "utf8").split("\0").filter(Boolean);
       if (executable === undefined && argv.length === 0) throw denied(stage, "EACCES");
       if (basename(executable ?? "") !== "codex" && !argv.some(value => basename(value) === "codex")) continue;
-      const chain = ancestors(pid);
+      chain = ancestors(pid);
       stage = "inventory.fds";
       for (const fd of readdirSync(`${procRoot}/${pid}/fd`)) {
         stage = "inventory.fd";
@@ -82,7 +83,7 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
         const lock = lstatSync(path);
         const held = statSync(`${procRoot}/${pid}/fd/${fd}`);
         if (!lock.isFile() || lock.dev !== held.dev || lock.ino !== held.ino) throw denied();
-        const holder = { pid, id, chain, fd, dev: lock.dev, ino: lock.ino };
+        const holder = { pid, id, chain, fd, dev: lock.dev, ino: lock.ino, lock };
         lockHolders.set(`${pid}:${id}`, holder);
         if (chain) {
           if (readlinkSync(`${procRoot}/${pid}/cwd`) !== cwd) throw denied();
@@ -93,12 +94,28 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
       // A process that exited during inspection no longer holds a lock. Every
       // still-present unobservable potential writer makes the proof incomplete.
       if (gone(pid)) continue;
+      if (stage === "inventory.fds" && error.code === "EACCES" && !chain) { unobservable.push(pid); continue; }
       throw error.proofStage ? error : denied(stage, error.code);
     }
   }
   if (candidates.size !== 1) throw denied();
   const candidate = [...candidates.values()][0];
   if ([...lockHolders.values()].filter(holder => holder.id === candidate.id).length !== 1) throw denied();
+  // Exclude an unobservable foreign writer only when it cannot write this exact lock.
+  for (const pid of unobservable) {
+    try {
+      const status = readFileSync(`${procRoot}/${pid}/status`, "utf8");
+      const uidLines = status.match(/^Uid:[^\n]*$/gm) ?? [];
+      const capLines = status.match(/^CapEff:[^\n]*$/gm) ?? [];
+      const uids = uidLines.length === 1 ? /^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(uidLines[0])?.slice(1).map(Number) : undefined;
+      const caps = capLines.length === 1 ? /^CapEff:\s+([0-9a-fA-F]+)\s*$/.exec(capLines[0]) : undefined;
+      if (!uids || uids.some(uid => !Number.isSafeInteger(uid) || uid === 0 || uid === candidate.lock.uid) ||
+          !caps || !/^0+$/.test(caps[1]) || (candidate.lock.mode & 0o022) !== 0) throw denied("inventory.fds", "EACCES");
+    } catch {
+      if (gone(pid)) continue;
+      throw denied("inventory.fds", "EACCES");
+    }
+  }
   // Recheck identity, ancestry, cwd and the held inode after discovery; never trust stale locks.
   for (const pid of candidate.chain) {
     const before = inventory.get(pid);
