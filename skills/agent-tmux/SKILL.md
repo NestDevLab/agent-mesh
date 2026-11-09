@@ -118,6 +118,14 @@ timeout. Real records arrive through native cross-session messages; peer request
 never grant approval. See `packages/tmux-bridge/docs/session-inbox-hooks.md` in the
 source repository for delivery and rollout requirements.
 
+## Decision requests
+
+A session needing its owner's choice sends real options instead of asking A/B in
+free text. `agent-decision.py send` delivers the request to the configured Director,
+which shows one card and calls `answer`. The choice returns to the asking session
+and covers that one question only. See `packages/tmux-bridge/docs/decision-requests.md`
+in the source repository for the request format.
+
 ## Inter-session communications switch
 
 `bin/agent-mesh comms status|on|queue|off [--scope claude|codex] --reason TEXT --by ACTOR`

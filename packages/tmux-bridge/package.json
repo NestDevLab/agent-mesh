@@ -26,6 +26,7 @@
     "mesh-send": "./bin/mesh-send.sh",
     "mesh-capacity-dispatch": "./bin/mesh-capacity-dispatch.mjs",
     "mesh-ledger": "./bin/mesh-ledger.py",
+    "agent-decision": "./bin/agent-decision.py",
     "agent-lifecycle-beat": "./bin/agent-lifecycle-beat.py",
     "agent-lifecycle": "./bin/agent-lifecycle.py",
     "agent-mesh": "./bin/agent-mesh"
