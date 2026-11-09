@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shlex
 import stat
@@ -95,6 +96,10 @@ class Delivery(unittest.TestCase):
     def answer(self, *extra):
         return self.run_cli('answer', 'WORK-1', '--card-hash', TOKEN, '--by', 'Owner', '--card', 'msg-1', *extra)
 
+    def delivered_command(self):
+        line = self.cloud.call_args.args[0][4].splitlines()[-1].split('Once the owner picks: ')[1]
+        return shlex.split(line.split(' --option')[0])
+
     def crash_when(self, stamped):
         real = cli.follow.atomic_json
         def write(path, record):
@@ -185,11 +190,22 @@ class Delivery(unittest.TestCase):
         config = self.root.parent / 'host config.json'
         config.write_text(json.dumps({'target': CLOUD, 'labels': {'other': 'Custom'}}))
         self.assertEqual(self.run_cli('--config', str(config), 'send', '--request', str(self.request_file), '--from', ORIGIN)[0], 0)
-        line = self.cloud.call_args.args[0][4].splitlines()[-1].split('Once the owner picks: ')[1]
-        command = shlex.split(line.split(' --option')[0])
+        command = self.delivered_command()
         self.assertEqual(Path(command[0]).name, 'agent-decision.py')
         self.assertEqual(command[1:5], ['--config', str(config.resolve()), '--state', str(self.root.resolve())])
         self.assertEqual(self.main(command[1:] + ['--option', 'ship', '--by', 'Owner', '--card', 'msg-1'])[0], 0)
+
+    def test_delivered_answer_command_works_from_another_directory(self):
+        base = self.root.parent
+        config = base / 'host.json'
+        config.write_text(json.dumps({'target': CLOUD, 'stateRoot': 'relative-state'}))
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(base)
+        self.assertEqual(self.main(['--config', str(config), 'send', '--request', str(self.request_file), '--from', ORIGIN])[0], 0)
+        elsewhere = base / 'elsewhere'
+        elsewhere.mkdir()
+        os.chdir(elsewhere)
+        self.assertEqual(self.main(self.delivered_command()[1:] + ['--option', 'ship', '--by', 'Owner', '--card', 'msg-1'])[0], 0)
 
     def test_crash_after_delivery_retries_with_the_same_key(self):
         send = ('send', '--request', str(self.request_file), '--from', ORIGIN, '--to', ORIGIN)

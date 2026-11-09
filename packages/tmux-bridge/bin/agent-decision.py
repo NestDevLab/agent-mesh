@@ -82,20 +82,19 @@ def card_token(record):
     return record['hash'][:16]
 
 
-def answer_command(record, args):
+def answer_command(record, args, root):
     command = [str(BIN / 'agent-decision.py')]
     if args.config:
         command += ['--config', str(args.config.resolve())]
-    if args.state:
-        command += ['--state', str(args.state.expanduser().resolve())]
-    return shlex.join(command + ['answer', record['card']['id'], '--card-hash', card_token(record)])
+    return shlex.join(command + ['--state', str(root.resolve()), 'answer', record['card']['id'],
+                                 '--card-hash', card_token(record)])
 
 
-def request_message(record, config, args):
+def request_message(record, config, args, root):
     return (config.get('messagePrefix', '') + "Decision request for the owner. Show it once as one card with these "
             "options and keep the option ids. Silence isn't an answer.\n" +
             json.dumps({'card': record['card'], 'from': record['from']}, ensure_ascii=False) +
-            f"\nOnce the owner picks: {answer_command(record, args)} --option <option id> "
+            f"\nOnce the owner picks: {answer_command(record, args, root)} --option <option id> "
             '--by <owner> --card <card message id> [--text "<their words, for the write-in option>"]')
 
 
@@ -133,7 +132,7 @@ def send(args, config):
             return finish(root, record, 'request-already-sent')
         record['to'] = target
         follow.atomic_json(path, record)
-        if not transmit(target, delivery_key(card['id'], 'request', digest), request_message(record, config, args), config):
+        if not transmit(target, delivery_key(card['id'], 'request', digest), request_message(record, config, args, root), config):
             return finish(root, record, 'request-pending')
         record['sentAt'] = now()
         follow.atomic_json(path, record)
