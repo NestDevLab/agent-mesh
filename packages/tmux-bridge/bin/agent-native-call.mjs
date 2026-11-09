@@ -22,6 +22,7 @@ const { values } = parseArgs({
     timeout: { type: "string", default: "120" },
     "delivery-only": { type: "boolean", default: false },
     cloud: { type: "boolean", default: false },
+    "steer-or-queue": { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
@@ -31,7 +32,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue --delivery-only (Codex only)]");
   process.exit(0);
 }
 
@@ -43,6 +44,9 @@ const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
 if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
+if (values["steer-or-queue"] && (agent !== "codex" || !values["delivery-only"] || values.cloud)) {
+  fail("--steer-or-queue requires --agent codex --delivery-only without --cloud", 2);
+}
 if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
   fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
 }
@@ -62,7 +66,8 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
   `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
-  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume, ...(values.cloud ? { cloud: true } : {}) });
+  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume, ...(values.cloud ? { cloud: true } : {}),
+  ...(values["steer-or-queue"] ? { steer_first: true } : {}) });
 activeComms = comms;
 if (comms.status !== 'send') {
   await comms.complete(false);
@@ -99,19 +104,46 @@ const offsets = new Map();
 for (const transcript of initialTranscripts) offsets.set(transcript, (await stat(transcript)).size);
 let resumeDiagnostic = false;
 let transportAccepted = false;
+let deliveryMethod;
+let steeredTurnId;
 try {
 if (agent === "codex") {
-  enqueueStarted = true;
-  const queued = await run(process.env.CODEX_BIN || "codex", [
-    "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
-  ], (timeoutSeconds + 15) * 1000);
-  if (queued.code !== 0) {
-    if (codexSessionIsNotDirectlyWritable(queued)) {
-      fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+  if (values["steer-or-queue"]) {
+    enqueueStarted = true;
+    const steered = await run(process.execPath, [
+      fileURLToPath(new URL("./agent-steer.mjs", import.meta.url)),
+      "--agent", "codex", sessionId, "--message", protocolMessage, "--json"
+    ], timeoutSeconds * 1000);
+    if (steered.code === 0) {
+      let receipt;
+      try { receipt = JSON.parse(steered.stdout); } catch { /* Unproven acceptance. */ }
+      if (receipt?.agent !== "codex" || receipt.sessionId !== sessionId || receipt.status !== "steered" ||
+          typeof receipt.turnId !== "string" || !receipt.turnId.trim()) {
+        fail("Codex steer acceptance is unverified; inspect before retrying", 70);
+      }
+      deliveryMethod = "steer";
+      steeredTurnId = receipt.turnId;
+    } else if (steered.code === 3) {
+      // The existing steer adapter proves no active turn and no send.
+      enqueueStarted = false;
+    } else {
+      fail("Codex steer outcome is uncertain; no queue fallback; inspect before retrying", 70);
     }
-    fail(safeError("Codex native queue failed", queued), 1);
   }
-  resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
+  if (deliveryMethod !== "steer") {
+    enqueueStarted = true;
+    const queued = await run(process.env.CODEX_BIN || "codex", [
+      "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
+    ], (timeoutSeconds + 15) * 1000);
+    if (queued.code !== 0) {
+      if (codexSessionIsNotDirectlyWritable(queued)) {
+        fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+      }
+      fail(safeError("Codex native queue failed", queued), 1);
+    }
+    resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
+    deliveryMethod = "queue";
+  }
 } else {
   enqueueStarted = true;
   await appendManagedInbox(claudeInbox, {
@@ -131,7 +163,8 @@ if (agent === "codex") {
 
 // Queue acknowledgement is transport proof, never proof that the turn ran.
 if (values["delivery-only"]) {
-  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId,
+  console.log(JSON.stringify({ status: deliveryMethod === "steer" ? "steered" : "queued", agent, sessionId, correlationId,
+    ...(values["steer-or-queue"] ? { deliveryMethod, ...(steeredTurnId ? { turnId: steeredTurnId } : {}) } : {}),
     ...(values.resume ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
   process.exit(0);
 }

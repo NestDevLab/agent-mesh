@@ -29,6 +29,13 @@ class CommsTests(unittest.TestCase):
         return {'kind': 'native', 'runtime': runtime, 'destination': '66666666-6666-4666-8666-666666666666',
                 'message': 'Synthetic peer request', 'correlation': correlation}
 
+    def test_steer_queue_validation_and_replay_command(self):
+        spec = {**self.spec(runtime='codex'), 'steer_first': True}
+        self.assertIn('--steer-or-queue', c.command(spec))
+        for change in ({'steer_first': False}, {'runtime': 'claude'}, {'kind': 'tmux'}, {'cloud': True}):
+            with self.assertRaises(ValueError):
+                c.validate({**spec, **change})
+
     def test_cloud_validation_and_replay_command(self):
         spec = {**self.spec(), 'destination': 'session_Synthetic123', 'cloud': True}
         self.assertEqual(c.validate(spec)['cloud'], True)

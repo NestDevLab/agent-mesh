@@ -40,3 +40,34 @@ a bidirectional session link, install a relay, poll sessions, or configure a ret
 route. Verify any response separately with a matching correlation and trustworthy
 sender evidence. A cloud sender may use an existing authorized MCP session ingress
 for a local recipient; its actual principal and session scope must be checked first.
+
+## Correlated return through the existing Codex transport
+
+A local relay can return a cloud recipient's response through the same native
+communications gate, without introducing another gateway:
+
+```sh
+agent-native-call --agent codex --steer-or-queue --delivery-only --resume \
+  --session 11111111-1111-4111-8111-111111111111 \
+  --correlation-id response-example --message 'Received request-example'
+```
+
+Use a distinct stable correlation for each response and bind it to the verified
+recipient UUID. This option composes the existing `agent-steer` adapter and native
+Codex queue. It steers an active turn; only exit 3 from that adapter, proving no
+active turn and no send, permits queue fallback. `--resume` explicitly requests
+activation after queueing an idle session. Other steer errors, missing or malformed
+acknowledgement, and timeout retain uncertainty and never fall back to queue.
+
+Both choices share one admission lease, payload deduplication and durable replay.
+A held record decides steer versus queue when it is dispatched. Accepted results
+report `status: "steered"` or `status: "queued"` and `deliveryMethod`; neither
+proves transcript appearance, execution, reading or a response. A duplicate returns
+the gate's existing receipt without another steer or queue operation. Observe the
+exact correlated message in the recipient's transcript separately.
+
+The cloud sender still needs an existing authorized relay or ingress that can run
+this local transport. Do not infer that access from a cloud ID or a return address.
+Do not also send through another return path, and never use a different correlation
+to retry an unknown delivery. Direct `agent-session steer` remains the lower-level
+adapter; this composed option supplies the durable gate for a response workflow.
