@@ -374,11 +374,18 @@ def watch(args):
                         delivery = module_from_spec(spec)
                         spec.loader.exec_module(delivery)
                         if not delivery.deliver(args.session, batch, owner):
-                            # Do not acknowledge failed or ambiguous deliveries.
-                            batch, deadline = [], None
-                            offset = acknowledged_offset
-                            time.sleep(5)
-                            continue
+                            # Delivery already retried receipt observation with a fixed bound.
+                            # Preserve the cursor and surface an alert; never resend blindly.
+                            try:
+                                atomic_json(cursor, {'schema': CURSOR_SCHEMA, 'inbox': str(inbox),
+                                                     'offset': acknowledged_offset,
+                                                     'alert': 'delivery-unconfirmed',
+                                                     'pending_offset': offset})
+                            except OSError:
+                                pass  # The prior cursor still retains the batch; stop even if alert persistence fails.
+                            print('AGENT_MESH_INBOX_UNCONFIRMED inspect-before-retry',
+                                  file=sys.stderr, flush=True)
+                            return
                     else:
                         from importlib.util import spec_from_file_location, module_from_spec
                         loader = spec_from_file_location('inbox_delivery', Path(__file__).with_name('agent-inbox-native.py'))

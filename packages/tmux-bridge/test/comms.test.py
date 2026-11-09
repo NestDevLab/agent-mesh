@@ -29,6 +29,19 @@ class CommsTests(unittest.TestCase):
         return {'kind': 'native', 'runtime': runtime, 'destination': '66666666-6666-4666-8666-666666666666',
                 'message': 'Synthetic peer request', 'correlation': correlation}
 
+    def test_receiver_outcomes_keep_transport_statuses_compatible(self):
+        with c.locked() as (db, _):
+            receipt = c.admit(db, self.spec())
+            c.record_outcome(db, receipt['id'], 'unconfirmed', False)
+            self.assertEqual(db.execute('SELECT status,detail FROM deliveries').fetchone(),
+                             ('unknown', 'unconfirmed'))
+            db.execute("UPDATE deliveries SET status='delivered' WHERE id=?", (receipt['id'],))
+            c.record_outcome(db, receipt['id'], 'read', True)
+            self.assertEqual(db.execute('SELECT status,detail FROM deliveries').fetchone(),
+                             ('delivered', 'read'))
+            with self.assertRaises(ValueError):
+                c.record_outcome(db, receipt['id'], 'read', False)
+
     def test_steer_queue_validation_and_replay_command(self):
         spec = {**self.spec(runtime='codex'), 'steer_first': True}
         self.assertIn('--steer-or-queue', c.command(spec))

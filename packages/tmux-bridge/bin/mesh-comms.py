@@ -197,7 +197,7 @@ def replaying(spec):
         db.close()
 
 
-def replay_complete(receipt, accepted=False, rejected=False):
+def replay_complete(receipt, accepted=False, rejected=False, outcome=None):
     db = sqlite3.connect(root()/'comms.sqlite')
     try:
         row = db.execute('SELECT cap_hash,cap_used,dispatcher_pid,dispatcher_start FROM deliveries WHERE id=?', (receipt['id'],)).fetchone()
@@ -208,8 +208,18 @@ def replay_complete(receipt, accepted=False, rejected=False):
         state = 'delivered' if accepted else 'refused' if rejected else 'unknown'
         db.execute('UPDATE deliveries SET status=?,cap_used=2,payload=CASE WHEN ? THEN NULL ELSE payload END WHERE id=?',
                    (state, state != 'unknown', receipt['id']))
+        record_outcome(db, receipt['id'], outcome, accepted)
         db.commit()
     finally: db.close()
+
+
+def record_outcome(db, ident, outcome, accepted):
+    # Keep transport statuses compatible; detail records receiver observation.
+    if outcome not in (None, 'read', 'unconfirmed') or (outcome == 'read' and not accepted):
+        raise ValueError('invalid receiver outcome')
+    if outcome is not None:
+        db.execute("UPDATE deliveries SET detail=CASE WHEN ?='unconfirmed' AND detail LIKE 'queued dispatch%' "
+                   "THEN 'queued dispatch: unconfirmed' ELSE ? END WHERE id=?", (outcome, outcome, ident))
 
 
 def identity(spec):
@@ -276,7 +286,7 @@ def flush(db, fd):
             result = subprocess.run(command(spec), input=encode(spec) if spec['kind'] == 'inbox' else None,
                                     text=True, capture_output=True, timeout=90, env=env, pass_fds=(reader,))
             if result.returncode == 0:
-                db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail='transport accepted' WHERE id=?", (ident,))
+                db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail=CASE WHEN detail='read' THEN detail ELSE 'transport accepted' END WHERE id=?", (ident,))
                 db.commit()
                 delivered += 1
             elif db.execute('SELECT status FROM deliveries WHERE id=?', (ident,)).fetchone()[0] not in ('refused','delivered'):
@@ -321,7 +331,7 @@ def lease(spec):
     if replay:
         print(encode(replay), flush=True)
         result = json.loads(sys.stdin.readline())
-        replay_complete(replay, result.get('accepted') is True, result.get('rejected') is True)
+        replay_complete(replay, result.get('accepted') is True, result.get('rejected') is True, result.get('outcome'))
         return
     with locked() as (db, fd):
         flush(db, fd)
@@ -339,6 +349,8 @@ def lease(spec):
         if result.get('accepted') is True:
             db.execute("UPDATE deliveries SET status='delivered',payload=NULL,detail='transport accepted' WHERE id=?", (receipt['id'],))
             db.commit()
+        record_outcome(db, receipt['id'], result.get('outcome'), result.get('accepted') is True)
+        db.commit()
 
 
 def change(mode, scope, reason, actor):
@@ -401,6 +413,7 @@ class Gate:
         self.spec = spec
         self.accepted = False
         self.rejected = False
+        self.outcome = None
         self.process = None
         self.replay = False
 
@@ -425,10 +438,10 @@ class Gate:
 
     def __exit__(self, *_args):
         if self.replay:
-            replay_complete(self.receipt, self.accepted, self.rejected)
+            replay_complete(self.receipt, self.accepted, self.rejected, self.outcome)
         if self.process:
             try:
-                self.process.stdin.write(encode({'accepted': self.accepted, 'rejected': self.rejected})+'\n')
+                self.process.stdin.write(encode({'accepted': self.accepted, 'rejected': self.rejected, 'outcome': self.outcome})+'\n')
                 self.process.stdin.flush()
             except BrokenPipeError:
                 pass

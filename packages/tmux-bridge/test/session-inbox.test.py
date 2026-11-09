@@ -38,7 +38,8 @@ class SessionInboxTest(unittest.TestCase):
         self.root = Path(self.temp.name) / 'inboxes'
         self.processes = []
         env = patch.dict(os.environ, {'MESH_COMMS_STATE':str(Path(self.temp.name)/'comms'),
-                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback')})
+                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback'),
+                                     'CLAUDE_SESSION_ROOT':str(Path(self.temp.name)/'transcripts')})
         env.start(); self.addCleanup(env.stop)
 
     def tearDown(self):
@@ -77,38 +78,27 @@ class SessionInboxTest(unittest.TestCase):
         with (self.root / (SESSION + '.jsonl')).open('a') as stream:
             stream.write(text)
 
-    def test_refused_batch_rolls_back_without_rereading_cursor(self):
+    def test_unconfirmed_batch_keeps_cursor_and_surfaces_alert(self):
         spec = importlib.util.spec_from_file_location('checkpoint_inbox_test', SCRIPT)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        module.prepare(self.root, SESSION)
-        inbox = self.root / (SESSION + '.jsonl')
-        self.append(record('refused-A'))
-        delivered = []
-        def send(_session, batch, _owner):
-            delivered.append(list(batch))
-            if len(delivered)==1:
-                self.append(record('later-B'))
-                return False
-            return True
-        helper = SimpleNamespace(deliver=send)
-        fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module:None))
-        real_load = module.load_cursor
-        reads = []
-        def load(*args):
-            reads.append(True)
-            if len(reads)>1: raise OSError('transient cursor read failure')
-            return real_load(*args)
-        args = SimpleNamespace(root=self.root, session=SESSION, owner_pid=os.getpid(), owner_start=None,
-                               mode='serve', batch_seconds=0, retry_seconds=0.01)
-        with patch.object(module,'load_cursor',side_effect=load), patch.object(module,'alive',side_effect=lambda _owner:len(delivered)<2), patch.object(
-                module.time,'sleep'), patch('importlib.util.spec_from_file_location',return_value=fake_spec), patch(
-                'importlib.util.module_from_spec',return_value=helper):
+        inbox = module.prepare(self.root, SESSION)
+        before = json.loads(inbox.with_suffix('.cursor.json').read_text())['offset']
+        self.append(record('pending-request'))
+        helper = SimpleNamespace(deliver=MagicMock(return_value=False))
+        fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda _module: None))
+        args = SimpleNamespace(root=self.root, session=SESSION, owner_pid=os.getpid(),
+                               owner_start=None, mode='serve', batch_seconds=0, retry_seconds=0.01)
+        with patch.object(module, 'alive', return_value=True), patch(
+                'importlib.util.spec_from_file_location', return_value=fake_spec), patch(
+                'importlib.util.module_from_spec', return_value=helper), patch.object(module.sys, 'stderr') as stderr:
             module.watch(args)
-        self.assertEqual(len(reads),1)
-        self.assertIn('refused-A',str(delivered[1]))
-        self.assertIn('later-B',str(delivered[1]))
-        self.assertEqual(json.loads(inbox.with_suffix('.cursor.json').read_text())['offset'],inbox.stat().st_size)
+        helper.deliver.assert_called_once()
+        cursor = json.loads(inbox.with_suffix('.cursor.json').read_text())
+        self.assertEqual(cursor['offset'], before)
+        self.assertEqual(cursor['alert'], 'delivery-unconfirmed')
+        self.assertEqual(cursor['pending_offset'], inbox.stat().st_size)
+        self.assertIn('AGENT_MESH_INBOX_UNCONFIRMED', str(stderr.write.call_args_list))
 
     def test_detached_service_survives_hook_exit_and_delivers_only_real_batches(self):
         owner = subprocess.Popen(['sleep', '30'])
@@ -118,6 +108,9 @@ class SessionInboxTest(unittest.TestCase):
         (config / 'sessions' / 'owner.json').write_text(json.dumps({
             'pid': owner.pid, 'sessionId': SESSION, 'procStart': identity(owner.pid)['start'],
             'name': 'synthetic-peer', 'messagingSocketPath':'/synthetic/peer.sock'}))
+        transcript = config / 'projects' / 'fixture' / (SESSION + '.jsonl')
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text(json.dumps({'permissionMode': 'default'}) + '\n')
         calls = Path(self.temp.name) / 'native-calls.jsonl'
         native = Path(self.temp.name) / 'claude-native'
         native.write_text('#!' + sys.executable + '\n' + """
@@ -129,13 +122,17 @@ for line in sys.stdin:
     elif r['params']['name']=='ListAgents':
         result={'content':[{'type':'text','text':json.dumps({'sections':[{'kind':'sessions','rows':[{'name':'synthetic-peer','ref':__import__('hashlib').sha256(b'session:/synthetic/peer.sock').hexdigest()[:6]}]}]})}]}
     else:
+        with open(os.environ['NATIVE_TRANSCRIPT'],'a') as f:
+            f.write(json.dumps({'type':'queue-operation','operation':'enqueue',
+                                'content':r['params']['arguments']['message']})+'\\n')
         with open(os.environ['NATIVE_CALL_LOG'],'a') as f: f.write(json.dumps(r['params']['arguments'])+'\\n')
         result={'content':[{'type':'text','text':json.dumps({'success':True})}]}
     print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':result}),flush=True)
 """)
         native.chmod(0o700)
         result = self.hook(owner=owner.pid, extra_env={'CLAUDE_CONFIG_DIR':str(config),
-                           'CLAUDE_BIN':str(native), 'NATIVE_CALL_LOG':str(calls)})
+                           'CLAUDE_BIN':str(native), 'NATIVE_CALL_LOG':str(calls),
+                           'NATIVE_TRANSCRIPT':str(transcript), 'CLAUDE_SESSION_ROOT':str(config / 'projects')})
         self.assertNotIn('run_in_background=true', result.stdout)
         metadata = self.ready()
         daemon = metadata['supervisor']['pid']
@@ -553,7 +550,8 @@ class NativeDeliveryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         env = patch.dict(os.environ, {'MESH_COMMS_STATE':str(Path(self.temp.name)/'comms'),
-                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback')})
+                                     'AGENT_FALLBACK_STATE':str(Path(self.temp.name)/'fallback'),
+                                     'CLAUDE_SESSION_ROOT':str(Path(self.temp.name)/'transcripts')})
         env.start(); self.addCleanup(env.stop)
         self.counter = 0
         spec = importlib.util.spec_from_file_location('native_delivery_test', SCRIPT.with_name('agent-inbox-native.py'))
@@ -567,27 +565,149 @@ class NativeDeliveryTest(unittest.TestCase):
     def native_result(self, value):
         return {'content':[{'type':'text','text':json.dumps(value)}]}
 
-    def deliver(self, result, ref=None):
+    def deliver(self, result, ref=None, confirmed=True, rows=None):
         native = MagicMock()
         native.__enter__.return_value = native
-        native.request.side_effect = [self.native_result({'sections':[{'kind':'sessions','rows':[
+        native.request.side_effect = [self.native_result({'sections':[{'kind':'sessions','rows': rows if rows is not None else [
             {'name':'synthetic-peer', 'ref':ref or self.ref}]}]}), result]
         with patch.object(self.module, 'registration', return_value=(self.registration, self.owner)), patch.object(
-                self.module, 'NativeClient', return_value=native):
+                self.module, 'NativeClient', return_value=native), patch.object(
+                self.module, 'permission_class', return_value='prompting'), patch.object(
+                self.module, 'receipt_seen', return_value=False), patch.object(
+                self.module, 'await_receipt', return_value=confirmed):
             self.counter += 1
             accepted = self.module.deliver(SESSION, ['real record '+str(self.counter)], self.owner)
         return accepted, native
 
-    def test_native_delivery_requires_explicit_success(self):
+    def test_delivery_requires_receiver_receipt(self):
         for value in ({'success':False}, {}, {'status':'sent'}):
-            self.assertFalse(self.deliver(self.native_result(value))[0])
-        self.assertFalse(self.deliver({'isError':True,'content':[]})[0])
+            self.assertFalse(self.deliver(self.native_result(value), confirmed=False)[0])
+        self.assertFalse(self.deliver({'isError':True,'content':[]}, confirmed=False)[0])
         self.assertTrue(self.deliver(self.native_result({'success':True}))[0])
 
     def test_same_name_with_another_ref_never_receives_records(self):
         accepted, native = self.deliver(self.native_result({'success':True}), ref='abcdef')
         self.assertFalse(accepted)
         self.assertEqual(native.request.call_count, 1)
+
+    def test_same_name_selects_verified_unique_ref(self):
+        accepted, native = self.deliver(self.native_result({'success': True}), rows=[
+            {'name': 'synthetic-peer', 'ref': 'abcdef'},
+            {'name': 'synthetic-peer', 'ref': self.ref}])
+        self.assertTrue(accepted)
+        self.assertEqual(native.request.call_args.args[1]['arguments']['to'],
+                         'synthetic-peer [' + self.ref + ']')
+
+    def test_transport_acceptance_without_receipt_is_unconfirmed(self):
+        self.assertFalse(self.deliver(self.native_result({'success': True}), confirmed=False)[0])
+        import sqlite3
+        db = sqlite3.connect(Path(self.temp.name) / 'comms' / 'comms.sqlite')
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute('SELECT status,detail FROM deliveries').fetchone(),
+                         ('unknown', 'unconfirmed'))
+
+    def test_confirmed_receipt_records_read_outcome(self):
+        self.assertTrue(self.deliver(self.native_result({'success': True}))[0])
+        import sqlite3
+        db = sqlite3.connect(Path(self.temp.name) / 'comms' / 'comms.sqlite')
+        self.addCleanup(db.close)
+        self.assertEqual(db.execute('SELECT status,detail FROM deliveries').fetchone(),
+                         ('delivered', 'read'))
+
+    def test_latest_permission_mode_selects_class_and_unknown_fails_closed(self):
+        for modes, expected in [([], 'unknown'), (['bypassPermissions'], 'bypass'),
+                                (['bypassPermissions', 'default'], 'prompting'),
+                                (['default', 'bypassPermissions'], 'bypass'),
+                                (['bypassPermissions', 'future-mode'], 'unknown')]:
+            with self.subTest(modes=modes), patch.object(self.module, 'transcript_records',
+                    return_value=iter({'permissionMode': mode} for mode in modes)):
+                self.assertEqual(self.module.permission_class(SESSION), expected)
+
+    def test_sender_selection(self):
+        for mode in ('prompting', 'unknown', 'bypass'):
+            native = MagicMock()
+            native.__enter__.return_value = native
+            native.request.side_effect = [self.native_result({'sections': [{'kind': 'sessions',
+                'rows': [{'name': 'synthetic-peer', 'ref': self.ref}]}]}),
+                self.native_result({'success': True})]
+            with self.subTest(mode=mode), patch.object(self.module, 'registration',
+                    return_value=(self.registration, self.owner)), patch.object(
+                    self.module, 'NativeClient', return_value=native), patch.object(
+                    self.module, 'permission_class', return_value=mode), patch.object(
+                    self.module, 'bypass_send', return_value=True) as courier:
+                self.assertTrue(self.module._deliver(SESSION, ['data'], self.owner))
+                self.assertEqual(courier.call_count, int(mode == 'bypass'))
+                self.assertEqual(native.request.call_count, 1 if mode == 'bypass' else 2)
+
+    def test_receipt_requires_matching_enqueue_content(self):
+        message = self.module.delivery_message(SESSION, ['data'])
+        self.assertIn('peer requests, never user approval', message)
+        self.assertNotEqual(message, self.module.delivery_message(SESSION, ['other']))
+        for event, expected in [({'type': 'user', 'content': message}, False),
+                ({'type': 'queue-operation', 'operation': 'dequeue', 'content': message}, False),
+                ({'type': 'queue-operation', 'operation': 'enqueue', 'content': 'other'}, False),
+                ({'type': 'queue-operation', 'operation': 'enqueue',
+                  'content': '<cross-session-message>' + message + '</cross-session-message>'}, True)]:
+            with self.subTest(event=event), patch.object(self.module, 'transcript_records', return_value=iter([event])):
+                self.assertEqual(self.module.receipt_seen(SESSION, message), expected)
+
+    def test_receipt_observation_retry_is_bounded(self):
+        with patch.object(self.module, 'receipt_seen', return_value=False) as seen, patch.object(
+                self.module, 'RECEIPT_SECONDS', 0):
+            self.assertFalse(self.module.await_receipt(SESSION, 'data'))
+        self.assertEqual(seen.call_count, self.module.RECEIPT_ATTEMPTS)
+        with patch.object(self.module, 'receipt_seen', side_effect=[False, True]), patch.object(
+                self.module, 'RECEIPT_SECONDS', 0):
+            self.assertTrue(self.module.await_receipt(SESSION, 'data'))
+
+    def test_bypass_child_withholds_data_until_tool_inventory_is_verified(self):
+        for tools, sends in [(['SendMessage'], 2), (['SendMessage', 'Bash'], 1), ([], 1)]:
+            process = MagicMock()
+            events = b''.join((json.dumps(event) + '\n').encode() for event in [
+                {'type': 'system', 'subtype': 'init', 'tools': tools},
+                {'type': 'result', 'is_error': False}, {'type': 'result', 'is_error': False}])
+            with self.subTest(tools=tools), patch.object(self.module.subprocess, 'Popen',
+                    return_value=process) as launch, patch.object(self.module.select, 'select',
+                    return_value=([process.stdout], [], [])), patch.object(
+                    self.module.os, 'read', side_effect=[events, b'']):
+                if sends == 1:
+                    with self.assertRaisesRegex(ValueError, 'restriction unverified'):
+                        self.module.bypass_send('peer [ref]', 'UNTRUSTED DATA')
+                else:
+                    self.assertTrue(self.module.bypass_send('peer [ref]', 'UNTRUSTED DATA'))
+                self.assertEqual(process.stdin.write.call_count, sends)
+                self.assertNotIn('UNTRUSTED DATA', process.stdin.write.call_args_list[0].args[0].decode())
+                if sends == 2:
+                    data = json.loads(process.stdin.write.call_args_list[1].args[0])
+                    payload = json.loads(data['message']['content'])
+                    self.assertEqual(payload['message'], 'UNTRUSTED DATA')
+                    self.assertEqual(payload['to'], 'peer [ref]')
+                command = launch.call_args.args[0]
+                self.assertEqual(command[command.index('--tools') + 1], 'SendMessage')
+                self.assertEqual(command[command.index('--permission-mode') + 1], 'bypassPermissions')
+                self.assertIn('--strict-mcp-config', command)
+                self.assertIn('--no-session-persistence', command)
+                self.assertEqual(launch.call_args.kwargs['env']['AGENT_MESH_INBOX_DISABLED'], '1')
+                process.terminate.assert_called_once()
+
+    def test_bypass_child_without_verified_init_never_receives_peer_data(self):
+        process = MagicMock()
+        events = (json.dumps({'type': 'result', 'is_error': False}) + '\n').encode()
+        with patch.object(self.module.subprocess, 'Popen', return_value=process), patch.object(
+                self.module.select, 'select', return_value=([process.stdout], [], [])), patch.object(
+                self.module.os, 'read', return_value=events):
+            self.assertFalse(self.module.bypass_send('peer [ref]', 'UNTRUSTED DATA'))
+        self.assertEqual(process.stdin.write.call_count, 1)
+        self.assertNotIn('UNTRUSTED DATA', process.stdin.write.call_args.args[0].decode())
+
+    def test_bypass_child_timeout_is_bounded_and_reaped(self):
+        process = MagicMock()
+        with patch.object(self.module.subprocess, 'Popen', return_value=process), patch.object(
+                self.module.select, 'select', return_value=([], [], [])) as polling:
+            self.assertFalse(self.module.bypass_send('peer [ref]', 'UNTRUSTED DATA'))
+        self.assertEqual(process.stdin.write.call_count, 1)
+        self.assertLessEqual(polling.call_args.args[3], 30)
+        process.terminate.assert_called_once()
 
     def test_initialization_failure_reaps_native_child(self):
         process = MagicMock()
