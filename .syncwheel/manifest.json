@@ -1,30 +1,75 @@
 {
-  "version": 1,
-  "defaults": {
-    "canonical_remote": "origin",
-    "publication_remote": "fork",
-    "base_branch": "main",
-    "base_ref": "origin/main",
-    "integration_membership": "required"
-  },
-  "integration": {
-    "branch": "main-integration",
-    "base": "origin/main",
-    "strategy": "cherry-pick",
-    "stacks": []
-  },
-  "stacks": [],
-  "syncwheel_worktree_root": "var/syncwheel",
-  "syncwheel_tracking": "git-tracked",
-  "repository_mode": "delivery",
-  "channels": [],
   "authority": {
-    "mode": "ai-managed",
     "allow": [
       "source_change"
     ],
     "deny": [
       "destructive_rewrite"
-    ]
-  }
+    ],
+    "mode": "ai-managed"
+  },
+  "channels": [],
+  "defaults": {
+    "base_branch": "main",
+    "base_ref": "origin/main",
+    "canonical_remote": "origin",
+    "integration_membership": "required",
+    "publication_remote": "fork"
+  },
+  "integration": {
+    "base": "origin/main",
+    "branch": "main-integration",
+    "stacks": [
+      "terminal-return-v1",
+      "lifecycle-recent-handoff"
+    ],
+    "strategy": "cherry-pick"
+  },
+  "repository_mode": "delivery",
+  "stacks": [
+    {
+      "base": "origin/main",
+      "branch": "pr/terminal-return-v1",
+      "commits": [
+        "bf9d58b01f44e0d3c2acfbd32d87a9f93b9d8a4a",
+        "c38b448ef43f24d0a0a0db90dfc4434edc5736f2",
+        "2e825a64e494a342a575268be1f90769fed2247a",
+        "ad369ff513ce4d76bedf468b64e82016ff65073e",
+        "382d7ba1999e1e36a8332666066c675bce6e2a89",
+        "fd6ba2af6aadfa206c74072a643c1c5e931bec6b",
+        "36aeb69aaecabc5597b910e3a9d0dc71986d447e",
+        "b15ea9440b2149c1873a7cb8f51ae08f4a32ca90"
+      ],
+      "id": "terminal-return-v1",
+      "integration_branch": "main-integration",
+      "meta": {},
+      "publication": {
+        "enabled": true
+      },
+      "state": "published",
+      "target_branch": "main",
+      "target_remote": "origin"
+    },
+    {
+      "base": "origin/main",
+      "branch": "pr/lifecycle-recent-handoff",
+      "commits": [
+        "7b7af7934fc7f7d107a3756cf404ea354090009d",
+        "90304f8800764745597f6bbd27535d3d59991cd3",
+        "68b35a5c95a0ed2f6b8f7263d002fb6864902e96"
+      ],
+      "id": "lifecycle-recent-handoff",
+      "integration_branch": "main-integration",
+      "meta": {},
+      "publication": {
+        "enabled": true
+      },
+      "state": "published",
+      "target_branch": "main",
+      "target_remote": "origin"
+    }
+  ],
+  "syncwheel_tracking": "git-tracked",
+  "syncwheel_worktree_root": "var/syncwheel",
+  "version": 1
 }
