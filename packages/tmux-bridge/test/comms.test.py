@@ -29,6 +29,15 @@ class CommsTests(unittest.TestCase):
         return {'kind': 'native', 'runtime': runtime, 'destination': '66666666-6666-4666-8666-666666666666',
                 'message': 'Synthetic peer request', 'correlation': correlation}
 
+    def test_cloud_validation_and_replay_command(self):
+        spec = {**self.spec(), 'destination': 'session_Synthetic123', 'cloud': True}
+        self.assertEqual(c.validate(spec)['cloud'], True)
+        self.assertIn('--cloud', c.command(spec))
+        for change in ({'cloud': False}, {'runtime': 'codex'}, {'kind': 'tmux'},
+                       {'destination': 'Create a session'}, {'resume': True}, {'inbox_root': '/synthetic'}):
+            with self.assertRaisesRegex(ValueError, 'invalid Claude cloud'):
+                c.validate({**spec, **change})
+
     def test_queue_durable_dedupe_and_conflict(self):
         c.change('queue', 'claude', 'test hold', 'test')
         with c.locked() as (db, _):

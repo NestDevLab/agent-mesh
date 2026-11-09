@@ -21,6 +21,7 @@ const { values } = parseArgs({
     "correlation-id": { type: "string" },
     timeout: { type: "string", default: "120" },
     "delivery-only": { type: "boolean", default: false },
+    cloud: { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
@@ -30,7 +31,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)]");
   process.exit(0);
 }
 
@@ -42,8 +43,12 @@ const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
 if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
-if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
-  fail("--session must be a complete UUID", 2);
+if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
+  fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
+}
+if (values.cloud ? !/^(session|cse)_[A-Za-z0-9]{1,128}$/.test(sessionId)
+  : !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
+  fail(values.cloud ? "--session must be an exact session_ or cse_ cloud ID" : "--session must be a complete UUID", 2);
 }
 if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 600) {
   fail("--timeout must be an integer from 1 to 600", 2);
@@ -57,7 +62,7 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
   `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
-  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume });
+  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume, ...(values.cloud ? { cloud: true } : {}) });
 activeComms = comms;
 if (comms.status !== 'send') {
   await comms.complete(false);
@@ -65,6 +70,25 @@ if (comms.status !== 'send') {
   console.log(JSON.stringify({ status: comms.status, held: true, commsId: comms.id, agent, sessionId, correlationId }));
   process.exit(0);
 }
+// Cloud follow-ups have a provider queue acknowledgement, but no local transcript.
+// All failures after invoking the provider retain the gate's unknown receipt.
+if (values.cloud) {
+  enqueueStarted = true;
+  const sent = await run(process.env.CLAUDE_BIN || "claude", [
+    "-p", "--cloud", sessionId, "--output-format", "json"
+  ], timeoutSeconds * 1000, message);
+  let receipt;
+  try { receipt = JSON.parse(sent.stdout); } catch { /* Unproven acceptance. */ }
+  if (sent.code !== 0 || receipt?.ok !== true || receipt.session_id !== sessionId) {
+    fail("Claude cloud acceptance is unverified; inspect before retrying", 70);
+  }
+  await comms.complete(true);
+  activeComms = undefined;
+  console.log(JSON.stringify({ status: "queued", agent, sessionId, correlationId,
+    commsId: comms.id, transport: "claude-cloud", readBack: false, responseObserved: false }));
+  process.exit(0);
+}
+
 const claudeInbox = agent === "claude"
   ? await requireManagedClaudeInbox(sessionId, correlationId, values["managed-inbox-root"])
   : undefined;
@@ -270,15 +294,19 @@ async function consumeTranscript(path, start) {
   }
 }
 
-function run(command, args, timeoutMs) {
+function run(command, args, timeoutMs, input) {
   return new Promise((resolveRun) => {
-    execFile(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       resolveRun({
         code: error && typeof error.code === "number" ? error.code : error ? 1 : 0,
         stdout: typeof stdout === "string" ? stdout : "",
         stderr: typeof stderr === "string" && stderr ? stderr : error instanceof Error ? error.message : ""
       });
     });
+    if (input !== undefined) {
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
+    }
   });
 }
 
