@@ -107,6 +107,8 @@ def validate(spec):
                             not re.fullmatch(r'(session|cse)_[A-Za-z0-9]{1,128}', spec['destination']) or
                             spec.get('resume') or spec.get('inbox_root')):
         raise ValueError('invalid Claude cloud destination')
+    if 'steer_first' in spec and (spec['steer_first'] is not True or spec['kind'] != 'native' or spec['runtime'] != 'codex' or spec.get('cloud')):
+        raise ValueError('invalid steer-or-queue destination')
     if len(encode(spec).encode()) > 1048576:
         raise ValueError('comms message exceeds one MiB')
     return spec
@@ -221,6 +223,8 @@ def command(spec):
                 '--correlation-id', spec['correlation'], '--message', spec['message'], '--delivery-only']
         if spec.get('cloud'):
             args += ['--cloud']
+        if spec.get('steer_first'):
+            args += ['--steer-or-queue']
         if spec.get('inbox_root'):
             args += ['--managed-inbox-root', spec['inbox_root']]
         if spec.get('resume'):
