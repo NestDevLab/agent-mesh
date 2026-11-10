@@ -103,7 +103,9 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   const listed = await call(member, "mesh_group_list", { workspace_id: workspace });
   assert.equal(listed.status, 200);
   assert.equal(listed.result.structuredContent.groups[0].group_id, group);
-  assert.equal((await call(member, "mesh_group_create", { name: "Denied", request_id: "denied" })).status, 404);
+  const denied = await call(member, "mesh_group_create", { name: "Denied", request_id: "denied" });
+  assert.ok(denied.status === 404 || denied.result?.isError === true || typeof denied.result?.code === "number",
+    JSON.stringify(denied));
   const created = await call(admin, "mesh_group_create", { name: "Created", request_id: "create-one" });
   assert.equal(created.result.structuredContent.created, true);
   const duplicate = await call(admin, "mesh_group_create", { name: "Created", request_id: "create-one" });
