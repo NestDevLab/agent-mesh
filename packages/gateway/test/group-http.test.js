@@ -34,11 +34,17 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
     globalThis.fetch = oldFetch;
     if (oldState === undefined) delete process.env.XDG_STATE_HOME;
     else process.env.XDG_STATE_HOME = oldState;
-    if (closeGateway) await closeGateway();
-    if (broker && broker.exitCode === null && broker.signalCode === null) {
-      await new Promise(resolveExit => { broker.once("exit", resolveExit); broker.kill("SIGTERM"); });
+    try {
+      if (closeGateway) await closeGateway();
+    } finally {
+      if (broker && broker.exitCode === null && broker.signalCode === null) {
+        await new Promise(resolveExit => {
+          broker.once("exit", resolveExit);
+          if (!broker.kill("SIGTERM")) resolveExit();
+        });
+      }
+      await rm(root, { recursive: true, force: true });
     }
-    await rm(root, { recursive: true, force: true });
   });
   process.env.XDG_STATE_HOME = root;
   await mkdir(gatewayState);
@@ -46,6 +52,7 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   const group = cli("create", "Example").group_id;
   cli("add", group, actor);
   cli("link", group, "work:item-1");
+  cli("link", group, "work:private-item");
   broker = spawn("python3", [join(bin, "mesh_group_broker.py"), "--socket", socket, "--state", state], { env, stdio: "ignore" });
   for (let i = 0; i < 100; i++) {
     try { if ((await stat(socket)).isSocket()) break; } catch { /* starting */ }
@@ -103,6 +110,10 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   const listed = await call(member, "mesh_group_list", { workspace_id: workspace });
   assert.equal(listed.status, 200);
   assert.equal(listed.result.structuredContent.groups[0].group_id, group);
+  assert.deepEqual(listed.result.structuredContent.groups[0].ledger_links.map(link => link.ref), ["work:item-1"]);
+  const hidden = await call(member, "mesh_group_lock_inspect", {
+    workspace_id: workspace, group_id: group, ref: "work:private-item" });
+  assert.equal(hidden.result.isError, true);
   const denied = await call(member, "mesh_group_create", { name: "Denied", request_id: "denied" });
   assert.ok(denied.status === 404 || denied.result?.isError === true || typeof denied.result?.code === "number",
     JSON.stringify(denied));
