@@ -29,6 +29,7 @@ export interface CloudflareAccessBinding {
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
   groupGrants?: readonly GroupGrant[];
+  manageAllGroups?: boolean;
   allowedGoogleAccounts?: readonly GoogleWorkspaceAccountAlias[];
 }
 
@@ -171,7 +172,8 @@ export function resolveCloudflareAccessPrincipal(
     allowedAgentIds: [...binding.allowedAgentIds],
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
     allowedDomainIds: [...binding.allowedDomainIds],
-    ...(binding.groupGrants === undefined ? {} : { groupGrants: binding.groupGrants.map((grant) => ({ ...grant, group_ids: [...grant.group_ids] })) })
+    ...(binding.groupGrants === undefined ? {} : { groupGrants: binding.groupGrants.map((grant) => ({ ...grant, group_ids: [...grant.group_ids] })) }),
+    ...(binding.manageAllGroups === undefined ? {} : { manageAllGroups: binding.manageAllGroups })
   };
 }
 

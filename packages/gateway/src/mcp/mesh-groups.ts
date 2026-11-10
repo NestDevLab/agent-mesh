@@ -119,9 +119,70 @@ function failure() {
   return { content: [{ type: "text" as const, text: "Group operation failed or its outcome is unknown; inspect before retrying." }], isError: true };
 }
 
+function authorizedGroupManager(options: MeshMcpOptions, tool: MeshMcpTool): void {
+  if (options.principal.manageAllGroups !== true || !options.principal.allowedTools.includes(tool) ||
+      !options.rateLimiter.consume(options.principal.id, tool) || options.groupGateway === undefined) {
+    throw new Error("Global group management is not allowed.");
+  }
+}
+
+const sessionId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) || CLOUD_SESSION.test(value));
+const ledgerRef = z.string().max(256).regex(/^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/);
+const label = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/[\x00-\x1f\x7f]/.test(value));
+const roleKey = z.string().regex(/^[a-z0-9][a-z0-9_.:/-]{0,127}$/);
+
+/** Global administration is a separate, explicitly configured host privilege. */
+function registerGroupAdminTools(server: McpServer, options: MeshMcpOptions): void {
+  if (options.principal.manageAllGroups !== true || options.groupGateway === undefined) return;
+  const invoke = async (tool: MeshMcpTool, request: Record<string, unknown>) => {
+    try {
+      authorizedGroupManager(options, tool);
+      return response(await options.groupGateway!.invoke(request));
+    } catch { return failure(); }
+  };
+  if (options.principal.allowedTools.includes("mesh_group_admin_list")) server.registerTool("mesh_group_admin_list", {
+    title: "List all managed groups", description: "Global administrator only; lists groups across the entire broker.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: z.object({}).strict()
+  }, async () => invoke("mesh_group_admin_list", { action: "admin_list" }));
+  if (options.principal.allowedTools.includes("mesh_group_create")) server.registerTool("mesh_group_create", {
+    title: "Create a group", description: "Global administrator only; reuse request_id for an exact retry.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: z.object({ name: label(160), request_id: label(128), role_key: roleKey.optional() }).strict()
+  }, async input => invoke("mesh_group_create", { action: "admin_create", name: input.name,
+    request_id: input.request_id, role_key: input.role_key ?? null }));
+  if (options.principal.allowedTools.includes("mesh_group_add")) server.registerTool("mesh_group_add", {
+    title: "Add a group member", description: "Global administrator only; cloud members must be registered.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: z.object({ group_id: groupId, session_id: sessionId }).strict()
+  }, async input => invoke("mesh_group_add", { action: "admin_add", group: input.group_id, session: input.session_id }));
+  if (options.principal.allowedTools.includes("mesh_group_remove")) server.registerTool("mesh_group_remove", {
+    title: "Remove a group member", description: "Global administrator only; removes membership without deleting history.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: z.object({ group_id: groupId, session_id: sessionId }).strict()
+  }, async input => invoke("mesh_group_remove", { action: "admin_remove", group: input.group_id, session: input.session_id }));
+  if (options.principal.allowedTools.includes("mesh_group_link")) server.registerTool("mesh_group_link", {
+    title: "Link a group to an item", description: "Global administrator only; at most one group leads an item.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: z.object({ group_id: groupId, ref: ledgerRef, lead: z.boolean().optional() }).strict()
+  }, async input => invoke("mesh_group_link", { action: "admin_link", group: input.group_id, ref: input.ref, lead: input.lead ?? null }));
+  if (options.principal.allowedTools.includes("mesh_group_unlink")) server.registerTool("mesh_group_unlink", {
+    title: "Unlink a group from an item", description: "Global administrator only; follows existing lead safeguards.",
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    inputSchema: z.object({ group_id: groupId, ref: ledgerRef }).strict()
+  }, async input => invoke("mesh_group_unlink", { action: "admin_unlink", group: input.group_id, ref: input.ref }));
+  if (options.principal.allowedTools.includes("mesh_group_transfer_lead")) server.registerTool("mesh_group_transfer_lead", {
+    title: "Transfer item lead", description: "Global administrator only; requires the expected current lead.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: z.object({ ref: ledgerRef, from_group_id: groupId, to_group_id: groupId }).strict()
+  }, async input => invoke("mesh_group_transfer_lead", { action: "admin_transfer_lead", ref: input.ref,
+    from_group: input.from_group_id, to_group: input.to_group_id }));
+}
+
 /** Grants and actor identities come from host configuration, never MCP arguments. */
 export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions): void {
   if (options.groupGateway === undefined) return;
+  registerGroupAdminTools(server, options);
   if (options.principal.allowedTools.includes("mesh_group_list")) server.registerTool("mesh_group_list", {
     title: "List accessible groups", description: "Lists groups granted to the authenticated session.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

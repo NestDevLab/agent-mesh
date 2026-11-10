@@ -649,6 +649,7 @@ function validateBinding(
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||
     (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds)) ||
+    (binding.manageAllGroups !== undefined && typeof binding.manageAllGroups !== "boolean") ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
         binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))

@@ -48,7 +48,14 @@ export const MESH_MCP_TOOLS = [
   "mesh_group_list",
   "mesh_group_history",
   "mesh_group_append",
-  "mesh_group_send"
+  "mesh_group_send",
+  "mesh_group_admin_list",
+  "mesh_group_create",
+  "mesh_group_add",
+  "mesh_group_remove",
+  "mesh_group_link",
+  "mesh_group_unlink",
+  "mesh_group_transfer_lead"
 ] as const;
 
 export type MeshMcpTool = (typeof MESH_MCP_TOOLS)[number];
@@ -98,6 +105,8 @@ export interface MeshMcpPrincipal {
   allowedDomainIds: readonly string[];
   /** Host-configured session and group grants; never supplied by tool arguments. */
   groupGrants?: readonly GroupGrant[];
+  /** Explicit global administrator; independent of workspace-scoped group grants. */
+  manageAllGroups?: boolean;
 }
 
 export interface MeshMcpRateLimiter {
@@ -136,7 +145,14 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_group_list: 30,
       mesh_group_history: 60,
       mesh_group_append: 30,
-      mesh_group_send: 10
+      mesh_group_send: 10,
+      mesh_group_admin_list: 30,
+      mesh_group_create: 10,
+      mesh_group_add: 30,
+      mesh_group_remove: 30,
+      mesh_group_link: 30,
+      mesh_group_unlink: 30,
+      mesh_group_transfer_lead: 10
     },
     windowMs = 60_000,
     nowMs: () => number = Date.now

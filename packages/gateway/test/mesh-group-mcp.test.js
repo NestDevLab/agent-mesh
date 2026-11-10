@@ -42,6 +42,11 @@ test("group grants are exact, workspace-bound and reject duplicate or malformed 
     extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } }, [binding]);
   assert.deepEqual(principal.groupGrants, [grant]);
   assert.notEqual(principal.groupGrants[0].group_ids, grant.group_ids);
+  assert.equal(principal.manageAllGroups, undefined);
+  const manager = resolveCloudflareAccessPrincipal({ token: "test", clientId: "test", scopes: [],
+    extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } },
+    [{ ...binding, manageAllGroups: true }]);
+  assert.equal(manager.manageAllGroups, true);
 });
 
 test("authenticated group history and append traverse a private broker without cross-group access", async t => {
@@ -91,6 +96,47 @@ test("authenticated group history and append traverse a private broker without c
   const invalidTarget = await call(handler, "mesh_group_send", { workspace_id: WORKSPACE, group_id: allowed,
     message_id: "three", message: "bad", destinations: ["codex:not-a-member"] });
   assert.equal(invalidTarget.isError, true);
+  const adminTools = ["mesh_group_admin_list", "mesh_group_create", "mesh_group_add", "mesh_group_remove",
+    "mesh_group_link", "mesh_group_unlink", "mesh_group_transfer_lead"];
+  const unauthorized = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+    groupGateway, resolvePrincipal: () => ({ ...principal, allowedTools: adminTools }) });
+  const denied = await call(unauthorized, "mesh_group_create", { name: "Created", request_id: "request-one" });
+  assert.ok(denied.isError || denied.code);
+  const manager = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+    groupGateway, resolvePrincipal: () => ({ ...principal, allowedTools: adminTools, manageAllGroups: true }) });
+  const all = await call(manager, "mesh_group_admin_list", {});
+  assert.deepEqual(new Set(all.structuredContent.groups.map(row => row.group_id)), new Set([allowed, hidden]));
+  const created = await call(manager, "mesh_group_create", { name: "Created", request_id: "request-one" });
+  assert.equal(created.structuredContent.created, true);
+  const group = created.structuredContent.group.group_id;
+  const retry = await call(manager, "mesh_group_create", { name: "Created", request_id: "request-one" });
+  assert.equal(retry.structuredContent.group.group_id, group);
+  assert.equal(retry.structuredContent.created, false);
+  const conflicting = await call(manager, "mesh_group_create", { name: "Different", request_id: "request-one" });
+  assert.equal(conflicting.isError, true);
+  const added = await call(manager, "mesh_group_add", { group_id: group, session_id: ACTOR });
+  assert.equal(added.structuredContent.changed, true);
+  const unregistered = await call(manager, "mesh_group_add", { group_id: group,
+    session_id: "claude-cloud:example:session_NotRegistered" });
+  assert.equal(unregistered.isError, true);
+  const linked = await call(manager, "mesh_group_link", { group_id: group, ref: "work:item-1", lead: true });
+  assert.equal(linked.structuredContent.lead, true);
+  const duplicateLead = await call(manager, "mesh_group_link", { group_id: allowed, ref: "work:item-1", lead: true });
+  assert.equal(duplicateLead.isError, true);
+  const secondLink = await call(manager, "mesh_group_link", { group_id: allowed, ref: "work:item-1" });
+  assert.equal(secondLink.structuredContent.lead, false);
+  const transfer = await call(manager, "mesh_group_transfer_lead", { ref: "work:item-1",
+    from_group_id: group, to_group_id: allowed });
+  assert.equal(transfer.structuredContent.changed, true);
+  const staleTransfer = await call(manager, "mesh_group_transfer_lead", { ref: "work:item-1",
+    from_group_id: group, to_group_id: allowed });
+  assert.equal(staleTransfer.isError, true);
+  const unlinked = await call(manager, "mesh_group_unlink", { group_id: group, ref: "work:item-1" });
+  assert.equal(unlinked.structuredContent.changed, true);
+  const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:item-1" });
+  assert.ok(incompatible.isError || incompatible.code);
+  const removed = await call(manager, "mesh_group_remove", { group_id: group, session_id: ACTOR });
+  assert.equal(removed.structuredContent.changed, true);
   for (let i = 0; i < 11; i++) {
     const item = await call(handler, "mesh_group_append", { workspace_id: WORKSPACE, group_id: allowed,
       message_id: `page-${i}`, message: `reply ${i}` });

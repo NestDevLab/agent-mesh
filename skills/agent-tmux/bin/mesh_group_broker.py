@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import socketserver
@@ -41,9 +42,44 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
         "history": {"action", "actor", "group", "after", "limit"},
         "append": {"action", "actor", "group", "message_id", "message"},
         "send": {"action", "actor", "group", "message_id", "message", "destinations"},
+        "admin_list": {"action"},
+        "admin_create": {"action", "name", "request_id", "role_key"},
+        "admin_add": {"action", "group", "session"},
+        "admin_remove": {"action", "group", "session"},
+        "admin_link": {"action", "group", "ref", "lead"},
+        "admin_unlink": {"action", "group", "ref"},
+        "admin_transfer_lead": {"action", "ref", "from_group", "to_group"},
     }
     if not isinstance(action, str) or action not in fields or set(request) != fields[action]:
         raise ValueError("invalid broker operation fields")
+    if action.startswith("admin_"):
+        manager = GroupActor(manage=True)
+        if action == "admin_list":
+            return {"groups": store.list_groups(manager)}
+        if action == "admin_create":
+            return store.ensure_group(manager, request["name"], request["request_id"], role_key=request["role_key"])
+        if action in ("admin_add", "admin_remove"):
+            session = request["session"]
+            if not isinstance(session, str):
+                raise ValueError("invalid session")
+            provider = session.partition(":")[0]
+            if action == "admin_add" and provider.endswith("-cloud") and (
+                provider != "claude-cloud" or not cloud_is_registered(session)
+            ):
+                raise ValueError("an open cloud graph registration is required")
+            operation = store.add_member if action == "admin_add" else store.remove_member
+            return operation(manager, request["group"], session)
+        ref = request["ref"]
+        if not isinstance(ref, str) or len(ref) > 256 or not re.fullmatch(
+            r"[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", ref
+        ):
+            raise ValueError("ledger ref is not compatible with groups, graph and leases")
+        if action == "admin_link":
+            return store.link_ledger(manager, request["group"], ref, lead=request["lead"])
+        if action == "admin_unlink":
+            return store.unlink_ledger(manager, request["group"], ref)
+        return store.transfer_ledger_lead(manager, ref, from_group_id=request["from_group"],
+                                          to_group_id=request["to_group"])
     actor = GroupActor(session_id=request["actor"])
     if not actor.session_id or not cloud_is_registered(actor.session_id):
         raise ValueError("session is not registered")

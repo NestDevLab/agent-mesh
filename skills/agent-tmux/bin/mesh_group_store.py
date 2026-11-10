@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import errno
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -222,6 +223,26 @@ class GroupStore:
     def get_group(self, actor, group_id):
         with self._transaction() as db:
             return self._describe(db, self._require_group(db, group_id, actor))
+
+    def ensure_group(self, actor, name, request_id, *, role_key=None):
+        """Create one group per stable request ID, safely returning exact retries."""
+        self._require_manager(actor)
+        _one_line(name, 160, "group name")
+        _one_line(request_id, 128, "request id")
+        if role_key is not None:
+            _matched(role_key, _ROLE_KEY, "role key")
+        group_id = "group_" + hashlib.sha256(("group-create-v1\0" + request_id).encode()).hexdigest()[:32]
+        with self._transaction(write=True, initialize=True) as db:
+            existing = db.execute("SELECT * FROM groups WHERE group_id = ?", (group_id,)).fetchone()
+            if existing is not None:
+                if existing["name"] != name or existing["role_key"] != role_key or existing["source_ref"] is not None:
+                    raise GroupConflictError("group request id already belongs to different content")
+                return {"group": self._describe(db, existing), "created": False}
+            if role_key is not None and db.execute("SELECT 1 FROM groups WHERE role_key = ?", (role_key,)).fetchone():
+                raise GroupConflictError("group role key is already assigned")
+            db.execute("INSERT INTO groups (group_id, name, role_key, created_at) VALUES (?, ?, ?, ?)",
+                       (group_id, name, role_key, _now()))
+            return {"group": self._describe(db, self._require_group(db, group_id, actor)), "created": True}
 
     def list_groups(self, actor, *, ledger_ref=None, source_ref=None):
         if ledger_ref is not None:

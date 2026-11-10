@@ -49,7 +49,14 @@ Example configuration shape, with synthetic identifiers:
 ```
 
 This example shows only the additional fields, not a complete gateway config.
-Group creation, membership changes and ledger links remain host management
-operations. No grant, service, credential or rollout is created by this code.
+Group creation, membership and item links have separate administrative tools.
+These are disabled unless a trusted principal has `manageAllGroups: true`
+and each specific tool in its allow-list. This is **global authority over the
+entire broker**, not a workspace-scoped grant; use only a dedicated
+administrator credential, never an ordinary participant identity. Creation
+uses a caller-generated stable request ID: exact retries return the same group;
+reusing an ID with different content fails. Administrative item links accept
+the intersection of the current graph, group and lease reference formats.
+No grant, service, credential or rollout is created by this code.
 Graceful broker shutdown drains admitted requests before removing its socket.
 Forced termination can leave delivery outcomes unknown and needs inspection.
