@@ -3,6 +3,8 @@
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import errno
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -96,34 +98,55 @@ class GroupStore:
         self.state_dir = Path(state_dir).absolute()
         self.path = self.state_dir / "groups.sqlite3"
 
-    @contextmanager
-    def _transaction(self, *, write=False, initialize=False):
+    def _connect(self, *, write, initialize):
         if initialize:
             self.state_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
         try:
-            info = self.state_dir.lstat()
+            directory = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except FileNotFoundError:
+            return None
+        except OSError as error:
+            if error.errno in (errno.ENOTDIR, errno.ELOOP):
+                raise ValueError("group state directory must be private and owned") from error
+            raise
+        try:
+            info = os.fstat(directory)
+            if info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError("group state directory must be private and owned")
+            # Closing a raw descriptor for the database inode can drop SQLite's
+            # POSIX locks in the same process. Open an inode ourselves only when
+            # creating it, and prevent a second connection until it is closed.
+            # The directory lock is independent of SQLite's transaction locks.
+            fcntl.flock(directory, fcntl.LOCK_EX)
+            if initialize:
+                try:
+                    created = os.open(self.path.name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                                      0o600, dir_fd=directory)
+                except FileExistsError:
+                    pass
+                else:
+                    os.close(created)
+            for suffix in ("", "-journal", "-wal", "-shm"):
+                try:
+                    info = os.stat(self.path.name + suffix, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    if suffix == "":
+                        return None
+                    continue
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077 or info.st_nlink != 1):
+                    raise ValueError("group database files must be private, owned regular files")
+            return sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
+                                   uri=True, timeout=5, isolation_level=None)
+        finally:
+            os.close(directory)
+
+    @contextmanager
+    def _transaction(self, *, write=False, initialize=False):
+        db = self._connect(write=write, initialize=initialize)
+        if db is None:
             yield None
             return
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise ValueError("group state directory must be private and owned")
-        if initialize:
-            fd = os.open(self.path, os.O_CREAT | os.O_RDONLY | os.O_NOFOLLOW, 0o600)
-            os.close(fd)
-        for suffix in ("", "-journal", "-wal", "-shm"):
-            try:
-                info = self.path.with_name(self.path.name + suffix).lstat()
-            except FileNotFoundError:
-                if suffix == "":
-                    yield None
-                    return
-                continue
-            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                    or info.st_mode & 0o077 or info.st_nlink != 1):
-                raise ValueError("group database files must be private, owned regular files")
-
-        db = sqlite3.connect(self.path.as_uri() + ("?mode=rw" if write else "?mode=ro"),
-                             uri=True, timeout=5, isolation_level=None)
         try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys = ON")

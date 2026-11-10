@@ -1,13 +1,17 @@
 """Exercise the group CLI and independent connections to the canonical store."""
 
 from concurrent.futures import ThreadPoolExecutor
+import fcntl
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
+from threading import Event, get_ident
 import unittest
+from unittest.mock import patch
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
 sys.dont_write_bytecode = True
@@ -135,6 +139,88 @@ class MeshGroupsTest(unittest.TestCase):
         self.state.chmod(0o755)
         with self.assertRaisesRegex(ValueError, "private and owned"):
             self.store.list_groups(self.admin)
+
+    def test_group_creation_cannot_drop_another_connection_write_lock(self):
+        self.store.create_group(self.admin, "Initial")
+        ready, resume = Event(), Event()
+        connect = sqlite3.connect
+
+        def pause_before_connect(*args, **kwargs):
+            ready.set()
+            if not resume.wait(10):
+                raise TimeoutError("group creator was not resumed")
+            return connect(*args, **kwargs)
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            with self.store._transaction(write=True):
+                with patch.object(sqlite3, "connect", side_effect=pause_before_connect):
+                    future = pool.submit(GroupStore(self.state).create_group, self.admin, "Next")
+                    try:
+                        self.assertTrue(ready.wait(5), "creator did not reach SQLite connection")
+                        # A process outside this interpreter observes the actual
+                        # kernel lock, independent of SQLite's process bookkeeping.
+                        probe = subprocess.run([sys.executable, "-c", """
+import sqlite3, sys
+with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
+    try:
+        db.execute('BEGIN IMMEDIATE')
+    except sqlite3.OperationalError as exc:
+        if str(exc) != 'database is locked':
+            raise
+        print('busy')
+    else:
+        print('acquired')
+""", str(self.store.path)], check=True, capture_output=True, text=True, timeout=5)
+                        self.assertEqual(probe.stdout.strip(), "busy")
+                    finally:
+                        resume.set()
+            self.assertEqual(future.result(timeout=5)["name"], "Next")
+
+    def test_bootstrap_keeps_other_connections_out_until_creation_descriptor_closes(self):
+        opened, resume, waiting, connected = Event(), Event(), Event(), Event()
+        first = {}
+        open_file, close_file, flock, connect = os.open, os.close, fcntl.flock, sqlite3.connect
+
+        def observe_creation(path, flags, *args, **kwargs):
+            fd = open_file(path, flags, *args, **kwargs)
+            if path == self.store.path.name and flags & os.O_CREAT:
+                first.update(fd=fd, thread=get_ident())
+            return fd
+
+        def pause_before_close(fd):
+            if fd == first.get("fd") and not opened.is_set():
+                opened.set()
+                if not resume.wait(10):
+                    close_file(fd)
+                    raise TimeoutError("initial descriptor was not released")
+            close_file(fd)
+
+        def observe_lock(*args):
+            if opened.is_set() and get_ident() != first["thread"]:
+                waiting.set()
+            return flock(*args)
+
+        def observe_connect(*args, **kwargs):
+            if get_ident() != first["thread"]:
+                connected.set()
+            return connect(*args, **kwargs)
+
+        with ThreadPoolExecutor(max_workers=2) as pool, \
+                patch.object(os, "open", side_effect=observe_creation), \
+                patch.object(os, "close", side_effect=pause_before_close), \
+                patch.object(fcntl, "flock", side_effect=observe_lock), \
+                patch.object(sqlite3, "connect", side_effect=observe_connect):
+            initial = pool.submit(self.store.create_group, self.admin, "Initial")
+            try:
+                self.assertTrue(opened.wait(5), "initial descriptor was not opened")
+                second = pool.submit(GroupStore(self.state).create_group, self.admin, "Concurrent")
+                self.assertTrue(waiting.wait(5), "second creator did not reach the bootstrap lock")
+                self.assertFalse(connected.wait(0.2), "second creator reached SQLite before the raw descriptor closed")
+            finally:
+                resume.set()
+            self.assertEqual(initial.result(timeout=5)["name"], "Initial")
+            self.assertEqual(second.result(timeout=5)["name"], "Concurrent")
+        self.assertEqual({group["name"] for group in self.store.list_groups(self.admin)}, {"Initial", "Concurrent"})
 
 
 if __name__ == "__main__":
