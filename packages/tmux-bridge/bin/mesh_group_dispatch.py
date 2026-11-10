@@ -117,6 +117,12 @@ def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=
         # receive through this active-session transport.
         ownership = receipt.get("ownership")
         discovery = ownership.get("discovery") if isinstance(ownership, dict) else None
+        codex_discovery = receipt.get("discovery")
+        if (runtime == "codex" and receipt.get("reason") == "codex_local_transcript_absent"
+                and isinstance(codex_discovery, dict)
+                and codex_discovery.get("scope") == "codex-local-transcripts"
+                and codex_discovery.get("complete") is True):
+            return {"outcome": "unavailable", "reason": "local_transport_has_no_transcript"}
         if (runtime == "claude" and isinstance(ownership, dict) and isinstance(discovery, dict)
                 and ownership.get("state") == "free"
                 and discovery.get("complete") is True

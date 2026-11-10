@@ -110,6 +110,23 @@ class GroupDispatchTest(unittest.TestCase):
         with patch("mesh_group_dispatch.subprocess.run", return_value=SimpleNamespace(returncode=78, stdout=receipt)):
             self.assertEqual(native_transport("claude:22222222-2222-4222-8222-222222222222", "c1", "hi")["outcome"], "unavailable")
 
+    def test_codex_absence_requires_exact_complete_pre_delivery_receipt(self):
+        session = "codex:33333333-3333-4333-8333-333333333333"
+        receipt = {"status": "blocked", "agent": "codex", "sessionId": session[6:],
+                   "correlationId": "c1", "reason": "codex_local_transcript_absent",
+                   "delivery": {"attempted": False},
+                   "discovery": {"scope": "codex-local-transcripts", "complete": True}}
+        def classify(data, code=78):
+            with patch("mesh_group_dispatch.subprocess.run", return_value=SimpleNamespace(returncode=code, stdout=json.dumps(data))):
+                return native_transport(session, "c1", "synthetic")["outcome"]
+        self.assertEqual(classify(receipt), "unavailable")
+        for changed in ({"discovery": {"scope": "codex-local-transcripts", "complete": False}},
+                        {"discovery": {"scope": "other", "complete": True}},
+                        {"reason": "other"}, {"delivery": {"attempted": True}},
+                        {"sessionId": "other"}, {"correlationId": "other"}):
+            self.assertNotEqual(classify({**receipt, **changed}), "unavailable")
+        self.assertNotEqual(classify(receipt, 0), "unavailable")
+
     def test_removed_fallback_is_not_sent_to(self):
         calls = []
         def transport(destination, correlation, prompt):
