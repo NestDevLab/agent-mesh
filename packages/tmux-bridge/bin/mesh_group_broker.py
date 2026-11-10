@@ -71,6 +71,7 @@ class Broker(socketserver.ThreadingUnixStreamServer):
         self.store = GroupStore(state_dir)
         self.inbox_root = inbox_root
         self.socket_path = Path(socket_path)
+        self.socket_identity = None
         info = self.socket_path.parent.stat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise ValueError("socket directory must be private and owned")
@@ -85,7 +86,7 @@ class Broker(socketserver.ThreadingUnixStreamServer):
         super().server_close()
         try:
             info = self.socket_path.lstat()
-            if stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and info.st_ino == self.socket_identity:
+            if self.socket_identity is not None and stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid() and info.st_ino == self.socket_identity:
                 self.socket_path.unlink()
         except FileNotFoundError:
             pass
