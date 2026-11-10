@@ -57,17 +57,21 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
     if not isinstance(destinations, list) or not 1 <= len(destinations) <= 4:
         raise ValueError("one to four destinations required")
     if cloud_bindings_path is not None:
-        # This optional feature requires the separately versioned cloud transport.
-        # Never record a delivery until that dependency and the current binding
-        # have been checked. Re-read the binding for revocation between sends.
-        try:
-            from mesh_group_dispatch import load_cloud_bindings, native_transport
-        except ImportError:
-            raise ValueError("cloud transport is unavailable") from None
-        bindings = load_cloud_bindings(cloud_bindings_path)
+        from mesh_group_dispatch import native_transport
+        def transport(dest, correlation, text):
+            if not dest.startswith("claude-cloud:"):
+                return native_transport(dest, correlation, text, inbox_root=inbox_root)
+            # Read immediately before each cloud attempt: a previous local
+            # attempt can take time and an operator may revoke the binding.
+            try:
+                from mesh_group_dispatch import load_cloud_bindings
+                bindings = load_cloud_bindings(cloud_bindings_path)
+            except (ImportError, OSError, ValueError):
+                return {"outcome": "blocked", "reason": "cloud_binding_unavailable"}
+            return native_transport(dest, correlation, text, inbox_root=inbox_root,
+                                    cloud_bindings=bindings)
         return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations,
-                        lambda dest, correlation, text: native_transport(
-                            dest, correlation, text, inbox_root=inbox_root, cloud_bindings=bindings))
+                        transport)
     if inbox_root is None:
         return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations)
     from mesh_group_dispatch import native_transport

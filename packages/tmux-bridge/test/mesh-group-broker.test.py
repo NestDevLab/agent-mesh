@@ -61,7 +61,7 @@ class GroupBrokerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_operation(self.store, {**request, "actor": OUTSIDER})
 
-    def test_cloud_binding_dependency_fails_closed_before_delivery(self):
+    def test_local_delivery_does_not_require_cloud_binding(self):
         request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "cloud",
                    "message": "work", "destinations": [OTHER]}
         # The gateway can be installed before the optional cloud transport.
@@ -70,17 +70,22 @@ class GroupBrokerTest(unittest.TestCase):
             if name == "mesh_group_dispatch" and len(args) > 2 and "load_cloud_bindings" in (args[2] or ()):
                 raise ImportError("optional dependency missing")
             return real_import(name, *args, **kwargs)
-        with patch("mesh_group_broker.dispatch") as send, patch("builtins.__import__", side_effect=without_cloud):
-            with self.assertRaisesRegex(ValueError, "cloud transport is unavailable"):
-                run_operation(self.store, request, cloud_bindings_path=self.root / "bindings")
-            send.assert_not_called()
+        with patch("mesh_group_dispatch.native_transport", return_value={"outcome": "accepted"}) as send, \
+             patch("builtins.__import__", side_effect=without_cloud):
+            result = run_operation(self.store, request, cloud_bindings_path=self.root / "bindings")
+        self.assertEqual(result["status"], "accepted")
+        send.assert_called_once()
 
     def test_cloud_bindings_are_refreshed_and_passed_to_transport(self):
+        cloud = "claude-cloud:example:session_Abc123"
         request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "cloud-one",
-                   "message": "work", "destinations": [OTHER]}
+                   "message": "work", "destinations": [cloud]}
         bindings = [{"example": {"orgId": "one"}}, {"example": {"orgId": "two"}}]
+        def invoke_transport(*args):
+            return {"status": args[-1](cloud, "correlation", "message")["outcome"]}
         with patch("mesh_group_dispatch.load_cloud_bindings", side_effect=bindings, create=True) as load, \
-             patch("mesh_group_dispatch.native_transport", return_value={"outcome": "accepted"}) as send:
+             patch("mesh_group_dispatch.native_transport", return_value={"outcome": "accepted"}) as send, \
+             patch("mesh_group_broker.dispatch", side_effect=invoke_transport):
             first = run_operation(self.store, request, cloud_bindings_path=self.root / "bindings")
             second = run_operation(self.store, {**request, "message_id": "cloud-two"},
                                    cloud_bindings_path=self.root / "bindings")
@@ -111,6 +116,17 @@ class GroupBrokerTest(unittest.TestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertFalse(result["read_back"])
         self.assertEqual(run.call_count, 1)
+
+    @unittest.skipUnless(hasattr(mesh_group_dispatch, "load_cloud_bindings"), "optional cloud transport not present")
+    def test_missing_cloud_binding_blocks_without_fallback(self):
+        cloud = "claude-cloud:example:session_Abc123"
+        self.store.add_member(GroupActor(manage=True), self.group, cloud)
+        request = {"action": "send", "actor": ACTOR, "group": self.group,
+                   "message_id": "cloud-missing", "message": "work", "destinations": [cloud, OTHER]}
+        with patch("mesh_group_dispatch.native_transport") as send:
+            result = run_operation(self.store, request, cloud_bindings_path=self.root / "missing")
+        self.assertEqual(result["status"], "blocked")
+        send.assert_not_called()
 
     def test_private_socket_round_trip_and_cleanup(self):
         path = self.root / "broker.sock"
