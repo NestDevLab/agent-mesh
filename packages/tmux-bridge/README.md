@@ -36,6 +36,7 @@ MCP servers keep session state in memory only — a restart loses everything. Bu
 | `bin/agent-watch.py` | Follow persisted Codex/Claude transcripts by session id |
 | `bin/agent-link.mjs` | Connect two watched sessions with a bounded Mesh v1 relay |
 | `bin/agent-native-call.mjs` | Use a supported active-session API or return a structured blocker |
+| `bin/agent-mesh group` | Manage [groups and shared conversation history](docs/groups.md) |
 | `bin/mesh-graph.mjs` | Maintain the local append-only session graph and derived projection |
 | `bin/mesh-list-agents.sh` | Discover mesh-capable configs and live tmux targets |
 | `bin/mesh-capacity-dispatch.mjs` | Persist/retry Limen-deferred work without sleeping |

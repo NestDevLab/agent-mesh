@@ -1,0 +1,69 @@
+# Agent Mesh groups
+
+A group has an opaque, stable `group_id`, a display name and an optional stable
+`role_key`. Names can repeat. The role describes the group independently of its
+provider and members. Creating a group does not create a session, acquire a role
+claim or change any existing claims.
+
+## Local API
+
+`agent-mesh group` returns JSON. Options follow the subcommand. Example:
+
+```sh
+group_id=$(agent-mesh group create 'Release planning' --role release:coordinator | jq -r .group_id)
+agent-mesh group add "$group_id" runtime-a:session-1
+agent-mesh group link "$group_id" tracker:release --lead
+agent-mesh group list --ledger-ref tracker:release
+printf '%s' 'The review notes are ready.' | agent-mesh group append "$group_id" \
+  --as-session runtime-a:session-1 --message-id review-notes
+agent-mesh group history "$group_id" --as-session runtime-a:session-1 --after 0 --limit 50
+agent-mesh group remove "$group_id" runtime-a:session-1
+```
+
+- `create`, `add`, `remove`, `link`, `unlink` and `transfer-lead` are management
+  operations. `add` and `remove` accept exact, case-sensitive namespaced session
+  IDs resolved by the caller. Removing a member revokes access to the group and
+  preserves messages the member authored. It does not change group roles or leads.
+- `get` and `list` return group metadata, roster and ledger links. A session can
+  see only its groups; a management actor can see all group metadata. Membership
+  order does not determine routing priority.
+- `append` and `history` require a current member, including when called by a
+  management actor. Every current member can see the entire shared history; adding
+  a member grants that access. Messages have a stable per-group sequence and
+  author. To read another page, pass `next_after` as `--after`. Reuse the same
+  `--message-id` on a retry; the same author and exact text return the stored
+  message, and reusing the ID with different input fails. Appending does not
+  send, broadcast or wake a session.
+
+## Ledger references and lead
+
+References are opaque exact strings. Several groups can link to the same ledger
+reference and each group can link to several references. At most one group is
+lead for any given reference. `link GROUP REF --lead` assigns a vacant lead.
+`transfer-lead REF --from-group CURRENT --to-group TARGET` checks the expected
+current lead and transfers it in one transaction to an already linked group.
+`link GROUP REF --clear-lead` explicitly vacates a lead. An active lead must be
+transferred or cleared before unlinking. Lead is group metadata; it grants no
+ledger write permission, lock, session claim or routing preference.
+
+Group links are available through `group list --ledger-ref REF` and `group get`.
+They do not update the ledger itself or the session graph. Existing graph naming
+conventions are not silently imported into the group store.
+
+## Persistence and trust boundary
+
+The local bridge is the API boundary in this version. Group data and conversation
+history live in one private SQLite database on one host, under
+`$XDG_STATE_HOME/agent-mesh/groups` (default `~/.local/state/agent-mesh/groups`).
+`MESH_GROUPS_STATE` or `--state` selects another private local directory. Separate
+processes using that directory share SQLite transactions. Distributed consistency,
+multi-host writers and a remote endpoint are outside this contract.
+
+The CLI is for the trusted OS account that owns the database. By default it can
+manage groups; `--as-session` selects the membership-only view and is an
+attestation by that account, not proof that the named runtime is the caller.
+Do not expose this CLI as an untrusted subprocess endpoint. In-process callers
+can use `GroupStore` and `GroupActor` from `mesh_group_store.py`; any remote
+adapter must authenticate the actor, bind the exact session ID and grant management
+authority independently before constructing `GroupActor`. Supplying a session ID,
+registering a member or holding a role does not authenticate a caller.
