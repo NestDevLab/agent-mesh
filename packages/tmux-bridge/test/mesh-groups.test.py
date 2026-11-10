@@ -232,7 +232,7 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
         def link(ref, role, session, until=None, evidence=()):
             return {"ref": ref, "role": role, "session": session, "until": until, "evidence": list(evidence)}
 
-        return {"schema": "agent-mesh.session-graph.v1", "migrated": True, "links": [
+        links = [
             link("group:release-director", "discusses", first, evidence=("area:release",)),
             link("group:release-director", "discusses", second),
             link("area:release", "owns", first, evidence=("group:release-director",)),
@@ -241,7 +241,10 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
             link("group:handoff", "discusses", second),
             link("group:handoff", "discusses", first, "2026-01-01T00:00:00Z"),
             link("tracker:unrelated", "works-on", first),
-        ]}
+        ]
+        return {"schema": "agent-mesh.session-graph.v1", "migrated": True, "lastSeq": 20,
+                "links": [{**item, "id": f"link-00000000-0000-4000-8000-{index:012x}"}
+                          for index, item in enumerate(links, 1)]}
 
     def test_graph_import_is_explicit_stable_and_preserves_original_graph(self):
         snapshot = self.graph_snapshot()
@@ -328,6 +331,32 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
         invalid = self.store.import_graph(self.admin, snapshot, "legacy",
                                           role_bindings={"group:release-director": "release:director"})
         self.assertEqual(invalid["destination_conflicts"], ["role release:director already belongs to a group"])
+
+    def test_graph_import_requires_numbered_coverage_and_binds_exact_witnesses(self):
+        snapshot = self.graph_snapshot()
+        with self.assertRaisesRegex(ValueError, "complete link coverage"):
+            self.store.import_graph(self.admin, {**snapshot, "unnumbered": True}, "legacy")
+        with self.assertRaisesRegex(ValueError, "numbered graph"):
+            self.store.import_graph(self.admin, {**snapshot, "lastSeq": 0}, "legacy")
+        plan = self.store.import_graph(self.admin, snapshot, "legacy")
+        self.assertEqual(plan["observed_source_seq"], 20)
+        replacement = {**snapshot, "lastSeq": 21, "links": [
+            {**link, "id": "link-00000000-0000-4000-8000-00000000000f"} if index == 2 else link
+            for index, link in enumerate(snapshot["links"])
+        ]}
+        revised = self.store.import_graph(self.admin, replacement, "legacy")
+        self.assertEqual(revised["groups"], plan["groups"])
+        self.assertNotEqual(revised["plan_digest"], plan["plan_digest"])
+        with self.assertRaisesRegex(GroupConflictError, "digest does not match"):
+            self.store.import_graph(self.admin, replacement, "legacy", expected_digest=plan["plan_digest"])
+        moved_evidence = {**snapshot, "links": [
+            {**link, "evidence": ([] if index == 0 else ["area:release"])} if index < 2 else link
+            for index, link in enumerate(snapshot["links"])
+        ]}
+        revised = self.store.import_graph(self.admin, moved_evidence, "legacy")
+        self.assertEqual(revised["groups"], plan["groups"])
+        self.assertNotEqual(revised["plan_digest"], plan["plan_digest"])
+        self.assertFalse(self.state.exists())
 
 
 if __name__ == "__main__":
