@@ -25,7 +25,8 @@
       "mesh-groups-v1",
       "ledger-item-lock",
       "cloud-group-sessions",
-      "group-message-route"
+      "group-message-route",
+      "groups-scoped-import"
     ],
     "strategy": "cherry-pick"
   },
@@ -177,6 +178,22 @@
         "cb6dcbef91fea1a2acdb8d72fff815f174f3423c",
         "639476aeef1aa59a303a38afee8d3bcb8e10b890"
       ]
+    },
+    {
+      "id": "groups-scoped-import",
+      "branch": "pr/groups-scoped-import",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Import selected legacy groups while checking full graph"
+      }
     }
   ],
   "syncwheel_tracking": "git-tracked",
