@@ -22,7 +22,8 @@
     "stacks": [
       "terminal-return-v1",
       "urgent-native-reply",
-      "mesh-groups-v1"
+      "mesh-groups-v1",
+      "ledger-item-lock"
     ],
     "strategy": "cherry-pick"
   },
@@ -84,6 +85,22 @@
       },
       "meta": {
         "purpose": "Add durable Mesh groups and shared conversation history"
+      }
+    },
+    {
+      "id": "ledger-item-lock",
+      "branch": "feat/ledger-item-lock",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Provide per-item work ledger leases with fencing"
       }
     }
   ],
