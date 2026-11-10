@@ -20,8 +20,7 @@
     "base": "origin/main",
     "branch": "main-integration",
     "stacks": [
-      "terminal-return-v1",
-      "gateway-mesh-send-cloud"
+      "terminal-return-v1"
     ],
     "strategy": "cherry-pick"
   },
@@ -49,25 +48,6 @@
       "state": "published",
       "target_branch": "main",
       "target_remote": "origin"
-    },
-    {
-      "id": "gateway-mesh-send-cloud",
-      "branch": "pr/gateway-mesh-send-cloud",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "eee34a51f3e531dd93e927fa7be409ee01d8a9b8",
-        "fab96c3d8a0b58546340097484f84e4dae910a3b"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Session status, priority and short wait on the MCP gateway"
-      }
     }
   ],
   "syncwheel_tracking": "git-tracked",
