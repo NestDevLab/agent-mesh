@@ -642,7 +642,7 @@ test("urgent with a live writer doesn't wait behind a queued send", async () => 
   await stuck;
 });
 
-test("a held delivery is not reported as queued", async () => {
+for (const urgent of [true, false]) test(urgent ? "a held delivery is not reported as queued" : "a non-urgent held receipt keeps the native result mapping", async () => {
   const { instance } = provider({
     agentNativeCallPath: "/bridge/agent-native-call.mjs",
     run: async (command, args) => {
@@ -651,8 +651,9 @@ test("a held delivery is not reported as queued", async () => {
       return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
     }
   });
-  const result = await instance.send({ sessionId: "session-new", workspaceId: "workspace.allowed", urgent: true, message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" });
-  assert.equal(JSON.parse(result.reply).held, true);
+  const result = await instance.send({ sessionId: "session-new", workspaceId: "workspace.allowed", urgent, message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" });
+  if (urgent) assert.match(result.reply, /^Held/);
+  else assert.equal(result.reply, JSON.stringify({ status: "queued", held: true }));
 });
 
 test("urgent native result timeout stays a result timeout without a second send", async () => {

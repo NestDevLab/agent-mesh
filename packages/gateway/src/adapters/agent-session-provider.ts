@@ -670,6 +670,13 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       env: { ...processEnv },
       timeoutMs: (this.timeoutSeconds + 20) * 1000
     });
+    if (steer && result.code === 0) {
+      try {
+        const receipt: unknown = JSON.parse(result.stdout);
+        if (typeof receipt === "object" && receipt !== null && !Array.isArray(receipt) &&
+            (receipt as { held?: unknown }).held === true) return deliveryReceipt(result);
+      } catch {}
+    }
     return nativeCallResult(result);
   }
 
