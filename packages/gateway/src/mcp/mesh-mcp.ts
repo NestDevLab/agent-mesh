@@ -23,6 +23,7 @@ import { canonicalCloudSessionId } from "../adapters/agent-session-provider.js";
 import type { AgentSessionLiveStatus, SessionAccessProfile } from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
+import { registerGroupMcpTools, type GroupGateway, type GroupGrant } from "./mesh-groups.js";
 
 const MAX_IDENTIFIER_LENGTH = 128;
 const MAX_MESSAGE_LENGTH = 16_384;
@@ -43,7 +44,11 @@ export const MESH_MCP_TOOLS = [
   "mesh_agent_session_get",
   "mesh_session_status",
   "mesh_agent_sessions_search",
-  "mesh_agent_session_transcript"
+  "mesh_agent_session_transcript",
+  "mesh_group_list",
+  "mesh_group_history",
+  "mesh_group_append",
+  "mesh_group_send"
 ] as const;
 
 export type MeshMcpTool = (typeof MESH_MCP_TOOLS)[number];
@@ -76,6 +81,7 @@ export interface MeshMcpOptions {
   taskCoordinator?: MeshTaskCoordinator;
   sessionRegistry?: AgentSessionRegistry;
   workspaceWorkers?: WorkspaceWorkerRouter;
+  groupGateway?: GroupGateway;
   /** Agents mesh_send can reach. Absent means every exposed agent, for deployments without a real transport. */
   meshSendTargets?: ReadonlySet<string>;
   now?: () => Date;
@@ -90,6 +96,8 @@ export interface MeshMcpPrincipal {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  /** Host-configured session and group grants; never supplied by tool arguments. */
+  groupGrants?: readonly GroupGrant[];
 }
 
 export interface MeshMcpRateLimiter {
@@ -124,7 +132,11 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_agent_session_get: 60,
       mesh_session_status: 60,
       mesh_agent_sessions_search: 20,
-      mesh_agent_session_transcript: 60
+      mesh_agent_session_transcript: 60,
+      mesh_group_list: 30,
+      mesh_group_history: 60,
+      mesh_group_append: 30,
+      mesh_group_send: 10
     },
     windowMs = 60_000,
     nowMs: () => number = Date.now
@@ -642,6 +654,7 @@ export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
 /** Registers the Agent Mesh surface on a standalone or aggregated MCP server. */
 export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions): void {
   const facade = new MeshMcpFacade(options);
+  registerGroupMcpTools(server, options);
 
   if (options.principal.allowedTools.includes("mesh_list_agents")) server.registerTool(
     "mesh_list_agents",

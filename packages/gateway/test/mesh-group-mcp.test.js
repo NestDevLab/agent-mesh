@@ -1,0 +1,94 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import test from "node:test";
+import "./ts-extension-resolver.mjs";
+
+const { createMeshMcpHandler, FixedWindowMeshMcpRateLimiter } = await import("../src/mcp/mesh-mcp.ts");
+const { UnixGroupGateway, validGroupGrants } = await import("../src/mcp/mesh-groups.ts");
+const { resolveCloudflareAccessPrincipal } = await import("../src/mcp/cloudflare-access.ts");
+const WORKSPACE = "workspace.example";
+const ACTOR = "claude-cloud:example:session_Abc123";
+const DEST = "codex:11111111-1111-4111-8111-111111111111";
+
+async function call(handler, name, args) {
+  const response = await handler.fetch(new Request("https://mcp.example.test/mcp", {
+    method: "POST", headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+      "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": name },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {
+      name, arguments: args, _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": { name: "group-test", version: "1" },
+        "io.modelcontextprotocol/clientCapabilities": {} }
+    } })
+  }), { authInfo: { token: "synthetic", clientId: "test", scopes: [] } });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  return body.result ?? body.error;
+}
+
+test("group grants are exact, workspace-bound and reject duplicate or malformed scope", () => {
+  const id = "group_" + "a".repeat(32);
+  const grant = { workspace_id: WORKSPACE, session_id: ACTOR, group_ids: [id] };
+  assert.equal(validGroupGrants([grant], [WORKSPACE]), true);
+  assert.equal(validGroupGrants([grant, grant], [WORKSPACE]), false);
+  assert.equal(validGroupGrants([{ ...grant, group_ids: [id, id] }], [WORKSPACE]), false);
+  assert.equal(validGroupGrants([{ ...grant, session_id: "claude-cloud:bad:session_!" }], [WORKSPACE]), false);
+  assert.equal(validGroupGrants([grant], ["workspace.other"]), false);
+  const binding = { kind: "service", selector: "example", allowedTools: ["mesh_group_history"],
+    allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [], groupGrants: [grant] };
+  const principal = resolveCloudflareAccessPrincipal({ token: "synthetic", clientId: "test", scopes: [],
+    extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } }, [binding]);
+  assert.deepEqual(principal.groupGrants, [grant]);
+  assert.notEqual(principal.groupGrants[0].group_ids, grant.group_ids);
+});
+
+test("authenticated group history and append traverse a private broker without cross-group access", async t => {
+  const root = await mkdtemp(join(tmpdir(), "group-mcp-test-"));
+  const state = join(root, "groups"), graph = join(root, "agent-mesh", "graph"), sock = join(root, "broker.sock");
+  const bin = resolve("../tmux-bridge/bin"), env = { ...process.env, XDG_STATE_HOME: root, MESH_GROUPS_STATE: state,
+    PYTHONDONTWRITEBYTECODE: "1" };
+  const run = (program, args) => execFileSync(program, args, { env, encoding: "utf8" });
+  run("node", [join(bin, "mesh-graph.mjs"), "cloud", "register", "--state", graph, "--session", ACTOR, "--evidence", "test:synthetic"]);
+  const cli = (...args) => JSON.parse(run("python3", [join(bin, "mesh-groups.py"), ...args]));
+  const allowed = cli("create", "Allowed").group_id, hidden = cli("create", "Hidden").group_id;
+  for (const group of [allowed, hidden]) { cli("add", group, ACTOR); cli("add", group, DEST); }
+  const broker = spawn("python3", [join(bin, "mesh_group_broker.py"), "--socket", sock, "--state", state], { env, stdio: "ignore" });
+  t.after(async () => {
+    if (broker.exitCode === null && broker.signalCode === null) {
+      await new Promise(resolve => { broker.once("exit", resolve); broker.kill("SIGTERM"); });
+    }
+    await rm(root, { recursive: true, force: true });
+  });
+  for (let i = 0; i < 100; i++) {
+    try { if ((await stat(sock)).isSocket()) break; } catch { /* still starting */ }
+    if (broker.exitCode !== null) throw new Error("broker exited before startup");
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const groupGateway = new UnixGroupGateway(sock, 5000);
+  const principal = { id: "test", kind: "service", requesterId: "mcp.test",
+    allowedTools: ["mesh_group_list", "mesh_group_history", "mesh_group_append", "mesh_group_send"],
+    allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [],
+    groupGrants: [{ workspace_id: WORKSPACE, session_id: ACTOR, group_ids: [allowed] }] };
+  const handler = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+    groupGateway, resolvePrincipal: () => principal });
+  const listed = await call(handler, "mesh_group_list", { workspace_id: WORKSPACE });
+  assert.deepEqual(listed.structuredContent.groups.map(group => group.group_id), [allowed]);
+  const written = await call(handler, "mesh_group_append", { workspace_id: WORKSPACE, group_id: allowed,
+    message_id: "one", message: "hello" });
+  assert.equal(written.structuredContent.message.author_session_id, ACTOR);
+  const repeated = await call(handler, "mesh_group_append", { workspace_id: WORKSPACE, group_id: allowed,
+    message_id: "one", message: "hello" });
+  assert.equal(repeated.structuredContent.duplicate, true);
+  const history = await call(handler, "mesh_group_history", { workspace_id: WORKSPACE, group_id: allowed });
+  assert.deepEqual(history.structuredContent.messages.map(row => row.message), ["hello"]);
+  const forbidden = await call(handler, "mesh_group_history", { workspace_id: WORKSPACE, group_id: hidden });
+  assert.equal(forbidden.isError, true);
+  const spoofed = await call(handler, "mesh_group_append", { workspace_id: WORKSPACE, group_id: allowed,
+    message_id: "two", message: "bad", actor: DEST });
+  assert.ok(spoofed.isError || spoofed.code);
+  const invalidTarget = await call(handler, "mesh_group_send", { workspace_id: WORKSPACE, group_id: allowed,
+    message_id: "three", message: "bad", destinations: ["codex:not-a-member"] });
+  assert.equal(invalidTarget.isError, true);
+});

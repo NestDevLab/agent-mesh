@@ -42,6 +42,7 @@ import {
 } from "./mesh-mcp.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import { MeshTaskStore } from "./mesh-task-store.js";
+import { UnixGroupGateway, validGroupGrants } from "./mesh-groups.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8790;
@@ -67,6 +68,7 @@ interface RuntimeConfig {
   tmuxIngress?: TmuxIngressConfig;
   agentSessions?: AgentSessionsConfig;
   workspaceWorkers?: WorkspaceWorkerRoute[];
+  groups?: { socketPath: string };
 }
 
 interface TmuxIngressConfig {
@@ -145,6 +147,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
   });
   const bindings = config.bindings;
   const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
+  const groupGateway = config.groups === undefined ? undefined : new UnixGroupGateway(config.groups.socketPath);
   const taskCoordinator = new MeshTaskCoordinator({
     store: new MeshTaskStore({ stateDir }),
     execute: (task, hooks) => task.worker_id === undefined
@@ -167,6 +170,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       taskCoordinator,
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
+      ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
     }),
@@ -192,6 +196,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       taskCoordinator,
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
+      ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
@@ -372,6 +377,10 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
   validateMemoryRecall(parsed.memoryRecall);
   validateTmuxIngress(parsed.tmuxIngress, agents);
   validateAgentSessions(parsed.agentSessions, agents, contexts);
+  if (parsed.groups !== undefined && (typeof parsed.groups !== "object" || parsed.groups === null || Array.isArray(parsed.groups) ||
+      typeof parsed.groups.socketPath !== "string" || !isAbsolute(parsed.groups.socketPath))) {
+    throw new Error("Invalid group broker socket configuration.");
+  }
   if (parsed.workspaceWorkers !== undefined) {
     new WorkspaceWorkerRouter(parsed.workspaceWorkers);
     for (const route of parsed.workspaceWorkers) {
@@ -388,7 +397,8 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
     ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
     ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions }),
-    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers })
+    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers }),
+    ...(parsed.groups === undefined ? {} : { groups: parsed.groups })
   };
 }
 
@@ -638,6 +648,7 @@ function validateBinding(
     !Array.isArray(binding.allowedAgentIds) ||
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||
+    (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds)) ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
         binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))
