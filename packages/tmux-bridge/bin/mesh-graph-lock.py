@@ -59,8 +59,8 @@ def identity_dead(identity, current_namespace):
 @contextmanager
 def gate(root):
     info = root.stat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
-        raise ValueError("graph state directory must be private and owned")
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        raise ValueError("graph state directory must be owned and not writable by others")
     fd = os.open(root / "graph.lock.gate", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
         info = os.fstat(fd)

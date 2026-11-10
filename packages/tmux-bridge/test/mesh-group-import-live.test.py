@@ -301,6 +301,19 @@ time.sleep(20)
                 owner.kill()
                 owner.wait(timeout=5)
 
+    def test_readable_graph_root_is_allowed_but_other_writers_are_not(self):
+        spec = importlib.util.spec_from_file_location("graph_lock", BIN / "mesh-graph-lock.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = self.root / "readable-root"
+        state.mkdir(mode=0o755)
+        state.chmod(0o755)
+        token = module.acquire(state, os.getpid())
+        module.release(state, os.getpid(), token)
+        state.chmod(0o777)
+        with self.assertRaisesRegex(ValueError, "not writable by others"):
+            module.acquire(state, os.getpid())
+
 
 if __name__ == "__main__":
     unittest.main()
