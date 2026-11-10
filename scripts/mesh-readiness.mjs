@@ -9,6 +9,9 @@ const checks = [];
 const agentTmuxBundleFiles = [
   "bin/agent-mesh",
   "bin/mesh-comms.py",
+  "bin/mesh-groups.py",
+  "bin/mesh_group_import.py",
+  "bin/mesh_group_store.py",
   "bin/comms-client.mjs",
   "bin/_mesh-graph.sh",
   "bin/_mesh-result.sh",
