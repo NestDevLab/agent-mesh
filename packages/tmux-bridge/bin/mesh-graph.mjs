@@ -52,6 +52,7 @@ const QUERIES = {
   subgraph: (graph, input, scope) => plexus.subgraph(graph, input, scope),
   resume: (graph, input, scope) => plexus.resumeInfo(graph, input, scope, probeWriter),
   search: (graph, input, scope) => plexus.searchSessions(graph, input, scope),
+  items: (graph, input, scope) => plexus.workItems(graph, input, scope, readWorkItems),
 };
 
 const { values, positionals } = parseArgs({
@@ -1748,4 +1749,40 @@ function probeWriter(session) {
   } catch {
     return null;
   }
+}
+
+function readWorkItems() {
+  const bin = join(dirname(fileURLToPath(import.meta.url)), "mesh-ledger.py");
+  const result = spawnSync("python3", [bin, "list", "--json"], { encoding: "utf8", timeout: 120_000, maxBuffer: 64 * 1024 * 1024 });
+  let listing = null;
+  try {
+    listing = JSON.parse(result.stdout);
+  } catch {
+    // Reported below with the exit status.
+  }
+  if (result.status !== 0 || !Array.isArray(listing?.items)) {
+    throw new Error(`ledger listing failed: ${listing?.errors?.[0]?.error || result.error?.code || `exit ${result.status}`}`);
+  }
+  return { items: listing.items, errors: listing.errors, remoteSessions: claudeRemoteSessions() };
+}
+
+// Only running Claude sessions have a record here, so stopped ones get no link.
+function claudeRemoteSessions() {
+  const dir = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "sessions");
+  const remote = {};
+  let names = [];
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return remote;
+  }
+  for (const name of names) {
+    try {
+      const { sessionId, bridgeSessionId } = JSON.parse(readFileSync(join(dir, name), "utf8"));
+      if (typeof sessionId === "string" && typeof bridgeSessionId === "string") remote[sessionId.toLowerCase()] = bridgeSessionId;
+    } catch {
+      // A session can exit and remove its record while we scan.
+    }
+  }
+  return remote;
 }
