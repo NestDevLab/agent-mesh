@@ -66,7 +66,8 @@ async function callTool(handler, name, args) {
     } })
   }), { authInfo: { token: "t", clientId: "client", scopes: [] } });
   assert.equal(response.status, 200);
-  return (await response.json()).result;
+  const payload = await response.json();
+  return payload.result ?? { isError: true, error: payload.error };
 }
 
 test("Codex creation advertises capability and launches read-only by default", async () => {

@@ -396,6 +396,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
     if (response.code !== 0) throw new Error(safeProcessError("Agent session inspection failed", response));
     const session = parseBridgeSessions(response.stdout, this.provider).sessions[0];
+    if (owned !== undefined && (session?.session_id !== input.sessionId || resolve(session.cwd) !== owned.cwd)) {
+      this.ownedCodexTargets.delete(input.sessionId);
+      await this.command(["--agent", "codex", "kill", owned.target], true, owned.socket);
+      throw new Error("Created Codex metadata does not match the owned workspace.");
+    }
     if (session === undefined || !roots.some((root) => isWithin(session.cwd, root))) return undefined;
     return this.summary(session, input.workspaceId);
   }
