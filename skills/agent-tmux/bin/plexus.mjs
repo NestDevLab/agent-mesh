@@ -16,6 +16,7 @@ export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touch
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const CLOUD_SESSION_ID = /^(claude-cloud):([a-z][a-z0-9-]{0,63}):((?:session|cse)_[A-Za-z0-9]{1,128})$/;
 const LIVE_ATTENTION = ["working", "waiting-user", "waiting-joseph"];
 
 export function hostLabel() {
@@ -27,7 +28,31 @@ export function isHarness(agent) {
 }
 
 export function sessionIdOf(node) {
+  if (node?.cloudIdentity || node?.origin === "cloud") return cloudSessionIdOf(node);
   return node && HARNESSES.has(node.agent) && UUID.test(node.runtimeUuid || "") ? `${node.agent}:${node.runtimeUuid.toLowerCase()}` : null;
+}
+
+export function parseCloudSessionId(value) {
+  const match = typeof value === "string" && CLOUD_SESSION_ID.exec(value);
+  if (!match || match[0] !== value) throw new Error("session must be claude-cloud:<account-scope>:<exact cloud ID>");
+  return { provider: match[1], accountScope: match[2], nativeId: match[3] };
+}
+
+export function cloudSessionIdOf(node) {
+  const { provider, accountScope, nativeId } = node?.cloudIdentity || {};
+  if (node?.origin !== "cloud" || ![provider, accountScope, nativeId].every((value) => typeof value === "string")) return null;
+  const value = `${provider}:${accountScope}:${nativeId}`;
+  return CLOUD_SESSION_ID.exec(value)?.[0] === value ? value : null;
+}
+
+function isCloudSessionId(value) {
+  return typeof value === "string" && value.startsWith("claude-cloud:");
+}
+
+function parseGraphSessionId(value) {
+  if (!isCloudSessionId(value)) return parseSessionId(value);
+  parseCloudSessionId(value);
+  return value;
 }
 
 export function linkSubject(node) {
@@ -192,18 +217,19 @@ export function sessionIndex(graph) {
     sessions.set(id, {
       sessionId: id,
       harness: newest.agent,
-      nativeId: newest.runtimeUuid.toLowerCase(),
+      nativeId: newest.cloudIdentity ? newest.cloudIdentity.nativeId : newest.runtimeUuid.toLowerCase(),
+      ...(newest.cloudIdentity ? { cloudIdentity: newest.cloudIdentity } : {}),
       nodeIds: nodes.map((node) => node.id).sort(),
       cwd: newest.cwd,
       title: newest.catalogTitle || newest.title,
       role: newest.catalogRole || "unclassified", project: newest.catalogProject || null,
-      catalogStatus: newest.catalogStatus || newest.status,
-      status: newest.status,
+      catalogStatus: newest.cloudIdentity && newest.status !== "closed" ? "registered" : newest.catalogStatus || newest.status,
+      status: newest.cloudIdentity && newest.status !== "closed" ? null : newest.status,
       attention: nodes.map((node) => node.attention).find((item) => item && LIVE_ATTENTION.includes(item.state)) || newest.attention || null,
       lifecycle: newest.lifecycle || null,
       class: newest.class, origin: newest.origin, surface: newest.surface || {},
       domains: [...new Set(nodes.flatMap((node) => node.domains || []))].sort(),
-      lastSeenAt: newest.lastSeenAt || newest.updatedAt,
+      lastSeenAt: newest.cloudIdentity ? null : newest.lastSeenAt || newest.updatedAt,
       archived: nodes.some((node) => node.surface?.archived === true),
       resumable: newest.resumable,
       resumabilityReasons: newest.resumabilityReasons || [],
@@ -233,7 +259,7 @@ export function makeScope(scope) {
     scoped: true,
     refVisible: (ref) => prefixes.some((prefix) => ref.startsWith(prefix)),
     target: (session) => {
-      if (!session) return undefined;
+      if (!session || session.cloudIdentity) return undefined;
       const match = targets.find((target) => target && target.harness === session.harness &&
         (target.roots || []).some((root) => within(session.cwd, root)) &&
         (!Array.isArray(target.domains) || target.domains.some((domain) => session.domains.includes(domain))));
@@ -260,7 +286,8 @@ function sessionView(view, session, sessionId) {
     ...(!view.scoped ? { lifecycle: session.lifecycle, archived: session.archived,
       resumable: session.resumable, resumabilityReasons: session.resumabilityReasons,
       role: session.role, project: session.project, catalogStatus: session.catalogStatus,
-      class: session.class, origin: session.origin, surface: session.surface, nodeIds: session.nodeIds } : {}), ...(target ? { target } : {}),
+      class: session.class, origin: session.origin, surface: session.surface, nodeIds: session.nodeIds,
+      ...(session.cloudIdentity ? { cloudIdentity: session.cloudIdentity } : {}) } : {}), ...(target ? { target } : {}),
   };
 }
 
@@ -275,7 +302,8 @@ function linkView(link) {
 function context(graph, scope) {
   const view = makeScope(scope);
   const sessions = sessionIndex(graph);
-  const links = graph.links.filter((link) => !link.session.startsWith("pending:") && view.refVisible(link.ref));
+  const links = graph.links.filter((link) => !link.session.startsWith("pending:") &&
+    (!view.scoped || !isCloudSessionId(link.session)) && view.refVisible(link.ref));
   // A ref is shown only if the principal sees at least one session linked to it.
   const shownRefs = new Set(links.filter((link) => visible(view, sessions.get(link.session))).map((link) => link.ref));
   return { view, sessions, links: links.filter((link) => shownRefs.has(link.ref)), shownRefs };
@@ -310,7 +338,7 @@ export function ledgerSessions(graph, input = {}, scope = null) {
 export function sessionLedgers(graph, input = {}, scope = null) {
   const ctx = context(graph, scope);
   if (input.launchId !== undefined) return { links: [] };
-  const id = parseSessionId(input.session);
+  const id = parseGraphSessionId(input.session);
   const session = ctx.sessions.get(id);
   if (scope && !visible(ctx.view, session)) throw notFound();
   const links = ctx.links.filter((link) => link.session === id && (input.history || link.until === null));
@@ -322,11 +350,12 @@ function decay(time, nowMs, halfLifeDays) {
   return 0.5 ** (age / (halfLifeDays * 86_400_000));
 }
 
-function lineageEdges(graph, history) {
+function lineageEdges(graph, history, includeCloud) {
   const sessionOfNode = new Map(graph.nodes.map((node) => [node.id, sessionIdOf(node)]));
   return graph.edges.flatMap((edge) => {
     if (!history && edge.endedAt) return [];
     const from = sessionOfNode.get(edge.from), to = sessionOfNode.get(edge.to);
+    if (!includeCloud && (isCloudSessionId(from) || isCloudSessionId(to))) return [];
     return from && to && from !== to ? [{ id: edge.id, from, to, type: edge.type, endedAt: edge.endedAt || null }] : [];
   });
 }
@@ -368,7 +397,7 @@ function scoreFrom(ctx, graph, id, options) {
       }
     }
   }
-  for (const edge of lineageEdges(graph, history)) {
+  for (const edge of lineageEdges(graph, history, !ctx.view.scoped)) {
     if (kinds && !kinds.has(edge.type)) continue;
     const other = edge.from === id ? edge.to : edge.to === id ? edge.from : null;
     if (!other) continue;
@@ -381,7 +410,7 @@ function scoreFrom(ctx, graph, id, options) {
 
 export function neighbours(graph, input = {}, scope = null, config = {}) {
   const ctx = context(graph, scope);
-  const id = parseSessionId(input.session);
+  const id = parseGraphSessionId(input.session);
   if (scope && !visible(ctx.view, ctx.sessions.get(id))) throw notFound();
   const depth = input.depth === undefined ? 1 : Number(input.depth);
   if (depth !== 1 && depth !== 2) throw new Error("depth must be 1 or 2");
@@ -419,7 +448,7 @@ export function subgraph(graph, input = {}, scope = null) {
   const refs = (input.refs || []).filter((ref) => ctx.shownRefs.has(ref));
   const seeds = new Set(ctx.links.filter((link) => refs.includes(link.ref) && link.until === null).map((link) => link.session));
   for (const value of input.sessions || []) {
-    const id = parseSessionId(value);
+    const id = parseGraphSessionId(value);
     if (!scope || visible(ctx.view, ctx.sessions.get(id))) seeds.add(id);
   }
   const included = new Set(seeds);
@@ -445,7 +474,7 @@ export function subgraph(graph, input = {}, scope = null) {
   const shownSessions = [...included].filter((id) => !scope || visible(ctx.view, ctx.sessions.get(id))).sort();
   const links = ctx.links.filter((link) => link.until === null && shownSessions.includes(link.session));
   const ledgers = [...new Set([...refs, ...links.map((link) => link.ref)])].sort();
-  const edges = lineageEdges(graph, false).filter((edge) => shownSessions.includes(edge.from) && shownSessions.includes(edge.to));
+  const edges = lineageEdges(graph, false, !ctx.view.scoped).filter((edge) => shownSessions.includes(edge.from) && shownSessions.includes(edge.to));
   return {
     sessions: [...shownSessions.map((id) => sessionView(ctx.view, ctx.sessions.get(id), id)), ...[...redacted.values()].sort((a, b) => a.handle.localeCompare(b.handle))],
     ledgers: ledgers.map((ref) => ({ ref, ...(links.find((link) => link.ref === ref && link.title)?.title ? { title: links.find((link) => link.ref === ref && link.title).title } : {}) })),
@@ -469,9 +498,14 @@ export function writerState(harness, status) {
 
 export function resumeInfo(graph, input = {}, scope = null, probeWriter = () => null) {
   const ctx = context(graph, scope);
-  const id = parseSessionId(input.session);
+  const id = parseGraphSessionId(input.session);
   const session = ctx.sessions.get(id);
   if (!session || (scope && !visible(ctx.view, session))) throw notFound();
+  if (session.cloudIdentity) return {
+    sessionId: id, harness: session.harness, nativeId: session.nativeId, host: hostLabel(), workspace: null,
+    resumable: false, reason: "cloud-session", reasons: ["cloud-session"], writer: { state: "unknown" },
+    commands: [], deepLinks: [], hints: [], successor: null,
+  };
   const writer = writerState(session.harness, probeWriter(session));
   const renewal = (graph.renewals || []).filter((item) => item.from === id).at(-1);
   const successor = renewal ? sessionView(ctx.view, ctx.sessions.get(renewal.to), renewal.to) : null;
@@ -680,6 +714,7 @@ function admitted(feed, view, sessions, state, refsFilter, scope) {
     if (refsFilter && !refsFilter.has(feed.ref)) return false;
   }
   const subjects = feed.ref !== undefined ? [feed.from] : [feed.session, feed.from, feed.to].filter(Boolean);
+  if (scope && subjects.some(isCloudSessionId)) return false;
   if (scope && subjects.some((id) => !visible(view, sessions.get(id)) && !(["session.removed", "session.updated"].includes(feed.type) && id === feed.session && feed.lastKnown && visible(view, feed.lastKnown)))) return false;
   if (refsFilter && feed.ref === undefined) {
     const linked = [...state.links.values()].some((link) => link.until === null && refsFilter.has(link.ref) && subjects.includes(link.session));
