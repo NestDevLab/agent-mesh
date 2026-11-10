@@ -34,7 +34,7 @@ import * as plexus from "./plexus.mjs";
 import { catalogList, catalogUpdate, roleOperation } from "./session-catalog.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
-const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation"]);
+const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
 const GRAPH_SCHEMA = "agent-mesh.session-graph.v1";
 const EVENT_SCHEMA = "agent-mesh.session-graph-event.v1";
 const NODE_STATUSES = new Set(["active", "waiting", "blocked", "quiet", "closed"]);
@@ -108,7 +108,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -120,6 +120,9 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "cloud":
+      printResult(cloudRegistration(stateDir, subcommand, values), { json: true });
+      break;
     case "catalog":
       if (subcommand === "list") printResult(catalogList(loadGraph(stateDir), values), { json: true });
       else if (subcommand === "backfill") {
@@ -214,6 +217,45 @@ try {
   }
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
+}
+
+function cloudRegistration(statePath, operation, options) {
+  const allowed = new Set(["state", "session", "json",
+    ...(operation === "register" ? ["evidence", "title"] : [])]);
+  if (Object.entries(options).some(([key, value]) => value !== false && !allowed.has(key))) {
+    throw new Error("cloud commands accept --session and --state; registration also accepts --evidence and --title");
+  }
+  const identity = plexus.parseCloudSessionId(options.session);
+  const find = (graph) => graph.nodes.find((node) => plexus.sessionIdOf(node) === options.session);
+  if (operation === "get") {
+    const node = find(loadGraph(statePath));
+    if (!node || node.status === "closed") throw new Error("open cloud registration not found");
+    return { sessionId: options.session, node };
+  }
+  const evidenceRef = requiredSingleLine(options.evidence, "--evidence");
+  if (!OPAQUE_REF.test(evidenceRef)) throw new Error("--evidence must be an opaque reference to independent verification");
+  const title = optionalSingleLine(options.title, "--title") || "";
+  if (title.length > 512 || /[\x00-\x1f\x7f]/.test(title)) throw new Error("invalid cloud registration title");
+  return mutate(statePath, (graph) => {
+    const existing = find(graph);
+    if (existing) {
+      if (existing.status === "closed") throw new Error("cloud registration is closed");
+      if (existing.cloudIdentity.evidenceRef !== evidenceRef || (title && existing.title !== title)) {
+        throw new Error("cloud session is already registered with different metadata");
+      }
+      return { graph, result: { sessionId: options.session, node: existing, changed: false } };
+    }
+    const timestamp = now();
+    const node = {
+      id: `node-${randomUUID()}`, agent: "claude", origin: "cloud",
+      cloudIdentity: { ...identity, source: "operator-attested", evidenceRef },
+      tmuxTarget: "", cwd: "", roleProfile: "", title, summary: "",
+      runtimeUuid: null, class: "unclassified", status: "quiet", refs: [],
+      lastSeenAt: null, resumable: false, resumabilityReasons: ["cloud-session"],
+      createdAt: timestamp, updatedAt: timestamp,
+    };
+    return { graph, event: event("node.upserted", { node }), result: { sessionId: options.session, node, changed: true } };
+  });
 }
 
 function addNode(statePath, options) {
@@ -490,6 +532,7 @@ function sweepNodes(statePath, options) {
     }
 
     for (const node of desired) {
+      if (node.cloudIdentity) continue;
       const reasons = [];
       if (!node.runtimeUuid) reasons.push("missing-runtime-uuid");
       if (!node.cwd || !existsSync(node.cwd)) reasons.push("missing-cwd");
@@ -550,6 +593,7 @@ function launchHistory() {
 function applyLaunchProvenance(nodes) {
   const launches = launchHistory();
   for (const node of nodes) {
+    if (node.cloudIdentity) continue;
     node.launches = launches.filter((item) => item.agent === node.agent && item.threadId === node.runtimeUuid)
       .map(({ launchId, kind, caller, at }) => ({ launchId, kind, caller, at }));
     if (!ORIGINS.has(node.origin)) node.origin = "human";
@@ -778,6 +822,7 @@ function claimDomain(statePath, options) {
   return mutate(statePath, (graph) => {
     const node = graph.nodes.find((item) => item.id === id);
     if (!node) throw new Error(`node not found: ${id}`);
+    if (node.cloudIdentity) throw new Error("cloud sessions cannot claim a local domain");
     const incumbent = graph.nodes.find((item) => item.id !== id && item.status !== "closed" && (item.primaryDomains || []).includes(domain));
     if (incumbent && takeover !== incumbent.id) throw new Error(`domain '${domain}' already has live primary ${incumbent.id}; rerun with --take-over ${incumbent.id} after human approval`);
     if (takeover && !incumbent) throw new Error(`--take-over ${takeover} is not the live primary for '${domain}'`);
@@ -1194,7 +1239,7 @@ function emptyGraph() {
 
 function normalizeNode(node) {
   const { meta: _legacyMeta, ...normalized } = node;
-  return { ...normalized, refs: normalizeRefs(node.refs), class: NODE_CLASSES.has(node.class) ? node.class : "unclassified", domains: normalizeDomains(node.domains), domainsExplicit: node.domainsExplicit === true, primaryDomains: normalizeDomains(node.primaryDomains), domainPredecessors: normalizePredecessors(node.domainPredecessors), lastSeenAt: typeof node.lastSeenAt === "string" ? node.lastSeenAt : node.updatedAt };
+  return { ...normalized, refs: normalizeRefs(node.refs), class: NODE_CLASSES.has(node.class) ? node.class : "unclassified", domains: normalizeDomains(node.domains), domainsExplicit: node.domainsExplicit === true, primaryDomains: normalizeDomains(node.primaryDomains), domainPredecessors: normalizePredecessors(node.domainPredecessors), lastSeenAt: node.cloudIdentity ? null : typeof node.lastSeenAt === "string" ? node.lastSeenAt : node.updatedAt };
 }
 
 function normalizeDomains(value) {
@@ -1374,6 +1419,16 @@ function validateNode(node) {
   if (node.resumabilityReasons !== undefined && (!Array.isArray(node.resumabilityReasons) || node.resumabilityReasons.some((reason) => typeof reason !== "string"))) throw new Error(`node '${node.id}' has invalid resumabilityReasons`);
   if (node.resumabilityObservedAt !== undefined && typeof node.resumabilityObservedAt !== "string") throw new Error(`node '${node.id}' has invalid resumabilityObservedAt`);
   if (node.origin !== undefined && !ORIGINS.has(node.origin)) throw new Error("invalid node origin");
+  if (node.cloudIdentity !== undefined || node.origin === "cloud") {
+    const identity = node.cloudIdentity;
+    if (!identity || !plexus.cloudSessionIdOf(node) || node.agent !== "claude" || node.origin !== "cloud" ||
+        identity.source !== "operator-attested" || typeof identity.evidenceRef !== "string" || /[\r\n]/.test(identity.evidenceRef) ||
+        !OPAQUE_REF.test(identity.evidenceRef) || node.runtimeUuid !== null || node.cwd || node.tmuxTarget ||
+        node.roleProfile || node.class !== "unclassified" || node.primaryDomains?.length || node.domains?.length ||
+        node.lastSeenAt || node.resumable !== false || !["quiet", "closed"].includes(node.status)) {
+      throw new Error("invalid cloud registration node");
+    }
+  }
   if (node.launches !== undefined && (!Array.isArray(node.launches) || node.launches.some((item) => !item || typeof item.launchId !== "string" || !["spawn", "resume"].includes(item.kind) || !(item.caller === null || typeof item.caller === "string") || !Number.isFinite(Date.parse(item.at))))) throw new Error("invalid node launches");
   assertStatus(node.status);
 }
@@ -1488,6 +1543,7 @@ function fail(message) {
 }
 
 function printHelp() {
+  process.stdout.write(`Cloud sessions:\n  mesh-graph cloud register --session claude-cloud:<account-scope>:<cloud-id> --evidence <opaque-ref> [--title <title>] [--state <dir>]\n  mesh-graph cloud get --session claude-cloud:<account-scope>:<cloud-id> [--state <dir>]\n\n`);
   process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug> --archive exclude|include|only --title <text>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 

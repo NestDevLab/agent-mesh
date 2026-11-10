@@ -41,6 +41,38 @@ route. Verify any response separately with a matching correlation and trustworth
 sender evidence. A cloud sender may use an existing authorized MCP session ingress
 for a local recipient; its actual principal and session scope must be checked first.
 
+## Register a cloud session in the local graph
+
+After independently confirming the provider account and the exact session under
+that account, a local operator can record the identity:
+
+```sh
+mesh-graph cloud register --session claude-cloud:team-a:session_Example123 \
+  --evidence operator:verified-session-record
+mesh-graph cloud get --session claude-cloud:team-a:session_Example123
+```
+
+Choose a stable, distinct lowercase account scope for each provider account or
+tenant; it is an operator-assigned namespace, not a credential. Keep the provider
+ID exactly as verified, including case. Do not treat a `session_` ID and a `cse_`
+ID as aliases. Use an opaque reference to the verification record and keep
+credentials and evidence contents out of graph state.
+
+The graph records an operator attestation, not a provider authentication check.
+The registered ID identifies a graph session; it gives no delivery, live activity,
+local writer, singleton role, or sender authority. Cloud registrations stay in
+the local graph and are excluded from scoped gateway queries. Local session IDs
+remain `codex:<uuid>` and `claude:<uuid>`.
+
+A local group manager can add the registered ID with
+`agent-mesh group add <group-id> claude-cloud:team-a:session_Example123`.
+The command checks that the exact registration is open in the default local
+graph. Membership is durable; closing the graph registration blocks future adds
+without removing existing members. A group member ID is not a credential. The
+local CLI rejects cloud IDs in `--as-session`; an authenticated adapter would
+need to bind the actual provider principal to a session separately before it
+could read or append group messages.
+
 ## Correlated return through the existing Codex transport
 
 A local relay can return a cloud recipient's response through the same native

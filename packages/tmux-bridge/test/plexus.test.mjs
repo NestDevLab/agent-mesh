@@ -47,6 +47,87 @@ const scopeA = {
   handleKey: "space-a-handle-key-0123456789",
 };
 
+test("cloud registration has exact account-qualified identity and survives graph replay", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-cloud-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const id = "claude-cloud:team-a:session_Exact123";
+  const register = (session, extra = []) => ok(state, ["cloud", "register", "--session", session, "--evidence", "operator:verified-record", ...extra]);
+  for (const unverified of [
+    ["--session", id],
+    ["--session", "session_Exact123", "--evidence", "operator:verified-record"],
+    ["--session", "claude-cloud:team-a:some-title", "--evidence", "operator:verified-record"],
+    ["--session", id, "--evidence", "operator:verified-record", "--cwd", "/work/space-a"],
+  ]) {
+    assert.notEqual((await run(state, ["cloud", "register", ...unverified])).code, 0);
+  }
+  const registration = await register(id);
+  assert.equal(registration.sessionId, id);
+  assert.equal(registration.node.runtimeUuid, null);
+  assert.equal(registration.node.origin, "cloud");
+  assert.deepEqual(registration.node.cloudIdentity, {
+    provider: "claude-cloud", accountScope: "team-a", nativeId: "session_Exact123",
+    source: "operator-attested", evidenceRef: "operator:verified-record",
+  });
+  assert.equal((await register(id)).changed, false);
+  assert.notEqual((await run(state, ["cloud", "get", "--session", "claude-cloud:team-a:session_exact123"])).code, 0);
+  const otherAccount = await register("claude-cloud:team-b:session_Exact123");
+  assert.notEqual(otherAccount.node.id, registration.node.id);
+  assert.notEqual((await register("claude-cloud:team-a:cse_Exact123")).node.id, registration.node.id);
+  await rm(join(state, "checkpoint.json"));
+  assert.equal((await ok(state, ["cloud", "get", "--session", id])).node.id, registration.node.id);
+  assert.equal((await query(state, "session-ledgers", { session: id })).session.lastSeenAt, null);
+  await ok(state, ["close", "--id", registration.node.id]);
+  assert.notEqual((await run(state, ["cloud", "get", "--session", id])).code, 0);
+});
+
+test("cloud registrations grant no writer or role and are excluded from scoped graph results", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-cloud-scope-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const local = `claude:${CLAUDE}`;
+  const localNode = (await query(state, "session-ledgers", { session: local })).session.nodeIds[0];
+  const feedHead = await query(state, "changes", { initial: "head" });
+  const id = "claude-cloud:team-a:cse_Exact123";
+  const cloud = await ok(state, ["cloud", "register", "--session", id, "--evidence", "operator:verified-record"]);
+  await ok(state, ["link", "--from", localNode, "--to", cloud.node.id, "--type", "linked"]);
+  await ok(state, ["link", "open", "--id", cloud.node.id, "--ref", "flow:space-a/work-item/1"]);
+  assert.ok((await query(state, "neighbours", { session: local })).neighbours.some((node) => node.sessionId === id));
+  assert.deepEqual((await query(state, "neighbours", { session: local, scope: scopeA })).neighbours, []);
+  assert.ok((await query(state, "ledger-sessions", { ref: "flow:space-a/work-item/1", scope: scopeA })).sessions.every((node) => node.sessionId === local));
+  assert.ok((await query(state, "search", { scope: scopeA })).sessions.every((node) => node.sessionId !== id));
+  assert.deepEqual((await query(state, "changes", { sinceCursor: feedHead.cursor, scope: scopeA })).events, []);
+  assert.match((await run(state, ["query", "resume", "--input", JSON.stringify({ session: id, scope: scopeA })])).stderr, /not found/);
+  const resume = await query(state, "resume", { session: id });
+  assert.deepEqual([resume.resumable, resume.writer.state, resume.commands], [false, "unknown", []]);
+  assert.notEqual((await run(state, ["role", "claim", "--session", id, "--role", "director", "--project", "team-a"])).code, 0);
+  assert.notEqual((await run(state, ["claim", "--id", cloud.node.id, "--role", "orchestrator", "--domain", "team-a"])).code, 0);
+});
+
+test("local groups admit exact open cloud registrations without authenticating cloud actors", async (t) => {
+  const stateHome = await mkdtemp(join(tmpdir(), "plexus-cloud-group-"));
+  t.after(() => rm(stateHome, { recursive: true, force: true }));
+  const state = join(stateHome, "agent-mesh", "graph");
+  const env = { ...process.env, XDG_STATE_HOME: stateHome, MESH_GROUPS_STATE: join(stateHome, "groups") };
+  const cli = join(packageRoot, "bin", "agent-mesh");
+  const group = async (...args) => JSON.parse((await exec(cli, ["group", ...args], { env })).stdout);
+  const { group_id: groupId } = await group("create", "Cloud test");
+  const session = "claude-cloud:team-a:session_Exact123";
+  await assert.rejects(group("add", groupId, session), /open cloud graph registration is required/);
+  await assert.rejects(group("add", groupId, "codex-cloud:team-a:session_Exact123"), /open cloud graph registration is required/);
+  const registration = await ok(state, ["cloud", "register", "--session", session, "--evidence", "operator:verified-record"]);
+  await assert.rejects(group("add", groupId, "claude-cloud:team-b:session_Exact123"), /open cloud graph registration is required/);
+  await assert.rejects(group("add", groupId, "claude-cloud:team-a:session_exact123"), /open cloud graph registration is required/);
+  assert.equal((await group("add", groupId, session)).changed, true);
+  assert.equal((await group("add", groupId, session)).changed, false);
+  assert.deepEqual((await group("get", groupId)).members.map((member) => member.session_id), [session]);
+  await assert.rejects(group("history", groupId, "--as-session", session), /cloud session actors require an authenticated adapter/);
+  await assert.rejects(group("append", groupId, "--as-session", session), /cloud session actors require an authenticated adapter/);
+  await ok(state, ["close", "--id", registration.node.id]);
+  await assert.rejects(group("add", groupId, session), /open cloud graph registration is required/);
+  assert.equal((await group("remove", groupId, session)).changed, true);
+});
+
 test("migrate numbers legacy events, opens legacy links once and keeps refs as a projection", async () => {
   const state = await mkdtemp(join(tmpdir(), "plexus-"));
   try {
