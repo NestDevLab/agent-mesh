@@ -62,6 +62,12 @@ agent-mesh group import-graph --snapshot graph.json --source local-graph --role-
 agent-mesh group list --source-ref group:release-director
 ```
 
+To import a subset, repeat `--include-group group:<slug>` for every selected group
+on both preview and apply. The selection is included in the plan digest. The
+entire supplied graph is still checked for conflicting ownership and its relevant
+witnesses are bound to the plan; provide the complete snapshot, not a pre-filtered
+one. An absent selection imports all groups as before.
+
 Preview does not initialize or change the group database. It proposes one
 stable group per `group:<slug>` with open `discusses` links to canonical local
 sessions. To establish a lead for an area, an open `discusses` link must list

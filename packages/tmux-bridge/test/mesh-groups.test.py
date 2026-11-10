@@ -305,6 +305,36 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
         self.assertEqual(self.store.import_graph(self.admin, snapshot, "legacy",
                                                expected_digest=blocked["plan_digest"])["status"], "imported")
 
+    def test_graph_import_selects_groups_but_checks_full_graph(self):
+        snapshot = self.graph_snapshot()
+        selected = ["group:release-director"]
+        plan = self.store.import_graph(self.admin, snapshot, "legacy", include_groups=selected)
+        self.assertEqual(plan["status"], "ready")
+        self.assertEqual([g["source_ref"] for g in plan["groups"]], selected)
+        self.assertEqual(plan["included_groups"], selected)
+        removed_other = {**snapshot, "links": [link for link in snapshot["links"]
+                                              if link["ref"] != "group:handoff"]}
+        other_plan = self.store.import_graph(self.admin, removed_other, "legacy", include_groups=selected)
+        self.assertNotEqual(plan["plan_digest"], other_plan["plan_digest"])
+        changed_selection = self.store.import_graph(self.admin, snapshot, "legacy", include_groups=["group:handoff"])
+        self.assertNotEqual(plan["plan_digest"], changed_selection["plan_digest"])
+        with self.assertRaisesRegex(GroupConflictError, "digest does not match"):
+            self.store.import_graph(self.admin, snapshot, "legacy", include_groups=["group:handoff"],
+                                    expected_digest=plan["plan_digest"])
+        conflict = {**snapshot, "links": [
+            {**link, "evidence": [*link["evidence"], "group:handoff"]} if link["ref"] == "area:release" else
+            {**link, "evidence": ["area:release"]} if link["ref"] == "group:handoff" else link
+            for link in snapshot["links"]
+        ]}
+        blocked = self.store.import_graph(self.admin, conflict, "legacy", include_groups=selected)
+        self.assertEqual(blocked["status"], "conflict")
+        self.assertTrue(any("more than one group" in c for c in blocked["conflicts"]))
+        self.assertEqual(self.store.import_graph(self.admin, snapshot, "legacy", include_groups=["group:missing"])["status"], "conflict")
+        imported = self.store.import_graph(self.admin, snapshot, "legacy", include_groups=selected,
+                                           expected_digest=plan["plan_digest"])
+        self.assertEqual(imported["status"], "imported")
+        self.assertEqual([g["source_ref"] for g in self.store.list_groups(self.admin)], selected)
+
     def test_graph_import_rejects_nonreciprocal_evidence_and_competing_roles(self):
         snapshot = self.graph_snapshot()
         one_way = {**snapshot, "links": [{**link, "evidence": []} if link["ref"] == "area:release" else link
