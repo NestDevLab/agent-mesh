@@ -12,6 +12,9 @@ sys.dont_write_bytecode = True
 from mesh_group_store import GroupActor, GroupStore
 
 
+MAX_GRAPH_BYTES = 32 * 1024 * 1024
+
+
 def default_state_dir():
     state_home = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
     return os.environ.get("MESH_GROUPS_STATE") or Path(state_home) / "agent-mesh" / "groups"
@@ -32,6 +35,7 @@ def parser():
 
     listing = sub.add_parser("list", parents=[common], help="List accessible groups")
     listing.add_argument("--ledger-ref")
+    listing.add_argument("--source-ref", help="Filter on the exact imported legacy group reference")
     sub.add_parser("get", parents=[common], help="Show one accessible group").add_argument("group_id")
 
     for command in ("add", "remove"):
@@ -63,6 +67,12 @@ def parser():
     history.add_argument("group_id")
     history.add_argument("--after", type=int, default=0)
     history.add_argument("--limit", type=int, default=50)
+
+    graph = sub.add_parser("import-graph", parents=[common], help="Preview an explicit legacy graph snapshot import")
+    graph.add_argument("--snapshot", required=True, type=Path)
+    graph.add_argument("--source", required=True, help="Stable name for the source graph")
+    graph.add_argument("--apply", action="store_true")
+    graph.add_argument("--plan-digest")
     return cli
 
 
@@ -72,7 +82,7 @@ def dispatch(args):
     if args.command == "create":
         return store.create_group(actor, args.name, role_key=args.role)
     if args.command == "list":
-        return {"groups": store.list_groups(actor, ledger_ref=args.ledger_ref)}
+        return {"groups": store.list_groups(actor, ledger_ref=args.ledger_ref, source_ref=args.source_ref)}
     if args.command == "get":
         return store.get_group(actor, args.group_id)
     if args.command == "add":
@@ -92,6 +102,16 @@ def dispatch(args):
         return store.append_message(actor, args.group_id, sys.stdin.read(32_001), message_id=args.message_id)
     if args.command == "history":
         return store.history(actor, args.group_id, after=args.after, limit=args.limit)
+    if args.command == "import-graph":
+        if not actor.manage:
+            raise ValueError("group management is not authorized")
+        if args.apply != (args.plan_digest is not None):
+            raise ValueError("--apply and --plan-digest must be provided together")
+        with args.snapshot.open("rb") as file:
+            payload = file.read(MAX_GRAPH_BYTES + 1)
+        if len(payload) > MAX_GRAPH_BYTES:
+            raise ValueError("graph snapshot exceeds 32 MiB")
+        return store.import_graph(actor, json.loads(payload), args.source, expected_digest=args.plan_digest)
     raise ValueError("unknown group command")
 
 
