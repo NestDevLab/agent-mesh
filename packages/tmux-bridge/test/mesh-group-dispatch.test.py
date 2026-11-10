@@ -127,6 +127,25 @@ class GroupDispatchTest(unittest.TestCase):
             self.assertNotEqual(classify({**receipt, **changed}), "unavailable")
         self.assertNotEqual(classify(receipt, 0), "unavailable")
 
+    def test_real_local_preflight_can_fall_back_without_sending_to_codex(self):
+        sessions = Path(self.tmp.name) / "sessions"
+        sessions.mkdir()
+        calls = []
+        def transport(destination, correlation, prompt):
+            calls.append(destination)
+            if destination == self.reserve:
+                return native_transport(destination, correlation, prompt)
+            return {"outcome": "accepted", "synthetic": True}
+        environment = {**os.environ, "HOME": self.tmp.name, "CODEX_HOME": str(Path(self.tmp.name) / "codex"),
+                       "CODEX_SESSION_ROOT": str(sessions), "MESH_COMMS_STATE": str(Path(self.tmp.name) / "comms")}
+        environment.pop("MESH_COMMS_REPLAY_FD", None)
+        with patch.dict(os.environ, environment, clear=True):
+            result = dispatch(self.store, self.sender, self.group, "codex-absent", "synthetic",
+                              [self.reserve, self.primary], transport)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(calls, [self.reserve, self.primary])
+        self.assertFalse(result["read_back"])
+
     def test_removed_fallback_is_not_sent_to(self):
         calls = []
         def transport(destination, correlation, prompt):
