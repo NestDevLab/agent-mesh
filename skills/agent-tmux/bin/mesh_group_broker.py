@@ -64,7 +64,8 @@ def run_operation(store, request, *, inbox_root=None):
 
 
 class Broker(socketserver.ThreadingUnixStreamServer):
-    daemon_threads = True
+    # On graceful shutdown, retain the socket until admitted operations finish.
+    daemon_threads = False
 
     def __init__(self, socket_path, state_dir, inbox_root=None):
         self.store = GroupStore(state_dir)

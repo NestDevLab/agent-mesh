@@ -58,11 +58,17 @@ export class UnixGroupGateway implements GroupGateway {
       const connection = createConnection(this.socketPath);
       let data = "";
       let finished = false;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
       const fail = () => {
-        if (!finished) { finished = true; connection.destroy(); reject(new Error("Group broker outcome is unknown; do not retry automatically.")); }
+        if (!finished) {
+          finished = true;
+          if (deadline !== undefined) clearTimeout(deadline);
+          connection.destroy();
+          reject(new Error("Group broker outcome is unknown; do not retry automatically."));
+        }
       };
       connection.setEncoding("utf8");
-      connection.setTimeout(this.timeoutMs, fail);
+      deadline = setTimeout(fail, this.timeoutMs);
       connection.on("error", fail);
       connection.on("connect", () => connection.write(payload));
       connection.on("data", (chunk: string) => {
@@ -76,6 +82,7 @@ export class UnixGroupGateway implements GroupGateway {
           const row = response as Record<string, unknown>;
           if (row.ok !== true || typeof row.result !== "object" || row.result === null || Array.isArray(row.result)) return fail();
           finished = true;
+          if (deadline !== undefined) clearTimeout(deadline);
           connection.end();
           resolve(row.result as Record<string, unknown>);
         } catch { fail(); }

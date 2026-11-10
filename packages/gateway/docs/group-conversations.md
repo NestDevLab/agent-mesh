@@ -44,3 +44,5 @@ Example configuration shape, with synthetic identifiers:
 This example shows only the additional fields, not a complete gateway config.
 Group creation, membership changes and ledger links remain host management
 operations. No grant, service, credential or rollout is created by this code.
+Graceful broker shutdown drains admitted requests before removing its socket.
+Forced termination can leave delivery outcomes unknown and needs inspection.

@@ -80,6 +80,40 @@ class GroupBrokerTest(unittest.TestCase):
             thread.join(timeout=5)
         self.assertFalse(path.exists())
 
+    def test_shutdown_waits_for_admitted_request(self):
+        path = self.root / "drain.sock"
+        broker = Broker(path, self.root / "state")
+        server_thread = threading.Thread(target=broker.serve_forever, daemon=True)
+        server_thread.start()
+        entered, release, closed = threading.Event(), threading.Event(), threading.Event()
+        def slow_operation(*_args, **_kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise ValueError("test timed out")
+            return {"groups": []}
+        with patch("mesh_group_broker.run_operation", side_effect=slow_operation):
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                    client.connect(str(path))
+                    client.sendall((json.dumps({"action": "list", "actor": ACTOR}) + "\n").encode())
+                    self.assertTrue(entered.wait(5))
+                    broker.shutdown()
+                    def close():
+                        broker.server_close()
+                        closed.set()
+                    closer = threading.Thread(target=close, daemon=True)
+                    closer.start()
+                    self.assertFalse(closed.wait(0.1))
+                    release.set()
+                    self.assertTrue(closed.wait(5))
+                    closer.join(timeout=5)
+            finally:
+                release.set()
+                broker.shutdown()
+                broker.server_close()
+                server_thread.join(timeout=5)
+        self.assertFalse(path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
