@@ -345,6 +345,53 @@ time.sleep(20)
                 owner.kill()
                 owner.wait(timeout=5)
 
+    def test_zombie_leader_with_live_thread_keeps_its_lock(self):
+        compiler = shutil.which("cc")
+        if compiler is None:
+            self.skipTest("C compiler is needed for the kernel thread fixture")
+        source = self.root / "thread-fixture.c"
+        binary = self.root / "thread-fixture"
+        source.write_text("""
+#include <pthread.h>
+#include <unistd.h>
+static void *worker(void *unused) { sleep(20); return 0; }
+int main(void) {
+    pthread_t thread;
+    if (pthread_create(&thread, 0, worker, 0)) return 1;
+    sleep(1);
+    pthread_exit(0);
+}
+""")
+        subprocess.run([compiler, "-pthread", str(source), "-o", str(binary)],
+                       capture_output=True, check=True, timeout=10)
+        spec = importlib.util.spec_from_file_location("graph_lock", BIN / "mesh-graph-lock.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = self.root / "thread-state"
+        state.mkdir(mode=0o700)
+        owner = subprocess.Popen([str(binary)])
+        try:
+            module.acquire(state, owner.pid)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                info = module.process_info(owner.pid)
+                if info and info["state"] == "Z":
+                    break
+                time.sleep(.02)
+            self.assertEqual(module.process_info(owner.pid)["state"], "Z")
+            metadata = json.loads((state / "graph.lock" / "owner.json").read_text())
+            self.assertFalse(module.identity_dead(metadata, module.namespace()))
+            old = time.time() - 65
+            os.utime(state / "graph.lock", (old, old))
+            with patch.object(module, "WAIT_SECONDS", .15):
+                with self.assertRaisesRegex(ValueError, "busy"):
+                    module.acquire(state, os.getpid())
+            self.assertTrue((state / "graph.lock").is_dir())
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

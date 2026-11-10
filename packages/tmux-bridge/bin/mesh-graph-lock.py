@@ -53,7 +53,24 @@ def identity_dead(identity, current_namespace):
             or identity.get("pidns") != current_namespace["pidns"]):
         return False
     info = process_info(identity["pid"])
-    return info is None or info["start"] != identity["start"] or info["state"] == "Z"
+    if info is None or info["start"] != identity["start"]:
+        return True
+    if info["state"] != "Z":
+        return False
+    # A zombie thread-group leader can coexist with still-running threads.
+    # Only a lone zombie has no thread that could continue a graph mutation.
+    try:
+        status = Path(f"/proc/{identity['pid']}/status").read_text()
+        threads = next((line.partition(":")[2].strip() for line in status.splitlines()
+                        if line.startswith("Threads:")), None)
+        if threads != "1":
+            return False
+        confirmed = process_info(identity["pid"])
+        return confirmed is None or confirmed["start"] != identity["start"] or confirmed["state"] == "Z"
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
 
 
 @contextmanager
