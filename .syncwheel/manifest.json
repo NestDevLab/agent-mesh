@@ -294,7 +294,7 @@
     },
     {
       "id": "group-ref-public",
-      "branch": "syncwheel/draft/group-ref-public",
+      "branch": "pr/group-ref-public",
       "base": "pr/group-gateway-conversation",
       "target_remote": "origin",
       "target_branch": "pr/group-gateway-conversation",
@@ -304,9 +304,9 @@
         "bf9d96d53a51e17a72f06ff2d22d85ac0fe6044e",
         "95b9667719d2f46b928aa147c6fc27cb7d0796e9"
       ],
-      "state": "draft",
+      "state": "published",
       "publication": {
-        "enabled": false
+        "enabled": true
       },
       "meta": {
         "purpose": "Align group and lease item references"
