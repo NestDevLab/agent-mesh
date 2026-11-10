@@ -158,9 +158,9 @@
       "target_branch": "main",
       "integration_branch": "main-integration",
       "commits": [
-        "24ca62551e2072f5da3957caa8cacc529182dcf6",
-        "c791dbeda30e6b8d21cee9ff52e4351ed0a48efb",
-        "7ccd707fc313bb6a443dd08158e96ffb90e9fee8",
+        "1a2dc52998aff508aa12153b29300279ea9f24b8",
+        "6fa156625b385dc05509b1581a27b4dab7ad4e43",
+        "27f5e900d771ffcc7c8a80e202dab5482198a409",
         "a8bcc49efc4fcaa845a9eb392d463cd869c75f8f"
       ],
       "state": "published",
