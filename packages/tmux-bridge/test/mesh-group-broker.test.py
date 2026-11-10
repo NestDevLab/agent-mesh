@@ -6,9 +6,11 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
+import mesh_group_dispatch
 from mesh_group_broker import Broker, run_operation
 from mesh_group_store import GroupActor, GroupStore
 
@@ -74,10 +76,8 @@ class GroupBrokerTest(unittest.TestCase):
             send.assert_not_called()
 
     def test_cloud_bindings_are_refreshed_and_passed_to_transport(self):
-        cloud = "claude-cloud:example:session_Abc123"
-        self.store.add_member(GroupActor(manage=True), self.group, cloud)
         request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "cloud-one",
-                   "message": "work", "destinations": [cloud]}
+                   "message": "work", "destinations": [OTHER]}
         bindings = [{"example": {"orgId": "one"}}, {"example": {"orgId": "two"}}]
         with patch("mesh_group_dispatch.load_cloud_bindings", side_effect=bindings, create=True) as load, \
              patch("mesh_group_dispatch.native_transport", return_value={"outcome": "accepted"}) as send:
@@ -88,6 +88,29 @@ class GroupBrokerTest(unittest.TestCase):
         self.assertEqual(load.call_count, 2)
         self.assertEqual(send.call_args_list[0].kwargs["cloud_bindings"], bindings[0])
         self.assertEqual(send.call_args_list[1].kwargs["cloud_bindings"], bindings[1])
+
+    @unittest.skipUnless(hasattr(mesh_group_dispatch, "load_cloud_bindings"), "optional cloud transport not present")
+    def test_cloud_destination_with_installed_transport(self):
+        cloud = "claude-cloud:example:session_Abc123"
+        self.store.add_member(GroupActor(manage=True), self.group, cloud)
+        binding_path = self.root / "bindings.json"
+        binding_path.write_text('{"example": {"email": "example", "orgId": "org"}}')
+        binding_path.chmod(0o600)
+        request = {"action": "send", "actor": ACTOR, "group": self.group,
+                   "message_id": "cloud-real-adapter", "message": "work", "destinations": [cloud]}
+        def fake_native(args, **_kwargs):
+            self.assertIn("--cloud", args)
+            correlation = args[args.index("--correlation-id") + 1]
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "status": "queued", "agent": "claude", "sessionId": "session_Abc123",
+                "correlationId": correlation,
+            }))
+        with patch("mesh_group_dispatch._cloud_authorized", return_value=True), \
+             patch("mesh_group_dispatch.subprocess.run", side_effect=fake_native) as run:
+            result = run_operation(self.store, request, cloud_bindings_path=binding_path)
+        self.assertEqual(result["status"], "accepted")
+        self.assertFalse(result["read_back"])
+        self.assertEqual(run.call_count, 1)
 
     def test_private_socket_round_trip_and_cleanup(self):
         path = self.root / "broker.sock"
