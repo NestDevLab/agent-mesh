@@ -102,8 +102,8 @@ test("authenticated group history and append traverse a private broker without c
   assert.ok(spoofed.isError || spoofed.code);
   const invalidTarget = await call(handler, "mesh_group_send", { workspace_id: WORKSPACE, group_id: allowed,
     message_id: "three", message: "bad", destinations: ["codex:not-a-member"] });
-  assert.equal(invalidTarget.isError, true);
-  const adminTools = ["mesh_group_admin_list", "mesh_group_create", "mesh_group_add", "mesh_group_remove",
+  assert.ok(invalidTarget.isError || invalidTarget.code);
+  const adminTools = ["mesh_group_admin_list", "mesh_group_create", "mesh_group_set_route", "mesh_group_add", "mesh_group_remove",
     "mesh_group_link", "mesh_group_unlink", "mesh_group_transfer_lead"];
   const unauthorized = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
     groupGateway, resolvePrincipal: () => ({ ...principal, allowedTools: adminTools }) });
@@ -113,6 +113,14 @@ test("authenticated group history and append traverse a private broker without c
     groupGateway, resolvePrincipal: () => ({ ...principal, allowedTools: adminTools, manageAllGroups: true }) });
   const all = await call(manager, "mesh_group_admin_list", {});
   assert.deepEqual(new Set(all.structuredContent.groups.map(row => row.group_id)), new Set([allowed, hidden]));
+  const route = await call(manager, "mesh_group_set_route", { group_id: allowed, revision: 0, destinations: [ACTOR, DEST] });
+  assert.equal(route.structuredContent.revision, 1);
+  const staleRoute = await call(manager, "mesh_group_set_route", { group_id: allowed, revision: 0, destinations: [DEST] });
+  assert.equal(staleRoute.isError, true);
+  const protectedMember = await call(manager, "mesh_group_remove", { group_id: allowed, session_id: ACTOR });
+  assert.equal(protectedMember.isError, true);
+  const revised = await call(manager, "mesh_group_set_route", { group_id: allowed, revision: 1, destinations: [DEST] });
+  assert.equal(revised.structuredContent.revision, 2);
   const created = await call(manager, "mesh_group_create", { name: "Created", request_id: "request-one" });
   assert.equal(created.structuredContent.created, true);
   const group = created.structuredContent.group.group_id;

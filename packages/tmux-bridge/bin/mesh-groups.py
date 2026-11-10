@@ -81,6 +81,13 @@ def parser():
         membership.add_argument("group_id")
         membership.add_argument("session_id")
 
+    route = sub.add_parser("set-route", parents=[common], help="Set ordered primary and fallback members")
+    route.add_argument("group_id")
+    route.add_argument("--revision", type=int, required=True)
+    choice = route.add_mutually_exclusive_group(required=True)
+    choice.add_argument("--to", action="append", help="Member in primary/fallback order; repeat for each member")
+    choice.add_argument("--clear", action="store_true", help="Clear the route while preserving its revision")
+
     link = sub.add_parser("link", parents=[common], help="Link a ledger reference")
     link.add_argument("group_id")
     link.add_argument("ledger_ref")
@@ -132,6 +139,8 @@ def dispatch(args):
         return store.add_member(actor, args.group_id, args.session_id)
     if args.command == "remove":
         return store.remove_member(actor, args.group_id, args.session_id)
+    if args.command == "set-route":
+        return store.set_route(actor, args.group_id, [] if args.clear else args.to, args.revision)
     if args.command == "link":
         return store.link_ledger(actor, args.group_id, args.ledger_ref, lead=args.lead)
     if args.command == "unlink":

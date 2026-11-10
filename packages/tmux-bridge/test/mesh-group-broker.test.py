@@ -94,6 +94,40 @@ class GroupBrokerTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             run_operation(self.store, {**request, "actor": OUTSIDER})
 
+    def test_group_route_tries_only_proven_unavailable_fallbacks(self):
+        self.store.add_member(GroupActor(manage=True), self.group, OUTSIDER)
+        self.store.set_route(GroupActor(manage=True), self.group, [OTHER, OUTSIDER], 0)
+        request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "routed",
+                   "message": "work", "destinations": None}
+        with patch("mesh_group_dispatch.native_transport", side_effect=[
+            {"outcome": "unavailable"}, {"outcome": "accepted"}]) as send:
+            result = run_operation(self.store, request)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual([call.args[0] for call in send.call_args_list], [OTHER, OUTSIDER])
+
+    def test_group_route_never_falls_back_on_unknown_delivery(self):
+        self.store.add_member(GroupActor(manage=True), self.group, OUTSIDER)
+        self.store.set_route(GroupActor(manage=True), self.group, [OTHER, OUTSIDER], 0)
+        request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "route-unknown",
+                   "message": "work", "destinations": None}
+        with patch("mesh_group_dispatch.native_transport", return_value={"outcome": "unknown"}) as send:
+            result = run_operation(self.store, request)
+        self.assertEqual(result["status"], "unknown")
+        send.assert_called_once()
+
+    def test_route_change_stops_fallback_before_next_attempt(self):
+        self.store.add_member(GroupActor(manage=True), self.group, OUTSIDER)
+        self.store.set_route(GroupActor(manage=True), self.group, [OTHER, OUTSIDER], 0)
+        request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "route-changed",
+                   "message": "work", "destinations": None}
+        def unavailable_then_update(*_args, **_kwargs):
+            self.store.set_route(GroupActor(manage=True), self.group, [OUTSIDER, OTHER], 1)
+            return {"outcome": "unavailable"}
+        with patch("mesh_group_dispatch.native_transport", side_effect=unavailable_then_update) as send:
+            result = run_operation(self.store, request)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(send.call_count, 1)
+
     def test_local_delivery_does_not_require_cloud_binding(self):
         request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "cloud",
                    "message": "work", "destinations": [OTHER]}

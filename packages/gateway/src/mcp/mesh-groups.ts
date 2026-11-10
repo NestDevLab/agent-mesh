@@ -203,6 +203,13 @@ function registerGroupAdminTools(server: McpServer, options: MeshMcpOptions): vo
     inputSchema: z.object({ name: label(160), request_id: label(128), role_key: roleKey.optional() }).strict()
   }, async input => invoke("mesh_group_create", { action: "admin_create", name: input.name,
     request_id: input.request_id, role_key: input.role_key ?? null }));
+  if (options.principal.allowedTools.includes("mesh_group_set_route")) server.registerTool("mesh_group_set_route", {
+    title: "Set primary and fallback members", description: "Global administrator only; update the route using its observed revision.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: z.object({ group_id: groupId, revision: fence, destinations: z.array(sessionId).max(4)
+      .refine(value => new Set(value).size === value.length) }).strict()
+  }, async input => invoke("mesh_group_set_route", { action: "admin_set_route", group: input.group_id,
+    revision: input.revision, destinations: input.destinations }));
   if (options.principal.allowedTools.includes("mesh_group_add")) server.registerTool("mesh_group_add", {
     title: "Add a group member", description: "Global administrator only; cloud members must be registered.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
@@ -277,13 +284,13 @@ export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions
     } catch { return failure(); }
   });
   if (options.principal.allowedTools.includes("mesh_group_send")) server.registerTool("mesh_group_send", {
-    title: "Send a group message", description: "Records a message and attempts delivery to ordered group members; unknown outcomes are not retried.",
+    title: "Send a group message", description: "Uses the configured primary and fallbacks unless destinations are explicitly supplied; unknown outcomes are not retried.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
-    inputSchema: object.extend({ message_id: messageId, message, destinations: z.array(z.string().min(1).max(320)).min(1).max(4) })
+    inputSchema: object.extend({ message_id: messageId, message, destinations: z.array(sessionId).min(1).max(4).optional() })
   }, async input => {
     try {
       const grant = authorized(options, "mesh_group_send", input.workspace_id, input.group_id);
-      return response(await options.groupGateway!.invoke({ action: "send", actor: grant.session_id, group: input.group_id, message_id: input.message_id, message: input.message, destinations: input.destinations }));
+      return response(await options.groupGateway!.invoke({ action: "send", actor: grant.session_id, group: input.group_id, message_id: input.message_id, message: input.message, destinations: input.destinations ?? null }));
     } catch { return failure(); }
   });
 }

@@ -28,6 +28,13 @@ message ID and is idempotent for the same author and content. Send records the
 message itself, then tries the requested members in order only after a proven
 pre-delivery refusal. Do not append the same ID before sending. Held and
 unknown outcomes are not proof of delivery and must not trigger blind retries.
+An administrator can set an ordered route of up to four existing members:
+the first is the primary and the rest are fallbacks. Setting the route requires
+the observed revision; a stale revision fails rather than overwriting another
+update. When destinations are omitted, send uses this route, excluding the
+sender; it stops before the next attempt if the route revision changed.
+Removing a routed member requires updating the route first. Existing groups
+without a route remain unconfigured and cannot be sent to implicitly.
 The broker uses the existing communication gate. Its native transport determines
 which destination providers are currently supported; registering a cloud member
 alone does not enable cloud delivery.

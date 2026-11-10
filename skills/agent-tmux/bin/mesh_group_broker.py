@@ -50,6 +50,7 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
         "lock_release": {"action", "actor", "group", "ref", "fence", "lease_id"},
         "admin_list": {"action"},
         "admin_create": {"action", "name", "request_id", "role_key"},
+        "admin_set_route": {"action", "group", "destinations", "revision"},
         "admin_add": {"action", "group", "session"},
         "admin_remove": {"action", "group", "session"},
         "admin_link": {"action", "group", "ref", "lead"},
@@ -64,6 +65,8 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
             return {"groups": store.list_groups(manager)}
         if action == "admin_create":
             return store.ensure_group(manager, request["name"], request["request_id"], role_key=request["role_key"])
+        if action == "admin_set_route":
+            return store.set_route(manager, request["group"], request["destinations"], request["revision"])
         if action in ("admin_add", "admin_remove"):
             session = request["session"]
             if not isinstance(session, str):
@@ -114,12 +117,25 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
     if action == "append":
         return store.append_message(actor, request["group"], request["message"], message_id=request["message_id"])
     destinations = request["destinations"]
+    automatic = destinations is None
+    route_revision = None
+    if automatic:
+        route = store.get_group(actor, request["group"])["route"]
+        route_revision = route["revision"]
+        destinations = [session for session in route["destinations"] if session != actor.session_id]
     if not isinstance(destinations, list) or not 1 <= len(destinations) <= 4:
-        raise ValueError("one to four destinations required")
-    if cloud_bindings_path is not None:
+        raise ValueError("one to four destinations or a configured group route required")
+    if automatic or cloud_bindings_path is not None or inbox_root is not None:
         from mesh_group_dispatch import native_transport
         def transport(dest, correlation, text):
-            if not dest.startswith("claude-cloud:"):
+            if automatic:
+                try:
+                    current = store.get_group(actor, request["group"])["route"]
+                    if current["revision"] != route_revision or dest not in current["destinations"]:
+                        return {"outcome": "blocked", "reason": "group_route_changed"}
+                except ValueError:
+                    return {"outcome": "blocked", "reason": "group_route_unavailable"}
+            if cloud_bindings_path is None or not dest.startswith("claude-cloud:"):
                 return native_transport(dest, correlation, text, inbox_root=inbox_root)
             # Read immediately before each cloud attempt: a previous local
             # attempt can take time and an operator may revoke the binding.
@@ -132,11 +148,7 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
                                     cloud_bindings=bindings)
         return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations,
                         transport)
-    if inbox_root is None:
-        return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations)
-    from mesh_group_dispatch import native_transport
-    return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations,
-                    lambda dest, correlation, text: native_transport(dest, correlation, text, inbox_root=inbox_root))
+    return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations)
 
 
 class Broker(socketserver.ThreadingUnixStreamServer):

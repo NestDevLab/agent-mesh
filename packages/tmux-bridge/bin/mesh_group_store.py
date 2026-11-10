@@ -20,6 +20,21 @@ _SESSION_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,
 _ROLE_KEY = re.compile(r"[a-z0-9][a-z0-9_.:/-]{0,127}")
 _GROUP_ID = re.compile(r"group_[a-f0-9]{32}")
 _VERSION = 1
+_MAX_ROUTE_REVISION = (1 << 53) - 1
+_ROUTE_SCHEMA = (
+    """CREATE TABLE IF NOT EXISTS group_routes (
+        group_id TEXT PRIMARY KEY NOT NULL REFERENCES groups(group_id),
+        revision INTEGER NOT NULL CHECK (revision > 0)
+    )""",
+    """CREATE TABLE IF NOT EXISTS group_route_members (
+        group_id TEXT NOT NULL REFERENCES group_routes(group_id),
+        position INTEGER NOT NULL CHECK (position >= 0),
+        session_id TEXT NOT NULL,
+        PRIMARY KEY (group_id, position),
+        UNIQUE (group_id, session_id),
+        FOREIGN KEY (group_id, session_id) REFERENCES members(group_id, session_id)
+    )""",
+)
 _SCHEMA = (
     """CREATE TABLE groups (
         group_id TEXT PRIMARY KEY NOT NULL,
@@ -35,6 +50,7 @@ _SCHEMA = (
         PRIMARY KEY (group_id, session_id)
     )""",
     "CREATE INDEX members_by_session ON members(session_id, group_id)",
+    *_ROUTE_SCHEMA,
     """CREATE TABLE ledger_links (
         group_id TEXT NOT NULL REFERENCES groups(group_id),
         ref TEXT NOT NULL,
@@ -205,7 +221,56 @@ class GroupStore:
             "ledger_links": [{"ref": row["ref"], "lead": bool(row["lead"])} for row in db.execute(
                 "SELECT ref, lead FROM ledger_links WHERE group_id = ? ORDER BY ref", key
             )],
+            "route": GroupStore._route(db, group["group_id"]),
         }
+
+    @staticmethod
+    def _route(db, group_id):
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                                               "AND name IN ('group_routes', 'group_route_members')")}
+        if not tables:
+            return {"revision": 0, "destinations": []}
+        if len(tables) != 2:
+            raise ValueError("incomplete group route schema")
+        row = db.execute("SELECT revision FROM group_routes WHERE group_id = ?", (group_id,)).fetchone()
+        if row is None:
+            return {"revision": 0, "destinations": []}
+        return {"revision": row["revision"], "destinations": [member["session_id"] for member in db.execute(
+            "SELECT session_id FROM group_route_members WHERE group_id = ? ORDER BY position", (group_id,)
+        )]}
+
+    def set_route(self, actor, group_id, destinations, expected_revision):
+        """Atomically set ordered primary and fallbacks using a revision compare-and-set."""
+        self._require_manager(actor)
+        if type(expected_revision) is not int or not 0 <= expected_revision <= _MAX_ROUTE_REVISION:
+            raise ValueError("invalid expected route revision")
+        if not isinstance(destinations, list) or len(destinations) > 4:
+            raise ValueError("route must contain at most four destinations")
+        for session in destinations:
+            _matched(session, _SESSION_ID, "session id")
+        if len(set(destinations)) != len(destinations):
+            raise ValueError("route destinations must be unique")
+        with self._transaction(write=True) as db:
+            self._require_group(db, group_id, actor)
+            current = self._route(db, group_id)
+            if current["revision"] != expected_revision:
+                raise GroupConflictError("route revision changed; inspect before updating")
+            if any(db.execute("SELECT 1 FROM members WHERE group_id = ? AND session_id = ?",
+                              (group_id, session)).fetchone() is None for session in destinations):
+                raise GroupConflictError("route destinations must be current group members")
+            if current["destinations"] == destinations:
+                return {"group_id": group_id, **current, "changed": False}
+            if expected_revision == _MAX_ROUTE_REVISION:
+                raise GroupConflictError("route revision exhausted")
+            for statement in _ROUTE_SCHEMA:
+                db.execute(statement)
+            revision = expected_revision + 1
+            db.execute("INSERT INTO group_routes VALUES (?, ?) ON CONFLICT(group_id) DO UPDATE SET revision=excluded.revision",
+                       (group_id, revision))
+            db.execute("DELETE FROM group_route_members WHERE group_id = ?", (group_id,))
+            db.executemany("INSERT INTO group_route_members VALUES (?, ?, ?)",
+                           ((group_id, position, session) for position, session in enumerate(destinations)))
+            return {"group_id": group_id, "revision": revision, "destinations": list(destinations), "changed": True}
 
     def create_group(self, actor, name, *, role_key=None):
         self._require_manager(actor)
@@ -346,6 +411,8 @@ class GroupStore:
         _matched(session_id, _SESSION_ID, "session id")
         with self._transaction(write=True) as db:
             group = self._require_group(db, group_id, actor)
+            if session_id in self._route(db, group_id)["destinations"]:
+                raise GroupConflictError("remove the member from the route first")
             cursor = db.execute("DELETE FROM members WHERE group_id = ? AND session_id = ?",
                                 (group_id, session_id))
             return {"group": self._describe(db, group), "changed": cursor.rowcount == 1}
