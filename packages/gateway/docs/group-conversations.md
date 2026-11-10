@@ -5,9 +5,13 @@ separate host-side `mesh-group-broker`. It is disabled unless the operator
 configures an absolute private Unix socket path and explicitly enables each
 tool for a principal. The gateway never starts the broker or creates sessions.
 
-Each principal needs a trusted `groupGrants` entry with exactly `workspace_id`,
-`session_id` and `group_ids`. The workspace must already be granted; each group
-ID is exact. Tool arguments cannot supply the actor. The broker checks current
+Each principal needs a trusted `groupGrants` entry with `workspace_id`,
+`session_id`, `group_ids` and optional `ledger_refs`. The workspace must already
+be granted; group IDs and ledger refs are exact. Membership does not imply
+permission to see or lock an item: without explicit `ledger_refs`, group
+listings hide all item links and item lock tools fail closed. The host must
+maintain these grants until an authoritative scoped ledger integration exists.
+Tool arguments cannot supply the actor. The broker checks current
 group membership, and cloud actors also need an open graph registration.
 Group IDs outside the grant are never returned. For a cloud agent, use an
 authentication identity bound exclusively to that session: an operator-created
@@ -43,7 +47,7 @@ Example configuration shape, with synthetic identifiers:
   "binding": {
     "allowedTools": ["mesh_group_list", "mesh_group_history", "mesh_group_append", "mesh_group_send"],
     "allowedWorkspaceIds": ["workspace.example"],
-    "groupGrants": [{"workspace_id": "workspace.example", "session_id": "claude-cloud:example:session_Example1", "group_ids": ["group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]}]
+    "groupGrants": [{"workspace_id": "workspace.example", "session_id": "claude-cloud:example:session_Example1", "group_ids": ["group_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], "ledger_refs": ["work:item-1"]}]
   }
 }
 ```

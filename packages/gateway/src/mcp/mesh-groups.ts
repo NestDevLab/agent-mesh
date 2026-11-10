@@ -9,6 +9,8 @@ export interface GroupGrant {
   workspace_id: string;
   session_id: string;
   group_ids: readonly string[];
+  /** Exact ledger refs independently authorized for this principal. */
+  ledger_refs?: readonly string[];
 }
 
 export interface GroupGateway {
@@ -18,18 +20,22 @@ export interface GroupGateway {
 const LOCAL_SESSION = /^(?:codex|claude):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CLOUD_SESSION = /^claude-cloud:[a-z][a-z0-9-]{0,63}:(?:session|cse)_[A-Za-z0-9]{1,128}$/;
 const GROUP = /^group_[a-f0-9]{32}$/;
+const LEDGER_REF = /^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 export function validGroupGrants(value: unknown, workspaces: readonly string[]): value is GroupGrant[] {
   if (!Array.isArray(value) || value.length > 100) return false;
   const seen = new Set<string>();
   return value.every(grant => {
     if (typeof grant !== "object" || grant === null || Array.isArray(grant) ||
-        Object.keys(grant).sort().join(",") !== "group_ids,session_id,workspace_id" ||
+        !["group_ids,session_id,workspace_id", "group_ids,ledger_refs,session_id,workspace_id"].includes(Object.keys(grant).sort().join(",")) ||
         typeof grant.workspace_id !== "string" || !workspaces.includes(grant.workspace_id) || seen.has(grant.workspace_id) ||
         typeof grant.session_id !== "string" || !(LOCAL_SESSION.test(grant.session_id) || CLOUD_SESSION.test(grant.session_id)) ||
         !Array.isArray(grant.group_ids) || grant.group_ids.length > 200 ||
         grant.group_ids.some((id: unknown) => typeof id !== "string" || !GROUP.test(id)) ||
-        new Set(grant.group_ids).size !== grant.group_ids.length) return false;
+        new Set(grant.group_ids).size !== grant.group_ids.length ||
+        (grant.ledger_refs !== undefined && (!Array.isArray(grant.ledger_refs) || grant.ledger_refs.length > 200 ||
+          grant.ledger_refs.some((ref: unknown) => typeof ref !== "string" || ref.length > 256 || !LEDGER_REF.test(ref)) ||
+          new Set(grant.ledger_refs).size !== grant.ledger_refs.length))) return false;
     seen.add(grant.workspace_id);
     return true;
   });
@@ -127,7 +133,7 @@ function authorizedGroupManager(options: MeshMcpOptions, tool: MeshMcpTool): voi
 }
 
 const sessionId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) || CLOUD_SESSION.test(value));
-const ledgerRef = z.string().max(256).regex(/^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/);
+const ledgerRef = z.string().max(256).regex(LEDGER_REF);
 const label = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/[\x00-\x1f\x7f]/.test(value));
 const roleKey = z.string().regex(/^[a-z0-9][a-z0-9_.:/-]{0,127}$/);
 const lockInput = z.object({ workspace_id: workspace, group_id: groupId, ref: ledgerRef }).strict();
@@ -140,6 +146,9 @@ function registerGroupLockTools(server: McpServer, options: MeshMcpOptions): voi
                         request: Record<string, unknown>) => {
     try {
       const grant = authorized(options, tool, workspaceId, group);
+      if (typeof request.ref !== "string" || !(grant.ledger_refs ?? []).includes(request.ref)) {
+        throw new Error("Ledger item is not granted to this principal.");
+      }
       return response(await options.groupGateway!.invoke({ ...request, actor: grant.session_id, group }));
     } catch { return failure(); }
   };
@@ -236,7 +245,15 @@ export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions
       const grant = authorized(options, "mesh_group_list", input.workspace_id);
       const result = await options.groupGateway!.invoke({ action: "list", actor: grant.session_id });
       if (!Array.isArray(result.groups)) throw new Error("Invalid group response.");
-      return response({ groups: result.groups.filter(row => typeof row === "object" && row !== null && grant.group_ids.includes((row as {group_id: string}).group_id)) });
+      const visible = result.groups.filter(row => typeof row === "object" && row !== null && grant.group_ids.includes((row as {group_id: string}).group_id));
+      const groups = visible.map(row => {
+        const group = row as Record<string, unknown>;
+        if (!Array.isArray(group.ledger_links)) throw new Error("Invalid group links.");
+        const links = group.ledger_links.filter(link => typeof link === "object" && link !== null &&
+          typeof (link as {ref?: unknown}).ref === "string" && (grant.ledger_refs ?? []).includes((link as {ref: string}).ref));
+        return { ...group, ledger_links: links };
+      });
+      return response({ groups });
     } catch { return failure(); }
   });
   if (options.principal.allowedTools.includes("mesh_group_history")) server.registerTool("mesh_group_history", {

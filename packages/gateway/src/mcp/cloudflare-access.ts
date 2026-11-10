@@ -172,7 +172,10 @@ export function resolveCloudflareAccessPrincipal(
     allowedAgentIds: [...binding.allowedAgentIds],
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
     allowedDomainIds: [...binding.allowedDomainIds],
-    ...(binding.groupGrants === undefined ? {} : { groupGrants: binding.groupGrants.map((grant) => ({ ...grant, group_ids: [...grant.group_ids] })) }),
+    ...(binding.groupGrants === undefined ? {} : { groupGrants: binding.groupGrants.map((grant) => ({
+      ...grant, group_ids: [...grant.group_ids],
+      ...(grant.ledger_refs === undefined ? {} : { ledger_refs: [...grant.ledger_refs] })
+    })) }),
     ...(binding.manageAllGroups === undefined ? {} : { manageAllGroups: binding.manageAllGroups })
   };
 }

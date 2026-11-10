@@ -37,12 +37,17 @@ test("group grants are exact, workspace-bound and reject duplicate or malformed 
   assert.equal(validGroupGrants([{ ...grant, group_ids: [id, id] }], [WORKSPACE]), false);
   assert.equal(validGroupGrants([{ ...grant, session_id: "claude-cloud:bad:session_!" }], [WORKSPACE]), false);
   assert.equal(validGroupGrants([grant], ["workspace.other"]), false);
+  assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work:item-1"] }], [WORKSPACE]), true);
+  assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work:item-1", "work:item-1"] }], [WORKSPACE]), false);
+  assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work.test:item-1"] }], [WORKSPACE]), false);
+  const granted = { ...grant, ledger_refs: ["work:item-1"] };
   const binding = { kind: "service", selector: "example", allowedTools: ["mesh_group_history"],
-    allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [], groupGrants: [grant] };
+    allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [], groupGrants: [granted] };
   const principal = resolveCloudflareAccessPrincipal({ token: "test", clientId: "test", scopes: [],
     extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } }, [binding]);
-  assert.deepEqual(principal.groupGrants, [grant]);
-  assert.notEqual(principal.groupGrants[0].group_ids, grant.group_ids);
+  assert.deepEqual(principal.groupGrants, [granted]);
+  assert.notEqual(principal.groupGrants[0].group_ids, granted.group_ids);
+  assert.notEqual(principal.groupGrants[0].ledger_refs, granted.ledger_refs);
   assert.equal(principal.manageAllGroups, undefined);
   const manager = resolveCloudflareAccessPrincipal({ token: "test", clientId: "test", scopes: [],
     extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } },
@@ -77,7 +82,7 @@ test("authenticated group history and append traverse a private broker without c
     allowedTools: ["mesh_group_list", "mesh_group_history", "mesh_group_append", "mesh_group_send",
       "mesh_group_lock_inspect", "mesh_group_lock_acquire", "mesh_group_lock_check", "mesh_group_lock_renew", "mesh_group_lock_release"],
     allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [],
-    groupGrants: [{ workspace_id: WORKSPACE, session_id: ACTOR, group_ids: [allowed] }] };
+    groupGrants: [{ workspace_id: WORKSPACE, session_id: ACTOR, group_ids: [allowed], ledger_refs: ["work:item-1"] }] };
   const handler = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
     groupGateway, resolvePrincipal: () => principal });
   const listed = await call(handler, "mesh_group_list", { workspace_id: WORKSPACE });
@@ -127,6 +132,21 @@ test("authenticated group history and append traverse a private broker without c
   assert.equal(duplicateLead.isError, true);
   const secondLink = await call(manager, "mesh_group_link", { group_id: allowed, ref: "work:item-1" });
   assert.equal(secondLink.structuredContent.lead, false);
+  const secretLink = await call(manager, "mesh_group_link", { group_id: allowed, ref: "work:secret" });
+  assert.equal(secretLink.structuredContent.changed, true);
+  const scopedList = await call(handler, "mesh_group_list", { workspace_id: WORKSPACE });
+  assert.deepEqual(scopedList.structuredContent.groups[0].ledger_links.map(link => link.ref), ["work:item-1"]);
+  const noLedger = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+    groupGateway, resolvePrincipal: () => ({ ...principal,
+      groupGrants: [{ workspace_id: WORKSPACE, session_id: ACTOR, group_ids: [allowed] }] }) });
+  const noLedgerList = await call(noLedger, "mesh_group_list", { workspace_id: WORKSPACE });
+  assert.deepEqual(noLedgerList.structuredContent.groups[0].ledger_links, []);
+  const noLedgerLock = await call(noLedger, "mesh_group_lock_inspect", {
+    workspace_id: WORKSPACE, group_id: allowed, ref: "work:item-1" });
+  assert.equal(noLedgerLock.isError, true);
+  const secretLock = await call(handler, "mesh_group_lock_inspect", {
+    workspace_id: WORKSPACE, group_id: allowed, ref: "work:secret" });
+  assert.equal(secretLock.isError, true);
   const transfer = await call(manager, "mesh_group_transfer_lead", { ref: "work:item-1",
     from_group_id: group, to_group_id: allowed });
   assert.equal(transfer.structuredContent.changed, true);
@@ -149,7 +169,7 @@ test("authenticated group history and append traverse a private broker without c
   assert.ok(spoofedLock.isError || spoofedLock.code);
   const other = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
     groupGateway, resolvePrincipal: () => ({ ...principal,
-      groupGrants: [{ workspace_id: WORKSPACE, session_id: DEST, group_ids: [allowed] }] }) });
+      groupGrants: [{ workspace_id: WORKSPACE, session_id: DEST, group_ids: [allowed], ledger_refs: ["work:item-1"] }] }) });
   const held = await call(other, "mesh_group_lock_acquire", { ...lockArgs, fence: firstFence, ttl: 60 });
   assert.equal(held.structuredContent.outcome, "held");
   const stolen = await call(other, "mesh_group_lock_check", { ...lockArgs, fence: firstFence, lease_id: firstLease });
@@ -189,7 +209,7 @@ test("authenticated group history and append traverse a private broker without c
   assert.equal(foreignLink.structuredContent.lead, false);
   const foreign = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
     groupGateway, resolvePrincipal: () => ({ ...principal,
-      groupGrants: [{ workspace_id: WORKSPACE, session_id: foreignSession, group_ids: [hidden] }] }) });
+      groupGrants: [{ workspace_id: WORKSPACE, session_id: foreignSession, group_ids: [hidden], ledger_refs: ["work:item-1"] }] }) });
   const foreignArgs = { ...lockArgs, group_id: hidden };
   const foreignLease = await call(foreign, "mesh_group_lock_acquire", { ...foreignArgs,
     fence: afterExpiry.structuredContent.fence, ttl: 60 });
