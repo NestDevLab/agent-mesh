@@ -22,7 +22,7 @@ async function call(handler, name, args) {
         "io.modelcontextprotocol/clientInfo": { name: "group-test", version: "1" },
         "io.modelcontextprotocol/clientCapabilities": {} }
     } })
-  }), { authInfo: { token: "synthetic", clientId: "test", scopes: [] } });
+  }), { authInfo: { token: "test", clientId: "test", scopes: [] } });
   assert.equal(response.status, 200);
   const body = await response.json();
   return body.result ?? body.error;
@@ -38,7 +38,7 @@ test("group grants are exact, workspace-bound and reject duplicate or malformed 
   assert.equal(validGroupGrants([grant], ["workspace.other"]), false);
   const binding = { kind: "service", selector: "example", allowedTools: ["mesh_group_history"],
     allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [], groupGrants: [grant] };
-  const principal = resolveCloudflareAccessPrincipal({ token: "synthetic", clientId: "test", scopes: [],
+  const principal = resolveCloudflareAccessPrincipal({ token: "test", clientId: "test", scopes: [],
     extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } }, [binding]);
   assert.deepEqual(principal.groupGrants, [grant]);
   assert.notEqual(principal.groupGrants[0].group_ids, grant.group_ids);
