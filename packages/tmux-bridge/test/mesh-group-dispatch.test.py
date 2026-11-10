@@ -114,6 +114,19 @@ class GroupDispatchTest(unittest.TestCase):
         with self.assertRaises(DispatchError):
             self.send(["accepted"], msgid="existing")
 
+    def test_invalid_message_does_not_reserve_its_id(self):
+        with self.assertRaises(DispatchError):
+            self.send(["accepted"], message=" ", msgid="validation")
+        result, calls = self.send(["accepted"], msgid="validation")
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(len(calls), 1)
+
+    def test_malformed_nested_receipt_is_unknown(self):
+        receipt = '{"status":"blocked","agent":"claude","sessionId":"primary",' \
+                  '"correlationId":"c1","delivery":[]}'
+        with patch("mesh_group_dispatch.subprocess.run", return_value=SimpleNamespace(returncode=78, stdout=receipt)):
+            self.assertEqual(native_transport("claude:primary", "c1", "hi")["outcome"], "unknown")
+
 
 if __name__ == "__main__":
     unittest.main()
