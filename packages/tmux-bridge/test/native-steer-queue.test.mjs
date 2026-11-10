@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,7 +26,7 @@ await appendFile(process.env.SYNTHETIC_QUEUE_CALLS, JSON.stringify(process.argv.
 `);
   await chmod(codex, 0o755);
   const requests = [];
-  const server = createAppServer((message, peer) => {
+  const server = createAppServer(async (message, peer) => {
     requests.push(message);
     if (!message.id) return;
     if (message.method === 'thread/turns/list') {
@@ -34,7 +34,25 @@ await appendFile(process.env.SYNTHETIC_QUEUE_CALLS, JSON.stringify(process.argv.
     } else if (message.method === 'turn/steer') {
       if (mode === 'timeout') return;
       if (mode === 'error') peer.send({ id: message.id, error: { code: -32600, message: 'synthetic steer failure' } });
-      else peer.send({ id: message.id, result: { turnId: mode === 'bad-ack' ? '' : 'turn-test' } });
+      else {
+        if (mode.startsWith('reply-')) {
+          const prompt = message.params.input[0].text;
+          const token = prompt.match(/\[MESH:([a-f0-9]+)\]/)?.[1];
+          const records = [
+            { type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: 'Earlier turn result' }] } },
+            { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'earlier-turn' } },
+          ];
+          if (mode !== 'reply-no-anchor') records.push(mode === 'reply-event'
+            ? { type: 'event_msg', payload: { type: 'user_message', message: prompt } }
+            : { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } });
+          if (mode !== 'reply-stale-only') records.push(
+            { type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: `[[R:${token}]]Current correlated result[[/R:${token}]]` }] } },
+            { type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-test' } },
+          );
+          await appendFile(join(sessions, `rollout-${session}.jsonl`), records.map(r => JSON.stringify(r) + '\n').join(''));
+        }
+        peer.send({ id: message.id, result: { turnId: mode === 'bad-ack' ? '' : 'turn-test' } });
+      }
     } else peer.send({ id: message.id, result: {} });
   });
   const sock = join(root, 'server.sock');
@@ -117,7 +135,6 @@ test('held composed response retains steer preference through capability-bound r
 
 test('off and invalid composed modes send nothing', async t => {
   const f = await fixture(t);
-  assert.equal((await f.invoke({ flags: ['--steer-or-queue'] })).code, 2);
   assert.equal((await f.invoke({ extra: ['--agent', 'claude'] })).code, 2);
   assert.equal((await f.invoke({ extra: ['--cloud'] })).code, 2);
   assert.equal((await f.gate('off')).code, 0);
@@ -125,3 +142,27 @@ test('off and invalid composed modes send nothing', async t => {
   assert.deepEqual(f.requests, []);
   assert.deepEqual(await f.queueCalls(), []);
 });
+
+for (const mode of ['reply-response', 'reply-event']) {
+  test(`urgent result follows the steered anchor in the running turn (${mode})`, async t => {
+    const f = await fixture(t, mode);
+    const result = await f.invoke({ flags: ['--steer-or-queue'] });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'Current correlated result');
+    assert.deepEqual(await f.queueCalls(), []);
+    assert.equal(f.requests.filter(r => r.method === 'turn/steer').length, 1);
+    assert.match(f.requests.find(r => r.method === 'turn/steer').params.input[0].text, /Final result markers:/);
+  });
+}
+for (const mode of ['active', 'reply-no-anchor', 'reply-stale-only']) {
+  test(`accepted steer times out without resending or consuming an earlier final (${mode})`, async t => {
+    const f = await fixture(t, mode);
+    const result = await f.invoke({ flags: ['--steer-or-queue'] });
+    assert.equal(result.code, 124, result.stderr);
+    assert.match(result.stderr, /result collection timed out/);
+    assert.deepEqual(await f.queueCalls(), []);
+    const before = f.requests.length;
+    await f.invoke({ flags: ['--steer-or-queue'] });
+    assert.equal(f.requests.length, before);
+  });
+}

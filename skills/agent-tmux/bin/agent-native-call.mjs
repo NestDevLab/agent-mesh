@@ -32,7 +32,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue --delivery-only (Codex only)]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--delivery-only]");
   process.exit(0);
 }
 
@@ -44,8 +44,8 @@ const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
 if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
-if (values["steer-or-queue"] && (agent !== "codex" || !values["delivery-only"] || values.cloud)) {
-  fail("--steer-or-queue requires --agent codex --delivery-only without --cloud", 2);
+if (values["steer-or-queue"] && (agent !== "codex" || values.cloud)) {
+  fail("--steer-or-queue requires --agent codex without --cloud", 2);
 }
 if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
   fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
