@@ -32,7 +32,8 @@
       "group-ref-contract",
       "group-ref-public",
       "ledger-read-query",
-      "plexus-work-items"
+      "plexus-work-items",
+      "codex-blank-session"
     ],
     "strategy": "cherry-pick"
   },
@@ -348,6 +349,22 @@
       },
       "meta": {
         "purpose": "Read open work items with sessions, sort and filter on live ledger fields"
+      }
+    },
+    {
+      "id": "codex-blank-session",
+      "branch": "fix/codex-blank-session",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Fix blank Codex creation and owned-pane first turn"
       }
     }
   ],
