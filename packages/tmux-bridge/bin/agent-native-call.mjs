@@ -63,7 +63,9 @@ const anchor = `[MESH:${resultToken}]`;
 const resultBegin = `[[R:${resultToken}]]`;
 const resultEnd = `[[/R:${resultToken}]]`;
 const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
-  `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
+  `Final result markers: ${resultBegin} ... ${resultEnd}\n` +
+  `Put your reply between them in your final message. The sender is a temporary bridge that can't be messaged, ` +
+  `so don't answer with a messaging tool, the caller reads your reply from the task.\n${message}`;
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
   correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume, ...(values.cloud ? { cloud: true } : {}),
@@ -195,6 +197,11 @@ while (Date.now() < deadline) {
       const assistantText = agent === "codex" ? messageText(record, "assistant") : claudeMessageText(record, "assistant");
       if (!state.anchorSeen) {
         continue;
+      }
+      if (agent === "claude") {
+        // a marked reply sent through a tool is final, the turn can go on for minutes after it
+        const marked = claudeMarkedToolText(record, resultBegin, resultEnd);
+        if (marked) finish([marked], resultBegin, resultEnd);
       }
       if (assistantText) {
         const bodies = agent === "claude"
@@ -365,6 +372,14 @@ function claudeMessageText(record, role) {
     .filter((part) => part?.type === "text" && typeof part.text === "string")
     .map((part) => part.text);
   return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+function claudeMarkedToolText(record, begin, end) {
+  if (record?.type !== "assistant" || !Array.isArray(record?.message?.content)) return undefined;
+  return record.message.content
+    .filter((part) => part?.type === "tool_use" && typeof part.input?.message === "string")
+    .map((part) => part.input.message)
+    .find((text) => text.includes(begin) && text.includes(end));
 }
 
 async function requireManagedClaudeInbox(id, correlation, configuredRoot) {

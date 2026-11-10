@@ -26,7 +26,7 @@ async function setup(
     allowedTools: [
       "mesh_call", "mesh_submit", "mesh_task_get", "mesh_task_cancel", "mesh_thread_get",
       "mesh_agent_sessions_list", "mesh_agent_session_get", "mesh_agent_sessions_search",
-      "mesh_agent_session_transcript"
+      "mesh_agent_session_transcript", "mesh_session_status"
     ],
     allowedAgentIds: ["agent.codex"],
     allowedWorkspaceIds: ["workspace.demo"],
@@ -381,4 +381,53 @@ test("coordinator persists a typed result error instead of generic agent_executi
   const completed = (await facade.callTask(input(), 2_000)).task;
   assert.equal(completed.status, "failed");
   assert.equal(completed.error.code, "result_parsing_failure");
+});
+
+function sessionsIn(state) {
+  const summary = { session_id: "session-1", title: "Thread", last_activity_at: "2026-11-01T00:00:00Z" };
+  return {
+    has: () => true,
+    get: async () => summary,
+    status: async () => ({ state, last_activity_at: null, last_step: "tool: Bash", checklist: [] })
+  };
+}
+
+const neverEnds = () => new Promise(() => {});
+
+test("mesh_call does not wait on a busy session unless the caller asked to steer", async () => {
+  const { facade } = await setup(neverEnds, sessionsIn("busy"));
+  const started = Date.now();
+  const queued = await facade.callTask(input({ sessionId: "session-1" }), 5_000);
+  assert.ok(Date.now() - started < 2_000);
+  assert.equal(queued.sessionState, "busy");
+  const urgent = facade.callTask(input({ sessionId: "session-1", idempotencyKey: "request-2", priority: "urgent" }), 300);
+  const steeredStart = Date.now();
+  await urgent;
+  assert.ok(Date.now() - steeredStart >= 250);
+});
+
+test("priority urgent is recorded and needs a session", async () => {
+  const { facade } = await setup(neverEnds, sessionsIn("free"));
+  const { task } = await facade.submitTask(input({ sessionId: "session-1", priority: "urgent" }));
+  assert.equal(task.priority, "urgent");
+  await assert.rejects(facade.submitTask(input({ idempotencyKey: "request-2", priority: "urgent" })), /needs a session_id/);
+  const normal = await facade.submitTask(input({ sessionId: "session-1", idempotencyKey: "request-3", priority: "normal" }));
+  assert.equal(normal.task.priority, undefined);
+});
+
+test("mesh_session_status has live state and queue length but no transcript", async () => {
+  const { facade } = await setup(neverEnds, sessionsIn("busy"));
+  await facade.submitTask(input({ sessionId: "session-1" }));
+  const status = await facade.getSessionStatus({ targetAgentId: "agent.codex", sessionId: "session-1" });
+  assert.deepEqual(status, {
+    session_id: "session-1", title: "Thread", state: "busy", last_step: "tool: Bash", checklist: [],
+    last_activity_at: "2026-11-01T00:00:00Z", queue_length: 1
+  });
+});
+
+test("an unreadable session state never blocks a dispatch", async () => {
+  const { facade } = await setup(undefined, { ...sessionsIn("free"), status: async () => { throw new Error("boom"); } });
+  const output = await facade.callTask(input({ sessionId: "session-1" }), 2_000);
+  assert.equal(output.sessionState, "unknown");
+  assert.equal(output.task.status, "completed");
 });

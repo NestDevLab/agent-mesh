@@ -82,6 +82,10 @@ export class MeshTaskCoordinator {
     return (await this.store.list()).find((task) => task.session_id === sessionId);
   }
 
+  async sessionQueueLength(sessionId: string): Promise<number> {
+    return (await this.store.list()).filter((task) => task.session_id === sessionId && !TERMINAL.has(task.status)).length;
+  }
+
   /** Include cancelled tasks whose executor has not returned, and queued executions. */
   async nonterminalTaskCount(): Promise<number> {
     const ids = new Set(this.active.keys());

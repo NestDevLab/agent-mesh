@@ -11,10 +11,11 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | Tool | Effect |
 | --- | --- |
 | `mesh_list_agents` | Lists the explicit endpoints exposed by the deployment and their capabilities. |
-| `mesh_send` | Sends an A2A request to one exposed endpoint. |
+| `mesh_send` | Transport probe for one exposed endpoint. It does not deliver to agent sessions: use `mesh_call` or `mesh_submit` with `session_id`. |
 | `mesh_delivery_status` | Reads recorded delivery lifecycle events. |
-| `mesh_call` | Submits a durable task and waits up to 120 seconds for its correlated result. |
+| `mesh_call` | Submits a durable task and waits at most 45 seconds (40 by default) for its correlated result. On a busy session with normal priority it returns right away. A task that isn't finished keeps running and is read with `mesh_task_get`. |
 | `mesh_submit` | Submits a durable task and immediately returns its handle. |
+| `mesh_session_status` | Reads one session's state (`busy`, `free`, `unknown`), title, last step, checklist, mesh queue length and last activity, without the transcript. |
 | `mesh_task_get` | Reads an owned task's status and result. |
 | `mesh_task_cancel` | Marks an owned task cancelled and ignores a late result. |
 | `mesh_thread_get` | Reads the ordered owned tasks in one context. |
@@ -45,6 +46,8 @@ instead of continuing one; see [Fresh sessions](#fresh-sessions). Omitting both
 fields keeps the static route. When `context_id` is omitted the gateway mints
 one, and it is excluded from the idempotency comparison, so an exact replay
 returns the original task.
+
+`mesh_call` and `mesh_submit` accept `priority`. `normal` (the default) leaves the message for the session's next turn. `urgent` needs `session_id` and steers a running Codex turn as delivery only, so no reply comes back through that task. Claude sessions can't be steered, so an urgent message to one stays queued and the result says so in `priority_note`. Results carry `session_state`, and `next_action` when the task isn't finished.
 
 ### Capability discovery
 
@@ -157,7 +160,8 @@ The MCP caller never receives a shell. It submits a prompt, and a local agent
 executes under its own sandbox and approval policy. `mesh_call` returns the
 correlated reply directly when it completes within the wait bound;
 `mesh_task_get` retrieves it later. `mesh_send` and `mesh_delivery_status`
-remain transport diagnostics. Point a route at a dedicated, least-privilege
+remain transport diagnostics, and when `tmuxIngress` is declared `mesh_send`
+rejects any target without an MCP-enabled route, except simulated agents. Point a route at a dedicated, least-privilege
 ingress session — never at an operator session.
 
 Keep this route off any profile that also reads untrusted content. A caller

@@ -195,7 +195,8 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
 
 for (const writerKind of ["desktop", "cli"]) {
 for (const deliveryOnly of [false, true]) {
-test(`managed Claude ${writerKind} inbox ${deliveryOnly ? "acknowledges delivery without a result" : "returns a correlated result"}`, async (t) => {
+for (const replyTool of deliveryOnly ? [false] : [false, true]) {
+test(`managed Claude ${writerKind} inbox ${deliveryOnly ? "acknowledges delivery without a result" : replyTool ? "takes a marked reply from a messaging tool" : "returns a correlated result"}`, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mesh-native-claude-managed-"));
   const procRoot = join(root, "proc");
   const ownerPid = 8552;
@@ -257,8 +258,12 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     assert.equal(JSON.parse(delivered).prompt, "Visible request");
     return;
   }
+  assert.match(delivered, /temporary bridge/);
   await appendFile(transcript, [
     { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
+    ...(replyTool ? [{ type: "assistant", message: { stop_reason: "tool_use", content: [
+      { type: "tool_use", name: "SendMessage", input: { to: "peer", message: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` } }
+    ] } }] : []),
     { type: "assistant", message: { stop_reason: "end_turn", content: [] } },
     { type: "assistant", message: { stop_reason: "end_turn", content: [
       { type: "text", text: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` }
@@ -269,6 +274,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
   assert.equal(stdout, "CLAUDE_MANAGED_OK\n");
 });
 
+}
 }
 
 }

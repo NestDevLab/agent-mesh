@@ -56,6 +56,7 @@ export interface MeshTaskRecord {
   target_agent_id: string;
   session_id?: string;
   session_mode?: "fresh";
+  priority?: "urgent";
   access_mode?: "read-only" | "workspace-write";
   worker_id?: string;
   workspace_path?: string;
@@ -83,6 +84,7 @@ export interface CreateMeshTaskInput {
   sessionId?: string;
   /** Needs sessionProvider, the store mints the session id. */
   sessionMode?: "fresh";
+  priority?: "urgent";
   accessMode?: "read-only" | "workspace-write";
   workerId?: string;
   workspacePath?: string;
@@ -124,6 +126,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
       target_agent_id: input.targetAgentId,
       ...(input.sessionId === undefined ? {} : { session_id: input.sessionId }),
       ...(input.sessionMode === undefined ? {} : { session_mode: input.sessionMode }),
+      ...(input.priority === undefined ? {} : { priority: input.priority }),
       ...(input.accessMode === "workspace-write" || input.workerId !== undefined ? { access_mode: input.accessMode ?? "read-only" } : {}),
       ...(input.workerId === undefined ? {} : { worker_id: input.workerId }),
       ...(input.workspacePath === undefined ? {} : { workspace_path: input.workspacePath }),
@@ -166,6 +169,7 @@ export class MeshTaskStore implements MeshTaskStoreLike {
           effort: "unknown"
         }
       }),
+      ...(input.priority === undefined ? {} : { priority: input.priority }),
       access_mode: input.accessMode ?? "read-only",
       ...(input.workerId === undefined ? {} : { worker_id: input.workerId }),
       ...(input.workspacePath === undefined ? {} : { workspace_path: input.workspacePath }),

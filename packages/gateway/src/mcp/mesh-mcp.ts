@@ -19,7 +19,7 @@ import type {
   AgentSessionSearchPage,
   AgentTranscriptPage
 } from "../adapters/agent-session-provider.js";
-import type { SessionAccessProfile } from "../adapters/agent-session-provider.js";
+import type { AgentSessionLiveStatus, SessionAccessProfile } from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
 
@@ -40,6 +40,7 @@ export const MESH_MCP_TOOLS = [
   "mesh_agent_sessions_list",
   "mesh_agent_session_create",
   "mesh_agent_session_get",
+  "mesh_session_status",
   "mesh_agent_sessions_search",
   "mesh_agent_session_transcript"
 ] as const;
@@ -74,6 +75,8 @@ export interface MeshMcpOptions {
   taskCoordinator?: MeshTaskCoordinator;
   sessionRegistry?: AgentSessionRegistry;
   workspaceWorkers?: WorkspaceWorkerRouter;
+  /** Agents mesh_send can reach. Absent means every exposed agent, for deployments without a real transport. */
+  meshSendTargets?: ReadonlySet<string>;
   now?: () => Date;
 }
 
@@ -118,6 +121,7 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_agent_sessions_list: 30,
       mesh_agent_session_create: 3,
       mesh_agent_session_get: 60,
+      mesh_session_status: 60,
       mesh_agent_sessions_search: 20,
       mesh_agent_session_transcript: 60
     },
@@ -166,6 +170,7 @@ export interface MeshTaskDispatchInput {
   sessionId?: string;
   /** "fresh": start a new session. Can't be combined with sessionId. */
   sessionMode?: "fresh";
+  priority?: "normal" | "urgent";
   accessMode?: "read-only" | "workspace-write";
   workspacePath?: string;
   workspaceId?: string;
@@ -176,12 +181,19 @@ export interface MeshTaskDispatchInput {
   labels?: string[];
 }
 
+export type SessionState = AgentSessionLiveStatus["state"];
+export type MeshTaskDispatchOutput = { task: MeshTaskRecord; duplicate: boolean; sessionState: SessionState | undefined };
+
+const DEFAULT_CALL_WAIT_SECONDS = 40;
+const MAX_CALL_WAIT_SECONDS = 45;
+
 export const CREATE_SESSION_CAPABILITY = "create_session";
 
 export type MeshMcpErrorCode =
   | "session_mode_conflict"
   | "fresh_session_unsupported"
-  | "fresh_session_workspace_unauthorized";
+  | "fresh_session_workspace_unauthorized"
+  | "no_transport_route";
 
 export class MeshMcpError extends Error {
   readonly code: MeshMcpErrorCode;
@@ -238,6 +250,12 @@ export class MeshMcpFacade {
     if (target === undefined || !this.options.principal.allowedAgentIds.includes(target.id)) {
       throw new Error(`Target agent is not exposed through this MCP bridge: ${input.targetAgentId}`);
     }
+    if (this.options.meshSendTargets !== undefined && !this.options.meshSendTargets.has(target.id)) {
+      throw new MeshMcpError(
+        "no_transport_route",
+        `mesh_send only probes the transport and has no route to ${target.id}. To reach an agent session, use mesh_call or mesh_submit with session_id.`
+      );
+    }
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
     const domainId = resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds);
 
@@ -291,14 +309,52 @@ export class MeshMcpFacade {
     return this.options.gateway.getDelivery(messageId);
   }
 
-  async submitTask(input: MeshTaskDispatchInput): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
+  async submitTask(input: MeshTaskDispatchInput): Promise<MeshTaskDispatchOutput> {
     this.assertAllowed("mesh_submit");
-    return this.coordinator().submit(await this.taskInput(input));
+    const task = await this.taskInput(input);
+    const sessionState = await this.sessionState(task);
+    return { ...(await this.coordinator().submit(task)), sessionState };
   }
 
-  async callTask(input: MeshTaskDispatchInput, waitMs: number): Promise<{ task: MeshTaskRecord; duplicate: boolean }> {
+  async callTask(input: MeshTaskDispatchInput, waitMs: number): Promise<MeshTaskDispatchOutput> {
     this.assertAllowed("mesh_call");
-    return this.coordinator().call(await this.taskInput(input), waitMs);
+    const task = await this.taskInput(input);
+    const sessionState = await this.sessionState(task);
+    // a queued turn can't answer inside the wait, no point holding the caller
+    const wait = sessionState === "busy" && task.priority !== "urgent" ? 0 : waitMs;
+    return { ...(await this.coordinator().call(task, wait)), sessionState };
+  }
+
+  private async sessionState(task: { targetAgentId: string; workspaceId: string; sessionId?: string; workerId?: string }): Promise<SessionState | undefined> {
+    if (task.sessionId === undefined || task.workerId !== undefined) return undefined;
+    try {
+      return (await this.sessions(task.targetAgentId).status(task.targetAgentId, { workspaceId: task.workspaceId, sessionId: task.sessionId })).state;
+    } catch {
+      return "unknown";
+    }
+  }
+
+  targetProvider(agentId: string): string {
+    return this.allowedTarget(agentId).provider;
+  }
+
+  async getSessionStatus(input: { targetAgentId: string; workspaceId?: string; sessionId: string }) {
+    this.assertAllowed("mesh_session_status");
+    const target = this.allowedTarget(input.targetAgentId);
+    const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
+    const scope = { workspaceId, sessionId: input.sessionId };
+    const session = await this.sessions(target.id).get(target.id, scope);
+    if (session === undefined) throw new Error("Agent session is not available in the authenticated workspace.");
+    const live = await this.sessions(target.id).status(target.id, scope);
+    return {
+      session_id: session.session_id,
+      title: session.title ?? null,
+      state: live.state,
+      last_step: live.last_step,
+      checklist: live.checklist,
+      last_activity_at: live.last_activity_at ?? session.last_activity_at ?? null,
+      queue_length: await this.options.taskCoordinator?.sessionQueueLength(input.sessionId) ?? 0
+    };
   }
 
   async getTask(taskId: string): Promise<MeshTaskRecord> {
@@ -426,6 +482,9 @@ export class MeshMcpFacade {
       agentId: target.id, workspaceId, workspacePath, accessMode, sessionMode: input.sessionMode, sessionId: input.sessionId, binding });
     if (workspacePath !== undefined && workerId === undefined) throw new Error("workspace_path_denied: no client-selected path worker grant.");
     if (accessMode === "workspace-write" && workerId === undefined) throw new Error("workspace_write_denied: no authorized isolated worker.");
+    if (input.priority === "urgent" && input.sessionId === undefined) {
+      throw new MeshMcpError("session_mode_conflict", "priority \"urgent\" needs a session_id: there is no running turn to steer otherwise.");
+    }
     if (input.sessionMode === "fresh") {
       if (input.sessionId !== undefined) {
         throw new MeshMcpError("session_mode_conflict", "session_id cannot be combined with session_mode \"fresh\".");
@@ -461,6 +520,7 @@ export class MeshMcpFacade {
       targetAgentId: target.id,
       ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
       ...(input.sessionMode === "fresh" ? { sessionMode: "fresh" as const, sessionProvider: target.provider } : {}),
+      ...(input.priority === "urgent" ? { priority: "urgent" as const } : {}),
       workspaceId,
       domainId: resolveScope("domain", input.domainId, this.options.principal.allowedDomainIds),
       message: input.message,
@@ -525,11 +585,12 @@ const taskDispatchInputSchema = z.object({
   context_id: identifierSchema.optional(),
   message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
   idempotency_key: z.string().min(1).max(MAX_IDEMPOTENCY_KEY_LENGTH),
-  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(20).optional()
+  labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(20).optional(),
+  priority: z.enum(["normal", "urgent"]).optional().describe("normal (default) queues for the session's next turn. urgent steers the running turn of a Codex session, delivery only, so no reply comes back through the task. Claude sessions can't be steered, urgent stays queued there. Needs session_id.")
 });
 
 const taskCallInputSchema = taskDispatchInputSchema.extend({
-  wait_seconds: z.number().int().min(1).max(120).optional()
+  wait_seconds: z.number().int().min(1).max(120).optional().describe(`Seconds to wait for the reply. Default ${DEFAULT_CALL_WAIT_SECONDS}, capped at ${MAX_CALL_WAIT_SECONDS}.`)
 });
 
 const taskIdSchema = z.object({ task_id: identifierSchema });
@@ -552,6 +613,7 @@ const agentSessionGetSchema = z.object({
   workspace_id: identifierSchema.optional(),
   session_id: identifierSchema
 });
+const sessionStatusSchema = agentSessionGetSchema;
 const agentSessionsSearchSchema = z.object({
   target_agent_id: identifierSchema,
   workspace_id: identifierSchema.optional(),
@@ -597,9 +659,8 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
   if (options.principal.allowedTools.includes("mesh_send")) server.registerTool(
     "mesh_send",
     {
-      title: "Send an A2A request",
-      description:
-        "Sends a governed Agent Mesh request to an exposed agent endpoint. This does not create or execute a task.",
+      title: "Probe the Agent Mesh transport",
+      description: "Transport diagnostic only: records a request to an exposed endpoint and reports its delivery. It does not deliver to an agent session or run anything. To reach a session, use mesh_call or mesh_submit with session_id.",
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -653,14 +714,14 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     "mesh_call",
     {
       title: "Call an Agent Mesh agent",
-      description: "Starts a governed agent task and waits for a bounded interval for its correlated result. Returns a durable task handle when still running. Pass session_id to continue a session, or session_mode \"fresh\" to start a new one on an agent with the create_session capability.",
+      description: "Sends a message to an agent session (pass session_id) or a new one (session_mode \"fresh\") and waits up to 45 seconds for the reply. If the session is busy it returns right away. When task.status is not final, read the reply later with mesh_task_get and the returned task_id, and don't send the message again.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       inputSchema: taskCallInputSchema
     },
     async (input) => {
       try {
-        const output = await facade.callTask(taskInput(input), (input.wait_seconds ?? 90) * 1000);
-        return result({ duplicate: output.duplicate, task: publicTask(output.task) });
+        const output = await facade.callTask(taskInput(input), Math.min(input.wait_seconds ?? DEFAULT_CALL_WAIT_SECONDS, MAX_CALL_WAIT_SECONDS) * 1000);
+        return result(dispatchResult(output, input.priority, facade.targetProvider(input.target_agent_id)));
       } catch (error) { return errorResult(error); }
     }
   );
@@ -669,14 +730,14 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     "mesh_submit",
     {
       title: "Submit an Agent Mesh task",
-      description: "Durably submits a governed agent task and returns immediately with a task handle. Accepts the same session_id or session_mode \"fresh\" selection as mesh_call.",
+      description: "Sends a message like mesh_call but never waits: it returns right away with task_id and session_state. Read the reply later with mesh_task_get. Accepts the same session_id or session_mode \"fresh\" selection as mesh_call.",
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
       inputSchema: taskDispatchInputSchema
     },
     async (input) => {
       try {
         const output = await facade.submitTask(taskInput(input));
-        return result({ duplicate: output.duplicate, task: publicTask(output.task) });
+        return result(dispatchResult(output, input.priority, facade.targetProvider(input.target_agent_id)));
       } catch (error) { return errorResult(error); }
     }
   );
@@ -765,6 +826,25 @@ export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions)
     }
   );
 
+  if (options.principal.allowedTools.includes("mesh_session_status")) server.registerTool(
+    "mesh_session_status",
+    {
+      title: "Check whether a session is busy",
+      description: "Light status of one session, without its transcript: state (busy, free or unknown), thread title, last step or checklist, last activity, and queue_length (mesh tasks not finished yet for this session). Use it before mesh_call to know whether the reply will take a while.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: sessionStatusSchema
+    },
+    async (input) => {
+      try {
+        return result(await facade.getSessionStatus({
+          targetAgentId: input.target_agent_id,
+          workspaceId: input.workspace_id,
+          sessionId: input.session_id
+        }));
+      } catch (error) { return errorResult(error); }
+    }
+  );
+
   if (options.principal.allowedTools.includes("mesh_agent_session_get")) server.registerTool(
     "mesh_agent_session_get",
     {
@@ -840,7 +920,22 @@ function taskInput(input: z.infer<typeof taskDispatchInputSchema>): MeshTaskDisp
     contextId: input.context_id,
     message: input.message,
     idempotencyKey: input.idempotency_key,
-    labels: input.labels
+    labels: input.labels,
+    priority: input.priority
+  };
+}
+
+function dispatchResult(output: MeshTaskDispatchOutput, priority: "normal" | "urgent" | undefined, provider: string) {
+  const running = !["completed", "failed", "cancelled"].includes(output.task.status);
+  const busy = output.sessionState === "busy";
+  const notSteerable = priority === "urgent" && provider !== "codex";
+  return {
+    duplicate: output.duplicate,
+    task: publicTask(output.task),
+    ...(output.sessionState === undefined ? {} : { session_state: output.sessionState }),
+    ...(running && busy && (priority !== "urgent" || notSteerable) ? { delivery: "queued" } : {}),
+    ...(notSteerable ? { priority_note: "Claude sessions can't be steered, so this stays queued for the next turn." } : {}),
+    ...(running ? { next_action: `${busy ? "The session is busy. " : ""}Not finished yet. Call mesh_task_get with task_id ${output.task.task_id} later to read the reply. Don't send the message again.` } : {})
   };
 }
 
@@ -901,7 +996,8 @@ export async function executeMeshTask(
       principal_kind: task.principal_kind,
       task_id: task.task_id,
       ...(task.session_id === undefined ? {} : { session_id: task.session_id }),
-      ...(task.session_mode === undefined ? {} : { session_mode: task.session_mode })
+      ...(task.session_mode === undefined ? {} : { session_mode: task.session_mode }),
+      ...(task.priority === undefined ? {} : { priority: task.priority })
     },
     ...(task.labels.length === 0 ? {} : { labels: [...task.labels] })
   });

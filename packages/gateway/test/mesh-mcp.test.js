@@ -11,7 +11,7 @@ const {
 } = await import(
   "../src/mcp/mesh-mcp.ts"
 );
-const { adaptMcpRequestBody, wrapSingletonJsonRpcResponse } = await import(
+const { adaptMcpRequestBody, meshSendTargets, wrapSingletonJsonRpcResponse } = await import(
   "../src/mcp/serve.ts"
 );
 
@@ -288,4 +288,20 @@ test("create_session advertisement follows effective fresh support for each prov
       assert.equal(agent.capabilities.includes("create_session"), agent.id === supported);
     }
   }
+});
+
+test("mesh_send points at mesh_call when the target has no transport route", async () => {
+  const facade = new MeshMcpFacade({ ...options(), meshSendTargets: new Set(["agent.codex"]) });
+  await assert.rejects(
+    facade.dispatch({ targetAgentId: "agent.claude", conversationId: "conversation-route", intent: "request", message: "hello" }),
+    /use mesh_call or mesh_submit with session_id/
+  );
+});
+
+test("mesh_send targets are real routes plus simulated canaries", () => {
+  assert.deepEqual([...meshSendTargets({
+    agents: [{ id: "a.tmux", status: "online" }, { id: "a.none", status: "online" }, { id: "a.canary", status: "simulated" }],
+    tmuxIngress: { routes: [{ target_agent_id: "a.tmux", allow_mcp_ingress: true }] }
+  })].sort(), ["a.canary", "a.tmux"]);
+  assert.equal(meshSendTargets({ agents: [] }), undefined);
 });
