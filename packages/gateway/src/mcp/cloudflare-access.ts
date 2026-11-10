@@ -1,3 +1,4 @@
+import type { LedgerReadGrant } from "./plexus-ledger.js";
 import { createHash, webcrypto } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
@@ -27,6 +28,7 @@ export interface CloudflareAccessBinding {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  ledgerReadGrants?: readonly LedgerReadGrant[];
   allowedGoogleAccounts?: readonly GoogleWorkspaceAccountAlias[];
 }
 
@@ -168,7 +170,8 @@ export function resolveCloudflareAccessPrincipal(
     allowedTools: [...binding.allowedTools],
     allowedAgentIds: [...binding.allowedAgentIds],
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
-    allowedDomainIds: [...binding.allowedDomainIds]
+    allowedDomainIds: [...binding.allowedDomainIds],
+    ...(binding.ledgerReadGrants === undefined ? {} : { ledgerReadGrants: binding.ledgerReadGrants.map(g => ({ ...g, ledger_refs: [...g.ledger_refs], session_ids: [...g.session_ids], ...(g.group_refs === undefined ? {} : { group_refs: [...g.group_refs] }) })) })
   };
 }
 

@@ -1,3 +1,4 @@
+import { registerPlexusLedgerTools, type LedgerReadGrant, type PlexusLedgerReader } from "./plexus-ledger.js";
 import type { WorkspaceWorkerRouter } from "./workspace-worker.js";
 import { randomUUID } from "crypto";
 import {
@@ -30,6 +31,8 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
 const MAX_LABEL_LENGTH = 64;
 
 export const MESH_MCP_TOOLS = [
+  "mesh_plexus_work_items",
+  "mesh_plexus_ledger_sessions",
   "mesh_list_agents",
   "mesh_send",
   "mesh_delivery_status",
@@ -68,6 +71,7 @@ export interface MeshMcpAgent {
 
 export interface MeshMcpOptions {
   gateway: MeshMcpGateway;
+  plexusLedgerReader?: PlexusLedgerReader;
   /** Verified, request-scoped identity. Never derive this from MCP arguments. */
   principal: MeshMcpPrincipal;
   /** Explicit allow-list supplied by the deployment, never inferred from a model name. */
@@ -90,6 +94,7 @@ export interface MeshMcpPrincipal {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  ledgerReadGrants?: readonly LedgerReadGrant[];
 }
 
 export interface MeshMcpRateLimiter {
@@ -112,6 +117,8 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
   constructor(
     limits: Readonly<Record<MeshMcpTool, number>> = {
       mesh_list_agents: 60,
+      mesh_plexus_work_items: 30,
+      mesh_plexus_ledger_sessions: 60,
       mesh_send: 10,
       mesh_delivery_status: 60,
       mesh_call: 6,
@@ -641,6 +648,7 @@ export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
 
 /** Registers the Agent Mesh surface on a standalone or aggregated MCP server. */
 export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions): void {
+  registerPlexusLedgerTools(server, options);
   const facade = new MeshMcpFacade(options);
 
   if (options.principal.allowedTools.includes("mesh_list_agents")) server.registerTool(

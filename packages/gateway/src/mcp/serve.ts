@@ -1,3 +1,4 @@
+import { ShellPlexusLedgerReader, validLedgerReadGrants, type PlexusLedgerConfig } from "./plexus-ledger.js";
 import { MaintenanceAdmission } from "./maintenance-admission.js";
 import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -53,6 +54,7 @@ interface RuntimeAgent extends MeshAgentRecord {
 }
 
 interface RuntimeConfig {
+  plexusLedger?: PlexusLedgerConfig;
   stateDir: string;
   agents: RuntimeAgent[];
   contexts: MeshContextRecord[];
@@ -144,6 +146,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       : { adapters: runtimeAdapters(config.tmuxIngress, sessionRegistry, stateDir) })
   });
   const bindings = config.bindings;
+  const plexusLedgerReader = config.plexusLedger === undefined ? undefined : new ShellPlexusLedgerReader(config.plexusLedger);
   const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
   const taskCoordinator = new MeshTaskCoordinator({
     store: new MeshTaskStore({ stateDir }),
@@ -165,10 +168,11 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       })),
       ...sendTargets,
       taskCoordinator,
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
-      resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
+      resolvePrincipal: async (authInfo) => resolveCloudflareAccessPrincipal(authInfo, (await readRuntimeConfig(configPath)).bindings)
     }),
     new CloudflareAccessAuthenticator({ teamDomain, audience })
   );
@@ -190,16 +194,18 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       })),
       ...sendTargets,
       taskCoordinator,
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
       memoryRunner,
-      resolvePrincipal: (authInfo) => {
-        const binding = resolveCloudflareAccessBinding(authInfo, bindings);
+      resolvePrincipal: async (authInfo) => {
+        const currentBindings = (await readRuntimeConfig(configPath)).bindings;
+        const binding = resolveCloudflareAccessBinding(authInfo, currentBindings);
         return {
-          mesh: resolveCloudflareAccessPrincipal(authInfo, bindings),
+          mesh: resolveCloudflareAccessPrincipal(authInfo, currentBindings),
           allowedGoogleAccounts: binding.allowedGoogleAccounts ?? []
         };
       }
@@ -367,6 +373,7 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     if (!validated.ok) throw new Error(`Invalid MCP runtime context at index ${index}.`);
     return validated.value!;
   });
+  if (parsed.plexusLedger !== undefined) new ShellPlexusLedgerReader(parsed.plexusLedger);
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
   validateGoogleWorkspace(parsed.googleWorkspace);
   validateMemoryRecall(parsed.memoryRecall);
@@ -388,6 +395,7 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
     ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
     ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions }),
+    ...(parsed.plexusLedger === undefined ? {} : { plexusLedger: parsed.plexusLedger }),
     ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers })
   };
 }
@@ -638,6 +646,7 @@ function validateBinding(
     !Array.isArray(binding.allowedAgentIds) ||
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||
+    (binding.ledgerReadGrants !== undefined && !validLedgerReadGrants(binding.ledgerReadGrants, binding.allowedWorkspaceIds)) ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
         binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))
