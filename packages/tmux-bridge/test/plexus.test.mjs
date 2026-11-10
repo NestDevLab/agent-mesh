@@ -104,6 +104,30 @@ test("cloud registrations grant no writer or role and are excluded from scoped g
   assert.notEqual((await run(state, ["claim", "--id", cloud.node.id, "--role", "orchestrator", "--domain", "team-a"])).code, 0);
 });
 
+test("local groups admit exact open cloud registrations without authenticating cloud actors", async (t) => {
+  const stateHome = await mkdtemp(join(tmpdir(), "plexus-cloud-group-"));
+  t.after(() => rm(stateHome, { recursive: true, force: true }));
+  const state = join(stateHome, "agent-mesh", "graph");
+  const env = { ...process.env, XDG_STATE_HOME: stateHome, MESH_GROUPS_STATE: join(stateHome, "groups") };
+  const cli = join(packageRoot, "bin", "agent-mesh");
+  const group = async (...args) => JSON.parse((await exec(cli, ["group", ...args], { env })).stdout);
+  const { group_id: groupId } = await group("create", "Cloud test");
+  const session = "claude-cloud:team-a:session_Exact123";
+  await assert.rejects(group("add", groupId, session), /open cloud graph registration is required/);
+  await assert.rejects(group("add", groupId, "codex-cloud:team-a:session_Exact123"), /open cloud graph registration is required/);
+  const registration = await ok(state, ["cloud", "register", "--session", session, "--evidence", "operator:verified-record"]);
+  await assert.rejects(group("add", groupId, "claude-cloud:team-b:session_Exact123"), /open cloud graph registration is required/);
+  await assert.rejects(group("add", groupId, "claude-cloud:team-a:session_exact123"), /open cloud graph registration is required/);
+  assert.equal((await group("add", groupId, session)).changed, true);
+  assert.equal((await group("add", groupId, session)).changed, false);
+  assert.deepEqual((await group("get", groupId)).members.map((member) => member.session_id), [session]);
+  await assert.rejects(group("history", groupId, "--as-session", session), /cloud session actors require an authenticated adapter/);
+  await assert.rejects(group("append", groupId, "--as-session", session), /cloud session actors require an authenticated adapter/);
+  await ok(state, ["close", "--id", registration.node.id]);
+  await assert.rejects(group("add", groupId, session), /open cloud graph registration is required/);
+  assert.equal((await group("remove", groupId, session)).changed, true);
+});
+
 test("migrate numbers legacy events, opens legacy links once and keeps refs as a projection", async () => {
   const state = await mkdtemp(join(tmpdir(), "plexus-"));
   try {
