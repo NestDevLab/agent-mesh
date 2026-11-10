@@ -48,6 +48,12 @@ test('claude interrupted turn is free, sidechains are ignored', async (t) => {
   assert.equal(result.state, 'free');
 });
 
+test('local commands and stop sequences do not read as an open turn', async (t) => {
+  const done = assistant('end_turn', [{ type: 'text', text: 'done' }]);
+  assert.equal((await status(t, 'claude', [done, { type: 'user', timestamp: now, message: { content: '<command-name>/clear</command-name>' } }])).state, 'free');
+  assert.equal((await status(t, 'claude', [assistant('stop_sequence', [])])).state, 'free');
+});
+
 test('an open turn silent for too long is unknown, not busy', async (t) => {
   assert.equal((await status(t, 'claude', [assistant('tool_use', [], old)])).state, 'unknown');
 });

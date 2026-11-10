@@ -37,10 +37,11 @@ function claudeTurn(items) {
     turn.seen = true;
     turn.at = record.timestamp ?? turn.at;
     if (record.type === "user") {
+      if (/<(command-name|local-command-)/.test(JSON.stringify(record.message?.content ?? ""))) continue;
       turn.open = !JSON.stringify(record.message?.content ?? "").includes("[Request interrupted");
       continue;
     }
-    turn.open = record.message?.stop_reason !== "end_turn";
+    turn.open = !["end_turn", "stop_sequence"].includes(record.message?.stop_reason);
     for (const part of Array.isArray(record.message?.content) ? record.message.content : []) {
       if (part?.type === "text" && part.text?.trim()) turn.step = firstLine(part.text);
       if (part?.type !== "tool_use") continue;

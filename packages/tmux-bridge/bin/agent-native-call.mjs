@@ -379,7 +379,8 @@ function claudeMarkedToolText(record, begin, end) {
   return record.message.content
     .filter((part) => part?.type === "tool_use" && typeof part.input?.message === "string")
     .map((part) => part.input.message)
-    .find((text) => text.includes(begin) && text.includes(end));
+    // the prompt quotes both markers, a session forwarding it verbatim isn't replying
+    .find((text) => text.trimStart().startsWith(begin) && text.includes(end));
 }
 
 async function requireManagedClaudeInbox(id, correlation, configuredRoot) {

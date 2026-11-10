@@ -431,3 +431,22 @@ test("an unreadable session state never blocks a dispatch", async () => {
   assert.equal(output.sessionState, "unknown");
   assert.equal(output.task.status, "completed");
 });
+
+test("urgent overtakes a task stuck on the same session", async () => {
+  const seen = [];
+  const { facade } = await setup((task) => {
+    seen.push(task.priority ?? "normal");
+    return task.priority === "urgent" ? { text: "steered" } : neverEnds();
+  }, sessionsIn("busy"));
+  await facade.submitTask(input({ sessionId: "session-1" }));
+  await new Promise((done) => setTimeout(done, 20));
+  await facade.submitTask(input({ sessionId: "session-1", idempotencyKey: "request-2", priority: "urgent" }));
+  await new Promise((done) => setTimeout(done, 20));
+  assert.deepEqual(seen, ["normal", "urgent"]);
+});
+
+test("cse_ and session_ forms of a cloud id share one task key", async () => {
+  const { facade, store } = await setup(neverEnds, sessionsIn("free"));
+  const { task } = await facade.submitTask(input({ sessionId: "cse_abc" }));
+  assert.equal((await store.get(task.task_id)).session_id, "session_abc");
+});

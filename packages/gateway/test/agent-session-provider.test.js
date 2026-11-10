@@ -615,3 +615,41 @@ test("status reports the script output and falls back to unknown", async () => {
     assert.equal(script, "/bridge/agent-session-status.mjs");
   }
 });
+
+test("urgent with a live writer doesn't wait behind a queued send", async () => {
+  let release;
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command.endsWith("agent-session.sh") && args.includes("inspect")) {
+        return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      }
+      if (command.endsWith("agent-session.sh") && args.includes("writer-status")) {
+        return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+      }
+      if (command === process.execPath && args.includes("--steer-or-queue")) {
+        return { code: 0, stdout: JSON.stringify({ status: "steered", held: false }), stderr: "" };
+      }
+      return new Promise((done) => { release = () => done({ code: 0, stdout: "late", stderr: "" }); });
+    }
+  });
+  const base = { sessionId: "session-new", workspaceId: "workspace.allowed", message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" };
+  const stuck = instance.send(base);
+  await new Promise((done) => setTimeout(done, 20));
+  assert.match((await instance.send({ ...base, urgent: true })).reply, /^Steered/);
+  release();
+  await stuck;
+});
+
+test("a held delivery is not reported as queued", async () => {
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command === process.execPath) return { code: 0, stdout: JSON.stringify({ status: "queued", held: true }), stderr: "" };
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+    }
+  });
+  const result = await instance.send({ sessionId: "session-new", workspaceId: "workspace.allowed", urgent: true, message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" });
+  assert.match(result.reply, /^Held/);
+});

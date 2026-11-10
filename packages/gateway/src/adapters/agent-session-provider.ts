@@ -438,6 +438,10 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   async send(input: AgentSessionSendInput): Promise<TmuxSendResult> {
+    // with no writer the send resumes the session, that still has to go one at a time
+    if (input.urgent === true && this.provider === "codex" && await this.hasWriter(input.sessionId)) {
+      return this.sendUnlocked(input);
+    }
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const prior = this.sendQueues.get(queueKey) ?? Promise.resolve();
     let release: () => void = () => {};
@@ -504,6 +508,12 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       await this.command(["--agent", "codex", "kill", target], true, socket);
       throw error;
     }
+  }
+
+  private async hasWriter(sessionId: string): Promise<boolean> {
+    const status = await this.command(["--agent", this.provider, "writer-status", sessionId, "--json"], true);
+    if (status.code !== 0) return false;
+    try { return parseWriterStatus(status.stdout, this.provider, sessionId).length > 0; } catch { return false; }
   }
 
   private async sendUnlocked(input: AgentSessionSendInput): Promise<TmuxSendResult> {
@@ -914,7 +924,7 @@ function parseBridgeSearch(value: string, expectedAgent: string): BridgeSearchRe
 }
 
 // the cloud CLI receipt echoes the id it was given and only session_ is known to round-trip
-function canonicalCloudSessionId(id: string): string {
+export function canonicalCloudSessionId(id: string): string {
   return id.replace(/^cse_/, "session_");
 }
 
@@ -922,7 +932,9 @@ function deliveryReceipt(result: { code: number; stdout: string; stderr: string 
   const native = nativeCallResult(result);
   if (result.code !== 0) return native;
   let status: unknown;
-  try { status = (JSON.parse(result.stdout) as { status?: unknown }).status; } catch { return native; }
+  let held: unknown;
+  try { ({ status, held } = JSON.parse(result.stdout) as { status?: unknown; held?: unknown }); } catch { return native; }
+  if (held === true) return { ok: true, reply: "Held by the communications gate, not delivered yet. No reply comes back through this task." };
   if (status !== "steered" && status !== "queued") return native;
   return {
     ok: true,

@@ -19,6 +19,7 @@ import type {
   AgentSessionSearchPage,
   AgentTranscriptPage
 } from "../adapters/agent-session-provider.js";
+import { canonicalCloudSessionId } from "../adapters/agent-session-provider.js";
 import type { AgentSessionLiveStatus, SessionAccessProfile } from "../adapters/agent-session-provider.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import type { MeshTaskRecord } from "./mesh-task-store.js";
@@ -353,7 +354,7 @@ export class MeshMcpFacade {
       last_step: live.last_step,
       checklist: live.checklist,
       last_activity_at: live.last_activity_at ?? session.last_activity_at ?? null,
-      queue_length: await this.options.taskCoordinator?.sessionQueueLength(input.sessionId) ?? 0
+      queue_length: await this.options.taskCoordinator?.sessionQueueLength(canonicalCloudSessionId(input.sessionId)) ?? 0
     };
   }
 
@@ -466,7 +467,9 @@ export class MeshMcpFacade {
     return this.sessions(target.id).create(target.id, { workspaceId, accessProfile: input.accessProfile });
   }
 
-  private async taskInput(input: MeshTaskDispatchInput) {
+  private async taskInput(rawInput: MeshTaskDispatchInput) {
+    // cse_ and session_ name the same cloud session, the binding and queue need one key
+    const input = rawInput.sessionId === undefined ? rawInput : { ...rawInput, sessionId: canonicalCloudSessionId(rawInput.sessionId) };
     const target = this.allowedTarget(input.targetAgentId);
     const workspaceId = resolveScope("workspace", input.workspaceId, this.options.principal.allowedWorkspaceIds);
     const binding = input.sessionId === undefined ? undefined : await this.options.taskCoordinator?.sessionBinding(input.sessionId);

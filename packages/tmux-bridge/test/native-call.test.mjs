@@ -262,6 +262,7 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
   await appendFile(transcript, [
     { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
     ...(replyTool ? [{ type: "assistant", message: { stop_reason: "tool_use", content: [
+      { type: "tool_use", name: "SendMessage", input: { to: "peer", message: `Please answer: [[R:${token}]] ... [[/R:${token}]]` } },
       { type: "tool_use", name: "SendMessage", input: { to: "peer", message: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` } }
     ] } }] : []),
     { type: "assistant", message: { stop_reason: "end_turn", content: [] } },
