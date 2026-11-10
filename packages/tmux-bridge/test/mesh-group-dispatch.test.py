@@ -88,6 +88,32 @@ class GroupDispatchTest(unittest.TestCase):
         with patch("mesh_group_dispatch.subprocess.run", return_value=SimpleNamespace(returncode=78, stdout=receipt)):
             self.assertEqual(native_transport("claude:primary", "c1", "hi")["outcome"], "unavailable")
 
+    def test_removed_fallback_is_not_sent_to(self):
+        calls = []
+        def transport(destination, correlation, prompt):
+            calls.append(destination)
+            self.store.remove_member(self.admin, self.group, self.reserve)
+            return {"outcome": "unavailable"}
+        result = dispatch(self.store, self.sender, self.group, "remove-test", "hello",
+                          [self.primary, self.reserve], transport)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(calls, [self.primary])
+
+    def test_intent_precedes_history_and_binds_destinations(self):
+        with patch.object(self.store, "append_message", side_effect=RuntimeError("crash")):
+            with self.assertRaises(RuntimeError):
+                self.send(["accepted"], msgid="crash-test")
+        with self.assertRaises(DispatchError):
+            self.send(["accepted"], msgid="crash-test", destinations=[self.reserve])
+        result, calls = self.send(["accepted"], msgid="crash-test")
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(calls, [])
+
+    def test_preexisting_message_is_not_sent_without_intent(self):
+        self.store.append_message(self.sender, self.group, "hello", message_id="existing")
+        with self.assertRaises(DispatchError):
+            self.send(["accepted"], msgid="existing")
+
 
 if __name__ == "__main__":
     unittest.main()

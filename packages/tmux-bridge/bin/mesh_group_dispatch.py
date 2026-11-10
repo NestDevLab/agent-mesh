@@ -47,6 +47,8 @@ def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=
         receipt = json.loads(result.stdout.strip())
     except (ValueError, UnicodeError):
         return {"outcome": "unknown"}
+    if not isinstance(receipt, dict):
+        return {"outcome": "unknown"}
     runtime, exact_id = session_id.split(":", 1)
     if (result.returncode == 78 and receipt.get("status") == "blocked"
             and receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id
@@ -64,7 +66,9 @@ def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=
             return {"outcome": "unavailable", "reason": "no_active_writer_and_no_delivery"}
         return {"outcome": "blocked", "reason": str(receipt.get("reason", "blocked"))}
     if result.returncode == 0 and receipt.get("held") is True:
-        return {"outcome": "held", "receipt": receipt}
+        if receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id and receipt.get("correlationId") == correlation:
+            return {"outcome": "held", "receipt": receipt}
+        return {"outcome": "unknown"}
     if result.returncode == 0 and receipt.get("status") in ("queued", "steered"):
         if receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id and receipt.get("correlationId") == correlation:
             return {"outcome": "accepted", "receipt": receipt}
@@ -91,7 +95,6 @@ def dispatch(store, actor, group_id, message_id, message, destinations, transpor
         raise DispatchError("destinations must be other members of the group")
     for destination in destinations:
         _identity(destination)
-    record = store.append_message(actor, group_id, message, message_id=message_id)["message"]
     payload = json.dumps({"group": group_id, "id": message_id, "author": actor.session_id,
                           "text": message, "destinations": destinations}, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(payload.encode()).hexdigest()
@@ -124,12 +127,40 @@ def dispatch(store, actor, group_id, message_id, message, destinations, transpor
             if previous["digest"] != digest:
                 raise DispatchError("message id conflicts with existing delivery")
             db.commit()
-            return {"status": "unknown" if previous["state"] == "dispatching" else previous["state"],
+            return {"status": "unknown" if previous["state"] in ("preparing", "dispatching") else previous["state"],
                     "receipt": json.loads(previous["receipt"]) if previous["receipt"] else None,
-                    "duplicate": True, "message_seq": record["seq"]}
-        db.execute("INSERT INTO deliveries VALUES (?, ?, ?, 'dispatching', 0, NULL)", (group_id, message_id, digest))
+                    "duplicate": True, "message_seq": None}
+        # Bind recipients and payload before history or any external call. A
+        # crash leaves an uncertain intent rather than permitting substitution.
+        db.execute("INSERT INTO deliveries VALUES (?, ?, ?, 'preparing', 0, NULL)", (group_id, message_id, digest))
+        db.commit()
+        appended = store.append_message(actor, group_id, message, message_id=message_id)
+        if appended["duplicate"]:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE deliveries SET state='blocked' WHERE group_id=? AND message_id=?", (group_id, message_id))
+            db.commit()
+            raise DispatchError("message exists without a matching delivery intent")
+        record = appended["message"]
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("UPDATE deliveries SET state='dispatching' WHERE group_id=? AND message_id=? AND state='preparing'", (group_id, message_id))
         db.commit()
         for position, destination in enumerate(destinations):
+            # Admission is evaluated at the last group check before each send.
+            # Removal after this point cannot revoke an already admitted call.
+            try:
+                live_group = store.get_group(actor, group_id)
+                live_members = {m["session_id"] for m in live_group["members"]}
+                authorized = actor.session_id in live_members and destination in live_members
+            except ValueError:
+                authorized = False
+            if not authorized:
+                outcome = {"outcome": "blocked", "reason": "membership_changed"}
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("UPDATE deliveries SET state='blocked', receipt=? WHERE group_id=? AND message_id=? AND state='dispatching'",
+                           (json.dumps(outcome), group_id, message_id))
+                db.commit()
+                return {"status": "blocked", "receipt": outcome, "duplicate": False,
+                        "message_seq": record["seq"], "destination": destination, "read_back": False}
             correlation = "group-" + hashlib.sha256((group_id + "\0" + message_id + "\0" + destination).encode()).hexdigest()[:32]
             prompt = (f"[Agent Mesh group {group_id}; message {message_id}; from {actor.session_id}]\n"
                       f"Use the group history for shared context; post replies to the group history.\n{message}")

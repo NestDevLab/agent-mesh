@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--managed-inbox-root", type=Path)
     parser.add_argument("--timeout", type=int, default=45)
     args = parser.parse_args()
+    if args.as_session.startswith(("claude-cloud:", "codex-cloud:")):
+        parser.error("cloud actors need a separate authenticated adapter")
     if not 1 <= args.timeout <= 600:
         parser.error("timeout must be between 1 and 600 seconds")
     message = sys.stdin.read(128001)
