@@ -24,7 +24,8 @@
       "urgent-native-reply",
       "mesh-groups-v1",
       "ledger-item-lock",
-      "cloud-group-sessions"
+      "cloud-group-sessions",
+      "group-message-route"
     ],
     "strategy": "cherry-pick"
   },
@@ -118,6 +119,22 @@
       },
       "meta": {
         "purpose": "Register provider-qualified cloud group sessions"
+      }
+    },
+    {
+      "id": "group-message-route",
+      "branch": "syncwheel/draft/group-message-route",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "draft",
+      "publication": {
+        "enabled": false
+      },
+      "meta": {
+        "purpose": "Group delivery with safe fallback"
       }
     }
   ],
