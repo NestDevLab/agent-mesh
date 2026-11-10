@@ -567,8 +567,8 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       if (writers.length !== 1 || writers[0]?.kind !== "codex") throw new Error("no unique bound writer proof");
       if (writers[0].pid !== owned.writerPid) this.revokeOwnedCodex(sessionId, "Writer PID changed.");
       const target = await this.command(["--agent", "codex", "target-status", owned.target,
-        "--writer-pid", String(owned.writerPid), "--json", "--allow-attached", "--owned-cwd", owned.cwd], true, owned.socket);
-      if (target.code === 5) this.revokeOwnedCodex(sessionId, "Writer cwd changed.");
+        "--writer-pid", String(owned.writerPid), "--json", "--allow-attached", "--owned-cwd", owned.cwd, "--pane-pid", String(owned.panePid)], true, owned.socket);
+      if (target.code === 5) this.revokeOwnedCodex(sessionId, "Bound pane, writer ancestry or cwd changed.");
       if (target.code !== 0) throw new Error("pane inspection did not complete");
       const metadata = JSON.parse(target.stdout) as { target: string; writer_pid: number };
       if (typeof metadata.target !== "string" || !/^[a-z0-9-]+$/.test(metadata.target) ||

@@ -22,6 +22,7 @@ function harness({ profiles = ["read-only", "full-access"], resolved = true, wri
     if (sub === "new") return ok(`${args[4]}\n`);
     if (sub === "target-session") return state.resolved ? ok(`${nativeId}\n`) : { code: 4, stdout: "", stderr: "ambiguous" };
     if (sub === "writer-status" && state.writerCode) return { code: state.writerCode, stdout: "", stderr: "observation incomplete" };
+    if (sub === "target-status" && state.targetResponse) return state.targetResponse;
     if (sub === "target-status" && state.targetCode) return { code: state.targetCode, stdout: "", stderr: "observation incomplete" };
     if (sub === "writer-status") return ok(JSON.stringify({
       agent: "codex", sessionId: state.writerId, writers: state.writer ? [{ pid: state.writerPid, kind: "codex" }] : []
@@ -242,4 +243,33 @@ test("owned Codex recovers exactly one correlated assistant result from its exac
   ], next_cursor: null });
   assert.deepEqual(await h.provider.send(sendInput), { ok: true, reply: "FIRST_REPLY" });
   assert.equal(h.calls.some(call => call.args[2] === "kill"), false);
+});
+
+test("actual bridge replacement outcome revokes permanently without killing the original process", async t => {
+  const { mkdtemp, mkdir, writeFile, rm } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { spawnSync } = await import("node:child_process");
+  const root = await mkdtemp(join(tmpdir(), "mesh-pane-replacement-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "bin"));
+  await mkdir(join(root, "proc/4242"), { recursive: true });
+  await writeFile(join(root, "proc/4242/status"), "PPid:\t4241\n");
+  await writeFile(join(root, "bin/tmux"), '#!/bin/sh\nprintf "%s|9999|codex|0|1\\n" "$FAKE_TARGET"\n', { mode: 0o755 });
+  const h = harness();
+  await h.provider.create({ workspaceId, accessProfile: "read-only" });
+  const target = h.calls.find(call => call.args[2] === "new").args[4];
+  const bridge = new URL("../../tmux-bridge/bin/agent-session.sh", import.meta.url).pathname;
+  const actual = spawnSync(bridge, ["--agent", "codex", "target-status", target,
+    "--writer-pid", "4242", "--json", "--allow-attached", "--pane-pid", "4241"], {
+    encoding: "utf8", env: { ...process.env, HOME: root, PATH: `${join(root, "bin")}:${process.env.PATH}`,
+      MESH_TMUX_SOCKET: "replacement-fixture", CODEX_NO_REMOTE: "1", MESH_GRAPH_DISABLE: "1",
+      AGENT_WRITER_PROC_ROOT: join(root, "proc"), FAKE_TARGET: target }
+  });
+  assert.equal(actual.status, 5, actual.stderr);
+  h.state.targetResponse = { code: actual.status, stdout: actual.stdout, stderr: actual.stderr };
+  await assert.rejects(h.provider.send(sendInput), /ownership lost/);
+  h.state.targetResponse = undefined;
+  await assert.rejects(h.provider.send(sendInput), /ownership was lost/);
+  assert.equal(h.calls.some(call => call.args[2] === "kill" || call.args[2] === "resume" || call.command === "/bridge/agent-send.sh"), false);
 });

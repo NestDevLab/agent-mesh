@@ -33,6 +33,12 @@ test("bound Codex pane permits attached observers while preserving ancestry and 
   assert.equal(invoke("owned|100|bash|0|1", flags).status, 4);
   assert.equal(invoke("owned|100|codex|1|1", flags).status, 4);
   assert.equal(invoke(attached, ["--allow-attached", "--owned-cwd", root]).status, 5);
+  assert.equal(invoke("owned|200|codex|0|1", [...flags, "--pane-pid", "100"]).status, 5);
+  await writeFile(join(proc, "101/status"), "PPid:\t1\n");
+  assert.equal(invoke(attached, [...flags, "--pane-pid", "100"]).status, 5);
+  await writeFile(join(proc, "101/status"), "Name:\tmissing-parent\n");
+  assert.equal(invoke(attached, [...flags, "--pane-pid", "100"]).status, 4);
+  await writeFile(join(proc, "101/status"), "PPid:\t100\n");
   await unlink(join(proc, "101/cwd"));
   assert.equal(invoke(attached, flags).status, 4); // missing observation is not a changed cwd
 });
