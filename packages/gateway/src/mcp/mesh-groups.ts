@@ -37,8 +37,13 @@ export function validGroupGrants(value: unknown, workspaces: readonly string[]):
 
 /** Connects to a separately managed, private host broker; never starts a process. */
 export class UnixGroupGateway implements GroupGateway {
-  constructor(private readonly socketPath: string, private readonly timeoutMs = 300_000) {
+  private readonly socketPath: string;
+  private readonly timeoutMs: number;
+
+  constructor(socketPath: string, timeoutMs = 300_000) {
     if (!isAbsolute(socketPath) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) throw new Error("Invalid group broker configuration.");
+    this.socketPath = socketPath;
+    this.timeoutMs = timeoutMs;
   }
 
   async invoke(request: Record<string, unknown>): Promise<Record<string, unknown>> {
