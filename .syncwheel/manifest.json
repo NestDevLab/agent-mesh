@@ -30,7 +30,8 @@
       "cloud-group-transport",
       "group-gateway-conversation",
       "group-ref-contract",
-      "group-ref-public"
+      "group-ref-public",
+      "ledger-read-query"
     ],
     "strategy": "cherry-pick"
   },
@@ -310,6 +311,22 @@
       },
       "meta": {
         "purpose": "Align group and lease item references"
+      }
+    },
+    {
+      "id": "ledger-read-query",
+      "branch": "feat/ledger-read-query",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Authorized request-time ledger and Plexus reads"
       }
     }
   ],
