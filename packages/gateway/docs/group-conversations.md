@@ -54,7 +54,9 @@ the existing fenced item lease. The authenticated actor must currently belong
 to the granted group and the item must be linked to it; the broker holds the
 group database write reservation throughout the lease operation. The lease
 owner is the bound session, never an argument. Inspection never returns the
-lease ID; only a successful acquisition does. The state is host-local, so all
+lease ID; only a successful acquisition does. A lease owner who is not a
+member of the requesting group is redacted, even when another group links the
+same item. The state is host-local, so all
 participants and guarded writers must use the same lock store. Writers must
 still use `guard_item_write`; obtaining a lease alone does not enforce writes.
 Removing membership prevents further API access, but does not revoke an

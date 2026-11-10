@@ -233,7 +233,10 @@ class GroupStore:
             if not db.execute("SELECT 1 FROM ledger_links WHERE group_id = ? AND ref = ?",
                               (group_id, ref)).fetchone():
                 raise GroupAccessError("item is not linked to the group")
-            yield
+            members = {row["session_id"] for row in db.execute(
+                "SELECT session_id FROM members WHERE group_id = ?", (group_id,)
+            )}
+            yield members
 
     def ensure_group(self, actor, name, request_id, *, role_key=None):
         """Create one group per stable request ID, safely returning exact retries."""

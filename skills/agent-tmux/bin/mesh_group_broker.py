@@ -95,13 +95,16 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
         try:
             # Hold a write reservation on the group database so revocation or
             # unlink cannot race the authorization and the lock operation.
-            with store.guard_item_link(actor, request["group"], ref):
+            with store.guard_item_link(actor, request["group"], ref) as members:
                 args = {} if name == "inspect" else {"owner": actor.session_id, "fence": request["fence"]}
                 if name in ("check", "renew", "release"):
                     args["lease_id"] = request["lease_id"]
                 if name in ("acquire", "renew"):
                     args["ttl"] = request["ttl"]
-                return lock_operation(name, ref, **args)
+                result = lock_operation(name, ref, **args)
+                if result.get("owner") is not None and result["owner"] not in members:
+                    result = {**result, "owner": None, "owner_redacted": True}
+                return result
         except LeaseError:
             raise ValueError("item lease is unavailable") from None
     if action == "list":

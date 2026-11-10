@@ -182,6 +182,27 @@ test("authenticated group history and append traverse a private broker without c
   const finalRelease = await call(other, "mesh_group_lock_release", { ...lockArgs,
     fence: afterExpiry.structuredContent.fence, lease_id: afterExpiry.structuredContent.leaseId });
   assert.equal(finalRelease.structuredContent.outcome, "released");
+  const foreignSession = "codex:33333333-3333-4333-8333-333333333333";
+  const foreignAdded = await call(manager, "mesh_group_add", { group_id: hidden, session_id: foreignSession });
+  assert.equal(foreignAdded.structuredContent.changed, true);
+  const foreignLink = await call(manager, "mesh_group_link", { group_id: hidden, ref: "work:item-1" });
+  assert.equal(foreignLink.structuredContent.lead, false);
+  const foreign = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+    groupGateway, resolvePrincipal: () => ({ ...principal,
+      groupGrants: [{ workspace_id: WORKSPACE, session_id: foreignSession, group_ids: [hidden] }] }) });
+  const foreignArgs = { ...lockArgs, group_id: hidden };
+  const foreignLease = await call(foreign, "mesh_group_lock_acquire", { ...foreignArgs,
+    fence: afterExpiry.structuredContent.fence, ttl: 60 });
+  assert.equal(foreignLease.structuredContent.owner, foreignSession);
+  const otherGroupView = await call(handler, "mesh_group_lock_inspect", lockArgs);
+  assert.equal(otherGroupView.structuredContent.status, "active");
+  assert.equal(otherGroupView.structuredContent.owner, null);
+  assert.equal(otherGroupView.structuredContent.owner_redacted, true);
+  const foreignView = await call(foreign, "mesh_group_lock_inspect", foreignArgs);
+  assert.equal(foreignView.structuredContent.owner, foreignSession);
+  const foreignRelease = await call(foreign, "mesh_group_lock_release", { ...foreignArgs,
+    fence: foreignLease.structuredContent.fence, lease_id: foreignLease.structuredContent.leaseId });
+  assert.equal(foreignRelease.structuredContent.outcome, "released");
   const unrelatedLock = await call(handler, "mesh_group_lock_inspect", { ...lockArgs, ref: "work:other" });
   assert.equal(unrelatedLock.isError, true);
   const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:item-1" });
