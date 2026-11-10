@@ -78,7 +78,7 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
         allowedWorkspaceIds: [workspace], allowedDomainIds: [], groupGrants: [{
           workspace_id: workspace, session_id: actor, group_ids: [group], ledger_refs: ["work:item-1"]
         }] },
-      { kind: "service", selector: "admin", allowedTools: ["mesh_group_create"], allowedAgentIds: [],
+      { kind: "service", selector: "admin", allowedTools: ["mesh_group_create", "mesh_group_set_route"], allowedAgentIds: [],
         allowedWorkspaceIds: [], allowedDomainIds: [], manageAllGroups: true }
     ] }), { mode: 0o600 });
   closeGateway = await startMeshMcpServer({ AGENT_MESH_MCP_HOST: "127.0.0.1",
@@ -111,6 +111,12 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   assert.equal(listed.status, 200);
   assert.equal(listed.result.structuredContent.groups[0].group_id, group);
   assert.deepEqual(listed.result.structuredContent.groups[0].ledger_links.map(link => link.ref), ["work:item-1"]);
+  const route = await call(admin, "mesh_group_set_route", { group_id: group, revision: 0, destinations: [actor] });
+  assert.equal(route.result.structuredContent.revision, 1);
+  const routed = await call(member, "mesh_group_list", { workspace_id: workspace });
+  assert.deepEqual(routed.result.structuredContent.groups[0].route.destinations, [actor]);
+  const staleRoute = await call(admin, "mesh_group_set_route", { group_id: group, revision: 0, destinations: [] });
+  assert.equal(staleRoute.result.isError, true);
   const hidden = await call(member, "mesh_group_lock_inspect", {
     workspace_id: workspace, group_id: group, ref: "work:private-item" });
   assert.equal(hidden.result.isError, true);
