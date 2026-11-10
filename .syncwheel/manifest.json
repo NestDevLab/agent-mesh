@@ -1,12 +1,12 @@
 {
   "authority": {
+    "mode": "ai-managed",
     "allow": [
       "source_change"
     ],
     "deny": [
       "destructive_rewrite"
-    ],
-    "mode": "ai-managed"
+    ]
   },
   "channels": [],
   "defaults": {
@@ -20,8 +20,7 @@
     "base": "origin/main",
     "branch": "main-integration",
     "stacks": [
-      "terminal-return-v1",
-      "lifecycle-recent-handoff"
+      "terminal-return-v1"
     ],
     "strategy": "cherry-pick"
   },
@@ -41,24 +40,6 @@
         "b15ea9440b2149c1873a7cb8f51ae08f4a32ca90"
       ],
       "id": "terminal-return-v1",
-      "integration_branch": "main-integration",
-      "meta": {},
-      "publication": {
-        "enabled": true
-      },
-      "state": "published",
-      "target_branch": "main",
-      "target_remote": "origin"
-    },
-    {
-      "base": "origin/main",
-      "branch": "pr/lifecycle-recent-handoff",
-      "commits": [
-        "7b7af7934fc7f7d107a3756cf404ea354090009d",
-        "90304f8800764745597f6bbd27535d3d59991cd3",
-        "68b35a5c95a0ed2f6b8f7263d002fb6864902e96"
-      ],
-      "id": "lifecycle-recent-handoff",
       "integration_branch": "main-integration",
       "meta": {},
       "publication": {
