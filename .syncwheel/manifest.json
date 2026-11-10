@@ -129,7 +129,7 @@
     },
     {
       "id": "cloud-group-sessions",
-      "branch": "syncwheel/draft/cloud-group-sessions",
+      "branch": "pr/cloud-group-sessions",
       "base": "origin/main",
       "target_remote": "origin",
       "target_branch": "main",
@@ -138,9 +138,9 @@
         "43cd673a098abf1a015dd439abc4c03f5964aa64",
         "c93e6234cd4a3445edd96800718b0b06838cc2fb"
       ],
-      "state": "draft",
+      "state": "published",
       "publication": {
-        "enabled": false
+        "enabled": true
       },
       "meta": {
         "purpose": "Register provider-qualified cloud group sessions"
