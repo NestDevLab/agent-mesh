@@ -461,7 +461,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
 
   async send(input: AgentSessionSendInput): Promise<TmuxSendResult> {
     // with no writer the send resumes the session, that still has to go one at a time
-    if (input.urgent === true && this.provider === "codex" && await this.hasWriter(input.sessionId)) {
+    if (input.urgent === true && this.provider === "codex" && !this.ownedCodexTargets.has(input.sessionId) && await this.hasWriter(input.sessionId)) {
       return this.sendUnlocked(input);
     }
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
@@ -529,7 +529,29 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       if (session === undefined) throw new Error("Created Codex session is outside the authorized workspace.");
       return { session, sessionId, target };
     } catch (error) {
+      for (const [id, owned] of this.ownedCodexTargets) {
+        if (owned.target === target) this.ownedCodexTargets.delete(id);
+      }
       await this.command(["--agent", "codex", "kill", target], true, socket);
+      throw error;
+    }
+  }
+
+  private async proveOwnedCodex(sessionId: string, owned: {
+    target: string; cwd: string; socket?: string; writerPid: number; panePid: number;
+  }): Promise<void> {
+    try {
+      const resolved = await this.command(["--agent", "codex", "target-session", owned.target, "--owned-cwd", owned.cwd], true, owned.socket, 4_000);
+      if (resolved.code !== 0 || resolved.stdout.trim() !== sessionId) throw new Error("Owned Codex thread identity changed.");
+      const status = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, owned.socket);
+      if (status.code !== 0) throw new Error("Owned Codex writer is unavailable.");
+      const writers = parseWriterStatus(status.stdout, "codex", sessionId);
+      if (writers.length !== 1 || writers[0]?.kind !== "codex" || writers[0].pid !== owned.writerPid) throw new Error("Owned Codex writer changed.");
+      const target = await this.command(["--agent", "codex", "target-status", owned.target, "--writer-pid", String(owned.writerPid), "--json"], true, owned.socket);
+      if (target.code !== 0 || parseOwnedTarget(target.stdout, owned.target, owned.writerPid).panePid !== owned.panePid) throw new Error("Owned Codex pane changed.");
+    } catch (error) {
+      this.ownedCodexTargets.delete(sessionId);
+      await this.command(["--agent", "codex", "kill", owned.target], true, owned.socket);
       throw error;
     }
   }
