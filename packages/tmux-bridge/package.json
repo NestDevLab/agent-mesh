@@ -22,6 +22,7 @@
     "agent-watch": "./bin/agent-watch.py",
     "agent-link": "./bin/agent-link.mjs",
     "mesh-graph": "./bin/mesh-graph.mjs",
+    "mesh-group-send": "./bin/mesh-group-send.py",
     "mesh-list-agents": "./bin/mesh-list-agents.sh",
     "mesh-send": "./bin/mesh-send.sh",
     "mesh-capacity-dispatch": "./bin/mesh-capacity-dispatch.mjs",
