@@ -1,0 +1,154 @@
+"""Durable, conservative delivery of one group message to an ordered member list.
+
+The caller must authenticate the actor and choose the permitted destinations.
+An accepted transport receipt is not a read or a completed turn.  An interrupted
+or uncertain transport attempt is never retried or sent to a fallback member.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import fcntl
+from pathlib import Path
+import sqlite3
+import subprocess
+import sys
+
+from mesh_group_store import GroupActor, GroupStore
+
+
+class DispatchError(ValueError):
+    pass
+
+
+def _identity(session_id):
+    if session_id.startswith("codex:"):
+        return ["--agent", "codex", "--session", session_id[6:], "--delivery-only", "--steer-or-queue", "--resume"]
+    if session_id.startswith("claude:"):
+        return ["--agent", "claude", "--session", session_id[7:], "--delivery-only"]
+    # Cloud identities require a verified provider and account binding; an opaque
+    # group member ID alone is not sufficient to authorize an outbound transport.
+    raise DispatchError("unsupported or unverified destination")
+
+
+def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=45):
+    argv = ["node", str(Path(__file__).with_name("agent-native-call.mjs")), *_identity(session_id),
+            "--correlation-id", correlation, "--message", text, "--timeout", str(timeout)]
+    if inbox_root and session_id.startswith("claude:"):
+        argv.extend(["--managed-inbox-root", str(inbox_root)])
+    try:
+        result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                timeout=timeout + 20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return {"outcome": "unknown"}
+    try:
+        receipt = json.loads(result.stdout.strip())
+    except (ValueError, UnicodeError):
+        return {"outcome": "unknown"}
+    runtime, exact_id = session_id.split(":", 1)
+    if (result.returncode == 78 and receipt.get("status") == "blocked"
+            and receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id
+            and receipt.get("correlationId") == correlation
+            and receipt.get("delivery", {}).get("attempted") is False):
+        # Missing inbox alone does not prove a session is down. A complete
+        # same-host ownership scan reporting no writer, together with a
+        # verified pre-delivery refusal, does establish it cannot currently
+        # receive through this active-session transport.
+        ownership = receipt.get("ownership")
+        if (runtime == "claude" and isinstance(ownership, dict)
+                and ownership.get("state") == "free"
+                and ownership.get("discovery", {}).get("complete") is True
+                and ownership.get("writers") == []):
+            return {"outcome": "unavailable", "reason": "no_active_writer_and_no_delivery"}
+        return {"outcome": "blocked", "reason": str(receipt.get("reason", "blocked"))}
+    if result.returncode == 0 and receipt.get("held") is True:
+        return {"outcome": "held", "receipt": receipt}
+    if result.returncode == 0 and receipt.get("status") in ("queued", "steered"):
+        if receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id and receipt.get("correlationId") == correlation:
+            return {"outcome": "accepted", "receipt": receipt}
+    return {"outcome": "unknown"}
+
+
+def dispatch(store, actor, group_id, message_id, message, destinations, transport=native_transport):
+    """Return the existing receipt or attempt each proven-unavailable member once.
+
+    `destinations` is an explicit ordered preference list. A timeout, a crash, a
+    held message or an ambiguous response never causes another delivery attempt.
+    The local store and the actor binding are trusted host boundaries.
+    """
+    if not isinstance(actor, GroupActor) or not actor.session_id:
+        raise DispatchError("authenticated member actor required")
+    if (not isinstance(destinations, list) or not destinations or len(destinations) > 32
+            or any(not isinstance(d, str) for d in destinations) or len(set(destinations)) != len(destinations)):
+        raise DispatchError("ordered unique destinations required")
+    if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+        raise DispatchError("message id required")
+    group = store.get_group(actor, group_id)
+    members = {m["session_id"] for m in group["members"]}
+    if any(not isinstance(d, str) or d not in members or d == actor.session_id for d in destinations):
+        raise DispatchError("destinations must be other members of the group")
+    for destination in destinations:
+        _identity(destination)
+    record = store.append_message(actor, group_id, message, message_id=message_id)["message"]
+    payload = json.dumps({"group": group_id, "id": message_id, "author": actor.session_id,
+                          "text": message, "destinations": destinations}, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    dbpath = store.state_dir / "group-delivery.sqlite3"
+    # Hold a short lock on the directory inode while closing a newly-created
+    # file and opening SQLite. Closing a second FD for an existing SQLite inode
+    # in this process can silently drop that process's POSIX record locks.
+    dirfd = os.open(store.state_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(dirfd, fcntl.LOCK_EX)
+        try:
+            fd = os.open(dbpath, os.O_CREAT | os.O_EXCL | os.O_RDONLY | os.O_NOFOLLOW, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+        info = dbpath.lstat()
+        if not dbpath.is_file() or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+            raise DispatchError("delivery store must be private and owned")
+        db = sqlite3.connect(dbpath, timeout=5, isolation_level=None)
+    finally:
+        os.close(dirfd)
+    db.row_factory = sqlite3.Row
+    try:
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("CREATE TABLE IF NOT EXISTS deliveries (group_id TEXT, message_id TEXT, digest TEXT NOT NULL, state TEXT NOT NULL, position INTEGER NOT NULL, receipt TEXT, PRIMARY KEY(group_id, message_id))")
+        db.execute("BEGIN IMMEDIATE")
+        previous = db.execute("SELECT * FROM deliveries WHERE group_id=? AND message_id=?", (group_id, message_id)).fetchone()
+        if previous:
+            if previous["digest"] != digest:
+                raise DispatchError("message id conflicts with existing delivery")
+            db.commit()
+            return {"status": "unknown" if previous["state"] == "dispatching" else previous["state"],
+                    "receipt": json.loads(previous["receipt"]) if previous["receipt"] else None,
+                    "duplicate": True, "message_seq": record["seq"]}
+        db.execute("INSERT INTO deliveries VALUES (?, ?, ?, 'dispatching', 0, NULL)", (group_id, message_id, digest))
+        db.commit()
+        for position, destination in enumerate(destinations):
+            correlation = "group-" + hashlib.sha256((group_id + "\0" + message_id + "\0" + destination).encode()).hexdigest()[:32]
+            prompt = (f"[Agent Mesh group {group_id}; message {message_id}; from {actor.session_id}]\n"
+                      f"Use the group history for shared context; post replies to the group history.\n{message}")
+            try:
+                outcome = transport(destination, correlation, prompt)
+            except Exception:
+                outcome = {"outcome": "unknown"}
+            state = outcome.get("outcome", "unknown") if isinstance(outcome, dict) else "unknown"
+            if state not in ("accepted", "held", "blocked", "unavailable", "unknown"):
+                state = "unknown"
+            last = position == len(destinations) - 1
+            # The next attempt remains durably marked dispatching across crashes.
+            persisted = "unavailable" if state == "unavailable" and last else ("dispatching" if state == "unavailable" else state)
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("UPDATE deliveries SET state=?, position=?, receipt=? WHERE group_id=? AND message_id=? AND state='dispatching'",
+                       (persisted, position, json.dumps(outcome), group_id, message_id))
+            db.commit()
+            if state != "unavailable" or last:
+                return {"status": state, "receipt": outcome, "duplicate": False, "message_seq": record["seq"],
+                        "destination": destination, "read_back": False}
+    finally:
+        db.close()
