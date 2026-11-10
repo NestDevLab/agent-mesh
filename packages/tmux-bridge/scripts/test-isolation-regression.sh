@@ -72,6 +72,7 @@ scripts/launch-options-test.sh
 scripts/mesh-cli-smoke.sh
 scripts/session-writer-test.sh
 python3 test/mesh-ledger.test.py
+python3 test/mesh-item-ref.test.py
 python3 test/mesh-group-dispatch.test.py
 python3 test/mesh-group-broker.test.py
 python3 test/decision-cards.test.py

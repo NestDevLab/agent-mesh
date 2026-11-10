@@ -38,6 +38,7 @@ const agentTmuxBundleFiles = [
   "bin/session-controller.py",
   "bin/mesh-ledger.py",
   "bin/ledger_item_lock.py",
+  "bin/mesh_item_ref.py",
   "bin/mesh-group-send.py",
   "bin/mesh_group_dispatch.py",
   "bin/mesh_group_broker.py",

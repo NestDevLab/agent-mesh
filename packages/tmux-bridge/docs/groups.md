@@ -106,3 +106,16 @@ can use `GroupStore` and `GroupActor` from `mesh_group_store.py`; any remote
 adapter must authenticate the actor, bind the exact session ID and grant management
 authority independently before constructing `GroupActor`. Supplying a session ID,
 registering a member or holding a role does not authenticate a caller.
+# Item reference contract
+
+Group links, gateway item grants and item leases use the versioned Unicode
+15.0.0 reference policy. A reference has a lowercase scheme matching
+`[a-z][a-z0-9+.-]{0,63}`, a colon, and a nonempty item identifier of printable,
+non-whitespace Unicode scalar values. The full reference is at most 512 code
+points. Lone surrogates, Unicode 15 non-printable characters and whitespace
+are rejected.
+Values are compared exactly: the system never normalizes or truncates them.
+The Python and gateway tables are pinned copies with shared fixtures; changing
+the Unicode version requires an explicit compatible migration and tests.
+Provider-specific identifier spaces, request batch limits and authorization
+grants remain separate from this syntax.

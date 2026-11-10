@@ -4,6 +4,7 @@ import { dirname, isAbsolute } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { MeshMcpOptions, MeshMcpTool } from "./mesh-mcp.js";
+import { validItemRef } from "./item-ref.js";
 
 export interface GroupGrant {
   workspace_id: string;
@@ -21,7 +22,6 @@ const LOCAL_SESSION = /^(?:codex|claude):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3
 const CLOUD_SESSION = /^claude-cloud:[a-z][a-z0-9-]{0,63}:(?:session|cse)_[A-Za-z0-9]{1,128}$/;
 const HUMAN_ACTOR = /^human:[a-z][a-z0-9-]{0,63}$/;
 const GROUP = /^group_[a-f0-9]{32}$/;
-const LEDGER_REF = /^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
 export function validGroupGrants(value: unknown, workspaces: readonly string[], kind?: "user" | "service"): value is GroupGrant[] {
   if (!Array.isArray(value) || value.length > 100) return false;
@@ -36,7 +36,7 @@ export function validGroupGrants(value: unknown, workspaces: readonly string[], 
         grant.group_ids.some((id: unknown) => typeof id !== "string" || !GROUP.test(id)) ||
         new Set(grant.group_ids).size !== grant.group_ids.length ||
         (grant.ledger_refs !== undefined && (!Array.isArray(grant.ledger_refs) || grant.ledger_refs.length > 200 ||
-          grant.ledger_refs.some((ref: unknown) => typeof ref !== "string" || ref.length > 256 || !LEDGER_REF.test(ref)) ||
+          grant.ledger_refs.some((ref: unknown) => !validItemRef(ref)) ||
           new Set(grant.ledger_refs).size !== grant.ledger_refs.length))) return false;
     seen.add(grant.workspace_id);
     return true;
@@ -136,7 +136,7 @@ function authorizedGroupManager(options: MeshMcpOptions, tool: MeshMcpTool): voi
 
 const sessionId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) || CLOUD_SESSION.test(value));
 const participantId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) || CLOUD_SESSION.test(value) || HUMAN_ACTOR.test(value));
-const ledgerRef = z.string().max(256).regex(LEDGER_REF);
+const ledgerRef = z.string().refine(validItemRef);
 const label = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/[\x00-\x1f\x7f]/.test(value));
 const roleKey = z.string().regex(/^[a-z0-9][a-z0-9_.:/-]{0,127}$/);
 const lockInput = z.object({ workspace_id: workspace, group_id: groupId, ref: ledgerRef }).strict();

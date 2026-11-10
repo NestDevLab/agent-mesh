@@ -14,6 +14,7 @@ import stat
 from uuid import uuid4
 
 from mesh_group_import import graph_import_plan
+from mesh_item_ref import valid_item_ref
 
 
 _SESSION_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,254}")
@@ -91,6 +92,12 @@ def _one_line(value, limit, label):
     if (not isinstance(value, str) or not 0 < len(value) <= limit or value != value.strip()
             or not value.isprintable()):
         raise ValueError(f"invalid {label}")
+    return value
+
+
+def _item_ref(value):
+    if not valid_item_ref(value):
+        raise ValueError("invalid ledger reference")
     return value
 
 
@@ -292,7 +299,7 @@ class GroupStore:
     @contextmanager
     def guard_item_link(self, actor, group_id, ref):
         """Keep membership and item linkage stable throughout a bounded lock operation."""
-        _one_line(ref, 256, "ledger reference")
+        _item_ref(ref)
         with self._transaction(write=True) as db:
             self._require_group(db, group_id, actor, conversation=True)
             if not db.execute("SELECT 1 FROM ledger_links WHERE group_id = ? AND ref = ?",
@@ -325,7 +332,7 @@ class GroupStore:
 
     def list_groups(self, actor, *, ledger_ref=None, source_ref=None):
         if ledger_ref is not None:
-            _one_line(ledger_ref, 256, "ledger reference")
+            _item_ref(ledger_ref)
         if source_ref is not None:
             _one_line(source_ref, 256, "source reference")
         with self._transaction() as db:
@@ -419,7 +426,7 @@ class GroupStore:
 
     def link_ledger(self, actor, group_id, ref, *, lead=None):
         self._require_manager(actor)
-        _one_line(ref, 256, "ledger reference")
+        _item_ref(ref)
         if lead is not None and type(lead) is not bool:
             raise ValueError("ledger lead must be a boolean")
         with self._transaction(write=True) as db:
@@ -452,7 +459,7 @@ class GroupStore:
 
     def transfer_ledger_lead(self, actor, ref, *, from_group_id, to_group_id):
         self._require_manager(actor)
-        _one_line(ref, 256, "ledger reference")
+        _item_ref(ref)
         _matched(from_group_id, _GROUP_ID, "expected lead group id")
         _matched(to_group_id, _GROUP_ID, "target lead group id")
         with self._transaction(write=True) as db:
@@ -473,7 +480,7 @@ class GroupStore:
 
     def unlink_ledger(self, actor, group_id, ref):
         self._require_manager(actor)
-        _one_line(ref, 256, "ledger reference")
+        _item_ref(ref)
         with self._transaction(write=True) as db:
             self._require_group(db, group_id, actor)
             incumbent = self._ledger_lead(db, ref)

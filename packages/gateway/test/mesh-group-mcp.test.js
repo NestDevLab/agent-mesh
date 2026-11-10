@@ -3,11 +3,13 @@ import { mkdtemp, rm, stat } from "node:fs/promises";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import "./ts-extension-resolver.mjs";
 
 const { createMeshMcpHandler, FixedWindowMeshMcpRateLimiter } = await import("../src/mcp/mesh-mcp.ts");
 const { UnixGroupGateway, validGroupGrants } = await import("../src/mcp/mesh-groups.ts");
+const { validItemRef } = await import("../src/mcp/item-ref.ts");
 const { resolveCloudflareAccessPrincipal } = await import("../src/mcp/cloudflare-access.ts");
 const WORKSPACE = "workspace.example";
 const ACTOR = "claude-cloud:example:session_Abc123";
@@ -39,7 +41,7 @@ test("group grants are exact, workspace-bound and reject duplicate or malformed 
   assert.equal(validGroupGrants([grant], ["workspace.other"]), false);
   assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work:item-1"] }], [WORKSPACE]), true);
   assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work:item-1", "work:item-1"] }], [WORKSPACE]), false);
-  assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work.test:item-1"] }], [WORKSPACE]), false);
+  assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work.test:item-1"] }], [WORKSPACE]), true);
   const humanGrant = { ...grant, session_id: "human:operator" };
   assert.equal(validGroupGrants([humanGrant], [WORKSPACE], "user"), true);
   assert.equal(validGroupGrants([humanGrant], [WORKSPACE], "service"), false);
@@ -58,6 +60,17 @@ test("group grants are exact, workspace-bound and reject duplicate or malformed 
     extra: { cloudflareAccessIdentity: { subject: "test", kind: "service", selector: "example" } } },
     [{ ...binding, manageAllGroups: true }]);
   assert.equal(manager.manageAllGroups, true);
+});
+
+test("item refs use the shared versioned Unicode policy and code-point limits", () => {
+  const fixtures = JSON.parse(readFileSync(new URL("../../tmux-bridge/test/fixtures/item-ref-v1.json", import.meta.url), "utf8"));
+  for (const ref of fixtures.valid) assert.equal(validItemRef(ref), true, JSON.stringify(ref));
+  for (const ref of fixtures.invalid) assert.equal(validItemRef(ref), false, JSON.stringify(ref));
+  assert.equal(validItemRef("x:" + "🧭".repeat(510)), true);
+  assert.equal(validItemRef("x:" + "🧭".repeat(511)), false);
+  assert.equal(validItemRef("x:é"), true);
+  assert.notEqual("x:é", "x:e\u0301");
+  assert.equal(validItemRef("x:e\u0301"), true);
 });
 
 test("authenticated group history and append traverse a private broker without cross-group access", async t => {
@@ -238,7 +251,9 @@ test("authenticated group history and append traverse a private broker without c
   assert.equal(foreignRelease.structuredContent.outcome, "released");
   const unrelatedLock = await call(handler, "mesh_group_lock_inspect", { ...lockArgs, ref: "work:other" });
   assert.equal(unrelatedLock.isError, true);
-  const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:item-1" });
+  const extendedScheme = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:item-1" });
+  assert.equal(extendedScheme.structuredContent.ref, "work.test:item-1");
+  const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:\u200b" });
   assert.ok(incompatible.isError || incompatible.code);
   const removed = await call(manager, "mesh_group_remove", { group_id: group, session_id: ACTOR });
   assert.equal(removed.structuredContent.changed, true);
