@@ -276,7 +276,9 @@
       "target_remote": "origin",
       "target_branch": "pr/group-gateway-conversation",
       "integration_branch": "main-integration",
-      "commits": [],
+      "commits": [
+        "77f2509bb2c72d9f32e27a02e35793275d0a75b2"
+      ],
       "state": "draft",
       "publication": {
         "enabled": false
