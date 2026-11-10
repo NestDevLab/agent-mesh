@@ -90,6 +90,26 @@ A changed witness invalidates the digest even when the projected group looks the
 same. For a live cutover, use a fresh snapshot and verify the reviewed digest
 against it before applying. The observed sequence is reported separately; the
 command cannot tell whether a supplied offline snapshot is current.
+
+For a live, single-host cutover on Linux, `mesh-group-import-live.py` obtains a
+fresh graph snapshot inside an existing `role run` graph guard and imports it
+before that guard is released. The worker fails closed without the guard proof
+or Linux parent-death protection. Both preview and apply require the exact
+active role claim and explicit graph and group state paths:
+
+```sh
+mesh-group-import-live.py --graph-state /path/to/graph --state /path/to/groups \
+  --session codex:11111111-1111-4111-8111-111111111111 \
+  --role operator --project sample --claim-id CLAIM \
+  --source local-graph --include-group group:sample
+# Repeat the same arguments with --apply --plan-digest REVIEWED_DIGEST.
+```
+
+The importer checks the plan and destination under the graph guard. A failed or
+interrupted invocation may have committed: inspect the import receipt and
+destination before retrying. This protects against cooperative graph writers
+during import; it does not synchronize later legacy writes, retire old links,
+or guarantee a complete migration. Arrange a separate writer handover.
 Using the same source and plan again is a no-op, even after someone changes
 group membership. A different plan for a source that was already imported needs
 an explicit reconciliation; it never overwrites groups. Verify imported groups
