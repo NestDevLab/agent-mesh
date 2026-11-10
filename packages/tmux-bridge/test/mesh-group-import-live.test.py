@@ -126,6 +126,7 @@ import importlib.util, os, pathlib, sys, time
 binary, graph, go, rejected = sys.argv[1:]
 while not pathlib.Path(go).exists():
     time.sleep(.01)
+sys.path.insert(0, str(pathlib.Path(binary).parent))
 spec = importlib.util.spec_from_file_location("live_import", binary)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
