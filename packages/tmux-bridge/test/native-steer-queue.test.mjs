@@ -92,12 +92,14 @@ test('composed native response steers an active turn once under concurrent dedup
 
 test('composed native response queues once only after proven no-active-turn and preserves resume', async t => {
   const f = await fixture(t, 'idle');
-  const result = await f.invoke({ extra: ['--resume'] });
+  const result = await f.invoke();
   assert.equal(result.code, 0, result.stderr);
   const receipt = JSON.parse(result.stdout);
   assert.equal(receipt.status, 'queued');
   assert.equal(receipt.deliveryMethod, 'queue');
+  assert.equal(receipt.resumeRequested, true);
   assert.equal(receipt.resumeVerified, false);
+  assert.equal(receipt.resumeDiagnostic, false);
   assert.equal(f.requests.some(r => r.method === 'turn/steer'), false);
   assert.deepEqual(await f.queueCalls(), [['queue', '--thread', session, '--message', 'Synthetic response', '--resume']]);
   assert.equal((await f.invoke({ extra: ['--resume'] })).code, 0);

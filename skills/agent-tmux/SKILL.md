@@ -237,6 +237,9 @@ $BIN/agent-native-call.mjs --agent codex --session <SESSION_ID> \
   --correlation-id <TASK_ID> --message "your prompt here"
 ```
 
+Codex queues wake by default; use `--no-resume` to hold the native queued turn.
+For the direct CLI, use `codex queue --thread <id> --message <text> --resume`.
+
 Claude ownership uses the documented `claude agents --json` inventory plus
 process verification, so Desktop owners are found even when their argv omits
 `--resume`. An incomplete inventory is unknown, not free, and resume fails
@@ -599,7 +602,7 @@ caveat; see `docs/codex-session-titles.md`.
 
 Urgent messages use `agent-session.sh --agent codex steer <SESSION_ID> --message <text>`,
 which adds the text to the running turn. Exit 3 means there's no active turn and
-nothing was sent, so fall back to `codex queue`. Exit 124 is an unknown outcome:
+nothing was sent, so fall back to `codex queue --thread <id> --message <text> --resume`. Exit 124 is an unknown outcome:
 inspect before retrying. Exit 0 proves acceptance only, confirm in the transcript.
 Claude sessions have no steer.
 
@@ -611,8 +614,8 @@ tmux session ends. `resume` checks before creating any tmux state:
 | Thread state | `resume` result | Do instead |
 | --- | --- | --- |
 | Archived | exit 3, names `codex unarchive <id>` | unarchive, then re-check writers |
-| Loaded by a Codex app-server (`writer-status` role `app-server`) | exit 4 | `codex queue --thread <id> --message <text>` |
-| Idle, but listed in Desktop (Desktop source, pinned, or filed) | exit 6 | `codex queue`; or `--allow-desktop-thread`, then `release` right after use |
+| Loaded by a Codex app-server (`writer-status` role `app-server`) | exit 4 | `codex queue --thread <id> --message <text> --resume` |
+| Idle, but listed in Desktop (Desktop source, pinned, or filed) | exit 6 | `codex queue --thread <id> --message <text> --resume`; or `--allow-desktop-thread`, then `release` right after use |
 
 `AGENT_DESKTOP_THREAD_SOURCES` in `codex.conf` sets which thread sources count as
 Desktop-listed. If the Codex state database can't be read, `resume` warns and

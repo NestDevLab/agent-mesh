@@ -90,7 +90,7 @@ def resume_check(args: argparse.Namespace) -> int:
     if archived:
         print(f"ERROR: Codex session '{session}' is archived. Restore it with `codex unarchive {session}` "
               "and retry. Codex Desktop may load it right after; if writer-status then shows an app-server "
-              f"writer, send work with `codex queue --thread {session} --message <text>` instead.", file=sys.stderr)
+              f"writer, send work with `codex queue --thread {session} --message <text> --resume` instead.", file=sys.stderr)
         return EXIT_ARCHIVED
     try:
         current = writers(session)
@@ -102,7 +102,7 @@ def resume_check(args: argparse.Namespace) -> int:
         pids = ", ".join(str(w["pid"]) for w in served)
         print(f"ERROR: Codex thread '{session}' is loaded by a Codex app-server (pid {pids}), e.g. Codex Desktop. "
               f"Don't resume it in tmux; send work through the app-server: "
-              f"`codex queue --thread {session} --message <text>`.", file=sys.stderr)
+              f"`codex queue --thread {session} --message <text> --resume`.", file=sys.stderr)
         return EXIT_WRITER
     if current:
         pids = ", ".join(str(w["pid"]) for w in current)
@@ -120,7 +120,7 @@ def resume_check(args: argparse.Namespace) -> int:
     if not args.allow_desktop_thread:
         print(f"ERROR: Codex thread '{session}' is visible in Codex Desktop and idle. A tmux resume keeps it "
               f"attached to the tmux CLI and Desktop can't drive it until that ends. Prefer "
-              f"`codex queue --thread {session} --message <text>`. To resume anyway, pass "
+              f"`codex queue --thread {session} --message <text> --resume`. To resume anyway, pass "
               f"--allow-desktop-thread and release it right after use: `{release}`.", file=sys.stderr)
         return EXIT_DESKTOP
     print(f"WARN: resuming Desktop-visible Codex thread '{session}' in tmux; release it right after use: "
