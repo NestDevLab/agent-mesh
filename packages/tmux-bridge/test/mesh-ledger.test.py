@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Exercise adapter boundaries and consumer isolation with a synthetic ledger."""
+"""Exercise adapter boundaries, consumer isolation and local item leases."""
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import sys
 import tempfile
+from threading import Event
+import time
 import unittest
 from unittest.mock import patch
 
@@ -16,6 +20,9 @@ ADAPTER = ROOT / 'test/fixtures/ledger-adapter.mjs'
 spec = importlib.util.spec_from_file_location('mesh_ledger', CLI)
 ledger = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ledger)
+spec = importlib.util.spec_from_file_location('ledger_item_lock', ROOT / 'bin/ledger_item_lock.py')
+item_lock = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(item_lock)
 
 class LedgerCLI(unittest.TestCase):
     def setUp(self):
@@ -234,6 +241,195 @@ class LedgerCLI(unittest.TestCase):
         self.configure(command=['node', str(ADAPTER), '; touch ' + str(marker)])
         self.changes(code=1)
         self.assertFalse(marker.exists())
+
+@unittest.skipUnless(sys.platform == 'linux', 'item leases use the Linux boot clock')
+class ItemLeaseCLI(unittest.TestCase):
+    ref = 'work:A'
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.state = self.root / 'locks'
+        invalid_config = self.root / 'invalid-adapters.json'
+        invalid_config.write_text('invalid')
+        self.env = {**os.environ, 'MESH_LEDGERS_FILE': str(invalid_config),
+                    'MESH_LEDGER_LOCK_STATE_DIR': str(self.state),
+                    'PYTHONPATH': str(ROOT / 'bin')}
+
+    def run_lock(self, action, *args, ref=None, code=0):
+        done = subprocess.run(
+            [sys.executable, '-B', str(CLI), 'lock', action, '--ref', ref or self.ref, *args],
+            env=self.env, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(done.stderr, '')
+        if code is not None:
+            self.assertEqual(done.returncode, code, done.stdout)
+        return done.returncode, json.loads(done.stdout)
+
+    def acquire(self, fence=0, owner='worker-a', **kwargs):
+        return self.run_lock('acquire', '--owner', owner, '--expect-fence', str(fence), **kwargs)[1]
+
+    @staticmethod
+    def credentials(lease):
+        return ('--owner', lease['owner'], '--fence', str(lease['fence']), '--lease-id', lease['leaseId'])
+
+    def start_worker(self, script):
+        worker = subprocess.Popen([sys.executable, '-B', '-c', script], env=self.env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.kill_worker, worker)
+        ready, _, _ = select.select([worker.stdout], [], [], 10)
+        self.assertTrue(ready, 'lease worker did not signal readiness')
+        line = worker.stdout.readline()
+        self.assertTrue(line, worker.stderr.read() if worker.poll() is not None else '')
+        return worker, line
+
+    @staticmethod
+    def kill_worker(worker):
+        if worker.poll() is None:
+            worker.kill()
+        worker.communicate(timeout=5)
+
+    def test_first_acquire_is_cas_across_processes_and_different_refs_are_independent(self):
+        missing = self.run_lock('inspect')[1]
+        self.assertEqual((missing['status'], missing['fence']), ('available', 0))
+        self.assertFalse(self.state.exists())
+
+        def contender(index):
+            return self.acquire(owner=f'worker-{index}', code=None)
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(contender, range(8)))
+        wins = [value for value in results if value['outcome'] == 'acquired']
+        self.assertEqual(len(wins), 1, results)
+        self.assertEqual([value['outcome'] for value in results].count('conflict'), 7, results)
+        view = self.run_lock('inspect')[1]
+        self.assertEqual((view['owner'], view['fence'], view['status']), (wins[0]['owner'], 1, 'active'))
+        self.assertNotIn('leaseId', view)
+        self.assertEqual(self.acquire(fence=1, code=3)['outcome'], 'held')
+        self.assertEqual(self.acquire(ref='work:B')['fence'], 1)
+
+    def test_first_raw_descriptor_cannot_overlap_sqlite_open_in_same_process(self):
+        opened, resume = Event(), Event()
+        normal_create = item_lock.create_database_file
+
+        def pause_after_raw_open(path):
+            if opened.is_set():
+                return normal_create(path)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                opened.set()
+                if not resume.wait(timeout=10):
+                    raise AssertionError('test did not let the initializer finish')
+            finally:
+                os.close(fd)
+
+        def acquire(ref):
+            return item_lock.operation('acquire', ref, owner='worker-a', fence=0, ttl=30,
+                                       directory=self.state)
+
+        with patch.object(item_lock, 'create_database_file', side_effect=pause_after_raw_open), \
+                patch.object(item_lock, 'BOOTSTRAP_WAIT', 0.1), ThreadPoolExecutor(max_workers=1) as pool:
+            creator = pool.submit(acquire, self.ref)
+            try:
+                self.assertTrue(opened.wait(timeout=5))
+                with self.assertRaises(item_lock.LeaseBusy):
+                    item_lock.operation('inspect', self.ref, directory=self.state)
+                self.assertEqual(acquire('work:B')['fence'], 1)
+            finally:
+                resume.set()
+            self.assertEqual(creator.result(timeout=5)['fence'], 1)
+
+    def test_release_preserves_fence_and_old_token_fails_for_same_owner(self):
+        first = self.acquire()
+        self.assertEqual(self.run_lock('release', *self.credentials(first))[1]['status'], 'available')
+        self.assertEqual(self.acquire(fence=0, code=3)['outcome'], 'conflict')
+        second = self.acquire(fence=first['fence'])
+        self.assertEqual(second['fence'], first['fence'] + 1)
+        self.assertNotEqual(second['leaseId'], first['leaseId'])
+        # Knowing the new public fence and stable owner does not give the old
+        # holder the new lease identity.
+        stale = (*self.credentials(second)[:-1], first['leaseId'])
+        for action in ('release', 'renew', 'check'):
+            self.assertEqual(self.run_lock(action, *stale, code=3)[1]['outcome'], 'stale')
+        self.assertEqual(self.run_lock('check', *self.credentials(second))[1]['outcome'], 'current')
+
+    def test_renew_expiry_boundary_reacquisition_and_boot_change(self):
+        def run(action, boot, seconds, **kwargs):
+            with patch.object(item_lock, 'clock', return_value=(boot, seconds * 1_000_000_000)):
+                return item_lock.operation(action, self.ref, directory=self.state, **kwargs)
+
+        def credentials(value):
+            return {'owner': value['owner'], 'fence': value['fence'], 'lease_id': value['leaseId']}
+
+        first = run('acquire', 'boot-1', 10, owner='worker-a', fence=0, ttl=3)
+        renewed = run('renew', 'boot-1', 12, **credentials(first), ttl=10)
+        self.assertEqual((renewed['fence'], renewed['remainingMs']), (1, 10_000))
+        short = run('renew', 'boot-1', 13, **credentials(first), ttl=1)
+        self.assertEqual(short['remainingMs'], 9_000)
+        for action in ('renew', 'release', 'check'):
+            self.assertEqual(run(action, 'boot-1', 22, **credentials(first), ttl=5)['outcome'], 'stale')
+        second = run('acquire', 'boot-1', 22, owner='worker-b', fence=1, ttl=2)
+        self.assertEqual(second['fence'], 2)
+        self.assertEqual(run('inspect', 'boot-2', 0)['status'], 'expired')
+        self.assertEqual(run('renew', 'boot-2', 0, **credentials(second), ttl=3)['outcome'], 'stale')
+        self.assertEqual(run('acquire', 'boot-2', 0, owner='worker-c', fence=2, ttl=2)['fence'], 3)
+
+    def test_killing_a_process_mid_transaction_rolls_back_and_preserves_cas(self):
+        # Stop after the real acquire has updated SQLite but before its enclosing
+        # context manager commits. A second process must see no phantom fence.
+        worker, _ = self.start_worker('''
+from contextlib import contextmanager
+import time
+import ledger_item_lock as lock
+original = lock.transaction
+@contextmanager
+def stop_before_commit(*args, **kwargs):
+    with original(*args, **kwargs) as db:
+        yield db
+        print("ready", flush=True)
+        time.sleep(30)
+lock.transaction = stop_before_commit
+lock.operation("acquire", "work:A", owner="worker-a", fence=0, ttl=10)
+''')
+        self.kill_worker(worker)
+        self.assertEqual(self.acquire(owner='worker-b')['fence'], 1)
+        self.assertEqual(self.run_lock('inspect')[1]['owner'], 'worker-b')
+
+    def test_guard_keeps_expired_lease_from_overlapping_successor_until_process_dies(self):
+        worker, line = self.start_worker('''
+import json
+import time
+import ledger_item_lock as lock
+first = lock.operation("acquire", "work:A", owner="worker-a", fence=0, ttl=1)
+with lock.guard_item_write("work:A", owner=first["owner"], fence=first["fence"], lease_id=first["leaseId"]):
+    print(json.dumps(first), flush=True)
+    time.sleep(30)
+''')
+        first = json.loads(line)
+        self.assertEqual(self.acquire(ref='work:B')['fence'], 1)
+        time.sleep(first['remainingMs'] / 1000)
+        self.assertEqual(self.acquire(fence=1, owner='worker-b', code=1)['outcome'], 'busy')
+        self.kill_worker(worker)
+        self.assertEqual(self.run_lock('inspect')[1]['status'], 'expired')
+        self.assertEqual(self.acquire(fence=1, owner='worker-b')['fence'], 2)
+        with self.assertRaises(item_lock.StaleLease):
+            with item_lock.guard_item_write(self.ref, directory=self.state, owner=first['owner'],
+                                            fence=first['fence'], lease_id=first['leaseId']):
+                self.fail('stale holder reached write')
+
+    def test_ref_never_becomes_a_path_and_storage_errors_fail_closed(self):
+        self.assertEqual(self.acquire(ref='not-a-ref', code=1)['outcome'], 'error')
+        self.assertFalse(self.state.exists())
+        self.acquire(ref='work:../../outside')
+        databases = list(self.state.glob('*.sqlite3'))
+        self.assertEqual(len(databases), 1)
+        self.assertRegex(databases[0].name, r'^[a-f0-9]{64}\.sqlite3$')
+        self.assertEqual(set(self.state.iterdir()), {databases[0], databases[0].with_suffix('.bootstrap')})
+        self.assertFalse((self.root / 'outside').exists())
+        databases[0].write_bytes(b'invalid sqlite bytes')
+        self.assertEqual(self.run_lock('inspect', ref='work:../../outside', code=1)[1]['outcome'], 'error')
+
 
 if __name__ == '__main__':
     unittest.main()
