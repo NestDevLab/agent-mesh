@@ -19,17 +19,19 @@ export interface GroupGateway {
 
 const LOCAL_SESSION = /^(?:codex|claude):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CLOUD_SESSION = /^claude-cloud:[a-z][a-z0-9-]{0,63}:(?:session|cse)_[A-Za-z0-9]{1,128}$/;
+const HUMAN_ACTOR = /^human:[a-z][a-z0-9-]{0,63}$/;
 const GROUP = /^group_[a-f0-9]{32}$/;
 const LEDGER_REF = /^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 
-export function validGroupGrants(value: unknown, workspaces: readonly string[]): value is GroupGrant[] {
+export function validGroupGrants(value: unknown, workspaces: readonly string[], kind?: "user" | "service"): value is GroupGrant[] {
   if (!Array.isArray(value) || value.length > 100) return false;
   const seen = new Set<string>();
   return value.every(grant => {
     if (typeof grant !== "object" || grant === null || Array.isArray(grant) ||
         !["group_ids,session_id,workspace_id", "group_ids,ledger_refs,session_id,workspace_id"].includes(Object.keys(grant).sort().join(",")) ||
         typeof grant.workspace_id !== "string" || !workspaces.includes(grant.workspace_id) || seen.has(grant.workspace_id) ||
-        typeof grant.session_id !== "string" || !(LOCAL_SESSION.test(grant.session_id) || CLOUD_SESSION.test(grant.session_id)) ||
+        typeof grant.session_id !== "string" || !(LOCAL_SESSION.test(grant.session_id) || CLOUD_SESSION.test(grant.session_id) ||
+          (kind === "user" && HUMAN_ACTOR.test(grant.session_id))) ||
         !Array.isArray(grant.group_ids) || grant.group_ids.length > 200 ||
         grant.group_ids.some((id: unknown) => typeof id !== "string" || !GROUP.test(id)) ||
         new Set(grant.group_ids).size !== grant.group_ids.length ||
@@ -108,7 +110,7 @@ const object = z.object({ workspace_id: workspace, group_id: groupId }).strict()
 
 function authorized(options: MeshMcpOptions, tool: MeshMcpTool, workspaceId?: string, target?: string): GroupGrant {
   if (!options.principal.allowedTools.includes(tool) || !options.rateLimiter.consume(options.principal.id, tool)) throw new Error("Group operation is not allowed.");
-  if (!validGroupGrants(options.principal.groupGrants, options.principal.allowedWorkspaceIds)) throw new Error("Group grants are unavailable or invalid.");
+  if (!validGroupGrants(options.principal.groupGrants, options.principal.allowedWorkspaceIds, options.principal.kind)) throw new Error("Group grants are unavailable or invalid.");
   const grants = (options.principal.groupGrants ?? []).filter(g =>
     options.principal.allowedWorkspaceIds.includes(g.workspace_id) && (workspaceId === undefined || g.workspace_id === workspaceId));
   if (grants.length !== 1) throw new Error("Group workspace is missing or ambiguous.");
@@ -133,6 +135,7 @@ function authorizedGroupManager(options: MeshMcpOptions, tool: MeshMcpTool): voi
 }
 
 const sessionId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) || CLOUD_SESSION.test(value));
+const participantId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) || CLOUD_SESSION.test(value) || HUMAN_ACTOR.test(value));
 const ledgerRef = z.string().max(256).regex(LEDGER_REF);
 const label = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/[\x00-\x1f\x7f]/.test(value));
 const roleKey = z.string().regex(/^[a-z0-9][a-z0-9_.:/-]{0,127}$/);
@@ -213,12 +216,12 @@ function registerGroupAdminTools(server: McpServer, options: MeshMcpOptions): vo
   if (options.principal.allowedTools.includes("mesh_group_add")) server.registerTool("mesh_group_add", {
     title: "Add a group member", description: "Global administrator only; cloud members must be registered.",
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    inputSchema: z.object({ group_id: groupId, session_id: sessionId }).strict()
+    inputSchema: z.object({ group_id: groupId, session_id: participantId }).strict()
   }, async input => invoke("mesh_group_add", { action: "admin_add", group: input.group_id, session: input.session_id }));
   if (options.principal.allowedTools.includes("mesh_group_remove")) server.registerTool("mesh_group_remove", {
     title: "Remove a group member", description: "Global administrator only; removes membership without deleting history.",
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    inputSchema: z.object({ group_id: groupId, session_id: sessionId }).strict()
+    inputSchema: z.object({ group_id: groupId, session_id: participantId }).strict()
   }, async input => invoke("mesh_group_remove", { action: "admin_remove", group: input.group_id, session: input.session_id }));
   if (options.principal.allowedTools.includes("mesh_group_link")) server.registerTool("mesh_group_link", {
     title: "Link a group to an item", description: "Global administrator only; at most one group leads an item.",

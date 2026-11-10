@@ -105,6 +105,19 @@ class GroupBrokerTest(unittest.TestCase):
         self.assertEqual(result["status"], "accepted")
         self.assertEqual([call.args[0] for call in send.call_args_list], [OTHER, OUTSIDER])
 
+    def test_human_participant_can_address_the_group_route(self):
+        human = "human:operator"
+        self.store.add_member(GroupActor(manage=True), self.group, human)
+        self.store.set_route(GroupActor(manage=True), self.group, [OTHER], 0)
+        request = {"action": "send", "actor": human, "group": self.group, "message_id": "human-message",
+                   "message": "status", "destinations": None}
+        with patch("mesh_group_dispatch.native_transport", return_value={"outcome": "accepted"}) as send:
+            result = run_operation(self.store, request)
+        self.assertEqual(result["status"], "accepted")
+        self.assertEqual(send.call_args.args[0], OTHER)
+        history = self.store.history(GroupActor(session_id=ACTOR), self.group)
+        self.assertEqual(history["messages"][0]["author_session_id"], human)
+
     def test_group_route_never_falls_back_on_unknown_delivery(self):
         self.store.add_member(GroupActor(manage=True), self.group, OUTSIDER)
         self.store.set_route(GroupActor(manage=True), self.group, [OTHER, OUTSIDER], 0)

@@ -10,9 +10,11 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import "./ts-extension-resolver.mjs";
 
 if (globalThis.crypto === undefined) globalThis.crypto = webcrypto;
-const { startMeshMcpServer } = await import("../src/mcp/serve.ts");
+const { startMeshMcpServer, validateHumanGroupActors } = await import("../src/mcp/serve.ts");
 const issuer = "https://identity.example.test";
 const actor = "codex:11111111-1111-4111-8111-111111111111";
+const human = "human:operator";
+const humanEmail = "operator@example.test";
 const workspace = "workspace.example";
 
 async function freePort() {
@@ -51,6 +53,7 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   const cli = (...args) => JSON.parse(execFileSync("python3", [join(bin, "mesh-groups.py"), ...args], { env, encoding: "utf8" }));
   const group = cli("create", "Example").group_id;
   cli("add", group, actor);
+  cli("add", group, human);
   cli("link", group, "work:item-1");
   cli("link", group, "work:private-item");
   broker = spawn("python3", [join(bin, "mesh_group_broker.py"), "--socket", socket, "--state", state], { env, stdio: "ignore" });
@@ -70,7 +73,14 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
     });
     throw new Error("Unexpected outbound request: " + address);
   };
-  const memberTools = ["mesh_group_list", "mesh_group_lock_inspect", "mesh_group_lock_acquire", "mesh_group_lock_release"];
+  const memberTools = ["mesh_group_list", "mesh_group_history", "mesh_group_lock_inspect", "mesh_group_lock_acquire", "mesh_group_lock_release"];
+  const humanGrant = { workspace_id: workspace, session_id: human, group_ids: [group], ledger_refs: ["work:item-1"] };
+  const humanBinding = { kind: "user", selector: humanEmail, allowedTools: ["mesh_group_list", "mesh_group_append", "mesh_group_send"],
+    allowedAgentIds: [], allowedWorkspaceIds: [workspace], allowedDomainIds: [], groupGrants: [humanGrant] };
+  assert.doesNotThrow(() => validateHumanGroupActors([humanBinding, { ...humanBinding, selector: humanEmail.toUpperCase() }]));
+  assert.throws(() => validateHumanGroupActors([humanBinding, { ...humanBinding, selector: "other@example.test" }]),
+    /conflicting user bindings/);
+  assert.throws(() => validateHumanGroupActors([{ ...humanBinding, kind: "service" }]), /require a user principal/);
   const config = join(root, "config.json");
   await writeFile(config, JSON.stringify({ stateDir: gatewayState, agents: [], contexts: [],
     groups: { socketPath: socket }, bindings: [
@@ -78,8 +88,9 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
         allowedWorkspaceIds: [workspace], allowedDomainIds: [], groupGrants: [{
           workspace_id: workspace, session_id: actor, group_ids: [group], ledger_refs: ["work:item-1"]
         }] },
-      { kind: "service", selector: "admin", allowedTools: ["mesh_group_create", "mesh_group_set_route"], allowedAgentIds: [],
-        allowedWorkspaceIds: [], allowedDomainIds: [], manageAllGroups: true }
+      { kind: "service", selector: "admin", allowedTools: ["mesh_group_create", "mesh_group_set_route", "mesh_group_add", "mesh_group_remove"], allowedAgentIds: [],
+        allowedWorkspaceIds: [], allowedDomainIds: [], manageAllGroups: true },
+      humanBinding
     ] }), { mode: 0o600 });
   closeGateway = await startMeshMcpServer({ AGENT_MESH_MCP_HOST: "127.0.0.1",
     AGENT_MESH_MCP_PORT: String(port), AGENT_MESH_MCP_CONFIG: config,
@@ -88,6 +99,8 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
     .setProtectedHeader({ alg: "RS256", kid: "test" }).setIssuer(issuer).setAudience("mesh-test")
     .setSubject("synthetic").setIssuedAt().setExpirationTime("5m").sign(key);
   const member = await sign(privateKey, "member"), admin = await sign(privateKey, "admin");
+  const humanToken = await new SignJWT({ email: humanEmail }).setProtectedHeader({ alg: "RS256", kid: "test" })
+    .setIssuer(issuer).setAudience("mesh-test").setSubject("synthetic-user").setIssuedAt().setExpirationTime("5m").sign(privateKey);
   const unknown = await sign(privateKey, "unknown");
   const wrongKey = await generateKeyPair("RS256");
   const forged = await sign(wrongKey.privateKey, "admin");
@@ -113,6 +126,15 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   assert.deepEqual(listed.result.structuredContent.groups[0].ledger_links.map(link => link.ref), ["work:item-1"]);
   const route = await call(admin, "mesh_group_set_route", { group_id: group, revision: 0, destinations: [actor] });
   assert.equal(route.result.structuredContent.revision, 1);
+  const removeHuman = await call(admin, "mesh_group_remove", { group_id: group, session_id: human });
+  assert.equal(removeHuman.result.structuredContent.changed, true);
+  const addHuman = await call(admin, "mesh_group_add", { group_id: group, session_id: human });
+  assert.equal(addHuman.result.structuredContent.changed, true);
+  const humanMessage = await call(humanToken, "mesh_group_append", {
+    workspace_id: workspace, group_id: group, message_id: "human-one", message: "Status?" });
+  assert.equal(humanMessage.result.structuredContent.message.author_session_id, human);
+  const sharedHistory = await call(member, "mesh_group_history", { workspace_id: workspace, group_id: group });
+  assert.equal(sharedHistory.result.structuredContent.messages[0].author_session_id, human);
   const routed = await call(member, "mesh_group_list", { workspace_id: workspace });
   assert.deepEqual(routed.result.structuredContent.groups[0].route.destinations, [actor]);
   const staleRoute = await call(admin, "mesh_group_set_route", { group_id: group, revision: 0, destinations: [] });

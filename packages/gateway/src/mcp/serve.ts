@@ -373,6 +373,7 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     return validated.value!;
   });
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
+  validateHumanGroupActors(parsed.bindings);
   validateGoogleWorkspace(parsed.googleWorkspace);
   validateMemoryRecall(parsed.memoryRecall);
   validateTmuxIngress(parsed.tmuxIngress, agents);
@@ -648,7 +649,7 @@ function validateBinding(
     !Array.isArray(binding.allowedAgentIds) ||
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||
-    (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds)) ||
+    (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds, binding.kind)) ||
     (binding.manageAllGroups !== undefined && typeof binding.manageAllGroups !== "boolean") ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
@@ -659,6 +660,21 @@ function validateBinding(
   const exposed = new Set(agents.map((agent) => agent.id));
   if (binding.allowedAgentIds.some((agentId) => !exposed.has(agentId))) {
     throw new Error(`MCP runtime binding ${index} refers to an unknown agent.`);
+  }
+}
+
+/** A human actor must resolve to one signed user identity across all bindings. */
+export function validateHumanGroupActors(bindings: readonly CloudflareAccessBinding[]): void {
+  const owners = new Map<string, string>();
+  for (const binding of bindings) {
+    for (const grant of binding.groupGrants ?? []) {
+      if (!grant.session_id.startsWith("human:")) continue;
+      if (binding.kind !== "user") throw new Error("Human group actors require a user principal.");
+      const owner = cloudflarePrincipalId(binding.kind, binding.selector);
+      const previous = owners.get(grant.session_id);
+      if (previous !== undefined && previous !== owner) throw new Error("Human group actor has conflicting user bindings.");
+      owners.set(grant.session_id, owner);
+    }
   }
 }
 

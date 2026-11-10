@@ -40,6 +40,11 @@ test("group grants are exact, workspace-bound and reject duplicate or malformed 
   assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work:item-1"] }], [WORKSPACE]), true);
   assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work:item-1", "work:item-1"] }], [WORKSPACE]), false);
   assert.equal(validGroupGrants([{ ...grant, ledger_refs: ["work.test:item-1"] }], [WORKSPACE]), false);
+  const humanGrant = { ...grant, session_id: "human:operator" };
+  assert.equal(validGroupGrants([humanGrant], [WORKSPACE], "user"), true);
+  assert.equal(validGroupGrants([humanGrant], [WORKSPACE], "service"), false);
+  assert.equal(validGroupGrants([humanGrant], [WORKSPACE]), false);
+  assert.equal(validGroupGrants([{ ...humanGrant, session_id: "human:bad@identity" }], [WORKSPACE], "user"), false);
   const granted = { ...grant, ledger_refs: ["work:item-1"] };
   const binding = { kind: "service", selector: "example", allowedTools: ["mesh_group_history"],
     allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [], groupGrants: [granted] };

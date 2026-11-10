@@ -13,6 +13,10 @@ listings hide all item links and item lock tools fail closed. The host must
 maintain these grants until an authoritative scoped ledger integration exists.
 Tool arguments cannot supply the actor. The broker checks current
 group membership, and cloud actors also need an open graph registration.
+An authenticated user may participate using a host-bound opaque
+`human:<id>` actor; a human actor cannot be assigned to a service principal
+or to two different user identities. It is a participant, not a native agent
+session, and cannot be selected as an automatic delivery destination.
 Group IDs outside the grant are never returned. For a cloud agent, use an
 authentication identity bound exclusively to that session: an operator-created
 binding alone does not prove which holder of a shared credential made a call.
