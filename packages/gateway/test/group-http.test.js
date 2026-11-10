@@ -99,7 +99,7 @@ test("isolated HTTP gateway verifies signed principals and routes group leases",
   }
   assert.equal((await call(null, "mesh_group_list", {})).status, 401);
   assert.equal((await call(forged, "mesh_group_create", { name: "Bad", request_id: "bad" })).status, 401);
-  assert.equal((await call(unknown, "mesh_group_list", {})).status, 401);
+  assert.equal((await call(unknown, "mesh_group_list", {})).status, 403);
   const listed = await call(member, "mesh_group_list", { workspace_id: workspace });
   assert.equal(listed.status, 200);
   assert.equal(listed.result.structuredContent.groups[0].group_id, group);
