@@ -32,7 +32,8 @@
       "group-ref-contract",
       "group-ref-public",
       "ledger-read-query",
-      "plexus-work-items"
+      "plexus-work-items",
+      "codex-queue-wake"
     ],
     "strategy": "cherry-pick"
   },
@@ -348,6 +349,22 @@
       },
       "meta": {
         "purpose": "Read open work items with sessions, sort and filter on live ledger fields"
+      }
+    },
+    {
+      "id": "codex-queue-wake",
+      "branch": "pr/codex-queue-wake",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Wake native Codex queue deliveries by default"
       }
     }
   ],
