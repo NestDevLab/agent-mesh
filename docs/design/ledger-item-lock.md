@@ -36,10 +36,11 @@ kernel time namespace. Ref aliases and separate state directories create separat
 application chooses the canonical ref. This is a cooperative single-host protocol, with no
 cross-host replication or user authentication. Do not put the directory on a network share.
 
-Each item uses its own SQLite file, with a name derived from the ref's SHA-256 digest. An exclusive
-transaction serializes compare-and-swap, renew, and release, and SQLite releases transaction locks
-and recovers uncommitted changes after process death. Transactions on different item files do not
-contend for the same database lock. Deadlines use the kernel boot clock, including suspended time;
+Each item uses its own SQLite file and bootstrap lock, named from the ref's SHA-256 digest.
+The bootstrap lock prevents another thread from opening SQLite before the initial database file
+has been created and closed. It is released before the SQLite transaction. An exclusive transaction
+serializes compare-and-swap, renew, and release, and SQLite releases transaction locks and recovers
+uncommitted changes after process death. Different refs do not share either lock. Deadlines use the kernel boot clock, including suspended time;
 a reboot expires old holders and preserves their recorded generations. Released rows retain the
 generation. Preserve the store across upgrades: deleting, restoring an older copy, or replacing
 files while writers are running can invalidate the fencing sequence.
