@@ -64,6 +64,15 @@ local writer, singleton role, or sender authority. Cloud registrations stay in
 the local graph and are excluded from scoped gateway queries. Local session IDs
 remain `codex:<uuid>` and `claude:<uuid>`.
 
+A local group manager can add the registered ID with
+`agent-mesh group add <group-id> claude-cloud:team-a:session_Example123`.
+The command checks that the exact registration is open in the default local
+graph. Membership is durable; closing the graph registration blocks future adds
+without removing existing members. A group member ID is not a credential. The
+local CLI rejects cloud IDs in `--as-session`; an authenticated adapter would
+need to bind the actual provider principal to a session separately before it
+could read or append group messages.
+
 ## Correlated return through the existing Codex transport
 
 A local relay can return a cloud recipient's response through the same native

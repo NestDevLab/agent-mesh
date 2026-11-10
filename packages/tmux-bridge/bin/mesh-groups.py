@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 import sys
 
 sys.dont_write_bytecode = True
@@ -37,11 +38,31 @@ def default_state_dir():
     return os.environ.get("MESH_GROUPS_STATE") or Path(state_home) / "agent-mesh" / "groups"
 
 
+def is_cloud_session(session_id):
+    return bool(session_id and session_id.partition(":")[0].endswith("-cloud"))
+
+
+def require_cloud_registration(session_id):
+    graph = Path(__file__).with_name("mesh-graph.mjs")
+    try:
+        result = subprocess.run(
+            ["node", str(graph), "cloud", "get", "--session", session_id],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0:
+            found = json.loads(result.stdout)
+            if isinstance(found, dict) and found.get("sessionId") == session_id:
+                return
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    raise ValueError("an open cloud graph registration is required")
+
+
 def parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--state", help="Override the local group database directory")
     common.add_argument("--as-session", metavar="SESSION_ID",
-                        help="Attest a session identity from this trusted local account")
+                        help="Attest a local session identity from this trusted local account")
     common.add_argument("--json", action="store_true", help="Emit JSON (the default)")
     cli = argparse.ArgumentParser(prog="agent-mesh group", description=__doc__)
     sub = cli.add_subparsers(dest="command", required=True)
@@ -96,6 +117,8 @@ def parser():
 
 def dispatch(args):
     store = GroupStore(args.state or default_state_dir())
+    if is_cloud_session(args.as_session):
+        raise ValueError("cloud session actors require an authenticated adapter")
     actor = GroupActor(session_id=args.as_session, manage=args.as_session is None)
     if args.command == "create":
         return store.create_group(actor, args.name, role_key=args.role)
@@ -104,6 +127,8 @@ def dispatch(args):
     if args.command == "get":
         return store.get_group(actor, args.group_id)
     if args.command == "add":
+        if actor.manage and is_cloud_session(args.session_id):
+            require_cloud_registration(args.session_id)
         return store.add_member(actor, args.group_id, args.session_id)
     if args.command == "remove":
         return store.remove_member(actor, args.group_id, args.session_id)
