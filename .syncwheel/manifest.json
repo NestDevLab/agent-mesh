@@ -20,7 +20,8 @@
     "base": "origin/main",
     "branch": "main-integration",
     "stacks": [
-      "terminal-return-v1"
+      "terminal-return-v1",
+      "urgent-native-reply"
     ],
     "strategy": "cherry-pick"
   },
@@ -48,6 +49,22 @@
       "state": "published",
       "target_branch": "main",
       "target_remote": "origin"
+    },
+    {
+      "id": "urgent-native-reply",
+      "branch": "fix/urgent-native-reply",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Preserve correlated urgent native replies"
+      }
     }
   ],
   "syncwheel_tracking": "git-tracked",
