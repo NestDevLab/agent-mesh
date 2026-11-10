@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import fcntl
+import re
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -23,10 +24,16 @@ class DispatchError(ValueError):
     pass
 
 
+_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
 def _identity(session_id):
-    if session_id.startswith("codex:"):
+    runtime, _, raw_id = session_id.partition(":")
+    if runtime not in ("codex", "claude") or not _UUID.fullmatch(raw_id):
+        raise DispatchError("unsupported or invalid destination")
+    if runtime == "codex":
         return ["--agent", "codex", "--session", session_id[6:], "--delivery-only", "--steer-or-queue", "--resume"]
-    if session_id.startswith("claude:"):
+    if runtime == "claude":
         return ["--agent", "claude", "--session", session_id[7:], "--delivery-only"]
     # Cloud identities require a verified provider and account binding; an opaque
     # group member ID alone is not sufficient to authorize an outbound transport.
@@ -95,8 +102,15 @@ def dispatch(store, actor, group_id, message_id, message, destinations, transpor
     if (not isinstance(message, str) or not 0 < len(message) <= 32000
             or not message.strip() or "\0" in message):
         raise DispatchError("message must contain 1 to 32000 characters and no NUL")
+    try:
+        message.encode("utf-8")
+        message_id.encode("utf-8")
+    except UnicodeEncodeError:
+        raise DispatchError("message and id must be valid UTF-8") from None
     group = store.get_group(actor, group_id)
     members = {m["session_id"] for m in group["members"]}
+    if actor.session_id not in members:
+        raise DispatchError("sender must be a member of the group")
     if any(not isinstance(d, str) or d not in members or d == actor.session_id for d in destinations):
         raise DispatchError("destinations must be other members of the group")
     for destination in destinations:
