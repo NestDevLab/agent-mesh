@@ -28,7 +28,8 @@
       "group-message-route",
       "groups-scoped-import",
       "cloud-group-transport",
-      "group-gateway-conversation"
+      "group-gateway-conversation",
+      "terminal-no-reply"
     ],
     "strategy": "cherry-pick"
   },
@@ -264,6 +265,22 @@
       },
       "meta": {
         "purpose": "Add authenticated group conversation gateway tools"
+      }
+    },
+    {
+      "id": "terminal-no-reply",
+      "branch": "fix/terminal-no-reply",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Complete turns ended by terminal no-reply tools"
       }
     }
   ],
