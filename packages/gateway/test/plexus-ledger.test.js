@@ -39,7 +39,7 @@ function harness() {
     const allowed = input ? JSON.parse(input).refs : [];
     return args.includes("show") ? JSON.stringify(graph) : JSON.stringify({ items: items.filter(i => allowed.includes(i.ref)), missing: [], errors: [] });
   });
-  const principal = { id: "principal", kind: "user", requesterId: "requester", allowedTools: ["mesh_plexus_work_items", "mesh_plexus_ledger_sessions"],
+  const principal = { id: "principal", kind: "user", plexusLedgerOwner: true, requesterId: "requester", allowedTools: ["mesh_plexus_work_items", "mesh_plexus_ledger_sessions"],
     allowedWorkspaceIds: ["workspace.test"], allowedDomainIds: [], allowedAgentIds: [], ledgerReadGrants: [grant] };
   const handlers = new Map();
   const options = { principal, plexusLedgerReader: reader, rateLimiter: { consume: () => true } };
@@ -162,6 +162,10 @@ test("HTTP tool boundary rejects caller scope injection and rechecks revoked gra
   const count = h.calls.length;
   assert.equal((await call({ limit: 200, scope: { ledger_refs: ["work:OUTSIDE"] } })).isError, true);
   assert.equal(h.calls.length, count);
+  h.principal.plexusLedgerOwner = false;
+  assert.equal((await call({})).isError, true);
+  assert.equal(h.calls.length, count);
+  h.principal.plexusLedgerOwner = true;
   h.principal.ledgerReadGrants = [];
   assert.equal((await call({ cursor: page.next_cursor })).isError, true);
   assert.equal(h.calls.length, count);
@@ -447,5 +451,51 @@ test("actual Fleet query fixture retains canonical aliases, raw fields, filters 
     invalid[0][key] = value;
     h.items.splice(0,h.items.length,...invalid);
     await assert.rejects(h.reader.read("items",{},h.grant));
+  }
+});
+
+test("scoped and service principals cannot discover or invoke owner-only ledger tools", async () => {
+  for (const role of [undefined,false,true]) {
+    for (const kind of ["user","service"]) {
+      const h = harness(), handlers = new Map();
+      h.principal.kind = kind;
+      h.principal.plexusLedgerOwner = role;
+      registerPlexusLedgerTools({registerTool(name,config,handler){handlers.set(name,{config,handler});}},h.options);
+      assert.equal(handlers.size,kind === "user" && role === true ? 2 : 0);
+      assert.equal(h.calls.length,0);
+    }
+  }
+  const h = harness();
+  h.principal.plexusLedgerOwner = false;
+  for(const tool of ["mesh_plexus_work_items","mesh_plexus_ledger_sessions"]) {
+    assert.equal((await h.invoke(tool,{ref:refs[0]})).isError,true);
+    assert.equal(h.calls.length,0);
+  }
+  h.principal.plexusLedgerOwner = true;
+  const result = await h.invoke("mesh_plexus_work_items",{limit:1});
+  assert.equal(result.total,671);
+  const count = h.calls.length;
+  h.principal.plexusLedgerOwner = false;
+  assert.equal((await h.invoke("mesh_plexus_work_items",{cursor:result.next_cursor})).isError,true);
+  assert.equal(h.calls.length,count);
+});
+
+test("core still rejects a scoped caller before requesting ledger data", async () => {
+  const {workItems} = await import(new URL("plexus.mjs",pathToFileURL(bridgeRoot+"/")).href);
+  let reads = 0;
+  assert.throws(()=>workItems({nodes:[],links:[]},{},{},()=>{reads++;return {items:[]};}),/local callers only/);
+  assert.equal(reads,0);
+});
+
+test("owner designation is bound to verified identity, not scoped grants or binding claims", () => {
+  for(const kind of ["user","service"]) {
+    const h = harness(), selector = kind === "user" ? "owner@example.test" : "test-service";
+    const binding = {...h.principal,kind,selector,plexusLedgerOwner:true};
+    const auth = {extra:{cloudflareAccessIdentity:{kind,subject:"test",selector}}};
+    const scoped = resolveCloudflareAccessPrincipal(auth,[binding]);
+    assert.equal(scoped.plexusLedgerOwner,undefined);
+    assert.equal(resolveCloudflareAccessPrincipal(auth,[binding],scoped.id).plexusLedgerOwner,kind === "user");
+    assert.equal(resolveCloudflareAccessPrincipal(auth,[binding],"different-principal").plexusLedgerOwner,false);
+    assert.equal(resolveCloudflareAccessPrincipal(auth,[binding],undefined).plexusLedgerOwner,undefined);
   }
 });

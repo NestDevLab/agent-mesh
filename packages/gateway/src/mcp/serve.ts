@@ -146,6 +146,10 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       : { adapters: runtimeAdapters(config.tmuxIngress, sessionRegistry, stateDir) })
   });
   const bindings = config.bindings;
+  const resolvePrincipal = async (authInfo: Parameters<typeof resolveCloudflareAccessPrincipal>[0]) => {
+    const current = await readRuntimeConfig(configPath);
+    return resolveCloudflareAccessPrincipal(authInfo, current.bindings, current.plexusLedger?.ownerPrincipalId);
+  };
   const plexusLedgerReader = config.plexusLedger === undefined ? undefined : new ShellPlexusLedgerReader(config.plexusLedger);
   const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
   const taskCoordinator = new MeshTaskCoordinator({
@@ -172,7 +176,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
-      resolvePrincipal: async (authInfo) => resolveCloudflareAccessPrincipal(authInfo, (await readRuntimeConfig(configPath)).bindings)
+      resolvePrincipal
     }),
     new CloudflareAccessAuthenticator({ teamDomain, audience })
   );
@@ -202,10 +206,11 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
       memoryRunner,
       resolvePrincipal: async (authInfo) => {
-        const currentBindings = (await readRuntimeConfig(configPath)).bindings;
+        const current = await readRuntimeConfig(configPath);
+        const currentBindings = current.bindings;
         const binding = resolveCloudflareAccessBinding(authInfo, currentBindings);
         return {
-          mesh: resolveCloudflareAccessPrincipal(authInfo, currentBindings),
+          mesh: resolveCloudflareAccessPrincipal(authInfo, currentBindings, current.plexusLedger?.ownerPrincipalId),
           allowedGoogleAccounts: binding.allowedGoogleAccounts ?? []
         };
       }

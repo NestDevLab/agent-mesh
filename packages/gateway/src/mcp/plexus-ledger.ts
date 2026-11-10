@@ -44,7 +44,7 @@ export interface LedgerReadGrant {
   session_ids: readonly string[];
   group_refs?: readonly string[];
 }
-export interface PlexusLedgerConfig { bridgeRoot: string; timeoutMs?: number; maxResultBytes?: number }
+export interface PlexusLedgerConfig { bridgeRoot: string; ownerPrincipalId?: string; timeoutMs?: number; maxResultBytes?: number }
 export interface PlexusLedgerReader {
   read(operation: "items" | "ledger-sessions", input: Row, grant: LedgerReadGrant): Promise<Row>;
 }
@@ -81,7 +81,9 @@ export class ShellPlexusLedgerReader implements PlexusLedgerReader {
     }) {
     this.config = config;
     this.run = run;
-    if (!isAbsolute(config.bridgeRoot) || !Number.isSafeInteger(config.timeoutMs ?? 30_000) ||
+    if (!isAbsolute(config.bridgeRoot) || (config.ownerPrincipalId !== undefined &&
+        (typeof config.ownerPrincipalId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(config.ownerPrincipalId))) ||
+        !Number.isSafeInteger(config.timeoutMs ?? 30_000) ||
         (config.timeoutMs ?? 30_000) < 1 || (config.timeoutMs ?? 30_000) > 120_000 ||
         !Number.isSafeInteger(config.maxResultBytes ?? 128 * 1024 * 1024) ||
         (config.maxResultBytes ?? 128 * 1024 * 1024) < 1024 ||
@@ -205,10 +207,12 @@ print(encoded)
 `;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOptions): void {
+  const isOwner = () => options.principal.kind === "user" && options.principal.plexusLedgerOwner === true;
+  if (!isOwner()) return;
   const workspace = z.string().min(1).max(128).optional();
   const invoke = async (tool: "mesh_plexus_work_items" | "mesh_plexus_ledger_sessions", input: Row) => {
     try {
-      if (!options.principal.allowedTools.includes(tool) || !options.plexusLedgerReader ||
+      if (!isOwner() || !options.principal.allowedTools.includes(tool) || !options.plexusLedgerReader ||
           !options.rateLimiter.consume(options.principal.id, tool)) throw new Error("Plexus read is not authorized.");
       const grants = options.principal.ledgerReadGrants;
       if (!validLedgerReadGrants(grants, options.principal.allowedWorkspaceIds)) throw new Error("Plexus read grant is required.");

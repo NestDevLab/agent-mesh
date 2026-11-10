@@ -95,6 +95,8 @@ export interface MeshMcpPrincipal {
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
   ledgerReadGrants?: readonly LedgerReadGrant[];
+  /** Server-verified owner role; never accepted from tool arguments or graph links. */
+  plexusLedgerOwner?: boolean;
 }
 
 export interface MeshMcpRateLimiter {

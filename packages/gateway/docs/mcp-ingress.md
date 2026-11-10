@@ -426,6 +426,14 @@ explicitly. Refs use the versioned Unicode 15.0 item-reference contract (up to 5
 there is no normalization, truncation, prefix grant or authority inferred from a
 link. Existing group grants and item leases remain separate.
 
+These tools are owner-only. Configure the owner's opaque verified principal ID
+as `plexusLedger.ownerPrincipalId` in private runtime configuration. Only that
+user principal can discover or invoke the tools; workspace/ref grants alone do
+not confer ownership. The server reloads the owner designation for every request
+and checks it before any graph or adapter read. Tool arguments cannot nominate an
+owner. Core `workItems` still rejects callers with a scope; the wrapper does not
+expose an alternate path for scoped callers.
+
 Optional work-item arguments are `workspace_id`, `filter`, `sort` (an array such
 as `["due:asc", "priority:asc", "size:asc"]`), `include_closed`, `limit` (1–200),
 and `cursor`. Core owns field operators and ordering, including missing values.
