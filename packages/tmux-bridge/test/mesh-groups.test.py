@@ -222,6 +222,77 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
             self.assertEqual(second.result(timeout=5)["name"], "Concurrent")
         self.assertEqual({group["name"] for group in self.store.list_groups(self.admin)}, {"Initial", "Concurrent"})
 
+    @staticmethod
+    def graph_snapshot():
+        first = "codex:deadc0de-a1b2-4433-8b5c-baddfacecafe"
+        second = "claude:feedcafe-c2d3-4312-a2e9-deadbeefcafe"
+
+        def link(ref, role, session, until=None):
+            return {"ref": ref, "role": role, "session": session, "until": until}
+
+        return {"schema": "agent-mesh.session-graph.v1", "migrated": True, "links": [
+            link("group:release", "discusses", first),
+            link("group:release", "discusses", second),
+            link("area:release", "owns", first),
+            link("area:release", "owns", second),
+            link("group:handoff", "discusses", second),
+            link("group:handoff", "discusses", first, "2026-01-01T00:00:00Z"),
+            link("tracker:unrelated", "works-on", first),
+        ]}
+
+    def test_graph_import_is_explicit_stable_and_preserves_original_graph(self):
+        snapshot = self.graph_snapshot()
+        path = Path(self.tmp.name) / "snapshot.json"
+        original = json.dumps(snapshot).encode()
+        path.write_bytes(original)
+        args = ("import-graph", "--snapshot", str(path), "--source", "legacy")
+        preview = self.cli(*args)
+        self.assertEqual(preview["status"], "ready")
+        self.assertFalse(self.state.exists())
+        digest = preview["plan_digest"]
+        reverse = {**snapshot, "links": list(reversed(snapshot["links"]))}
+        self.assertEqual(self.store.import_graph(self.admin, reverse, "legacy")["plan_digest"], digest)
+        self.assertIn("does not match", self.cli(*args, "--apply", "--plan-digest", "wrong", success=False))
+        self.assertFalse(self.state.exists())
+        self.assertEqual(self.cli(*args, "--apply", "--plan-digest", digest)["status"], "imported")
+        release = self.cli("list", "--source-ref", "group:release")["groups"][0]
+        proposed = next(group for group in preview["groups"] if group["source_ref"] == "group:release")
+        self.assertEqual(release["group_id"], proposed["group_id"])
+        self.assertEqual(release["ledger_links"], [{"ref": "area:release", "lead": True}])
+        self.assertEqual(len(proposed["area_owners"]), 2)
+        self.assertEqual(self.cli("list", "--ledger-ref", "tracker:unrelated")["groups"], [])
+        self.cli("remove", release["group_id"], release["members"][0]["session_id"])
+        self.assertEqual(self.cli(*args, "--apply", "--plan-digest", digest)["status"], "already_imported")
+        self.assertEqual(len(self.cli("get", release["group_id"])["members"]), 1)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_graph_import_rejects_ambiguity_and_rolls_back_on_late_failure(self):
+        snapshot = self.graph_snapshot()
+        ambiguous = {**snapshot, "links": [*snapshot["links"],
+                     {"ref": "group:release", "role": "discusses", "session": "pending:unresolved", "until": None}]}
+        self.assertEqual(self.store.import_graph(self.admin, ambiguous, "legacy")["status"], "conflict")
+        current = self.store.create_group(self.admin, "Current")
+        self.store.link_ledger(self.admin, current["group_id"], "area:release", lead=True)
+        blocked = self.store.import_graph(self.admin, snapshot, "legacy")
+        self.assertEqual(blocked["destination_conflicts"], ["ledger reference area:release already has a lead"])
+        with self.assertRaises(GroupConflictError):
+            self.store.import_graph(self.admin, snapshot, "legacy", expected_digest=blocked["plan_digest"])
+        self.store.link_ledger(self.admin, current["group_id"], "area:release", lead=False)
+
+        connect = self.store._connect
+
+        def deny_receipt(**kwargs):
+            db = connect(**kwargs)
+            db.set_authorizer(lambda action, table, *_: sqlite3.SQLITE_DENY
+                              if action == sqlite3.SQLITE_INSERT and table == "graph_imports" else sqlite3.SQLITE_OK)
+            return db
+
+        with patch.object(self.store, "_connect", side_effect=deny_receipt), self.assertRaises(sqlite3.DatabaseError):
+            self.store.import_graph(self.admin, snapshot, "legacy", expected_digest=blocked["plan_digest"])
+        self.assertEqual([row["name"] for row in self.store.list_groups(self.admin)], ["Current"])
+        self.assertEqual(self.store.import_graph(self.admin, snapshot, "legacy",
+                                               expected_digest=blocked["plan_digest"])["status"], "imported")
+
 
 if __name__ == "__main__":
     unittest.main()

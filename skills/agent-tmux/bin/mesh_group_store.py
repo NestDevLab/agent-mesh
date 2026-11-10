@@ -12,6 +12,8 @@ import sqlite3
 import stat
 from uuid import uuid4
 
+from mesh_group_import import graph_import_plan
+
 
 _SESSION_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}:[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,254}")
 _ROLE_KEY = re.compile(r"[a-z0-9][a-z0-9_.:/-]{0,127}")
@@ -22,6 +24,7 @@ _SCHEMA = (
         group_id TEXT PRIMARY KEY NOT NULL,
         name TEXT NOT NULL,
         role_key TEXT,
+        source_ref TEXT UNIQUE,
         created_at TEXT NOT NULL
     )""",
     """CREATE TABLE members (
@@ -49,6 +52,7 @@ _SCHEMA = (
         PRIMARY KEY (group_id, seq),
         UNIQUE (group_id, message_id)
     )""",
+    "CREATE TABLE graph_imports (source TEXT PRIMARY KEY NOT NULL, plan_digest TEXT NOT NULL)",
 )
 
 
@@ -209,16 +213,19 @@ class GroupStore:
             _matched(role_key, _ROLE_KEY, "role key")
         group_id = f"group_{uuid4().hex}"
         with self._transaction(write=True, initialize=True) as db:
-            db.execute("INSERT INTO groups VALUES (?, ?, ?, ?)", (group_id, name, role_key, _now()))
+            db.execute("INSERT INTO groups (group_id, name, role_key, created_at) VALUES (?, ?, ?, ?)",
+                       (group_id, name, role_key, _now()))
             return self._describe(db, self._require_group(db, group_id, actor))
 
     def get_group(self, actor, group_id):
         with self._transaction() as db:
             return self._describe(db, self._require_group(db, group_id, actor))
 
-    def list_groups(self, actor, *, ledger_ref=None):
+    def list_groups(self, actor, *, ledger_ref=None, source_ref=None):
         if ledger_ref is not None:
             _one_line(ledger_ref, 256, "ledger reference")
+        if source_ref is not None:
+            _one_line(source_ref, 256, "source reference")
         with self._transaction() as db:
             if db is None:
                 return []
@@ -226,9 +233,56 @@ class GroupStore:
                 "SELECT g.* FROM groups g "
                 "WHERE (? OR EXISTS (SELECT 1 FROM members m WHERE m.group_id = g.group_id AND m.session_id = ?)) "
                 "AND (? IS NULL OR EXISTS (SELECT 1 FROM ledger_links l WHERE l.group_id = g.group_id AND l.ref = ?)) "
-                "ORDER BY g.created_at, g.group_id", (actor.manage, actor.session_id, ledger_ref, ledger_ref)
+                "AND (? IS NULL OR g.source_ref = ?) ORDER BY g.created_at, g.group_id",
+                (actor.manage, actor.session_id, ledger_ref, ledger_ref, source_ref, source_ref)
             )
             return [self._describe(db, row) for row in rows]
+
+    def import_graph(self, actor, snapshot, source, *, expected_digest=None):
+        """Preview, or atomically import, a reviewed legacy snapshot without writing the graph."""
+        self._require_manager(actor)
+        plan = graph_import_plan(snapshot, source)
+        digest = plan["plan_digest"]
+        apply = expected_digest is not None
+        if apply and expected_digest != digest:
+            raise GroupConflictError("graph import plan digest does not match; preview again")
+        if plan["conflicts"]:
+            if apply:
+                raise GroupConflictError("graph import has source conflicts; review the preview")
+            return {**plan, "status": "conflict", "destination_conflicts": []}
+
+        with self._transaction(write=apply, initialize=apply) as db:
+            destination = []
+            if db is not None:
+                previous = db.execute("SELECT plan_digest FROM graph_imports WHERE source = ?", (source,)).fetchone()
+                if previous is not None and previous["plan_digest"] == digest:
+                    return {**plan, "status": "already_imported", "destination_conflicts": []}
+                if previous is not None:
+                    destination.append("graph source was already imported with a different plan")
+                for group in plan["groups"]:
+                    if db.execute("SELECT 1 FROM groups WHERE group_id = ? OR source_ref = ?",
+                                  (group["group_id"], group["source_ref"])).fetchone():
+                        destination.append(f"group already exists for {group['source_ref']}")
+                    for link in group["ledger_links"]:
+                        if self._ledger_lead(db, link["ref"]) is not None:
+                            destination.append(f"ledger reference {link['ref']} already has a lead")
+            if destination:
+                if apply:
+                    raise GroupConflictError("graph import has destination conflicts; review the preview")
+                return {**plan, "status": "conflict", "destination_conflicts": destination}
+            if not apply:
+                return {**plan, "status": "ready", "destination_conflicts": []}
+            at = _now()
+            for group in plan["groups"]:
+                key = group["group_id"]
+                db.execute("INSERT INTO groups (group_id, name, source_ref, created_at) VALUES (?, ?, ?, ?)",
+                           (key, group["name"], group["source_ref"], at))
+                db.executemany("INSERT INTO members VALUES (?, ?, ?)",
+                               ((key, session, at) for session in group["members"]))
+                db.executemany("INSERT INTO ledger_links VALUES (?, ?, ?)",
+                               ((key, link["ref"], link["lead"]) for link in group["ledger_links"]))
+            db.execute("INSERT INTO graph_imports VALUES (?, ?)", (source, digest))
+            return {**plan, "status": "imported", "destination_conflicts": []}
 
     def add_member(self, actor, group_id, session_id):
         self._require_manager(actor)

@@ -47,8 +47,34 @@ transferred or cleared before unlinking. Lead is group metadata; it grants no
 ledger write permission, lock, session claim or routing preference.
 
 Group links are available through `group list --ledger-ref REF` and `group get`.
-They do not update the ledger itself or the session graph. Existing graph naming
-conventions are not silently imported into the group store.
+They do not update the ledger itself or the session graph.
+
+## Import an existing graph convention
+
+An operator can preview the import from an explicit, reviewed local snapshot of
+the migrated graph. The command never updates the graph or its original links.
+
+```sh
+agent-mesh group import-graph --snapshot graph.json --source local-graph
+agent-mesh group import-graph --snapshot graph.json --source local-graph \
+  --apply --plan-digest "$REVIEWED_PLAN_DIGEST"
+agent-mesh group list --source-ref group:release
+```
+
+Preview does not initialize or change the group database. It proposes one
+stable group per `group:<slug>` with open `discusses` links to canonical local
+sessions. Open `owns` links for matching `area:<slug>` refs become one lead
+held by that group. The owners are evidence in the preview, not a selected
+session lead. Closed links and unrelated work links do not become membership,
+lead or ledger links. Unresolved candidate sessions and destination collisions
+are reported. Imported groups have no inferred role claim or conversation history.
+
+Apply rechecks the reviewed digest and current destination, then commits groups,
+their unique source refs, members, lead links and the import receipt together.
+Using the same source and plan again is a no-op, even after someone changes
+group membership. A different plan for a source that was already imported needs
+an explicit reconciliation; it never overwrites groups. Verify imported groups
+and keep the original graph links until their separate retirement is authorized.
 
 ## Persistence and trust boundary
 
