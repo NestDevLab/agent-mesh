@@ -167,6 +167,21 @@ test("authenticated group history and append traverse a private broker without c
   const otherRelease = await call(other, "mesh_group_lock_release", { ...lockArgs,
     fence: reacquired.structuredContent.fence, lease_id: reacquired.structuredContent.leaseId });
   assert.equal(otherRelease.structuredContent.outcome, "released");
+  const shortLease = await call(handler, "mesh_group_lock_acquire", { ...lockArgs,
+    fence: reacquired.structuredContent.fence, ttl: 1 });
+  assert.equal(shortLease.structuredContent.outcome, "acquired");
+  await new Promise(resolve => setTimeout(resolve, 1250));
+  const expired = await call(handler, "mesh_group_lock_inspect", lockArgs);
+  assert.equal(expired.structuredContent.status, "expired");
+  const expiredRenewal = await call(handler, "mesh_group_lock_renew", { ...lockArgs,
+    fence: shortLease.structuredContent.fence, lease_id: shortLease.structuredContent.leaseId, ttl: 60 });
+  assert.equal(expiredRenewal.structuredContent.outcome, "stale");
+  const afterExpiry = await call(other, "mesh_group_lock_acquire", { ...lockArgs,
+    fence: shortLease.structuredContent.fence, ttl: 60 });
+  assert.equal(afterExpiry.structuredContent.fence, shortLease.structuredContent.fence + 1);
+  const finalRelease = await call(other, "mesh_group_lock_release", { ...lockArgs,
+    fence: afterExpiry.structuredContent.fence, lease_id: afterExpiry.structuredContent.leaseId });
+  assert.equal(finalRelease.structuredContent.outcome, "released");
   const unrelatedLock = await call(handler, "mesh_group_lock_inspect", { ...lockArgs, ref: "work:other" });
   assert.equal(unrelatedLock.isError, true);
   const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:item-1" });
