@@ -117,6 +117,7 @@ export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions
   if (options.groupGateway === undefined) return;
   if (options.principal.allowedTools.includes("mesh_group_list")) server.registerTool("mesh_group_list", {
     title: "List accessible groups", description: "Lists groups granted to the authenticated session.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: z.object({ workspace_id: workspace }).strict()
   }, async input => {
     try {
@@ -128,6 +129,7 @@ export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions
   });
   if (options.principal.allowedTools.includes("mesh_group_history")) server.registerTool("mesh_group_history", {
     title: "Read group history", description: "Reads a page of conversation for a granted group.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: object.extend({ after: cursor, limit: z.number().int().min(1).max(10).optional() })
   }, async input => {
     try {
@@ -137,6 +139,7 @@ export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions
   });
   if (options.principal.allowedTools.includes("mesh_group_append")) server.registerTool("mesh_group_append", {
     title: "Append a group reply", description: "Records a reply once without waking another session.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: object.extend({ message_id: messageId, message })
   }, async input => {
     try {
@@ -146,6 +149,7 @@ export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions
   });
   if (options.principal.allowedTools.includes("mesh_group_send")) server.registerTool("mesh_group_send", {
     title: "Send a group message", description: "Records a message and attempts delivery to ordered group members; unknown outcomes are not retried.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     inputSchema: object.extend({ message_id: messageId, message, destinations: z.array(z.string().min(1).max(320)).min(1).max(4) })
   }, async input => {
     try {

@@ -91,4 +91,18 @@ test("authenticated group history and append traverse a private broker without c
   const invalidTarget = await call(handler, "mesh_group_send", { workspace_id: WORKSPACE, group_id: allowed,
     message_id: "three", message: "bad", destinations: ["codex:not-a-member"] });
   assert.equal(invalidTarget.isError, true);
+  for (let i = 0; i < 11; i++) {
+    const item = await call(handler, "mesh_group_append", { workspace_id: WORKSPACE, group_id: allowed,
+      message_id: `page-${i}`, message: `reply ${i}` });
+    assert.equal(item.isError, undefined);
+  }
+  const firstPage = await call(handler, "mesh_group_history", { workspace_id: WORKSPACE, group_id: allowed });
+  assert.equal(firstPage.structuredContent.messages.length, 10);
+  assert.equal(firstPage.structuredContent.has_more, true);
+  const secondPage = await call(handler, "mesh_group_history", { workspace_id: WORKSPACE, group_id: allowed,
+    after: firstPage.structuredContent.next_after });
+  assert.equal(secondPage.structuredContent.messages.length, 2);
+  cli("remove", allowed, ACTOR);
+  const revoked = await call(handler, "mesh_group_history", { workspace_id: WORKSPACE, group_id: allowed });
+  assert.equal(revoked.isError, true);
 });

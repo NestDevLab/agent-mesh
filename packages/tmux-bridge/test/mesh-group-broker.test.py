@@ -55,6 +55,8 @@ class GroupBrokerTest(unittest.TestCase):
             self.assertEqual(send.call_args.args[1].session_id, ACTOR)
         with self.assertRaises(ValueError):
             run_operation(self.store, {**request, "destinations": []})
+        with self.assertRaises(ValueError):
+            run_operation(self.store, {**request, "actor": OUTSIDER})
 
     def test_private_socket_round_trip_and_cleanup(self):
         path = self.root / "broker.sock"
@@ -62,6 +64,8 @@ class GroupBrokerTest(unittest.TestCase):
         thread = threading.Thread(target=broker.serve_forever, daemon=True)
         thread.start()
         try:
+            with self.assertRaises(OSError):
+                Broker(path, self.root / "state")
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
                 client.connect(str(path))
                 client.sendall((json.dumps({"action": "list", "actor": ACTOR}) + "\n").encode())
