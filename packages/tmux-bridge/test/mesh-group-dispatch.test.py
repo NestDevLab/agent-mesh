@@ -8,10 +8,26 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
 from mesh_group_store import GroupActor, GroupStore
-from mesh_group_dispatch import DispatchError, dispatch, native_transport
+from mesh_group_dispatch import DispatchError, dispatch, load_cloud_bindings, native_transport
 
 
 class GroupDispatchTest(unittest.TestCase):
+    def test_binding_file_is_private_and_read_fresh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bindings.json"
+            path.write_text('{"scope": {"orgId": "one"}}')
+            path.chmod(0o600)
+            self.assertEqual(load_cloud_bindings(path)["scope"]["orgId"], "one")
+            path.write_text('{"scope": {"orgId": "two"}}')
+            self.assertEqual(load_cloud_bindings(path)["scope"]["orgId"], "two")
+            path.chmod(0o644)
+            with self.assertRaises(ValueError):
+                load_cloud_bindings(path)
+            link = Path(tmp) / "link"
+            link.symlink_to(path)
+            with self.assertRaises(OSError):
+                load_cloud_bindings(link)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

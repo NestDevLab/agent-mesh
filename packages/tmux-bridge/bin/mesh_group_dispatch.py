@@ -14,6 +14,7 @@ import fcntl
 import re
 from pathlib import Path
 import sqlite3
+import stat
 import subprocess
 import sys
 
@@ -22,6 +23,24 @@ from mesh_group_store import GroupActor, GroupStore
 
 class DispatchError(ValueError):
     pass
+
+
+def load_cloud_bindings(path):
+    """Read a private account binding on each send, without following symlinks."""
+    if path is None:
+        return None
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as file:
+        info = os.fstat(file.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+            raise ValueError("cloud binding file must be private and owned")
+        payload = file.read(65537)
+    if len(payload) > 65536:
+        raise ValueError("cloud binding file too large")
+    data = json.loads(payload)
+    if not isinstance(data, dict):
+        raise ValueError("cloud binding file must be an object")
+    return data
 
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)

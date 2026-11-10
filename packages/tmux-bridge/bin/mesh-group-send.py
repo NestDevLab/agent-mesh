@@ -2,30 +2,11 @@
 """Trusted local CLI for a single message to an Agent Mesh group."""
 import argparse
 import json
-import os
-import stat
 from pathlib import Path
 import sys
 
-from mesh_group_dispatch import DispatchError, dispatch, native_transport
+from mesh_group_dispatch import DispatchError, dispatch, load_cloud_bindings, native_transport
 from mesh_group_store import GroupActor, GroupStore
-
-
-def load_cloud_bindings(path):
-    if path is None:
-        return None
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-    with os.fdopen(fd, "rb") as file:
-        info = os.fstat(file.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
-            raise ValueError("cloud binding file must be private and owned")
-        payload = file.read(65537)
-    if len(payload) > 65536:
-        raise ValueError("cloud binding file too large")
-    data = json.loads(payload)
-    if not isinstance(data, dict):
-        raise ValueError("cloud binding file must be an object")
-    return data
 
 
 def main():
