@@ -20,7 +20,8 @@
     "base": "origin/main",
     "branch": "main-integration",
     "stacks": [
-      "terminal-return-v1"
+      "terminal-return-v1",
+      "skill-bundle-native-call"
     ],
     "strategy": "cherry-pick"
   },
@@ -48,6 +49,24 @@
       "state": "published",
       "target_branch": "main",
       "target_remote": "origin"
+    },
+    {
+      "id": "skill-bundle-native-call",
+      "branch": "pr/skill-bundle-native-call",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "b07f11ea7d21ef05dee27f6447d665bec0f1ff06"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Sync the bundled agent-native-call"
+      }
     }
   ],
   "syncwheel_tracking": "git-tracked",
