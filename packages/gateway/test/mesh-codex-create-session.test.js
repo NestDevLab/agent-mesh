@@ -195,15 +195,15 @@ test("full-access socket rejection and per-principal gating prevent launch", asy
   assert.equal(h.calls.some(call => call.args[2] === "new"), false);
 });
 
-test("owned Codex recovers exactly one correlated assistant result from persisted transcript search", async () => {
+test("owned Codex recovers exactly one correlated assistant result from its exact persisted transcript", async () => {
   const h = harness({ persisted: false, sendCode: 66 });
   await h.provider.create({ workspaceId, accessProfile: "read-only" });
   const { createHash } = await import("node:crypto");
   const token = createHash("sha256").update(sendInput.correlationId).digest("hex").slice(0, 16);
-  h.provider.search = async () => ({ results: [{ session_id: nativeId, matches: [
+  h.provider.transcript = async () => ({ session_id: nativeId, events: [
     { role: "user", text: `[[R:${token}]]wrong[[/R:${token}]]` },
     { role: "assistant", text: `Advisory\n[[R:${token}]]FIRST_REPLY[[/R:${token}]]` }
-  ] }], next_cursor: null });
+  ], next_cursor: null });
   assert.deepEqual(await h.provider.send(sendInput), { ok: true, reply: "FIRST_REPLY" });
   assert.equal(h.calls.some(call => call.args[2] === "kill"), false);
 });

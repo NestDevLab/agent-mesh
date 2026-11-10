@@ -808,11 +808,27 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     const begin = `[[R:${token}]]`;
     const end = `[[/R:${token}]]`;
     try {
-      const page = await this.search({ workspaceId: input.workspaceId, query: begin, limit: 20 });
-      const matches = page.results
-        .filter((session) => session.session_id === input.sessionId)
-        .flatMap((session) => session.matches)
-        .filter((event) => event.role === "assistant");
+      let matches: AgentTranscriptEvent[];
+      if (this.provider === "codex") {
+        // Read only this owned thread; a global transcript search is both
+        // unnecessary and too slow for the first-turn recovery boundary.
+        matches = [];
+        let cursor: string | undefined;
+        for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+          const page = await this.transcript({ workspaceId: input.workspaceId, sessionId: input.sessionId, cursor, limit: 500 });
+          if (page === undefined) return result;
+          matches.push(...page.events.filter(event => event.role === "assistant"));
+          if (page.next_cursor === null) break;
+          if (pageNumber === 19 || page.next_cursor === cursor) return result;
+          cursor = page.next_cursor;
+        }
+      } else {
+        const page = await this.search({ workspaceId: input.workspaceId, query: begin, limit: 20 });
+        matches = page.results
+          .filter((session) => session.session_id === input.sessionId)
+          .flatMap((session) => session.matches)
+          .filter((event) => event.role === "assistant");
+      }
       const replies = matches.map((event) => {
         const start = event.text.indexOf(begin);
         if (start < 0 || event.text.indexOf(begin, start + begin.length) >= 0) return undefined;
