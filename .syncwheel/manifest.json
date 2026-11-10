@@ -226,7 +226,8 @@
       "integration_branch": "main-integration",
       "commits": [
         "45f101a5fd094e2347880ff1f5f6ffc9d9e908dd",
-        "f1281de00c2ae579be4fd3eca76f1460c57680ac"
+        "f1281de00c2ae579be4fd3eca76f1460c57680ac",
+        "bb59689a91fd1189c23f9b01e647158deb376237"
       ],
       "state": "published",
       "publication": {
