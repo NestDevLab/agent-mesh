@@ -277,7 +277,8 @@
       "target_branch": "pr/group-gateway-conversation",
       "integration_branch": "main-integration",
       "commits": [
-        "77f2509bb2c72d9f32e27a02e35793275d0a75b2"
+        "77f2509bb2c72d9f32e27a02e35793275d0a75b2",
+        "3b65cc4449a847af7a14c529fe15bacb249b2c77"
       ],
       "state": "draft",
       "publication": {
