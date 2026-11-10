@@ -36,8 +36,10 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
   const gone = pid => {
     // Fully exited single-thread Linux zombies have closed descriptors and cannot hold a
     // writer lock. Their proc entry can outlive exe/cmdline until reaped.
-    try { lstatSync(`${procRoot}/${pid}`); return fullyExited(pid); }
+    try { lstatSync(`${procRoot}/${pid}`); }
     catch (error) { return error.code === "ENOENT"; }
+    try { return fullyExited(pid); }
+    catch { return false; }
   };
   const inventory = new Map();
   for (const entry of readdirSync(procRoot, { withFileTypes: true })) {
