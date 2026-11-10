@@ -255,6 +255,17 @@ test("authenticated group history and append traverse a private broker without c
   assert.equal(extendedScheme.structuredContent.ref, "work.test:item-1");
   const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:\u200b" });
   assert.ok(incompatible.isError || incompatible.code);
+  const longRef = "work.test:" + "🧭".repeat(502);
+  assert.equal(Array.from(longRef).length, 512);
+  principal.groupGrants[0].ledger_refs.push(longRef);
+  const longLink = await call(manager, "mesh_group_link", { group_id: allowed, ref: longRef });
+  assert.equal(longLink.structuredContent.ref, longRef);
+  const longArgs = { workspace_id: WORKSPACE, group_id: allowed, ref: longRef };
+  const longLease = await call(handler, "mesh_group_lock_acquire", { ...longArgs, fence: 0, ttl: 60 });
+  assert.equal(longLease.structuredContent.outcome, "acquired");
+  const longRelease = await call(handler, "mesh_group_lock_release", { ...longArgs,
+    fence: longLease.structuredContent.fence, lease_id: longLease.structuredContent.leaseId });
+  assert.equal(longRelease.structuredContent.outcome, "released");
   const removed = await call(manager, "mesh_group_remove", { group_id: group, session_id: ACTOR });
   assert.equal(removed.structuredContent.changed, true);
   for (let i = 0; i < 11; i++) {
