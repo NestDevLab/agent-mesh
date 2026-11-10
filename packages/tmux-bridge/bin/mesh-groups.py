@@ -1,0 +1,103 @@
+#!/usr/bin/env python3
+"""Trusted local CLI for the Agent Mesh group API."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sqlite3
+import sys
+
+sys.dont_write_bytecode = True
+from mesh_group_store import GroupActor, GroupStore
+
+
+def default_state_dir():
+    state_home = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
+    return os.environ.get("MESH_GROUPS_STATE") or Path(state_home) / "agent-mesh" / "groups"
+
+
+def parser():
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--state", help="Override the local group database directory")
+    common.add_argument("--as-session", metavar="SESSION_ID",
+                        help="Attest a session identity from this trusted local account")
+    common.add_argument("--json", action="store_true", help="Emit JSON (the default)")
+    cli = argparse.ArgumentParser(prog="agent-mesh group", description=__doc__)
+    sub = cli.add_subparsers(dest="command", required=True)
+
+    create = sub.add_parser("create", parents=[common], help="Create a group")
+    create.add_argument("name")
+    create.add_argument("--role", metavar="ROLE_KEY")
+
+    listing = sub.add_parser("list", parents=[common], help="List accessible groups")
+    listing.add_argument("--ledger-ref")
+    sub.add_parser("get", parents=[common], help="Show one accessible group").add_argument("group_id")
+
+    for command in ("add", "remove"):
+        membership = sub.add_parser(command, parents=[common], help=f"{command.title()} a group member")
+        membership.add_argument("group_id")
+        membership.add_argument("session_id")
+
+    link = sub.add_parser("link", parents=[common], help="Link a ledger reference")
+    link.add_argument("group_id")
+    link.add_argument("ledger_ref")
+    lead = link.add_mutually_exclusive_group()
+    lead.add_argument("--lead", dest="lead", action="store_const", const=True, help="Assign the currently vacant lead")
+    lead.add_argument("--clear-lead", dest="lead", action="store_const", const=False, help="Clear this link's lead")
+
+    unlink = sub.add_parser("unlink", parents=[common], help="Unlink a ledger reference")
+    unlink.add_argument("group_id")
+    unlink.add_argument("ledger_ref")
+
+    transfer = sub.add_parser("transfer-lead", parents=[common], help="Move an exact ledger lead atomically")
+    transfer.add_argument("ledger_ref")
+    transfer.add_argument("--from-group", required=True)
+    transfer.add_argument("--to-group", required=True)
+
+    append = sub.add_parser("append", parents=[common], help="Append a group message from stdin")
+    append.add_argument("group_id")
+    append.add_argument("--message-id", help="Repeat this id to safely retry the same message")
+
+    history = sub.add_parser("history", parents=[common], help="Read group messages in sequence order")
+    history.add_argument("group_id")
+    history.add_argument("--after", type=int, default=0)
+    history.add_argument("--limit", type=int, default=50)
+    return cli
+
+
+def dispatch(args):
+    store = GroupStore(args.state or default_state_dir())
+    actor = GroupActor(session_id=args.as_session, manage=args.as_session is None)
+    if args.command == "create":
+        return store.create_group(actor, args.name, role_key=args.role)
+    if args.command == "list":
+        return {"groups": store.list_groups(actor, ledger_ref=args.ledger_ref)}
+    if args.command == "get":
+        return store.get_group(actor, args.group_id)
+    if args.command == "add":
+        return store.add_member(actor, args.group_id, args.session_id)
+    if args.command == "remove":
+        return store.remove_member(actor, args.group_id, args.session_id)
+    if args.command == "link":
+        return store.link_ledger(actor, args.group_id, args.ledger_ref, lead=args.lead)
+    if args.command == "unlink":
+        return store.unlink_ledger(actor, args.group_id, args.ledger_ref)
+    if args.command == "transfer-lead":
+        return store.transfer_ledger_lead(actor, args.ledger_ref, from_group_id=args.from_group,
+                                          to_group_id=args.to_group)
+    if args.command == "append":
+        if actor.session_id is None:
+            raise ValueError("append requires --as-session")
+        return store.append_message(actor, args.group_id, sys.stdin.read(32_001), message_id=args.message_id)
+    if args.command == "history":
+        return store.history(actor, args.group_id, after=args.after, limit=args.limit)
+    raise ValueError("unknown group command")
+
+
+if __name__ == "__main__":
+    try:
+        print(json.dumps(dispatch(parser().parse_args()), ensure_ascii=True))
+    except (ValueError, OSError, sqlite3.Error) as error:
+        print(f"agent-mesh group: {error}", file=sys.stderr)
+        sys.exit(1)
