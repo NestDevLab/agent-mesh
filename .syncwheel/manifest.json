@@ -300,7 +300,8 @@
       "target_branch": "pr/group-gateway-conversation",
       "integration_branch": "main-integration",
       "commits": [
-        "592185f49b51999280f143bf05e1cb0c98f4d36a"
+        "592185f49b51999280f143bf05e1cb0c98f4d36a",
+        "bf9d96d53a51e17a72f06ff2d22d85ac0fe6044e"
       ],
       "state": "draft",
       "publication": {
