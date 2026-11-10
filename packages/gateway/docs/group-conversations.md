@@ -28,6 +28,13 @@ The broker uses the existing communication gate. Its native transport determines
 which destination providers are currently supported; registering a cloud member
 alone does not enable cloud delivery.
 
+The optional broker flag `--cloud-bindings` enables the separate cloud
+transport when it is present. The broker reads the private binding file for
+each send, so changes take effect without restart. If that transport is absent
+or the binding is invalid, the operation fails before any delivery is recorded.
+The transport still verifies the registered cloud identity and authenticated
+account for each cloud attempt. A binding is not proof of message delivery.
+
 Example configuration shape, with synthetic identifiers:
 
 ```json

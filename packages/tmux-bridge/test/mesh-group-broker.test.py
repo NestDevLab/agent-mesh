@@ -1,3 +1,4 @@
+import builtins
 import json
 import socket
 import sys
@@ -57,6 +58,36 @@ class GroupBrokerTest(unittest.TestCase):
             run_operation(self.store, {**request, "destinations": []})
         with self.assertRaises(ValueError):
             run_operation(self.store, {**request, "actor": OUTSIDER})
+
+    def test_cloud_binding_dependency_fails_closed_before_delivery(self):
+        request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "cloud",
+                   "message": "work", "destinations": [OTHER]}
+        # The gateway can be installed before the optional cloud transport.
+        real_import = builtins.__import__
+        def without_cloud(name, *args, **kwargs):
+            if name == "mesh_group_dispatch" and len(args) > 2 and "load_cloud_bindings" in (args[2] or ()):
+                raise ImportError("optional dependency missing")
+            return real_import(name, *args, **kwargs)
+        with patch("mesh_group_broker.dispatch") as send, patch("builtins.__import__", side_effect=without_cloud):
+            with self.assertRaisesRegex(ValueError, "cloud transport is unavailable"):
+                run_operation(self.store, request, cloud_bindings_path=self.root / "bindings")
+            send.assert_not_called()
+
+    def test_cloud_bindings_are_refreshed_and_passed_to_transport(self):
+        cloud = "claude-cloud:example:session_Abc123"
+        self.store.add_member(GroupActor(manage=True), self.group, cloud)
+        request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "cloud-one",
+                   "message": "work", "destinations": [cloud]}
+        bindings = [{"example": {"orgId": "one"}}, {"example": {"orgId": "two"}}]
+        with patch("mesh_group_dispatch.load_cloud_bindings", side_effect=bindings, create=True) as load, \
+             patch("mesh_group_dispatch.native_transport", return_value={"outcome": "accepted"}) as send:
+            first = run_operation(self.store, request, cloud_bindings_path=self.root / "bindings")
+            second = run_operation(self.store, {**request, "message_id": "cloud-two"},
+                                   cloud_bindings_path=self.root / "bindings")
+        self.assertEqual([first["status"], second["status"]], ["accepted", "accepted"])
+        self.assertEqual(load.call_count, 2)
+        self.assertEqual(send.call_args_list[0].kwargs["cloud_bindings"], bindings[0])
+        self.assertEqual(send.call_args_list[1].kwargs["cloud_bindings"], bindings[1])
 
     def test_private_socket_round_trip_and_cleanup(self):
         path = self.root / "broker.sock"

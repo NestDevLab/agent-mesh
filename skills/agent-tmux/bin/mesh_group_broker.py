@@ -32,7 +32,7 @@ def cloud_is_registered(session):
         return False
 
 
-def run_operation(store, request, *, inbox_root=None):
+def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
     if not isinstance(request, dict):
         raise ValueError("invalid broker request")
     action = request.get("action")
@@ -56,6 +56,18 @@ def run_operation(store, request, *, inbox_root=None):
     destinations = request["destinations"]
     if not isinstance(destinations, list) or not 1 <= len(destinations) <= 4:
         raise ValueError("one to four destinations required")
+    if cloud_bindings_path is not None:
+        # This optional feature requires the separately versioned cloud transport.
+        # Never record a delivery until that dependency and the current binding
+        # have been checked. Re-read the binding for revocation between sends.
+        try:
+            from mesh_group_dispatch import load_cloud_bindings, native_transport
+        except ImportError:
+            raise ValueError("cloud transport is unavailable") from None
+        bindings = load_cloud_bindings(cloud_bindings_path)
+        return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations,
+                        lambda dest, correlation, text: native_transport(
+                            dest, correlation, text, inbox_root=inbox_root, cloud_bindings=bindings))
     if inbox_root is None:
         return dispatch(store, actor, request["group"], request["message_id"], request["message"], destinations)
     from mesh_group_dispatch import native_transport
@@ -67,9 +79,10 @@ class Broker(socketserver.ThreadingUnixStreamServer):
     # On graceful shutdown, retain the socket until admitted operations finish.
     daemon_threads = False
 
-    def __init__(self, socket_path, state_dir, inbox_root=None):
+    def __init__(self, socket_path, state_dir, inbox_root=None, cloud_bindings_path=None):
         self.store = GroupStore(state_dir)
         self.inbox_root = inbox_root
+        self.cloud_bindings_path = cloud_bindings_path
         self.socket_path = Path(socket_path)
         self.socket_identity = None
         info = self.socket_path.parent.stat()
@@ -104,7 +117,8 @@ class Handler(socketserver.StreamRequestHandler):
             data = self.rfile.readline(MAX_REQUEST + 1)
             if not data.endswith(b"\n") or len(data) > MAX_REQUEST:
                 raise ValueError("invalid broker request size")
-            result = run_operation(self.server.store, json.loads(data), inbox_root=self.server.inbox_root)
+            result = run_operation(self.server.store, json.loads(data), inbox_root=self.server.inbox_root,
+                                   cloud_bindings_path=self.server.cloud_bindings_path)
             output = {"ok": True, "result": result}
         except (ValueError, OSError) as error:
             output = {"ok": False, "error": str(error)}
@@ -116,11 +130,12 @@ def main():
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--managed-inbox-root", type=Path)
+    parser.add_argument("--cloud-bindings", type=Path, help="private cloud account binding file")
     args = parser.parse_args()
     def terminate(_signal, _frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)
-    with Broker(args.socket, args.state, args.managed_inbox_root) as broker:
+    with Broker(args.socket, args.state, args.managed_inbox_root, args.cloud_bindings) as broker:
         broker.serve_forever()
 
 
