@@ -23,7 +23,8 @@
       "terminal-return-v1",
       "urgent-native-reply",
       "mesh-groups-v1",
-      "ledger-item-lock"
+      "ledger-item-lock",
+      "cloud-group-sessions"
     ],
     "strategy": "cherry-pick"
   },
@@ -101,6 +102,22 @@
       },
       "meta": {
         "purpose": "Provide per-item work ledger leases with fencing"
+      }
+    },
+    {
+      "id": "cloud-group-sessions",
+      "branch": "syncwheel/draft/cloud-group-sessions",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "draft",
+      "publication": {
+        "enabled": false
+      },
+      "meta": {
+        "purpose": "Register provider-qualified cloud group sessions"
       }
     }
   ],
