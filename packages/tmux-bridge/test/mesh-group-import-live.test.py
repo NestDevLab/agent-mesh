@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -167,6 +169,72 @@ time.sleep(20)
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+
+    def test_suspended_guard_must_not_commit_stale_membership(self):
+        self.graph_call("add", "--agent", "codex", "--runtime-uuid", SECOND.split(":")[1],
+                        "--tmux-target", "second")
+        preview = self.live()
+        copied = self.root / "stale-bin"
+        shutil.copytree(BIN, copied, ignore=shutil.ignore_patterns("__pycache__"))
+        store = copied / "mesh_group_store.py"
+        source = store.read_text()
+        marker = '        """Preview, or atomically import, a reviewed legacy snapshot without writing the graph."""'
+        injection = marker + """
+        if os.environ.get("TEST_IMPORT_SIGNAL"):
+            import time
+            Path(os.environ["TEST_IMPORT_SIGNAL"]).write_text("armed")
+            while not Path(os.environ["TEST_IMPORT_RELEASE"]).exists():
+                time.sleep(.01)
+"""
+        self.assertIn(marker, source)
+        store.write_text(source.replace(marker, injection, 1))
+        env = {**self.env, "TEST_IMPORT_SIGNAL": str(self.root / "armed"),
+               "TEST_IMPORT_RELEASE": str(self.root / "release")}
+        proc = subprocess.Popen([sys.executable, str(copied / "mesh-group-import-live.py"),
+                                 *self.base, "--apply", "--plan-digest", preview["plan_digest"]],
+                                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        guard = None
+        try:
+            deadline = time.monotonic() + 10
+            while not (self.root / "armed").exists() and time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    self.fail(f"import exited before the test barrier: {proc.communicate()}")
+                time.sleep(.02)
+            self.assertTrue((self.root / "armed").exists())
+            guard = json.loads((self.graph / "graph.lock" / "comms-guard.json").read_text())["pid"]
+            os.kill(guard, signal.SIGSTOP)
+            old = time.time() - 65
+            os.utime(self.graph / "graph.lock", (old, old))
+            writer = subprocess.run(
+                ["node", str(BIN / "mesh-graph.mjs"), "--state", str(self.graph), "link", "open",
+                 "--agent", "codex", "--runtime-uuid", SECOND.split(":")[1], "--ref", "group:fixture",
+                 "--role", "discusses", "--json"], env=self.env, text=True, capture_output=True, timeout=8)
+            (self.root / "release").write_text("go")
+            os.kill(guard, signal.SIGCONT)
+            guard = None
+            out, err = proc.communicate(timeout=10)
+            if proc.returncode:
+                database = self.groups / "groups.sqlite3"
+                if database.exists():
+                    with sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True) as db:
+                        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='groups'").fetchone()
+                        if table:
+                            self.assertEqual(db.execute("SELECT count(*) FROM groups").fetchone()[0], 0)
+                return
+            imported = json.loads(out)
+            expected = 2 if writer.returncode == 0 else 1
+            self.assertEqual(len(imported["groups"][0]["members"]), expected,
+                             "a successful import must include every membership committed before it")
+        finally:
+            (self.root / "release").touch()
+            if guard is not None:
+                try:
+                    os.kill(guard, signal.SIGCONT)
+                except ProcessLookupError:
+                    pass
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate(timeout=5)
 
 
 if __name__ == "__main__":
