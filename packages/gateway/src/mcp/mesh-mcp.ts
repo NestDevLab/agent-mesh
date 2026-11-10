@@ -589,7 +589,7 @@ const taskDispatchInputSchema = z.object({
   message: z.string().min(1).max(MAX_MESSAGE_LENGTH),
   idempotency_key: z.string().min(1).max(MAX_IDEMPOTENCY_KEY_LENGTH),
   labels: z.array(z.string().min(1).max(MAX_LABEL_LENGTH)).max(20).optional(),
-  priority: z.enum(["normal", "urgent"]).optional().describe("normal (default) queues for the session's next turn. urgent steers the running turn of a Codex session, delivery only, so no reply comes back through the task. Claude sessions can't be steered, urgent stays queued there. Needs session_id.")
+  priority: z.enum(["normal", "urgent"]).optional().describe("normal (default) queues for the session's next turn. urgent steers the running turn of a Codex session and returns its correlated reply through the task. Claude sessions can't be interrupted from the gateway. The message arrives without stopping the running turn, at the latest on the next one. Needs session_id.")
 });
 
 const taskCallInputSchema = taskDispatchInputSchema.extend({
@@ -937,7 +937,7 @@ function dispatchResult(output: MeshTaskDispatchOutput, priority: "normal" | "ur
     task: publicTask(output.task),
     ...(output.sessionState === undefined ? {} : { session_state: output.sessionState }),
     ...(running && busy && (priority !== "urgent" || notSteerable) ? { delivery: "queued" } : {}),
-    ...(notSteerable ? { priority_note: "Claude sessions can't be steered, so this stays queued for the next turn." } : {}),
+    ...(notSteerable ? { priority_note: "Claude sessions can't be interrupted from the gateway. The message arrives without stopping the running turn, at the latest on the next one." } : {}),
     ...(running ? { next_action: `${busy ? "The session is busy. " : ""}Not finished yet. Call mesh_task_get with task_id ${output.task.task_id} later to read the reply. Don't send the message again.` } : {})
   };
 }

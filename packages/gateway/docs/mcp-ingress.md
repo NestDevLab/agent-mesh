@@ -47,7 +47,7 @@ fields keeps the static route. When `context_id` is omitted the gateway mints
 one, and it is excluded from the idempotency comparison, so an exact replay
 returns the original task.
 
-`mesh_call` and `mesh_submit` accept `priority`. `normal` (the default) leaves the message for the session's next turn. `urgent` needs `session_id` and steers a running Codex turn as delivery only, so no reply comes back through that task. Claude sessions can't be steered, so an urgent message to one stays queued and the result says so in `priority_note`. Results carry `session_state`, and `next_action` when the task isn't finished.
+`mesh_call` and `mesh_submit` accept `priority`. `normal` (the default) leaves the message for the session's next turn. `urgent` needs `session_id` and steers a running Codex turn and returns its correlated reply through the task. A result timeout remains `result_timeout` and never triggers a second send after an accepted steer. Claude sessions can't be interrupted from the gateway. The message arrives without stopping the running turn, at the latest on the next one. The result keeps `delivery: "queued"` and explains this in `priority_note`. Results carry `session_state`, and `next_action` when the task isn't finished.
 
 ### Capability discovery
 

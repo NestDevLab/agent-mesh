@@ -576,7 +576,7 @@ test("cloud sessions are reachable only when listed and only as delivery", async
   assert.equal(await instance.get({ workspaceId: "workspace.allowed", sessionId: "cse_other" }), undefined);
 });
 
-test("urgent steers an active Codex session as delivery only", async () => {
+test("urgent steers an active Codex session and returns its correlated reply", async () => {
   let native;
   const { instance } = provider({
     agentNativeCallPath: "/bridge/agent-native-call.mjs",
@@ -589,7 +589,7 @@ test("urgent steers an active Codex session as delivery only", async () => {
       }
       if (command === process.execPath) {
         native = args;
-        return { code: 0, stdout: JSON.stringify({ status: "steered" }), stderr: "" };
+        return { code: 0, stdout: "correlated urgent reply", stderr: "" };
       }
       throw new Error("unexpected command");
     }
@@ -599,8 +599,9 @@ test("urgent steers an active Codex session as delivery only", async () => {
     messageId: "message-urgent", contextId: "context", correlationId: "task-urgent", idempotencyKey: "idem-urgent"
   });
   assert.equal(result.ok, true);
-  assert.match(result.reply, /^Steered/);
-  assert.ok(native.includes("--steer-or-queue") && native.includes("--delivery-only"));
+  assert.equal(result.reply, "correlated urgent reply");
+  assert.ok(native.includes("--steer-or-queue"));
+  assert.ok(!native.includes("--delivery-only"));
 });
 
 test("status reports the script output and falls back to unknown", async () => {
@@ -628,7 +629,7 @@ test("urgent with a live writer doesn't wait behind a queued send", async () => 
         return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
       }
       if (command === process.execPath && args.includes("--steer-or-queue")) {
-        return { code: 0, stdout: JSON.stringify({ status: "steered", held: false }), stderr: "" };
+        return { code: 0, stdout: "correlated urgent reply", stderr: "" };
       }
       return new Promise((done) => { release = () => done({ code: 0, stdout: "late", stderr: "" }); });
     }
@@ -636,12 +637,12 @@ test("urgent with a live writer doesn't wait behind a queued send", async () => 
   const base = { sessionId: "session-new", workspaceId: "workspace.allowed", message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" };
   const stuck = instance.send(base);
   await new Promise((done) => setTimeout(done, 20));
-  assert.match((await instance.send({ ...base, urgent: true })).reply, /^Steered/);
+  assert.equal((await instance.send({ ...base, urgent: true })).reply, "correlated urgent reply");
   release();
   await stuck;
 });
 
-test("a held delivery is not reported as queued", async () => {
+for (const urgent of [true, false]) test(urgent ? "a held delivery is not reported as queued" : "a non-urgent held receipt keeps the native result mapping", async () => {
   const { instance } = provider({
     agentNativeCallPath: "/bridge/agent-native-call.mjs",
     run: async (command, args) => {
@@ -650,6 +651,29 @@ test("a held delivery is not reported as queued", async () => {
       return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
     }
   });
+  const result = await instance.send({ sessionId: "session-new", workspaceId: "workspace.allowed", urgent, message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" });
+  if (urgent) assert.match(result.reply, /^Held/);
+  else assert.equal(result.reply, JSON.stringify({ status: "queued", held: true }));
+});
+
+test("urgent native result timeout stays a result timeout without a second send", async () => {
+  let sends = 0;
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command === process.execPath) {
+        sends++;
+        assert.ok(args.includes("--steer-or-queue"));
+        assert.ok(!args.includes("--delivery-only"));
+        return { code: 124, stdout: "", stderr: "correlated native session result collection timed out" };
+      }
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      if (args.includes("writer-status")) return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+      throw new Error("unexpected fallback");
+    }
+  });
   const result = await instance.send({ sessionId: "session-new", workspaceId: "workspace.allowed", urgent: true, message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" });
-  assert.match(result.reply, /^Held/);
+  assert.equal(result.ok, true);
+  assert.equal(result.result_error_code, "result_timeout");
+  assert.equal(sends, 1);
 });

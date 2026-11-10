@@ -665,12 +665,19 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       nativeArgs.push("--managed-inbox-root", this.agentManagedInboxRoot);
     }
     const steer = input.urgent === true && this.provider === "codex";
-    if (steer) nativeArgs.push("--steer-or-queue", "--delivery-only");
+    if (steer) nativeArgs.push("--steer-or-queue");
     const result = await this.run(process.execPath, nativeArgs, {
       env: { ...processEnv },
       timeoutMs: (this.timeoutSeconds + 20) * 1000
     });
-    return steer ? deliveryReceipt(result) : nativeCallResult(result);
+    if (steer && result.code === 0) {
+      try {
+        const receipt: unknown = JSON.parse(result.stdout);
+        if (typeof receipt === "object" && receipt !== null && !Array.isArray(receipt) &&
+            (receipt as { held?: unknown }).held === true) return deliveryReceipt(result);
+      } catch {}
+    }
+    return nativeCallResult(result);
   }
 
   /** Launches via the bridge's `new`, checks we own the writer, then sends the first turn. Never falls back to another session. */

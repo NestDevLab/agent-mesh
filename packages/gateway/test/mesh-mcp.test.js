@@ -305,3 +305,35 @@ test("mesh_send targets are real routes plus simulated canaries", () => {
   })].sort(), ["a.canary", "a.tmux"]);
   assert.equal(meshSendTargets({ agents: [] }), undefined);
 });
+
+for (const name of ["mesh_call", "mesh_submit"]) {
+  test(`${name} explains urgent Claude delivery while keeping queued status`, async (t) => {
+    const setup = options();
+    setup.principal.allowedTools.push(name);
+    const output = { duplicate: false, sessionState: "busy", task: {
+      task_id: "task-urgent", context_id: "context", message_id: "message-urgent",
+      target_agent_id: "agent.claude", session_id: "synthetic-session", status: "running",
+      created_at: "2026-11-01T00:00:00Z", updated_at: "2026-11-01T00:00:00Z", message: "Adjust the response."
+    } };
+    t.mock.method(MeshMcpFacade.prototype, name === "mesh_call" ? "callTask" : "submitTask", async () => output);
+    const handler = createMeshMcpHandler({ ...setup, resolvePrincipal: () => setup.principal });
+    const response = await handler.fetch(new Request("https://mcp.example.test/mcp", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream",
+        "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": name },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: {
+        name, arguments: { target_agent_id: "agent.claude", session_id: "synthetic-session",
+          context_id: "context", message: "Adjust the response.", idempotency_key: "urgent", priority: "urgent" },
+        _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+          "io.modelcontextprotocol/clientInfo": { name: "urgent-test", version: "1" },
+          "io.modelcontextprotocol/clientCapabilities": {} }
+      } })
+    }), { authInfo: { token: "t", clientId: "client", scopes: [] } });
+    assert.equal(response.status, 200);
+    const result = (await response.json()).result;
+    assert.equal(result.isError, undefined, JSON.stringify(result));
+    const body = JSON.parse(result.content[0].text);
+    assert.equal(body.delivery, "queued");
+    assert.equal(body.priority_note, "Claude sessions can't be interrupted from the gateway. The message arrives without stopping the running turn, at the latest on the next one.");
+  });
+}
