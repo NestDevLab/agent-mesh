@@ -29,7 +29,8 @@
       "groups-scoped-import",
       "cloud-group-transport",
       "group-gateway-conversation",
-      "group-ref-contract"
+      "group-ref-contract",
+      "group-ref-public"
     ],
     "strategy": "cherry-pick"
   },
@@ -283,6 +284,22 @@
         "18918f0531298ed3a7e6533870708897769982ef",
         "7528a85c2814a0c1a565e59405164f6e37c643ef"
       ],
+      "state": "draft",
+      "publication": {
+        "enabled": false
+      },
+      "meta": {
+        "purpose": "Align group and lease item references"
+      }
+    },
+    {
+      "id": "group-ref-public",
+      "branch": "syncwheel/draft/group-ref-public",
+      "base": "pr/group-gateway-conversation",
+      "target_remote": "origin",
+      "target_branch": "pr/group-gateway-conversation",
+      "integration_branch": "main-integration",
+      "commits": [],
       "state": "draft",
       "publication": {
         "enabled": false
