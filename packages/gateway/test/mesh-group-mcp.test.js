@@ -23,6 +23,7 @@ async function call(handler, name, args) {
         "io.modelcontextprotocol/clientCapabilities": {} }
     } })
   }), { authInfo: { token: "test", clientId: "test", scopes: [] } });
+  if (response.status === 404) return { code: 404 };
   assert.equal(response.status, 200);
   const body = await response.json();
   return body.result ?? body.error;
