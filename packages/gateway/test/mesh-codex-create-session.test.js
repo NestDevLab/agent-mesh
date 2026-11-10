@@ -12,23 +12,25 @@ const nativeId = "12345678-1234-4234-8234-123456789abc";
 
 function harness({ profiles = ["read-only", "full-access"], resolved = true, writer = true, hostSocket = "mesh", persisted = true, sendCode = 0 } = {}) {
   const calls = [];
-  const state = { persisted, writer, panePid: 4241, resolved, hostReady: true };
+  const state = { persisted, writer, panePid: 4241, resolved, hostReady: true, writerPid: 4242, writerId: nativeId, writerCode: 0, targetCode: 0, cwd: "/srv/workspaces/example/project", sendCode };
   const run = async (command, args, options) => {
     calls.push({ command, args: [...args], env: options.env });
-    if (command === "/bridge/agent-send.sh") return { code: sendCode, stdout: sendCode ? "" : "FIRST_REPLY", stderr: sendCode ? "send failed" : "" };
+    if (command === "/bridge/agent-send.sh") return { code: state.sendCode, stdout: state.sendCode ? "" : "FIRST_REPLY", stderr: state.sendCode ? "send failed" : "" };
     const sub = args[2];
     const ok = (stdout) => ({ code: 0, stdout, stderr: "" });
     if (sub === "socket-status") return state.hostReady ? ok("ready\n") : { code: 4, stdout: "", stderr: "not trusted" };
     if (sub === "new") return ok(`${args[4]}\n`);
     if (sub === "target-session") return state.resolved ? ok(`${nativeId}\n`) : { code: 4, stdout: "", stderr: "ambiguous" };
+    if (sub === "writer-status" && state.writerCode) return { code: state.writerCode, stdout: "", stderr: "observation incomplete" };
+    if (sub === "target-status" && state.targetCode) return { code: state.targetCode, stdout: "", stderr: "observation incomplete" };
     if (sub === "writer-status") return ok(JSON.stringify({
-      agent: "codex", sessionId: nativeId, writers: state.writer ? [{ pid: 4242, kind: "codex" }] : []
+      agent: "codex", sessionId: state.writerId, writers: state.writer ? [{ pid: state.writerPid, kind: "codex" }] : []
     }));
-    if (sub === "target-status") return ok(JSON.stringify({ target: args[3], pane_pid: state.panePid, writer_pid: 4242 }));
+    if (sub === "target-status") return ok(JSON.stringify({ target: args[3], pane_pid: state.panePid, writer_pid: state.writerPid }));
     if ((sub === "inspect" || sub === "transcript") && !state.persisted) return { code: 3, stdout: "", stderr: "not found" };
     if (sub === "transcript") return ok(JSON.stringify({ agent_type: "codex", session_id: nativeId, events: [], next_cursor: null }));
     if (sub === "inspect") return ok(JSON.stringify({ agent_type: "codex", sessions: [{
-      session_id: nativeId, agent_type: "codex", cwd: "/srv/workspaces/example/project", updated_at: "2026-10-13T00:00:00Z"
+      session_id: nativeId, agent_type: "codex", cwd: state.cwd, updated_at: "2026-10-13T00:00:00Z"
     }] }));
     if (sub === "kill") return ok("killed\n");
     throw new Error(`Unexpected bridge command: ${sub}`);
@@ -81,7 +83,7 @@ test("Codex creation advertises capability and launches read-only by default", a
   assert.equal(launch.env.MESH_STRICT_READY, "1");
   assert.equal(launch.env.MESH_TMUX_SOCKET, "mesh-mcp-sessions");
   assert.match(launch.args[4], /^mesh-codex-[0-9a-f-]{36}$/);
-  assert.deepEqual(h.calls.map((call) => call.args[2]), ["new", "target-session", "writer-status", "target-status", "target-session", "writer-status", "target-status", "inspect"]);
+  assert.deepEqual(h.calls.map((call) => call.args[2]), ["new", "target-session", "writer-status", "target-status", "writer-status", "target-status", "inspect"]);
 });
 
 test("full-access is explicit and unavailable unless enabled by the host", async () => {
@@ -166,22 +168,56 @@ test("unpersisted guessed ID and restart have no capability and fail clearly", a
   assert.equal(restarted.calls.some(call => call.command === "/bridge/agent-send.sh"), false);
 });
 
-for (const change of [{ writer: false }, { panePid: 9999 }, { resolved: false }]) test(`owned proof loss kills target: ${JSON.stringify(change)}`, async () => {
-  const h = harness({ persisted: false });
+for (const change of [{ panePid: 9999 }, { writerPid: 9999 }, { writerId: "abcdefab-1234-4234-8234-123456789abc" }, { targetCode: 5 }, { cwd: "/srv/workspaces/example/changed" }]) test(`proven ownership loss revokes without killing: ${JSON.stringify(change)}`, async () => {
+  const h = harness();
   await h.provider.create({ workspaceId, accessProfile: "full-access" });
   Object.assign(h.state, change);
-  await assert.rejects(h.provider.send(sendInput), /Owned Codex/);
-  assert.equal(h.calls.at(-1).args[2], "kill");
-  assert.equal(h.calls.at(-1).env.MESH_TMUX_SOCKET, "mesh");
-  assert.equal(h.calls.some(call => call.command === "/bridge/agent-send.sh"), false);
+  await assert.rejects(h.provider.send(sendInput), /ownership lost/);
+  Object.assign(h.state, { panePid: 4241, writerPid: 4242, writerId: nativeId, targetCode: 0, cwd: "/srv/workspaces/example/project" });
+  // Even with durable metadata and a restored writer, a revoked ID cannot resume.
+  await assert.rejects(h.provider.send(sendInput), /ownership was lost/);
+  assert.equal(h.calls.some(call => call.args[2] === "kill" || call.args[2] === "resume" || call.command === "/bridge/agent-send.sh"), false);
 });
 
-test("first send failure kills owned target on its original socket", async () => {
-  const h = harness({ persisted: false, sendCode: 1 });
+for (const change of [{ writer: false }, { writerCode: 124 }, { writerCode: 4 }, { targetCode: 124 }, { targetCode: 4 }]) test(`inconclusive proof preserves capability and process: ${JSON.stringify(change)}`, async () => {
+  const h = harness({ persisted: false });
+  await h.provider.create({ workspaceId, accessProfile: "read-only" });
+  Object.assign(h.state, change);
+  await assert.rejects(h.provider.get(sendInput), /inconclusive.*retry/);
+  await assert.rejects(h.provider.transcript({ ...sendInput, limit: 10 }), /inconclusive.*retry/);
+  await assert.rejects(h.provider.send(sendInput), /inconclusive.*retry/);
+  Object.assign(h.state, { writer: true, writerCode: 0, targetCode: 0 });
+  assert.equal((await h.provider.get(sendInput)).session_id, nativeId);
+  assert.deepEqual(await h.provider.send(sendInput), { ok: true, reply: "FIRST_REPLY" });
+  assert.equal(h.calls.some(call => call.args[2] === "kill"), false);
+});
+
+for (const [code, expected] of [[4, "result_timeout"], [124, "result_timeout"], [65, "result_no_output"], [66, "result_uncorrelated"], [67, "result_parsing_failure"], [1, undefined]]) test(`send exit ${code} preserves established session on first and later turns`, async () => {
+  const h = harness({ persisted: false, sendCode: code });
   await h.provider.create({ workspaceId, accessProfile: "full-access" });
-  assert.equal((await h.provider.send(sendInput)).ok, false);
-  assert.equal(h.calls.at(-1).args[2], "kill");
-  assert.equal(h.calls.at(-1).env.MESH_TMUX_SOCKET, "mesh");
+  for (let turn = 0; turn < 2; turn++) {
+    const result = await h.provider.send(sendInput);
+    assert.equal(result.result_error_code, expected);
+    assert.equal(result.ok, code !== 1);
+    assert.equal((await h.provider.get(sendInput)).session_id, nativeId);
+    assert.deepEqual((await h.provider.transcript({ ...sendInput, limit: 10 })).events, []);
+  }
+  h.state.sendCode = 0;
+  assert.deepEqual(await h.provider.send(sendInput), { ok: true, reply: "FIRST_REPLY" });
+  assert.equal(h.calls.some(call => call.args[2] === "kill" || call.args[2] === "resume"), false);
+});
+
+test("established proof never rediscovers unique candidates and explicitly allows attached observers", async () => {
+  const h = harness({ persisted: false });
+  await h.provider.create({ workspaceId, accessProfile: "read-only" });
+  const discoveryCount = h.calls.filter(call => call.args[2] === "target-session").length;
+  h.state.resolved = false; // unique discovery would fail with another thread/attached observer
+  assert.equal((await h.provider.get(sendInput)).session_id, nativeId);
+  assert.deepEqual(await h.provider.send(sendInput), { ok: true, reply: "FIRST_REPLY" });
+  assert.equal(h.calls.filter(call => call.args[2] === "target-session").length, discoveryCount);
+  const boundProof = h.calls.filter(call => call.args[2] === "target-status").slice(1);
+  assert.ok(boundProof.every(call => call.args.includes("--allow-attached") && call.args.includes("--owned-cwd")));
+  assert.equal(h.calls.some(call => call.args[2] === "kill"), false);
 });
 
 test("full-access socket rejection and per-principal gating prevent launch", async () => {

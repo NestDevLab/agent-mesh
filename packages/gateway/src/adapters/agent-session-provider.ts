@@ -292,6 +292,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     workspaceId: string; cwd: string; target: string; socket?: string;
     writerPid: number; panePid: number; updatedAt: string;
   }>();
+  private readonly revokedCodexSessions = new Set<string>();
   private readonly ownedClaudeTargets = new Map<string, { target: string; writerPid: number; panePid: number }>();
 
   constructor(options: ShellAgentSessionProviderOptions) {
@@ -379,6 +380,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     if (this.cloudSessionId(input) !== undefined) {
       return this.summary({ session_id: input.sessionId, agent_type: this.provider, cwd: "", updated_at: new Date().toISOString() }, input.workspaceId);
     }
+    if (this.revokedCodexSessions.has(input.sessionId)) throw new Error("Owned Codex ownership was lost; this gateway will not resume or send to that session.");
     const owned = this.ownedCodexTargets.get(input.sessionId);
     if (owned !== undefined) {
       if (owned.workspaceId !== input.workspaceId) return undefined;
@@ -396,10 +398,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
     if (response.code !== 0) throw new Error(safeProcessError("Agent session inspection failed", response));
     const session = parseBridgeSessions(response.stdout, this.provider).sessions[0];
-    if (owned !== undefined && (session?.session_id !== input.sessionId || resolve(session.cwd) !== owned.cwd)) {
-      this.ownedCodexTargets.delete(input.sessionId);
-      await this.command(["--agent", "codex", "kill", owned.target], true, owned.socket);
-      throw new Error("Created Codex metadata does not match the owned workspace.");
+    if (owned !== undefined) {
+      if (session === undefined) throw new Error("Owned Codex metadata inspection is inconclusive; retry the call.");
+      if (session.session_id !== input.sessionId || resolve(session.cwd) !== owned.cwd) {
+        this.revokeOwnedCodex(input.sessionId, "Persisted thread or cwd changed.");
+      }
     }
     if (session === undefined || !roots.some((root) => isWithin(session.cwd, root))) return undefined;
     return this.summary(session, input.workspaceId);
@@ -542,22 +545,43 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
   }
 
+  private revokeOwnedCodex(sessionId: string, reason: string): never {
+    this.ownedCodexTargets.delete(sessionId);
+    // A revoked ID must never fall through to durable discovery/resume/native-call.
+    this.revokedCodexSessions.add(sessionId);
+    throw new Error(`Owned Codex ownership lost: ${reason}`);
+  }
+
   private async proveOwnedCodex(sessionId: string, owned: {
     target: string; cwd: string; socket?: string; writerPid: number; panePid: number;
   }): Promise<void> {
     try {
-      const resolved = await this.command(["--agent", "codex", "target-session", owned.target, "--owned-cwd", owned.cwd], true, owned.socket, 4_000);
-      if (resolved.code !== 0 || resolved.stdout.trim() !== sessionId) throw new Error("Owned Codex thread identity changed.");
+      // Discovery is only for creation. A bound writer can have child threads,
+      // and observing a session must also work while a person is attached.
       const status = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, owned.socket);
-      if (status.code !== 0) throw new Error("Owned Codex writer is unavailable.");
-      const writers = parseWriterStatus(status.stdout, "codex", sessionId);
-      if (writers.length !== 1 || writers[0]?.kind !== "codex" || writers[0].pid !== owned.writerPid) throw new Error("Owned Codex writer changed.");
-      const target = await this.command(["--agent", "codex", "target-status", owned.target, "--writer-pid", String(owned.writerPid), "--json"], true, owned.socket);
-      if (target.code !== 0 || parseOwnedTarget(target.stdout, owned.target, owned.writerPid).panePid !== owned.panePid) throw new Error("Owned Codex pane changed.");
+      if (status.code !== 0) throw new Error("writer inspection did not complete");
+      const identity = JSON.parse(status.stdout) as { sessionId?: string };
+      if (!identity.sessionId || !SESSION_UUID.test(identity.sessionId)) throw new Error("invalid writer identity");
+      const writers = parseWriterStatus(status.stdout, "codex", identity.sessionId);
+      if (identity.sessionId !== sessionId) this.revokeOwnedCodex(sessionId, "Thread identity changed.");
+      if (writers.length !== 1 || writers[0]?.kind !== "codex") throw new Error("no unique bound writer proof");
+      if (writers[0].pid !== owned.writerPid) this.revokeOwnedCodex(sessionId, "Writer PID changed.");
+      const target = await this.command(["--agent", "codex", "target-status", owned.target,
+        "--writer-pid", String(owned.writerPid), "--json", "--allow-attached", "--owned-cwd", owned.cwd], true, owned.socket);
+      if (target.code === 5) this.revokeOwnedCodex(sessionId, "Writer cwd changed.");
+      if (target.code !== 0) throw new Error("pane inspection did not complete");
+      const metadata = JSON.parse(target.stdout) as { target: string; writer_pid: number };
+      if (typeof metadata.target !== "string" || !/^[a-z0-9-]+$/.test(metadata.target) ||
+          !Number.isSafeInteger(metadata.writer_pid) || metadata.writer_pid <= 0) throw new Error("invalid pane identity");
+      const pane = parseOwnedTarget(target.stdout, metadata.target, metadata.writer_pid);
+      if (metadata.target !== owned.target || metadata.writer_pid !== owned.writerPid || pane.panePid !== owned.panePid) {
+        this.revokeOwnedCodex(sessionId, "Pane identity changed.");
+      }
     } catch (error) {
-      this.ownedCodexTargets.delete(sessionId);
-      await this.command(["--agent", "codex", "kill", owned.target], true, owned.socket);
-      throw error;
+      if (this.revokedCodexSessions.has(sessionId)) throw error;
+      // Timeout, race, malformed/incomplete observations are not ownership loss.
+      // Retain the capability and leave the process alone so a later call can retry.
+      throw new Error("Owned Codex ownership proof is inconclusive; retry the call. The session was left running.", { cause: error });
     }
   }
 
@@ -582,12 +606,9 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       // use native-call, or send on the default socket for this owned target.
       const sender = new ShellTmuxSender({ agentSendPath: this.agentSendPath, agentType: "codex",
         timeoutSeconds: this.timeoutSeconds, meshSocket: ownedCodex.socket, run: this.run });
-      const result = await this.sendToOwnedTarget(input, ownedCodex.target, sender);
-      if (!result.ok || result.result_error_code !== undefined) {
-        this.ownedCodexTargets.delete(input.sessionId);
-        await this.command(["--agent", "codex", "kill", ownedCodex.target], true, ownedCodex.socket);
-      }
-      return result;
+      // A turn result (including a delivered-but-progressing timeout) says
+      // nothing about ownership. Never retire the capability or kill the pane.
+      return this.sendToOwnedTarget(input, ownedCodex.target, sender);
     }
     const writerStatus = await this.command([
       "--agent", this.provider, "writer-status", input.sessionId, "--json"

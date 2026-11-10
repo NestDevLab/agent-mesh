@@ -4,8 +4,20 @@ Creation resolves the native thread from the exact new unattended pane and its
 writer lock, including its authorized cwd. It does not require a seed model turn
 or a persisted thread row. The gateway retains a process-local capability binding
 the thread to its workspace, cwd, pane, writer and creation socket. Every owned
-get/send rechecks that proof; proof or send failure invalidates the capability
-and kills the target on its original socket.
+get/send checks the bound thread's writer and exact pane, including the writer's
+cwd, on the original socket. Unique-candidate discovery is used only at creation;
+attached observers and other threads started by the session do not invalidate the
+bound identity. Creation failures kill the new target only before its ID has
+been returned to the caller.
+
+After creation, get, transcript and send never kill the target. Inconclusive
+proof (including timeouts, races and incomplete observations) fails that call
+with a retryable error and retains the capability. Proven thread, writer, pane or
+cwd changes revoke the capability and refuse later calls without resume or
+native-call fallback, leaving the process alone. A turn timeout, no output,
+parsing failure or other send/result error does not revoke ownership. In
+particular, result_timeout is returned while the turn may still be progressing;
+later get and transcript remain available.
 
 Before persistence, get returns authorized launch metadata and transcript returns
 an empty page if the bridge has no transcript yet. Persisted metadata is used

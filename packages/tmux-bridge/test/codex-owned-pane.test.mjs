@@ -277,3 +277,15 @@ for (const status of ["Threads:\t2\n", "", "Threads:\t1\nThreads:\t1\n", null]) 
   if (status !== null) await writeFile(join(f.procRoot, "90/status"), status);
   assert.throws(() => discoverOwnedCodexThread(f.options));
 });
+
+test("bound thread writer-status remains exact when the same pane holds a subagent thread", async t => {
+  const f = await fixture(t);
+  await f.lock(12, second, "8");
+  assert.throws(() => discoverOwnedCodexThread(f.options));
+  const status = fileURLToPath(new URL("../bin/session-writer-status.mjs", import.meta.url));
+  const response = spawnSync(process.execPath, [status, "--agent", "codex", "--session", id, "--json"], {
+    encoding: "utf8", env: { ...process.env, AGENT_WRITER_PROC_ROOT: f.procRoot, CODEX_HOME: f.codexHome }
+  });
+  assert.equal(response.status, 0, response.stderr);
+  assert.deepEqual(JSON.parse(response.stdout).writers.map(writer => writer.pid), [12]);
+});
