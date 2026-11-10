@@ -7,7 +7,9 @@ from uuid import NAMESPACE_URL, uuid5
 
 
 _SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}")
-_SESSION = re.compile(r"(?:codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+_UUID = r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}"
+_SESSION = re.compile(rf"(?:codex|claude):{_UUID}")
+_LINK_ID = re.compile(rf"link-{_UUID}")
 
 
 def graph_import_plan(snapshot, source, role_bindings):
@@ -16,10 +18,14 @@ def graph_import_plan(snapshot, source, role_bindings):
     if (not isinstance(snapshot, dict) or snapshot.get("schema") != "agent-mesh.session-graph.v1"
             or snapshot.get("migrated") is not True or not isinstance(snapshot.get("links"), list)):
         raise ValueError("expected a migrated Agent Mesh graph snapshot with links")
+    observed_seq = snapshot.get("lastSeq")
+    if snapshot.get("unnumbered", False) is not False or type(observed_seq) is not int or observed_seq < 1:
+        raise ValueError("expected a numbered graph snapshot with complete link coverage")
 
     groups, areas = {}, {}
     from_groups, from_areas = set(), set()
     conflicts, ignored = set(), set()
+    witnesses = {}
     for link in snapshot["links"]:
         if not isinstance(link, dict) or not isinstance(link.get("ref"), str):
             raise ValueError("invalid graph link")
@@ -43,22 +49,33 @@ def graph_import_plan(snapshot, source, role_bindings):
         if not isinstance(session, str) or not _SESSION.fullmatch(session):
             conflicts.add(f"unresolved or noncanonical session for {ref}")
             continue
+        witness = link.get("id")
+        if not isinstance(witness, str) or not _LINK_ID.fullmatch(witness):
+            conflicts.add(f"missing or invalid witness link ID for {ref}")
+            continue
+        if witness in witnesses:
+            conflicts.add(f"duplicate witness link ID: {witness}")
+            continue
         (groups if kind == "group" else areas).setdefault(ref, set()).add(session)
         evidence = link.get("evidence", [])
         if not isinstance(evidence, list) or not all(isinstance(item, str) for item in evidence):
             conflicts.add(f"invalid legacy evidence for {ref}")
             continue
         counterpart = "area" if kind == "group" else "group"
+        matched_evidence = set()
         for item in evidence:
             if not item.startswith(f"{counterpart}:"):
                 continue
             if not _SLUG.fullmatch(item.partition(":")[2]):
                 conflicts.add(f"invalid legacy evidence reference for {ref}: {item}")
                 continue
+            matched_evidence.add(item)
             if kind == "group":
                 from_groups.add((ref, item))
             else:
                 from_areas.add((item, ref))
+        witnesses[witness] = {"id": witness, "session": session, "ref": ref, "role": role,
+                              "evidence": sorted(matched_evidence)}
 
     for group_ref, area_ref in from_groups ^ from_areas:
         conflicts.add(f"nonreciprocal group/area evidence: {group_ref} and {area_ref}")
@@ -93,7 +110,11 @@ def graph_import_plan(snapshot, source, role_bindings):
         ignored.add(f"open ownership for {ref} has no group evidence")
     if not rows:
         conflicts.add("snapshot contains no importable legacy groups")
+    source_witnesses = [item for _, item in sorted(witnesses.items())
+                        if item["role"] == "discusses" or item["ref"] in referenced_groups]
     plan = {"schema": "agent-mesh.group-import.v1", "source": source, "groups": rows,
+            "source_witnesses": source_witnesses,
             "conflicts": sorted(conflicts), "ignored": sorted(ignored)}
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return {**plan, "plan_digest": sha256(canonical.encode("ascii")).hexdigest()}
+    return {**plan, "observed_source_seq": observed_seq,
+            "plan_digest": sha256(canonical.encode("ascii")).hexdigest()}

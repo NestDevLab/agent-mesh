@@ -52,7 +52,8 @@ They do not update the ledger itself or the session graph.
 ## Import an existing graph convention
 
 An operator can preview the import from an explicit, reviewed local snapshot of
-the migrated graph. The command never updates the graph or its original links.
+the numbered, migrated graph. Snapshots with incomplete link coverage are rejected.
+The command never updates the graph or its original links.
 
 ```sh
 agent-mesh group import-graph --snapshot graph.json --source local-graph --role-map roles.json
@@ -78,6 +79,11 @@ Imported groups have no inferred role claim or conversation history.
 
 Apply rechecks the reviewed digest and current destination, then commits groups,
 their unique source refs, members, lead links and the import receipt together.
+The preview lists the exact open link IDs, their sessions and relevant evidence.
+A changed witness invalidates the digest even when the projected group looks the
+same. For a live cutover, use a fresh snapshot and verify the reviewed digest
+against it before applying. The observed sequence is reported separately; the
+command cannot tell whether a supplied offline snapshot is current.
 Using the same source and plan again is a no-op, even after someone changes
 group membership. A different plan for a source that was already imported needs
 an explicit reconciliation; it never overwrites groups. Verify imported groups
