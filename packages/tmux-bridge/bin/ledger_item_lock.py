@@ -218,8 +218,14 @@ def cli(args):
                            **{key: getattr(args, key, None) for key in ('owner', 'fence', 'lease_id', 'ttl')})
         code = 3 if result.get('outcome') in {'conflict', 'held', 'stale'} else 0
     except (LeaseError, OSError, sqlite3.Error) as error:
-        code_family = getattr(error, 'sqlite_errorcode', 0) & 255
-        busy = code_family in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+        # Python 3.10 (including Ubuntu 22.04) does not expose SQLite's
+        # extended result code on exceptions yet.
+        code = getattr(error, 'sqlite_errorcode', None)
+        busy = (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) if code is not None else (
+            isinstance(error, sqlite3.OperationalError)
+            and str(error).startswith(('database is locked', 'database table is locked',
+                                       'database schema is locked'))
+        )
         result = {'schema': SCHEMA, 'outcome': 'busy' if busy else 'error',
                   'error': str(error) if isinstance(error, LeaseError) else
                   'item lease storage busy' if busy else 'item lease storage unavailable'}
