@@ -1,4 +1,5 @@
 import sys
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -146,6 +147,43 @@ class GroupDispatchTest(unittest.TestCase):
             self.send(["accepted"], message="\ud800", msgid="invalid-unicode")
         result, _ = self.send(["accepted"], msgid="invalid-unicode")
         self.assertEqual(result["status"], "accepted")
+
+    def test_cloud_delivery_requires_registered_session_and_bound_account(self):
+        cloud = "claude-cloud:work:session_Abc123"
+        self.store.add_member(self.admin, self.group, cloud)
+        bindings = {"work": {"email": "example@example.invalid", "orgId": "example-org"}}
+        graph = SimpleNamespace(returncode=0, stdout=json.dumps({"sessionId": cloud}))
+        account = SimpleNamespace(returncode=0, stdout=json.dumps({"loggedIn": True, **bindings["work"]}))
+        accepted = SimpleNamespace(returncode=0, stdout=json.dumps({
+            "status": "queued", "agent": "claude", "sessionId": "session_Abc123", "correlationId": "c1"}))
+        with patch("mesh_group_dispatch.subprocess.run", side_effect=[graph, account, accepted]) as run:
+            outcome = native_transport(cloud, "c1", "hello", cloud_bindings=bindings)
+        self.assertEqual(outcome["outcome"], "accepted")
+        self.assertIn("--cloud", run.call_args_list[2].args[0])
+        with patch("mesh_group_dispatch.subprocess.run", side_effect=[graph, account]) as run:
+            outcome = native_transport(cloud, "c1", "hello", cloud_bindings={"work": {
+                "email": "another@example.invalid", "orgId": "example-org"}})
+        self.assertEqual(outcome["outcome"], "blocked")
+        self.assertEqual(run.call_count, 2)
+        with patch("mesh_group_dispatch.subprocess.run") as run:
+            self.assertEqual(native_transport(cloud, "c1", "hello")["outcome"], "blocked")
+        run.assert_not_called()
+        absent = SimpleNamespace(returncode=1, stdout="{}")
+        with patch("mesh_group_dispatch.subprocess.run", return_value=absent) as run:
+            self.assertEqual(native_transport(cloud, "c1", "hello", cloud_bindings=bindings)["outcome"], "blocked")
+        self.assertEqual(run.call_count, 1)
+
+    def test_cloud_unverified_or_uncertain_never_causes_fallback(self):
+        cloud = "claude-cloud:work:session_Abc123"
+        self.store.add_member(self.admin, self.group, cloud)
+        calls = []
+        def transport(destination, correlation, prompt):
+            calls.append(destination)
+            return {"outcome": "unknown"}
+        result = dispatch(self.store, self.sender, self.group, "cloud-unknown", "hello",
+                          [cloud, self.reserve], transport)
+        self.assertEqual(result["status"], "unknown")
+        self.assertEqual(calls, [cloud])
 
 
 if __name__ == "__main__":

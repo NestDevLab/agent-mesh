@@ -25,9 +25,13 @@ class DispatchError(ValueError):
 
 
 _UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.IGNORECASE)
+_CLAUDE_CLOUD = re.compile(r"^claude-cloud:([a-z][a-z0-9-]{0,63}):((?:session|cse)_[A-Za-z0-9]{1,128})$")
 
 
 def _identity(session_id):
+    cloud = _CLAUDE_CLOUD.fullmatch(session_id)
+    if cloud:
+        return ["--agent", "claude", "--session", cloud.group(2), "--delivery-only", "--cloud"]
     runtime, _, raw_id = session_id.partition(":")
     if runtime not in ("codex", "claude") or not _UUID.fullmatch(raw_id):
         raise DispatchError("unsupported or invalid destination")
@@ -35,12 +39,38 @@ def _identity(session_id):
         return ["--agent", "codex", "--session", session_id[6:], "--delivery-only", "--steer-or-queue", "--resume"]
     if runtime == "claude":
         return ["--agent", "claude", "--session", session_id[7:], "--delivery-only"]
-    # Cloud identities require a verified provider and account binding; an opaque
-    # group member ID alone is not sufficient to authorize an outbound transport.
     raise DispatchError("unsupported or unverified destination")
 
 
-def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=45):
+def _cloud_authorized(session_id, bindings):
+    """Require an open registration and an explicitly bound authenticated account."""
+    match = _CLAUDE_CLOUD.fullmatch(session_id)
+    binding = bindings.get(match.group(1)) if match and isinstance(bindings, dict) else None
+    if not isinstance(binding, dict) or set(binding) != {"email", "orgId"}:
+        return False
+    if not all(isinstance(binding[key], str) and binding[key] for key in ("email", "orgId")):
+        return False
+    try:
+        graph = subprocess.run(["node", str(Path(__file__).with_name("mesh-graph.mjs")),
+                                "cloud", "get", "--session", session_id], stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=10, check=False)
+        node = json.loads(graph.stdout)
+        if graph.returncode != 0 or node.get("sessionId") != session_id:
+            return False
+        account = subprocess.run([os.environ.get("CLAUDE_BIN", "claude"), "auth", "status", "--json"],
+                                 stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                 timeout=10, check=False)
+        status = json.loads(account.stdout)
+        return (account.returncode == 0 and status.get("loggedIn") is True
+                and status.get("email") == binding["email"] and status.get("orgId") == binding["orgId"])
+    except (OSError, ValueError, TypeError, AttributeError, subprocess.TimeoutExpired):
+        return False
+
+
+def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=45, cloud_bindings=None):
+    cloud = _CLAUDE_CLOUD.fullmatch(session_id)
+    if cloud and not _cloud_authorized(session_id, cloud_bindings):
+        return {"outcome": "blocked", "reason": "cloud_binding_unverified"}
     argv = ["node", str(Path(__file__).with_name("agent-native-call.mjs")), *_identity(session_id),
             "--correlation-id", correlation, "--message", text, "--timeout", str(timeout)]
     if inbox_root and session_id.startswith("claude:"):
@@ -56,7 +86,7 @@ def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=
         return {"outcome": "unknown"}
     if not isinstance(receipt, dict):
         return {"outcome": "unknown"}
-    runtime, exact_id = session_id.split(":", 1)
+    runtime, exact_id = ("claude", cloud.group(2)) if cloud else session_id.split(":", 1)
     delivery = receipt.get("delivery")
     if (result.returncode == 78 and receipt.get("status") == "blocked"
             and receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id
