@@ -50,18 +50,20 @@ def native_transport(session_id, correlation, text, *, inbox_root=None, timeout=
     if not isinstance(receipt, dict):
         return {"outcome": "unknown"}
     runtime, exact_id = session_id.split(":", 1)
+    delivery = receipt.get("delivery")
     if (result.returncode == 78 and receipt.get("status") == "blocked"
             and receipt.get("agent") == runtime and receipt.get("sessionId") == exact_id
             and receipt.get("correlationId") == correlation
-            and receipt.get("delivery", {}).get("attempted") is False):
+            and isinstance(delivery, dict) and delivery.get("attempted") is False):
         # Missing inbox alone does not prove a session is down. A complete
         # same-host ownership scan reporting no writer, together with a
         # verified pre-delivery refusal, does establish it cannot currently
         # receive through this active-session transport.
         ownership = receipt.get("ownership")
-        if (runtime == "claude" and isinstance(ownership, dict)
+        discovery = ownership.get("discovery") if isinstance(ownership, dict) else None
+        if (runtime == "claude" and isinstance(ownership, dict) and isinstance(discovery, dict)
                 and ownership.get("state") == "free"
-                and ownership.get("discovery", {}).get("complete") is True
+                and discovery.get("complete") is True
                 and ownership.get("writers") == []):
             return {"outcome": "unavailable", "reason": "no_active_writer_and_no_delivery"}
         return {"outcome": "blocked", "reason": str(receipt.get("reason", "blocked"))}
@@ -87,8 +89,12 @@ def dispatch(store, actor, group_id, message_id, message, destinations, transpor
     if (not isinstance(destinations, list) or not destinations or len(destinations) > 32
             or any(not isinstance(d, str) for d in destinations) or len(set(destinations)) != len(destinations)):
         raise DispatchError("ordered unique destinations required")
-    if not isinstance(message_id, str) or not message_id or len(message_id) > 128:
+    if (not isinstance(message_id, str) or not message_id or len(message_id) > 128
+            or message_id != message_id.strip() or not message_id.isprintable()):
         raise DispatchError("message id required")
+    if (not isinstance(message, str) or not 0 < len(message) <= 32000
+            or not message.strip() or "\0" in message):
+        raise DispatchError("message must contain 1 to 32000 characters and no NUL")
     group = store.get_group(actor, group_id)
     members = {m["session_id"] for m in group["members"]}
     if any(not isinstance(d, str) or d not in members or d == actor.session_id for d in destinations):
