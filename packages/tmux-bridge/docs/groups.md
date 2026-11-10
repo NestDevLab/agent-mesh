@@ -2,7 +2,7 @@
 
 A group has an opaque, stable `group_id`, a display name and an optional stable
 `role_key`. Names can repeat. The role describes the group independently of its
-provider and members. Creating a group does not create a session, acquire a role
+provider and members. Each assigned role key belongs to one group. Creating a group does not create a session, acquire a role
 claim or change any existing claims.
 
 ## Local API
@@ -55,19 +55,26 @@ An operator can preview the import from an explicit, reviewed local snapshot of
 the migrated graph. The command never updates the graph or its original links.
 
 ```sh
-agent-mesh group import-graph --snapshot graph.json --source local-graph
-agent-mesh group import-graph --snapshot graph.json --source local-graph \
+agent-mesh group import-graph --snapshot graph.json --source local-graph --role-map roles.json
+agent-mesh group import-graph --snapshot graph.json --source local-graph --role-map roles.json \
   --apply --plan-digest "$REVIEWED_PLAN_DIGEST"
-agent-mesh group list --source-ref group:release
+agent-mesh group list --source-ref group:release-director
 ```
 
 Preview does not initialize or change the group database. It proposes one
 stable group per `group:<slug>` with open `discusses` links to canonical local
-sessions. Open `owns` links for matching `area:<slug>` refs become one lead
-held by that group. The owners are evidence in the preview, not a selected
-session lead. Closed links and unrelated work links do not become membership,
-lead or ledger links. Unresolved candidate sessions and destination collisions
-are reported. Imported groups have no inferred role claim or conversation history.
+sessions. To establish a lead for an area, an open `discusses` link must list
+the exact `area:<slug>` in its `evidence` and an open `owns` link for that area
+must list the exact group ref in return. Names need not match. Owners remain
+evidence in the preview; the group holds the lead. Nonreciprocal evidence and
+areas that point to competing groups block the import. Closed links and unrelated
+work links are excluded. Unresolved candidate sessions and destination collisions
+are reported.
+
+The optional role map binds exact source refs to reviewed stable roles, for
+example `{"group:release-director":"release:director"}`. Roles absent from the map
+are left unassigned. Unknown group refs and duplicate role keys block import.
+Imported groups have no inferred role claim or conversation history.
 
 Apply rechecks the reviewed digest and current destination, then commits groups,
 their unique source refs, members, lead links and the import receipt together.

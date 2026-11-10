@@ -13,6 +13,23 @@ from mesh_group_store import GroupActor, GroupStore
 
 
 MAX_GRAPH_BYTES = 32 * 1024 * 1024
+MAX_ROLE_MAP_BYTES = 64 * 1024
+
+
+def read_json(path, limit):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key in import input")
+            result[key] = value
+        return result
+
+    with path.open("rb") as file:
+        payload = file.read(limit + 1)
+    if len(payload) > limit:
+        raise ValueError(f"import input exceeds {limit} bytes")
+    return json.loads(payload, object_pairs_hook=unique_object)
 
 
 def default_state_dir():
@@ -71,6 +88,7 @@ def parser():
     graph = sub.add_parser("import-graph", parents=[common], help="Preview an explicit legacy graph snapshot import")
     graph.add_argument("--snapshot", required=True, type=Path)
     graph.add_argument("--source", required=True, help="Stable name for the source graph")
+    graph.add_argument("--role-map", type=Path, help="JSON object mapping legacy group refs to role keys")
     graph.add_argument("--apply", action="store_true")
     graph.add_argument("--plan-digest")
     return cli
@@ -107,11 +125,12 @@ def dispatch(args):
             raise ValueError("group management is not authorized")
         if args.apply != (args.plan_digest is not None):
             raise ValueError("--apply and --plan-digest must be provided together")
-        with args.snapshot.open("rb") as file:
-            payload = file.read(MAX_GRAPH_BYTES + 1)
-        if len(payload) > MAX_GRAPH_BYTES:
-            raise ValueError("graph snapshot exceeds 32 MiB")
-        return store.import_graph(actor, json.loads(payload), args.source, expected_digest=args.plan_digest)
+        snapshot = read_json(args.snapshot, MAX_GRAPH_BYTES)
+        role_bindings = read_json(args.role_map, MAX_ROLE_MAP_BYTES) if args.role_map is not None else {}
+        if not isinstance(role_bindings, dict):
+            raise ValueError("role bindings must map source refs to role keys")
+        return store.import_graph(actor, snapshot, args.source, role_bindings=role_bindings,
+                                  expected_digest=args.plan_digest)
     raise ValueError("unknown group command")
 
 

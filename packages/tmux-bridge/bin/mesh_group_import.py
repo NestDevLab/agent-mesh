@@ -10,7 +10,7 @@ _SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]{0,127}")
 _SESSION = re.compile(r"(?:codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
 
 
-def graph_import_plan(snapshot, source):
+def graph_import_plan(snapshot, source, role_bindings):
     if not isinstance(source, str) or not _SLUG.fullmatch(source):
         raise ValueError("invalid graph source name")
     if (not isinstance(snapshot, dict) or snapshot.get("schema") != "agent-mesh.session-graph.v1"
@@ -18,6 +18,7 @@ def graph_import_plan(snapshot, source):
         raise ValueError("expected a migrated Agent Mesh graph snapshot with links")
 
     groups, areas = {}, {}
+    from_groups, from_areas = set(), set()
     conflicts, ignored = set(), set()
     for link in snapshot["links"]:
         if not isinstance(link, dict) or not isinstance(link.get("ref"), str):
@@ -42,17 +43,54 @@ def graph_import_plan(snapshot, source):
         if not isinstance(session, str) or not _SESSION.fullmatch(session):
             conflicts.add(f"unresolved or noncanonical session for {ref}")
             continue
-        (groups if kind == "group" else areas).setdefault(slug, set()).add(session)
+        (groups if kind == "group" else areas).setdefault(ref, set()).add(session)
+        evidence = link.get("evidence", [])
+        if not isinstance(evidence, list) or not all(isinstance(item, str) for item in evidence):
+            conflicts.add(f"invalid legacy evidence for {ref}")
+            continue
+        counterpart = "area" if kind == "group" else "group"
+        for item in evidence:
+            if not item.startswith(f"{counterpart}:"):
+                continue
+            if not _SLUG.fullmatch(item.partition(":")[2]):
+                conflicts.add(f"invalid legacy evidence reference for {ref}: {item}")
+                continue
+            if kind == "group":
+                from_groups.add((ref, item))
+            else:
+                from_areas.add((item, ref))
+
+    for group_ref, area_ref in from_groups ^ from_areas:
+        conflicts.add(f"nonreciprocal group/area evidence: {group_ref} and {area_ref}")
+    referenced_groups = {}
+    for group_ref, area_ref in from_groups | from_areas:
+        referenced_groups.setdefault(area_ref, set()).add(group_ref)
+    ambiguous = {area_ref for area_ref, refs in referenced_groups.items() if len(refs) > 1}
+    for area_ref in ambiguous:
+        conflicts.add(f"more than one group is evidenced for {area_ref}: {', '.join(sorted(referenced_groups[area_ref]))}")
+    reciprocal = {}
+    for group_ref, area_ref in from_groups & from_areas:
+        if area_ref not in ambiguous:
+            reciprocal.setdefault(group_ref, []).append(area_ref)
+    for ref in role_bindings.keys() - groups.keys():
+        conflicts.add(f"role binding refers to a group absent from the import: {ref}")
+    role_owners = {}
+    for ref, role in role_bindings.items():
+        role_owners.setdefault(role, []).append(ref)
+    for role, refs in role_owners.items():
+        if len(refs) > 1:
+            conflicts.add(f"role {role} is bound to more than one group: {', '.join(sorted(refs))}")
 
     rows = []
-    for slug, members in sorted(groups.items()):
-        ref = f"group:{slug}"
+    for ref, members in sorted(groups.items()):
+        linked_areas = sorted(reciprocal.get(ref, ()))
         rows.append({"group_id": f"group_{uuid5(NAMESPACE_URL, f'urn:agent-mesh:plexus:{ref}').hex}",
-                     "source_ref": ref, "name": slug, "members": sorted(members),
-                     "ledger_links": [{"ref": f"area:{slug}", "lead": True}] if slug in areas else [],
-                     "area_owners": sorted(areas.get(slug, ()))})
-    for slug in sorted(areas.keys() - groups.keys()):
-        ignored.add(f"open ownership for area:{slug} has no matching legacy group")
+                     "source_ref": ref, "name": ref.partition(":")[2], "role_key": role_bindings.get(ref),
+                     "members": sorted(members),
+                     "ledger_links": [{"ref": area, "lead": True} for area in linked_areas],
+                     "area_owners": {area: sorted(areas[area]) for area in linked_areas}})
+    for ref in areas.keys() - referenced_groups.keys():
+        ignored.add(f"open ownership for {ref} has no group evidence")
     if not rows:
         conflicts.add("snapshot contains no importable legacy groups")
     plan = {"schema": "agent-mesh.group-import.v1", "source": source, "groups": rows,

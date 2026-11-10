@@ -23,7 +23,7 @@ _SCHEMA = (
     """CREATE TABLE groups (
         group_id TEXT PRIMARY KEY NOT NULL,
         name TEXT NOT NULL,
-        role_key TEXT,
+        role_key TEXT UNIQUE,
         source_ref TEXT UNIQUE,
         created_at TEXT NOT NULL
     )""",
@@ -213,6 +213,8 @@ class GroupStore:
             _matched(role_key, _ROLE_KEY, "role key")
         group_id = f"group_{uuid4().hex}"
         with self._transaction(write=True, initialize=True) as db:
+            if role_key is not None and db.execute("SELECT 1 FROM groups WHERE role_key = ?", (role_key,)).fetchone():
+                raise GroupConflictError("group role key is already assigned")
             db.execute("INSERT INTO groups (group_id, name, role_key, created_at) VALUES (?, ?, ?, ?)",
                        (group_id, name, role_key, _now()))
             return self._describe(db, self._require_group(db, group_id, actor))
@@ -238,10 +240,17 @@ class GroupStore:
             )
             return [self._describe(db, row) for row in rows]
 
-    def import_graph(self, actor, snapshot, source, *, expected_digest=None):
+    def import_graph(self, actor, snapshot, source, *, role_bindings=None, expected_digest=None):
         """Preview, or atomically import, a reviewed legacy snapshot without writing the graph."""
         self._require_manager(actor)
-        plan = graph_import_plan(snapshot, source)
+        if role_bindings is None:
+            role_bindings = {}
+        if not isinstance(role_bindings, dict):
+            raise ValueError("role bindings must map source refs to role keys")
+        for ref, role in role_bindings.items():
+            _one_line(ref, 256, "source reference")
+            _matched(role, _ROLE_KEY, "role key")
+        plan = graph_import_plan(snapshot, source, role_bindings)
         digest = plan["plan_digest"]
         apply = expected_digest is not None
         if apply and expected_digest != digest:
@@ -263,6 +272,10 @@ class GroupStore:
                     if db.execute("SELECT 1 FROM groups WHERE group_id = ? OR source_ref = ?",
                                   (group["group_id"], group["source_ref"])).fetchone():
                         destination.append(f"group already exists for {group['source_ref']}")
+                    if group["role_key"] is not None and db.execute(
+                        "SELECT 1 FROM groups WHERE role_key = ?", (group["role_key"],)
+                    ).fetchone():
+                        destination.append(f"role {group['role_key']} already belongs to a group")
                     for link in group["ledger_links"]:
                         if self._ledger_lead(db, link["ref"]) is not None:
                             destination.append(f"ledger reference {link['ref']} already has a lead")
@@ -275,8 +288,8 @@ class GroupStore:
             at = _now()
             for group in plan["groups"]:
                 key = group["group_id"]
-                db.execute("INSERT INTO groups (group_id, name, source_ref, created_at) VALUES (?, ?, ?, ?)",
-                           (key, group["name"], group["source_ref"], at))
+                db.execute("INSERT INTO groups (group_id, name, role_key, source_ref, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (key, group["name"], group["role_key"], group["source_ref"], at))
                 db.executemany("INSERT INTO members VALUES (?, ?, ?)",
                                ((key, session, at) for session in group["members"]))
                 db.executemany("INSERT INTO ledger_links VALUES (?, ?, ?)",
