@@ -1,5 +1,6 @@
 """Host-local per-item leases. This module does not write ledger contents."""
 from contextlib import closing, contextmanager
+import fcntl
 import hashlib
 import json
 import os
@@ -15,6 +16,7 @@ SCHEMA = 'agent-mesh.ledger-item-lock.v1'
 MAX_FENCE = (1 << 53) - 1  # JSON clients must be able to round-trip it exactly.
 DEFAULT_TTL = 300
 MAX_TTL = 3600
+BOOTSTRAP_WAIT = 2.0
 OWNER = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}')
 SCHEME = re.compile(r'[a-z][a-z0-9+.-]{0,63}')
 LEASE_ID = re.compile(r'[0-9a-f]{32}')
@@ -25,6 +27,10 @@ class LeaseError(Exception):
 
 
 class StaleLease(LeaseError):
+    pass
+
+
+class LeaseBusy(LeaseError):
     pass
 
 
@@ -61,30 +67,73 @@ def validate(ref, owner=None, fence=None, lease_id=None, ttl=None):
         raise LeaseError('TTL must be 1 to 3600 seconds')
 
 
-def private_path(path, expected):
-    info = path.lstat()
+def require_private(info, expected):
     if (not expected(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077
             or stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
         raise LeaseError('item lease storage must be private and owned by the caller')
 
 
-@contextmanager
-def transaction(ref, directory, *, writable=False, create=False):
+def take_bootstrap_lock(fd, *, create):
+    mode = fcntl.LOCK_EX if create else fcntl.LOCK_SH
+    deadline = time.monotonic() + BOOTSTRAP_WAIT
+    while True:
+        try:
+            fcntl.flock(fd, mode | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise LeaseBusy('item lease storage busy') from None
+            time.sleep(min(remaining, 0.01))
+
+
+def create_database_file(path):
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return
+    os.close(fd)
+
+
+def prepared_path(ref, directory, *, create):
     root = Path(directory if directory is not None else state_dir()).absolute()
-    path = root / (hashlib.sha256(ref.encode('utf-8')).hexdigest() + '.sqlite3')
+    digest = hashlib.sha256(ref.encode('utf-8')).hexdigest()
+    database = root / (digest + '.sqlite3')
     if create:
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if create else os.O_RDONLY)
     try:
-        private_path(root, stat.S_ISDIR)
-        if create:
-            try:
-                os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
-            except FileExistsError:
-                pass
-        private_path(path, stat.S_ISREG)
+        require_private(root.lstat(), stat.S_ISDIR)
+        fd = os.open(root / (digest + '.bootstrap'), flags, 0o600)
     except FileNotFoundError:
+        if create or os.path.lexists(database):
+            raise LeaseError('item lease bootstrap storage unavailable') from None
+        return None
+
+    # Every SQLite opener passes the sidecar first. Closing a raw FD for a
+    # database inode can cancel all POSIX locks for that inode in the process.
+    # The sidecar protects the first raw open/close; SQLite owns the DB from
+    # then on. It never holds this lock across a lease transaction.
+    try:
+        require_private(os.fstat(fd), stat.S_ISREG)
+        take_bootstrap_lock(fd, create=create)
         if create:
-            raise
+            create_database_file(database)
+        try:
+            require_private(database.lstat(), stat.S_ISREG)
+        except FileNotFoundError:
+            if create:
+                raise
+            return None
+    finally:
+        os.close(fd)
+    return database
+
+
+@contextmanager
+def transaction(ref, directory, *, writable=False, create=False):
+    path = prepared_path(ref, directory, create=create)
+    if path is None:
         yield None
         return
 
@@ -221,11 +270,12 @@ def cli(args):
         # Python 3.10 (including Ubuntu 22.04) does not expose SQLite's
         # extended result code on exceptions yet.
         code = getattr(error, 'sqlite_errorcode', None)
-        busy = (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) if code is not None else (
+        sqlite_busy = (code & 255) in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) if code is not None else (
             isinstance(error, sqlite3.OperationalError)
             and str(error).startswith(('database is locked', 'database table is locked',
                                        'database schema is locked'))
         )
+        busy = isinstance(error, LeaseBusy) or sqlite_busy
         result = {'schema': SCHEMA, 'outcome': 'busy' if busy else 'error',
                   'error': str(error) if isinstance(error, LeaseError) else
                   'item lease storage busy' if busy else 'item lease storage unavailable'}

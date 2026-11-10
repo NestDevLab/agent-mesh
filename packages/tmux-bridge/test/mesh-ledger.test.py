@@ -9,6 +9,8 @@ import select
 import subprocess
 import sys
 import tempfile
+from threading import Event
+import time
 import unittest
 from unittest.mock import patch
 
@@ -307,6 +309,37 @@ class ItemLeaseCLI(unittest.TestCase):
         self.assertEqual(self.acquire(fence=1, code=3)['outcome'], 'held')
         self.assertEqual(self.acquire(ref='work:B')['fence'], 1)
 
+    def test_first_raw_descriptor_cannot_overlap_sqlite_open_in_same_process(self):
+        opened, resume = Event(), Event()
+        normal_create = item_lock.create_database_file
+
+        def pause_after_raw_open(path):
+            if opened.is_set():
+                return normal_create(path)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                opened.set()
+                if not resume.wait(timeout=10):
+                    raise AssertionError('test did not let the initializer finish')
+            finally:
+                os.close(fd)
+
+        def acquire(ref):
+            return item_lock.operation('acquire', ref, owner='worker-a', fence=0, ttl=30,
+                                       directory=self.state)
+
+        with patch.object(item_lock, 'create_database_file', side_effect=pause_after_raw_open), \
+                patch.object(item_lock, 'BOOTSTRAP_WAIT', 0.1), ThreadPoolExecutor(max_workers=1) as pool:
+            creator = pool.submit(acquire, self.ref)
+            try:
+                self.assertTrue(opened.wait(timeout=5))
+                with self.assertRaises(item_lock.LeaseBusy):
+                    item_lock.operation('inspect', self.ref, directory=self.state)
+                self.assertEqual(acquire('work:B')['fence'], 1)
+            finally:
+                resume.set()
+            self.assertEqual(creator.result(timeout=5)['fence'], 1)
+
     def test_release_preserves_fence_and_old_token_fails_for_same_owner(self):
         first = self.acquire()
         self.assertEqual(self.run_lock('release', *self.credentials(first))[1]['status'], 'available')
@@ -375,6 +408,7 @@ with lock.guard_item_write("work:A", owner=first["owner"], fence=first["fence"],
 ''')
         first = json.loads(line)
         self.assertEqual(self.acquire(ref='work:B')['fence'], 1)
+        time.sleep(first['remainingMs'] / 1000)
         self.assertEqual(self.acquire(fence=1, owner='worker-b', code=1)['outcome'], 'busy')
         self.kill_worker(worker)
         self.assertEqual(self.run_lock('inspect')[1]['status'], 'expired')
@@ -388,11 +422,12 @@ with lock.guard_item_write("work:A", owner=first["owner"], fence=first["fence"],
         self.assertEqual(self.acquire(ref='not-a-ref', code=1)['outcome'], 'error')
         self.assertFalse(self.state.exists())
         self.acquire(ref='work:../../outside')
-        files = list(self.state.iterdir())
-        self.assertEqual(len(files), 1)
-        self.assertRegex(files[0].name, r'^[a-f0-9]{64}\.sqlite3$')
+        databases = list(self.state.glob('*.sqlite3'))
+        self.assertEqual(len(databases), 1)
+        self.assertRegex(databases[0].name, r'^[a-f0-9]{64}\.sqlite3$')
+        self.assertEqual(set(self.state.iterdir()), {databases[0], databases[0].with_suffix('.bootstrap')})
         self.assertFalse((self.root / 'outside').exists())
-        files[0].write_bytes(b'invalid sqlite bytes')
+        databases[0].write_bytes(b'invalid sqlite bytes')
         self.assertEqual(self.run_lock('inspect', ref='work:../../outside', code=1)[1]['outcome'], 'error')
 
 
