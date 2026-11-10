@@ -582,7 +582,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       // use native-call, or send on the default socket for this owned target.
       const sender = new ShellTmuxSender({ agentSendPath: this.agentSendPath, agentType: "codex",
         timeoutSeconds: this.timeoutSeconds, meshSocket: ownedCodex.socket, run: this.run });
-      const result = await sender.send(this.tmuxSendInput(input, ownedCodex.target));
+      const result = await this.sendToOwnedTarget(input, ownedCodex.target, sender);
       if (!result.ok || result.result_error_code !== undefined) {
         this.ownedCodexTargets.delete(input.sessionId);
         await this.command(["--agent", "codex", "kill", ownedCodex.target], true, ownedCodex.socket);
@@ -609,7 +609,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
             if (targetStatus.code === 0) {
               const target = parseOwnedTarget(targetStatus.stdout, owned.target, writer.pid);
               if (target.panePid === owned.panePid) {
-                return this.sendToOwnedClaudeTarget(input, owned.target);
+                return this.sendToOwnedTarget(input, owned.target);
               }
             }
           }
@@ -669,7 +669,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       this.ownedClaudeTargets.set(queueKey, { target: tmuxTarget, writerPid: writer.pid, panePid: target.panePid });
     }
     return this.provider === "claude"
-      ? this.sendToOwnedClaudeTarget(input, tmuxTarget)
+      ? this.sendToOwnedTarget(input, tmuxTarget)
       : this.sender.send(this.tmuxSendInput(input, tmuxTarget));
   }
 
@@ -798,11 +798,11 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     } catch (error) {
       return failed(error instanceof Error ? error.message : String(error));
     }
-    return this.sendToOwnedClaudeTarget(input, target);
+    return this.sendToOwnedTarget(input, target);
   }
 
-  private async sendToOwnedClaudeTarget(input: AgentSessionSendInput, target: string): Promise<TmuxSendResult> {
-    const result = await this.sender.send(this.tmuxSendInput(input, target));
+  private async sendToOwnedTarget(input: AgentSessionSendInput, target: string, sender = this.sender): Promise<TmuxSendResult> {
+    const result = await sender.send(this.tmuxSendInput(input, target));
     if (result.result_error_code !== "result_uncorrelated" || input.correlationId === undefined) return result;
     const token = createHash("sha256").update(input.correlationId).digest("hex").slice(0, 16);
     const begin = `[[R:${token}]]`;

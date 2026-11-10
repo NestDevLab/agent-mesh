@@ -26,10 +26,17 @@ function readLockAcl(path) {
 export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", codexHome, readAcl = readLockAcl }) {
   if (!Number.isSafeInteger(panePid) || panePid <= 0 || !isAbsolute(cwd) || resolve(cwd) !== cwd || !isAbsolute(codexHome)) throw denied();
   const processInfo = pid => processIdentity(procRoot, pid);
+  const fullyExited = pid => {
+    if (processInfo(pid).state !== "Z") return false;
+    const status = readFileSync(`${procRoot}/${pid}/status`, "utf8");
+    const threads = status.match(/^Threads:[^\n]*$/gm) ?? [];
+    // A zombie leader can still have live workers with shared descriptors.
+    return threads.length === 1 && /^Threads:\s+1\s*$/.test(threads[0]);
+  };
   const gone = pid => {
-    // Linux zombies have already closed every descriptor and cannot hold a
+    // Fully exited single-thread Linux zombies have closed descriptors and cannot hold a
     // writer lock. Their proc entry can outlive exe/cmdline until reaped.
-    try { lstatSync(`${procRoot}/${pid}`); return processInfo(pid).state === "Z"; }
+    try { lstatSync(`${procRoot}/${pid}`); return fullyExited(pid); }
     catch (error) { return error.code === "ENOENT"; }
   };
   const inventory = new Map();
@@ -37,7 +44,7 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
     try {
       const info = processInfo(entry.name);
-      if (info.state !== "Z") inventory.set(Number(entry.name), info);
+      if (!fullyExited(entry.name)) inventory.set(Number(entry.name), info);
     }
     catch (error) { if (!gone(entry.name)) throw denied("inventory.stat", error.code); }
   }
