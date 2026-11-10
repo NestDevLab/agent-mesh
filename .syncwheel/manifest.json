@@ -27,7 +27,8 @@
       "cloud-group-sessions",
       "group-message-route",
       "groups-scoped-import",
-      "cloud-group-transport"
+      "cloud-group-transport",
+      "group-gateway-conversation"
     ],
     "strategy": "cherry-pick"
   },
@@ -214,6 +215,22 @@
       },
       "meta": {
         "purpose": "Route group messages through verified cloud session bindings"
+      }
+    },
+    {
+      "id": "group-gateway-conversation",
+      "branch": "pr/group-gateway-conversation",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Add authenticated group conversation gateway tools"
       }
     }
   ],
