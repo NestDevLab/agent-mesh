@@ -26,7 +26,8 @@
       "ledger-item-lock",
       "cloud-group-sessions",
       "group-message-route",
-      "groups-scoped-import"
+      "groups-scoped-import",
+      "cloud-group-transport"
     ],
     "strategy": "cherry-pick"
   },
@@ -195,6 +196,22 @@
       },
       "meta": {
         "purpose": "Import selected legacy groups while checking full graph"
+      }
+    },
+    {
+      "id": "cloud-group-transport",
+      "branch": "pr/cloud-group-transport",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Route group messages through verified cloud session bindings"
       }
     }
   ],
