@@ -1,5 +1,6 @@
 import sys
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,6 +28,10 @@ class GroupDispatchTest(unittest.TestCase):
             link.symlink_to(path)
             with self.assertRaises(OSError):
                 load_cloud_bindings(link)
+            fifo = Path(tmp) / "pipe"
+            os.mkfifo(fifo, 0o600)
+            with self.assertRaises(ValueError):
+                load_cloud_bindings(fifo)
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

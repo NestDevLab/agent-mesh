@@ -29,7 +29,7 @@ def load_cloud_bindings(path):
     """Read a private account binding on each send, without following symlinks."""
     if path is None:
         return None
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "rb") as file:
         info = os.fstat(file.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
