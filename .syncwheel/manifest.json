@@ -169,7 +169,13 @@
       },
       "meta": {
         "purpose": "Group delivery with safe fallback"
-      }
+      },
+      "integration_commits": [
+        "fc453ecf9adad06f5db8352d1848ef326e4ffe6c",
+        "fe74f449bb2c0f01b1dfc5868003a742a82dc05f",
+        "cb6dcbef91fea1a2acdb8d72fff815f174f3423c",
+        "639476aeef1aa59a303a38afee8d3bcb8e10b890"
+      ]
     }
   ],
   "syncwheel_tracking": "git-tracked",
