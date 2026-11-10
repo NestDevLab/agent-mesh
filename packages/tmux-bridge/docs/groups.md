@@ -110,6 +110,10 @@ interrupted invocation may have committed: inspect the import receipt and
 destination before retrying. This protects against cooperative graph writers
 during import; it does not synchronize later legacy writes, retire old links,
 or guarantee a complete migration. Arrange a separate writer handover.
+Every writer of that graph must first use the same Linux graph-lock protocol.
+Older writers can reap a live lock solely because it is old and are incompatible
+with a safe live cutover. An unmarked stale lock or an interrupted generic
+guarded child cannot be reaped automatically without proof of its owner.
 Using the same source and plan again is a no-op, even after someone changes
 group membership. A different plan for a source that was already imported needs
 an explicit reconciliation; it never overwrites groups. Verify imported groups

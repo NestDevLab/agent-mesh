@@ -64,6 +64,16 @@ def arm_parent_death_guard(graph_state):
             or not isinstance(proof.get("tokenHash"), str)
             or not hmac.compare_digest(proof["tokenHash"], hashlib.sha256(token.encode()).hexdigest())):
         raise ValueError("graph role guard proof is invalid")
+    worker = {"pid": os.getpid(), "start": process_start(os.getpid()),
+              "boot": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+              "pidns": os.readlink("/proc/self/ns/pid"), "guard_pid": parent,
+              "guard_start": proof["start"], "tokenHash": proof["tokenHash"]}
+    fd = os.open(graph_state / "graph.lock" / "import-worker.json",
+                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as file:
+        json.dump(worker, file)
+        file.flush()
+        os.fsync(file.fileno())
 
 
 def parser():

@@ -1,6 +1,7 @@
 """Exercise live group import with an isolated graph and real role guard."""
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 BIN = Path(__file__).resolve().parents[1] / "bin"
 SESSION = "codex:11111111-1111-4111-8111-111111111111"
@@ -235,6 +237,69 @@ time.sleep(20)
             if proc.poll() is None:
                 proc.kill()
                 proc.communicate(timeout=5)
+
+    def test_stale_lock_requires_a_proven_dead_owner(self):
+        spec = importlib.util.spec_from_file_location("graph_lock", BIN / "mesh-graph-lock.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = self.root / "lock-fixture"
+        state.mkdir(mode=0o700)
+        with patch.object(module, "WAIT_SECONDS", .15):
+            # An old but live owner must not be reaped, and a foreign release
+            # cannot remove it.
+            token = module.acquire(state, os.getpid())
+            old = time.time() - 65
+            os.utime(state / "graph.lock", (old, old))
+            with self.assertRaisesRegex(ValueError, "busy"):
+                module.acquire(state, os.getpid())
+            with self.assertRaisesRegex(ValueError, "ownership"):
+                module.release(state, os.getpid(), "0" * 32)
+            self.assertTrue((state / "graph.lock").is_dir())
+            module.release(state, os.getpid(), token)
+            # A legacy lock has no provable owner and must not be removed.
+            (state / "graph.lock").mkdir(mode=0o700)
+            os.utime(state / "graph.lock", (old, old))
+            with self.assertRaisesRegex(ValueError, "busy"):
+                module.acquire(state, os.getpid())
+            self.assertTrue((state / "graph.lock").is_dir())
+            (state / "graph.lock").rmdir()
+            # A plain stale lock can be reclaimed after its exact owner dies.
+            owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+            try:
+                module.acquire(state, owner.pid)
+                owner.kill()
+                owner.wait(timeout=5)
+                os.utime(state / "graph.lock", (old, old))
+                replacement = module.acquire(state, os.getpid())
+                module.release(state, os.getpid(), replacement)
+            finally:
+                if owner.poll() is None:
+                    owner.kill()
+                    owner.wait(timeout=5)
+
+    def test_unverified_guarded_child_is_not_reaped(self):
+        spec = importlib.util.spec_from_file_location("graph_lock", BIN / "mesh-graph-lock.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        state = self.root / "guard-fixture"
+        state.mkdir(mode=0o700)
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+        try:
+            module.acquire(state, owner.pid)
+            (state / "graph.lock" / "comms-guard.json").write_text("{}")
+            (state / "graph.lock" / "comms-guard.json").chmod(0o600)
+            owner.kill()
+            owner.wait(timeout=5)
+            old = time.time() - 65
+            os.utime(state / "graph.lock", (old, old))
+            with patch.object(module, "WAIT_SECONDS", .15):
+                with self.assertRaisesRegex(ValueError, "busy"):
+                    module.acquire(state, os.getpid())
+            self.assertTrue((state / "graph.lock").is_dir())
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=5)
 
 
 if __name__ == "__main__":
