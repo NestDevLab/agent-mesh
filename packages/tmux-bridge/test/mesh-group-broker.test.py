@@ -5,6 +5,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "bin"))
 import mesh_group_dispatch
 from mesh_group_broker import Broker, run_operation
 from mesh_group_store import GroupActor, GroupStore
+from ledger_item_lock import validate as validate_lease
 
 ACTOR = "codex:11111111-1111-4111-8111-111111111111"
 OTHER = "claude:22222222-2222-4222-8222-222222222222"
@@ -49,6 +51,37 @@ class GroupBrokerTest(unittest.TestCase):
         with patch("mesh_group_broker.cloud_is_registered", return_value=False):
             with self.assertRaisesRegex(ValueError, "not registered"):
                 run_operation(self.store, {"action": "list", "actor": cloud})
+
+    def test_cloud_session_can_be_a_lease_owner(self):
+        owner = "claude-cloud:" + "a" * 64 + ":session_" + "b" * 128
+        validate_lease("work:item", owner=owner)
+
+    def test_group_revocation_waits_for_inflight_lease_operation(self):
+        self.store.link_ledger(GroupActor(manage=True), self.group, "work:item")
+        request = {"action": "lock_inspect", "actor": ACTOR, "group": self.group, "ref": "work:item"}
+        entered, release, removing = threading.Event(), threading.Event(), threading.Event()
+        def slow_lock(*_args, **_kwargs):
+            entered.set()
+            if not release.wait(5):
+                raise ValueError("test timed out")
+            return {"status": "available", "fence": 0}
+        def remove_member():
+            removing.set()
+            return GroupStore(self.root / "state").remove_member(GroupActor(manage=True), self.group, ACTOR)
+        with patch("mesh_group_broker.lock_operation", side_effect=slow_lock), ThreadPoolExecutor(max_workers=2) as pool:
+            operation = pool.submit(run_operation, self.store, request)
+            try:
+                self.assertTrue(entered.wait(5))
+                removal = pool.submit(remove_member)
+                self.assertTrue(removing.wait(5))
+                with self.assertRaises(TimeoutError):
+                    removal.result(timeout=0.2)
+            finally:
+                release.set()
+            self.assertEqual(operation.result(timeout=5)["status"], "available")
+            self.assertTrue(removal.result(timeout=5)["changed"])
+        with self.assertRaises(ValueError):
+            run_operation(self.store, request)
 
     def test_send_forwards_only_group_member_actor(self):
         request = {"action": "send", "actor": ACTOR, "group": self.group, "message_id": "two",

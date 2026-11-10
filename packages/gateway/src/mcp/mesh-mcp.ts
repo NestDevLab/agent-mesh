@@ -55,7 +55,12 @@ export const MESH_MCP_TOOLS = [
   "mesh_group_remove",
   "mesh_group_link",
   "mesh_group_unlink",
-  "mesh_group_transfer_lead"
+  "mesh_group_transfer_lead",
+  "mesh_group_lock_inspect",
+  "mesh_group_lock_acquire",
+  "mesh_group_lock_check",
+  "mesh_group_lock_renew",
+  "mesh_group_lock_release"
 ] as const;
 
 export type MeshMcpTool = (typeof MESH_MCP_TOOLS)[number];
@@ -152,7 +157,12 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
       mesh_group_remove: 30,
       mesh_group_link: 30,
       mesh_group_unlink: 30,
-      mesh_group_transfer_lead: 10
+      mesh_group_transfer_lead: 10,
+      mesh_group_lock_inspect: 60,
+      mesh_group_lock_acquire: 30,
+      mesh_group_lock_check: 60,
+      mesh_group_lock_renew: 30,
+      mesh_group_lock_release: 30
     },
     windowMs = 60_000,
     nowMs: () => number = Date.now

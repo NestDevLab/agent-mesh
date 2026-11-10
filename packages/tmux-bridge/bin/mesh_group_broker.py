@@ -16,6 +16,7 @@ import sys
 sys.dont_write_bytecode = True
 from mesh_group_dispatch import dispatch
 from mesh_group_store import GroupActor, GroupStore
+from ledger_item_lock import LeaseError, operation as lock_operation
 
 MAX_REQUEST = 131072
 
@@ -42,6 +43,11 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
         "history": {"action", "actor", "group", "after", "limit"},
         "append": {"action", "actor", "group", "message_id", "message"},
         "send": {"action", "actor", "group", "message_id", "message", "destinations"},
+        "lock_inspect": {"action", "actor", "group", "ref"},
+        "lock_acquire": {"action", "actor", "group", "ref", "fence", "ttl"},
+        "lock_check": {"action", "actor", "group", "ref", "fence", "lease_id"},
+        "lock_renew": {"action", "actor", "group", "ref", "fence", "lease_id", "ttl"},
+        "lock_release": {"action", "actor", "group", "ref", "fence", "lease_id"},
         "admin_list": {"action"},
         "admin_create": {"action", "name", "request_id", "role_key"},
         "admin_add": {"action", "group", "session"},
@@ -83,6 +89,21 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
     actor = GroupActor(session_id=request["actor"])
     if not actor.session_id or not cloud_is_registered(actor.session_id):
         raise ValueError("session is not registered")
+    if action.startswith("lock_"):
+        name = action.removeprefix("lock_")
+        ref = request["ref"]
+        try:
+            # Hold a write reservation on the group database so revocation or
+            # unlink cannot race the authorization and the lock operation.
+            with store.guard_item_link(actor, request["group"], ref):
+                args = {} if name == "inspect" else {"owner": actor.session_id, "fence": request["fence"]}
+                if name in ("check", "renew", "release"):
+                    args["lease_id"] = request["lease_id"]
+                if name in ("acquire", "renew"):
+                    args["ttl"] = request["ttl"]
+                return lock_operation(name, ref, **args)
+        except LeaseError:
+            raise ValueError("item lease is unavailable") from None
     if action == "list":
         return {"groups": store.list_groups(actor)}
     if action == "history":

@@ -224,6 +224,17 @@ class GroupStore:
         with self._transaction() as db:
             return self._describe(db, self._require_group(db, group_id, actor))
 
+    @contextmanager
+    def guard_item_link(self, actor, group_id, ref):
+        """Keep membership and item linkage stable throughout a bounded lock operation."""
+        _one_line(ref, 256, "ledger reference")
+        with self._transaction(write=True) as db:
+            self._require_group(db, group_id, actor, conversation=True)
+            if not db.execute("SELECT 1 FROM ledger_links WHERE group_id = ? AND ref = ?",
+                              (group_id, ref)).fetchone():
+                raise GroupAccessError("item is not linked to the group")
+            yield
+
     def ensure_group(self, actor, name, request_id, *, role_key=None):
         """Create one group per stable request ID, safely returning exact retries."""
         self._require_manager(actor)

@@ -49,6 +49,16 @@ Example configuration shape, with synthetic identifiers:
 ```
 
 This example shows only the additional fields, not a complete gateway config.
+Five separately allowed lock tools inspect, acquire, check, renew and release
+the existing fenced item lease. The authenticated actor must currently belong
+to the granted group and the item must be linked to it; the broker holds the
+group database write reservation throughout the lease operation. The lease
+owner is the bound session, never an argument. Inspection never returns the
+lease ID; only a successful acquisition does. The state is host-local, so all
+participants and guarded writers must use the same lock store. Writers must
+still use `guard_item_write`; obtaining a lease alone does not enforce writes.
+Removing membership prevents further API access, but does not revoke an
+already issued lease; it remains valid until release or expiry.
 Group creation, membership and item links have separate administrative tools.
 These are disabled unless a trusted principal has `manageAllGroups: true`
 and each specific tool in its allow-list. This is **global authority over the

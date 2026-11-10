@@ -130,6 +130,49 @@ const sessionId = z.string().max(320).refine(value => LOCAL_SESSION.test(value) 
 const ledgerRef = z.string().max(256).regex(/^[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/);
 const label = (max: number) => z.string().min(1).max(max).refine(value => value === value.trim() && !/[\x00-\x1f\x7f]/.test(value));
 const roleKey = z.string().regex(/^[a-z0-9][a-z0-9_.:/-]{0,127}$/);
+const lockInput = z.object({ workspace_id: workspace, group_id: groupId, ref: ledgerRef }).strict();
+const fence = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+const leaseId = z.string().regex(/^[a-f0-9]{32}$/);
+const ttl = z.number().int().min(1).max(3600);
+
+function registerGroupLockTools(server: McpServer, options: MeshMcpOptions): void {
+  const invoke = async (tool: MeshMcpTool, workspaceId: string | undefined, group: string,
+                        request: Record<string, unknown>) => {
+    try {
+      const grant = authorized(options, tool, workspaceId, group);
+      return response(await options.groupGateway!.invoke({ ...request, actor: grant.session_id, group }));
+    } catch { return failure(); }
+  };
+  if (options.principal.allowedTools.includes("mesh_group_lock_inspect")) server.registerTool("mesh_group_lock_inspect", {
+    title: "Inspect an item lease", description: "Read a lease only for an item linked to a granted group.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: lockInput
+  }, async input => invoke("mesh_group_lock_inspect", input.workspace_id, input.group_id, { action: "lock_inspect", ref: input.ref }));
+  if (options.principal.allowedTools.includes("mesh_group_lock_acquire")) server.registerTool("mesh_group_lock_acquire", {
+    title: "Acquire an item lease", description: "Acquire a fenced lease for a linked item using the observed fence.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: lockInput.extend({ fence, ttl })
+  }, async input => invoke("mesh_group_lock_acquire", input.workspace_id, input.group_id,
+    { action: "lock_acquire", ref: input.ref, fence: input.fence, ttl: input.ttl }));
+  if (options.principal.allowedTools.includes("mesh_group_lock_check")) server.registerTool("mesh_group_lock_check", {
+    title: "Check an item lease", description: "Check a lease owned by the authenticated session.",
+    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    inputSchema: lockInput.extend({ fence, lease_id: leaseId })
+  }, async input => invoke("mesh_group_lock_check", input.workspace_id, input.group_id,
+    { action: "lock_check", ref: input.ref, fence: input.fence, lease_id: input.lease_id }));
+  if (options.principal.allowedTools.includes("mesh_group_lock_renew")) server.registerTool("mesh_group_lock_renew", {
+    title: "Renew an item lease", description: "Renew a current lease owned by the authenticated session.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: lockInput.extend({ fence, lease_id: leaseId, ttl })
+  }, async input => invoke("mesh_group_lock_renew", input.workspace_id, input.group_id,
+    { action: "lock_renew", ref: input.ref, fence: input.fence, lease_id: input.lease_id, ttl: input.ttl }));
+  if (options.principal.allowedTools.includes("mesh_group_lock_release")) server.registerTool("mesh_group_lock_release", {
+    title: "Release an item lease", description: "Release a current lease owned by the authenticated session.",
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    inputSchema: lockInput.extend({ fence, lease_id: leaseId })
+  }, async input => invoke("mesh_group_lock_release", input.workspace_id, input.group_id,
+    { action: "lock_release", ref: input.ref, fence: input.fence, lease_id: input.lease_id }));
+}
 
 /** Global administration is a separate, explicitly configured host privilege. */
 function registerGroupAdminTools(server: McpServer, options: MeshMcpOptions): void {
@@ -183,6 +226,7 @@ function registerGroupAdminTools(server: McpServer, options: MeshMcpOptions): vo
 export function registerGroupMcpTools(server: McpServer, options: MeshMcpOptions): void {
   if (options.groupGateway === undefined) return;
   registerGroupAdminTools(server, options);
+  registerGroupLockTools(server, options);
   if (options.principal.allowedTools.includes("mesh_group_list")) server.registerTool("mesh_group_list", {
     title: "List accessible groups", description: "Lists groups granted to the authenticated session.",
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },

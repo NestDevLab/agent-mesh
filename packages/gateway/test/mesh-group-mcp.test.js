@@ -74,7 +74,8 @@ test("authenticated group history and append traverse a private broker without c
   }
   const groupGateway = new UnixGroupGateway(sock, 5000);
   const principal = { id: "test", kind: "service", requesterId: "mcp.test",
-    allowedTools: ["mesh_group_list", "mesh_group_history", "mesh_group_append", "mesh_group_send"],
+    allowedTools: ["mesh_group_list", "mesh_group_history", "mesh_group_append", "mesh_group_send",
+      "mesh_group_lock_inspect", "mesh_group_lock_acquire", "mesh_group_lock_check", "mesh_group_lock_renew", "mesh_group_lock_release"],
     allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [],
     groupGrants: [{ workspace_id: WORKSPACE, session_id: ACTOR, group_ids: [allowed] }] };
   const handler = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
@@ -134,6 +135,40 @@ test("authenticated group history and append traverse a private broker without c
   assert.equal(staleTransfer.isError, true);
   const unlinked = await call(manager, "mesh_group_unlink", { group_id: group, ref: "work:item-1" });
   assert.equal(unlinked.structuredContent.changed, true);
+  const lockArgs = { workspace_id: WORKSPACE, group_id: allowed, ref: "work:item-1" };
+  const inspect = await call(handler, "mesh_group_lock_inspect", lockArgs);
+  assert.equal(inspect.structuredContent.fence, 0);
+  const acquired = await call(handler, "mesh_group_lock_acquire", { ...lockArgs, fence: 0, ttl: 60 });
+  assert.equal(acquired.structuredContent.outcome, "acquired");
+  assert.equal(acquired.structuredContent.owner, ACTOR);
+  const firstFence = acquired.structuredContent.fence;
+  const firstLease = acquired.structuredContent.leaseId;
+  const visible = await call(handler, "mesh_group_lock_inspect", lockArgs);
+  assert.equal(visible.structuredContent.leaseId, undefined);
+  const spoofedLock = await call(handler, "mesh_group_lock_acquire", { ...lockArgs, fence: firstFence, ttl: 60, owner: DEST });
+  assert.ok(spoofedLock.isError || spoofedLock.code);
+  const other = createMeshMcpHandler({ gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+    groupGateway, resolvePrincipal: () => ({ ...principal,
+      groupGrants: [{ workspace_id: WORKSPACE, session_id: DEST, group_ids: [allowed] }] }) });
+  const held = await call(other, "mesh_group_lock_acquire", { ...lockArgs, fence: firstFence, ttl: 60 });
+  assert.equal(held.structuredContent.outcome, "held");
+  const stolen = await call(other, "mesh_group_lock_check", { ...lockArgs, fence: firstFence, lease_id: firstLease });
+  assert.equal(stolen.structuredContent.outcome, "stale");
+  const checked = await call(handler, "mesh_group_lock_check", { ...lockArgs, fence: firstFence, lease_id: firstLease });
+  assert.equal(checked.structuredContent.outcome, "current");
+  const renewed = await call(handler, "mesh_group_lock_renew", { ...lockArgs, fence: firstFence, lease_id: firstLease, ttl: 60 });
+  assert.equal(renewed.structuredContent.outcome, "renewed");
+  const released = await call(handler, "mesh_group_lock_release", { ...lockArgs, fence: firstFence, lease_id: firstLease });
+  assert.equal(released.structuredContent.outcome, "released");
+  const reacquired = await call(other, "mesh_group_lock_acquire", { ...lockArgs, fence: firstFence, ttl: 60 });
+  assert.equal(reacquired.structuredContent.fence, firstFence + 1);
+  const stale = await call(handler, "mesh_group_lock_release", { ...lockArgs, fence: firstFence, lease_id: firstLease });
+  assert.equal(stale.structuredContent.outcome, "stale");
+  const otherRelease = await call(other, "mesh_group_lock_release", { ...lockArgs,
+    fence: reacquired.structuredContent.fence, lease_id: reacquired.structuredContent.leaseId });
+  assert.equal(otherRelease.structuredContent.outcome, "released");
+  const unrelatedLock = await call(handler, "mesh_group_lock_inspect", { ...lockArgs, ref: "work:other" });
+  assert.equal(unrelatedLock.isError, true);
   const incompatible = await call(manager, "mesh_group_link", { group_id: group, ref: "work.test:item-1" });
   assert.ok(incompatible.isError || incompatible.code);
   const removed = await call(manager, "mesh_group_remove", { group_id: group, session_id: ACTOR });
@@ -152,4 +187,6 @@ test("authenticated group history and append traverse a private broker without c
   cli("remove", allowed, ACTOR);
   const revoked = await call(handler, "mesh_group_history", { workspace_id: WORKSPACE, group_id: allowed });
   assert.equal(revoked.isError, true);
+  const revokedLock = await call(handler, "mesh_group_lock_inspect", lockArgs);
+  assert.equal(revokedLock.isError, true);
 });
