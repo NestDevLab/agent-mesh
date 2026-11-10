@@ -32,8 +32,7 @@
       "group-ref-contract",
       "group-ref-public",
       "ledger-read-query",
-      "plexus-work-items",
-      "owner-notify-memory"
+      "plexus-work-items"
     ],
     "strategy": "cherry-pick"
   },
@@ -349,24 +348,6 @@
       },
       "meta": {
         "purpose": "Read open work items with sessions, sort and filter on live ledger fields"
-      }
-    },
-    {
-      "id": "owner-notify-memory",
-      "branch": "pr/owner-notify-memory",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "4f7ddf5632400e036aaf9cfb423275f838df098f"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "fix: bound owner-notify receipt memory and pending writes"
       }
     }
   ],
