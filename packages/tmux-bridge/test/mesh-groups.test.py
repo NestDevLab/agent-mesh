@@ -45,6 +45,8 @@ class MeshGroupsTest(unittest.TestCase):
         self.assertFalse(self.state.exists())
         created = self.cli("create", "Release planning", "--role", "release:coordinator")
         group = created["group_id"]
+        self.assertIn("already assigned", self.cli("create", "Competing role", "--role",
+                                                  "release:coordinator", success=False))
         other = self.cli("create", "Release planning")["group_id"]
         self.assertNotEqual(group, other)
         self.assertTrue(self.cli("add", group, self.first.session_id)["changed"])
@@ -227,14 +229,15 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
         first = "codex:deadc0de-a1b2-4433-8b5c-baddfacecafe"
         second = "claude:feedcafe-c2d3-4312-a2e9-deadbeefcafe"
 
-        def link(ref, role, session, until=None):
-            return {"ref": ref, "role": role, "session": session, "until": until}
+        def link(ref, role, session, until=None, evidence=()):
+            return {"ref": ref, "role": role, "session": session, "until": until, "evidence": list(evidence)}
 
         return {"schema": "agent-mesh.session-graph.v1", "migrated": True, "links": [
-            link("group:release", "discusses", first),
-            link("group:release", "discusses", second),
-            link("area:release", "owns", first),
-            link("area:release", "owns", second),
+            link("group:release-director", "discusses", first, evidence=("area:release",)),
+            link("group:release-director", "discusses", second),
+            link("area:release", "owns", first, evidence=("group:release-director",)),
+            link("area:release", "owns", second, evidence=("group:release-director",)),
+            link("area:release-director", "owns", second),
             link("group:handoff", "discusses", second),
             link("group:handoff", "discusses", first, "2026-01-01T00:00:00Z"),
             link("tracker:unrelated", "works-on", first),
@@ -243,33 +246,39 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
     def test_graph_import_is_explicit_stable_and_preserves_original_graph(self):
         snapshot = self.graph_snapshot()
         path = Path(self.tmp.name) / "snapshot.json"
+        role_map = Path(self.tmp.name) / "roles.json"
+        bindings = {"group:release-director": "release:director"}
+        role_map.write_text(json.dumps(bindings))
         original = json.dumps(snapshot).encode()
         path.write_bytes(original)
-        args = ("import-graph", "--snapshot", str(path), "--source", "legacy")
+        args = ("import-graph", "--snapshot", str(path), "--source", "legacy", "--role-map", str(role_map))
         preview = self.cli(*args)
         self.assertEqual(preview["status"], "ready")
         self.assertFalse(self.state.exists())
         digest = preview["plan_digest"]
         reverse = {**snapshot, "links": list(reversed(snapshot["links"]))}
-        self.assertEqual(self.store.import_graph(self.admin, reverse, "legacy")["plan_digest"], digest)
+        self.assertEqual(self.store.import_graph(self.admin, reverse, "legacy", role_bindings=bindings)["plan_digest"], digest)
         self.assertIn("does not match", self.cli(*args, "--apply", "--plan-digest", "wrong", success=False))
         self.assertFalse(self.state.exists())
         self.assertEqual(self.cli(*args, "--apply", "--plan-digest", digest)["status"], "imported")
-        release = self.cli("list", "--source-ref", "group:release")["groups"][0]
-        proposed = next(group for group in preview["groups"] if group["source_ref"] == "group:release")
+        release = self.cli("list", "--source-ref", "group:release-director")["groups"][0]
+        proposed = next(group for group in preview["groups"] if group["source_ref"] == "group:release-director")
         self.assertEqual(release["group_id"], proposed["group_id"])
         self.assertEqual(release["ledger_links"], [{"ref": "area:release", "lead": True}])
-        self.assertEqual(len(proposed["area_owners"]), 2)
+        self.assertEqual(len(proposed["area_owners"]["area:release"]), 2)
+        self.assertEqual(release["role_key"], "release:director")
         self.assertEqual(self.cli("list", "--ledger-ref", "tracker:unrelated")["groups"], [])
         self.cli("remove", release["group_id"], release["members"][0]["session_id"])
         self.assertEqual(self.cli(*args, "--apply", "--plan-digest", digest)["status"], "already_imported")
-        self.assertEqual(len(self.cli("get", release["group_id"])["members"]), 1)
+        reread = self.cli("get", release["group_id"])
+        self.assertEqual(len(reread["members"]), 1)
+        self.assertEqual(reread["role_key"], "release:director")
         self.assertEqual(path.read_bytes(), original)
 
     def test_graph_import_rejects_ambiguity_and_rolls_back_on_late_failure(self):
         snapshot = self.graph_snapshot()
         ambiguous = {**snapshot, "links": [*snapshot["links"],
-                     {"ref": "group:release", "role": "discusses", "session": "pending:unresolved", "until": None}]}
+                     {"ref": "group:release-director", "role": "discusses", "session": "pending:unresolved", "until": None}]}
         self.assertEqual(self.store.import_graph(self.admin, ambiguous, "legacy")["status"], "conflict")
         current = self.store.create_group(self.admin, "Current")
         self.store.link_ledger(self.admin, current["group_id"], "area:release", lead=True)
@@ -292,6 +301,33 @@ with sqlite3.connect(sys.argv[1], timeout=0, isolation_level=None) as db:
         self.assertEqual([row["name"] for row in self.store.list_groups(self.admin)], ["Current"])
         self.assertEqual(self.store.import_graph(self.admin, snapshot, "legacy",
                                                expected_digest=blocked["plan_digest"])["status"], "imported")
+
+    def test_graph_import_rejects_nonreciprocal_evidence_and_competing_roles(self):
+        snapshot = self.graph_snapshot()
+        one_way = {**snapshot, "links": [{**link, "evidence": []} if link["ref"] == "area:release" else link
+                                        for link in snapshot["links"]]}
+        invalid = self.store.import_graph(self.admin, one_way, "legacy")
+        self.assertEqual(invalid["status"], "conflict")
+        self.assertIn("nonreciprocal group/area evidence: group:release-director and area:release", invalid["conflicts"])
+
+        competing = {**snapshot, "links": [
+            {**link, "evidence": [*link["evidence"], "group:handoff"]} if link["ref"] == "area:release" else
+            {**link, "evidence": ["area:release"]} if link["ref"] == "group:handoff" else link
+            for link in snapshot["links"]
+        ]}
+        invalid = self.store.import_graph(self.admin, competing, "legacy")
+        self.assertEqual(invalid["status"], "conflict")
+        self.assertTrue(any("more than one group" in conflict for conflict in invalid["conflicts"]))
+        invalid = self.store.import_graph(self.admin, snapshot, "legacy", role_bindings={
+            "group:release-director": "release:director", "group:handoff": "release:director"})
+        self.assertEqual(invalid["status"], "conflict")
+        self.assertTrue(any("bound to more than one group" in conflict for conflict in invalid["conflicts"]))
+        self.assertFalse(self.state.exists())
+
+        self.store.create_group(self.admin, "Existing", role_key="release:director")
+        invalid = self.store.import_graph(self.admin, snapshot, "legacy",
+                                          role_bindings={"group:release-director": "release:director"})
+        self.assertEqual(invalid["destination_conflicts"], ["role release:director already belongs to a group"])
 
 
 if __name__ == "__main__":
