@@ -94,6 +94,49 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         with c.locked() as (db, _):
             self.assertEqual(db.execute('SELECT detail FROM deliveries').fetchone()[0], 'read')
 
+    def test_native_resume_defaults_and_explicit_hold(self):
+        codex = c.validate(self.spec(runtime='codex'))
+        self.assertIs(codex['resume'], True)
+        self.assertIn('--resume', c.command(codex))
+        held = c.validate({**codex, 'resume': False})
+        self.assertIn('--no-resume', c.command(held))
+        self.assertNotIn('--resume', c.command(held))
+        claude = c.validate(self.spec())
+        self.assertIs(claude['resume'], False)
+        self.assertNotIn('--resume', c.command(claude))
+        self.assertNotIn('--no-resume', c.command(claude))
+
+    def test_legacy_codex_queue_ids_and_payloads_survive_default_change(self):
+        c.change('queue', 'codex', 'test hold', 'test')
+        with c.locked() as (db, _):
+            for correlation in ('legacy', ''):
+                original = {**self.spec(correlation, 'codex'), 'resume': False}
+                receipt = c.admit(db, original)
+                before = db.execute('SELECT id,digest,payload,status FROM deliveries WHERE id=?',
+                                    (receipt['id'],)).fetchone()
+                default = self.spec(correlation, 'codex')
+                duplicate = c.admit(db, default)
+                self.assertTrue(duplicate['duplicate'])
+                self.assertEqual(duplicate['id'], receipt['id'])
+                self.assertEqual(duplicate['status'], 'queued')
+                self.assertEqual(db.execute('SELECT id,digest,payload,status FROM deliveries WHERE id=?',
+                                            (receipt['id'],)).fetchone(), before)
+                self.assertIn('--no-resume', c.command(json.loads(before[2])))
+                db.execute("UPDATE deliveries SET status='delivered',payload=NULL WHERE id=?", (receipt['id'],))
+                self.assertEqual(c.admit(db, default)['status'], 'delivered')
+                db.execute("UPDATE deliveries SET status='unknown' WHERE id=?", (receipt['id'],))
+                with self.assertRaisesRegex(ValueError, 'unknown'):
+                    c.admit(db, default)
+                db.execute("UPDATE deliveries SET status='queued',payload=? WHERE id=?", (before[2], receipt['id']))
+                if correlation:
+                    with self.assertRaisesRegex(ValueError, 'different payload'):
+                        c.admit(db, {**default, 'message': 'changed'})
+            self.assertEqual(db.execute('SELECT count(*) FROM deliveries').fetchone()[0], 2)
+        c.change('off', 'codex', 'test off', 'test')
+        with c.locked() as (db, _):
+            with self.assertRaisesRegex(ValueError, 'nothing stored'):
+                c.admit(db, self.spec('new', 'codex'))
+
     def test_steer_queue_validation_and_replay_command(self):
         spec = {**self.spec(runtime='codex'), 'steer_first': True}
         self.assertIn('--steer-or-queue', c.command(spec))
