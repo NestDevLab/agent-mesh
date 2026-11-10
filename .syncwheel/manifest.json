@@ -21,7 +21,8 @@
     "branch": "main-integration",
     "stacks": [
       "terminal-return-v1",
-      "urgent-native-reply"
+      "urgent-native-reply",
+      "mesh-groups-v1"
     ],
     "strategy": "cherry-pick"
   },
@@ -67,6 +68,22 @@
       },
       "meta": {
         "purpose": "Preserve correlated urgent native replies"
+      }
+    },
+    {
+      "id": "mesh-groups-v1",
+      "branch": "pr/mesh-groups-v1",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Add durable Mesh groups and shared conversation history"
       }
     }
   ],
