@@ -28,7 +28,8 @@
       "group-message-route",
       "groups-scoped-import",
       "cloud-group-transport",
-      "group-gateway-conversation"
+      "group-gateway-conversation",
+      "group-ref-contract"
     ],
     "strategy": "cherry-pick"
   },
@@ -266,6 +267,22 @@
       },
       "meta": {
         "purpose": "Add authenticated group conversation gateway tools"
+      }
+    },
+    {
+      "id": "group-ref-contract",
+      "branch": "syncwheel/draft/group-ref-contract",
+      "base": "pr/group-gateway-conversation",
+      "target_remote": "origin",
+      "target_branch": "pr/group-gateway-conversation",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "draft",
+      "publication": {
+        "enabled": false
+      },
+      "meta": {
+        "purpose": "Align group and lease item references"
       }
     }
   ],
