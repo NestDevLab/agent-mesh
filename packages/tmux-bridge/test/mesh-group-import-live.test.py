@@ -1,5 +1,6 @@
 """Exercise live group import with an isolated graph and real role guard."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 import importlib.util
 import os
@@ -313,6 +314,36 @@ time.sleep(20)
         state.chmod(0o777)
         with self.assertRaisesRegex(ValueError, "not writable by others"):
             module.acquire(state, os.getpid())
+
+    def test_concurrent_writers_safely_recover_one_dead_owner(self):
+        spec = importlib.util.spec_from_file_location("graph_lock", BIN / "mesh-graph-lock.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(20)"])
+        try:
+            module.acquire(self.graph, owner.pid)
+            owner.kill()
+            owner.wait(timeout=5)
+            old = time.time() - 65
+            os.utime(self.graph / "graph.lock", (old, old))
+
+            def write(index):
+                return self.graph_call("link", "open", "--agent", "codex",
+                                       "--runtime-uuid", SESSION.split(":")[1],
+                                       "--ref", f"group:reap-{index}", "--role", "discusses")
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(write, range(8)))
+            self.assertTrue(all(result["changed"] for result in results))
+            snapshot = self.graph_call("show")
+            links = [link for link in snapshot["links"]
+                     if link["ref"].startswith("group:reap-") and link["until"] is None]
+            self.assertEqual(len(links), 8)
+            self.assertEqual(len({link["id"] for link in links}), 8)
+        finally:
+            if owner.poll() is None:
+                owner.kill()
+                owner.wait(timeout=5)
 
 
 if __name__ == "__main__":

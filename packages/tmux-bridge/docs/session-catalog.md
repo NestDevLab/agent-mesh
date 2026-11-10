@@ -44,6 +44,13 @@ state mutation and heartbeat during work. An expired or superseded writer must s
 A claim alone cannot kill a process or make an unrelated filesystem write atomic with lease checking.
 Use the Director state writer's integration for enforced checks at the write boundary.
 
+On Linux, graph writers use the bundled Python 3 lock helper. It keeps a live
+owner's graph lock even when its timestamp is old and serializes recovery of a
+proven dead owner. Unknown or unmarked stale locks are not automatically
+removed. Writers that still use the previous age-only lock algorithm can remove
+a live lock; every writer sharing a graph must use the same protocol before a
+live group import or cutover.
+
 The CLI exposes mutations locally. Existing scoped gateway queries retain their authorization
 boundaries; the local catalog and claim ledger must not be exported as an unscoped remote MCP tool.
 
