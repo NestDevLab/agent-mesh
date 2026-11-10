@@ -82,6 +82,10 @@ export class MeshTaskCoordinator {
     return (await this.store.list()).find((task) => task.session_id === sessionId);
   }
 
+  async sessionQueueLength(sessionId: string): Promise<number> {
+    return (await this.store.list()).filter((task) => task.session_id === sessionId && !TERMINAL.has(task.status)).length;
+  }
+
   /** Include cancelled tasks whose executor has not returned, and queued executions. */
   async nonterminalTaskCount(): Promise<number> {
     const ids = new Set(this.active.keys());
@@ -102,10 +106,12 @@ export class MeshTaskCoordinator {
     const taskId = task.task_id;
     if (this.active.has(taskId)) return;
     const targetKey = JSON.stringify([task.target_agent_id, task.session_id ?? null]);
-    const prior = this.targetTails.get(targetKey) ?? Promise.resolve();
+    // urgent can't sit behind the tasks it's meant to overtake
+    const urgent = task.priority === "urgent";
+    const prior = (urgent ? undefined : this.targetTails.get(targetKey)) ?? Promise.resolve();
     const run = prior.catch(() => undefined).then(() => this.run(taskId));
     this.active.set(taskId, run);
-    this.targetTails.set(targetKey, run);
+    if (!urgent) this.targetTails.set(targetKey, run);
     void run.finally(() => {
       this.active.delete(taskId);
       if (this.targetTails.get(targetKey) === run) this.targetTails.delete(targetKey);

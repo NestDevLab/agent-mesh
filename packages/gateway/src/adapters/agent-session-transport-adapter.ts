@@ -38,7 +38,8 @@ export class AgentSessionTransportAdapter implements MeshTransportAdapter {
         ...(typeof envelope.task_id === "string" ? { taskId: envelope.task_id } : {}),
         ...(typeof envelope.correlation_id === "string" ? { correlationId: envelope.correlation_id } : {}),
         idempotencyKey: envelope.idempotency_key,
-        ...(fresh ? { sessionMode: "fresh" as const } : {})
+        ...(fresh ? { sessionMode: "fresh" as const } : {}),
+        ...(envelope.metadata?.priority === "urgent" ? { urgent: true } : {})
       });
       const resolved = result.session_id === undefined ? {} : { resolved_session_id: result.session_id };
       if (!result.ok) return {

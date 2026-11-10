@@ -24,6 +24,7 @@ import { ShellTmuxSender } from "../adapters/shell-tmux-sender.js";
 import { TmuxTransportAdapter, type TmuxRoute } from "../adapters/tmux-transport-adapter.js";
 import {
   AgentSessionRegistry,
+  CLOUD_SESSION_ID,
   ShellAgentSessionProvider
 } from "../adapters/agent-session-provider.js";
 import { AgentSessionTransportAdapter } from "../adapters/agent-session-transport-adapter.js";
@@ -88,6 +89,8 @@ interface AgentSessionsConfig {
     target_agent_id: string;
     agent_type: "codex" | "claude";
     workspace_roots: Record<string, string[]>;
+    /** Opt-in, Claude only. Exact cloud session ids per workspace. */
+    cloud_sessions?: Record<string, string[]>;
     /** Opt-in. Fresh sessions only ever start in these dirs. */
     fresh_session?: {
       workspace_cwd: Record<string, string>;
@@ -148,6 +151,8 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ? executeMeshTask(gateway, task, undefined, { bindSession: hooks.bindSession })
       : workspaceWorkers === undefined ? Promise.reject(new Error("workspace_worker_unavailable")) : workspaceWorkers.execute(task, hooks)
   });
+  const targets = meshSendTargets(config);
+  const sendTargets = targets === undefined ? {} : { meshSendTargets: targets };
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
   const meshHandler = requireCloudflareAccess(
     createMeshMcpHandler({
@@ -158,6 +163,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         provider,
         capabilities
       })),
+      ...sendTargets,
       taskCoordinator,
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
@@ -182,6 +188,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       agents: config.agents.map(({ id, name, provider, capabilities }) => ({
         id, name, provider, capabilities
       })),
+      ...sendTargets,
       taskCoordinator,
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
@@ -504,8 +511,23 @@ function validateAgentSessions(
         throw new Error(`Unknown agent sessions workspace at index ${index}: ${workspaceId}`);
       }
     }
+    if (provider.cloud_sessions !== undefined) validateCloudSessions(provider, index, value.agentNativeCallPath);
     if (provider.fresh_session !== undefined) validateFreshSession(provider, index, value.meshSocket);
     seen.add(provider.target_agent_id);
+  }
+}
+
+function validateCloudSessions(provider: AgentSessionsConfig["providers"][number], index: number, nativeCallPath?: string): void {
+  const sessions = provider.cloud_sessions;
+  if (
+    provider.agent_type !== "claude" || nativeCallPath === undefined ||
+    typeof sessions !== "object" || sessions === null || Array.isArray(sessions) ||
+    Object.entries(sessions).some(([workspaceId, ids]) => (
+      !Object.hasOwn(provider.workspace_roots, workspaceId) || !Array.isArray(ids) || ids.length === 0 ||
+      ids.some((id) => typeof id !== "string" || !CLOUD_SESSION_ID.test(id))
+    ))
+  ) {
+    throw new Error(`Invalid agent sessions cloud_sessions at index ${index}.`);
   }
 }
 
@@ -551,6 +573,18 @@ function isWithinRoot(path: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+export function meshSendTargets(config: {
+  agents: ReadonlyArray<{ id: string; status?: string }>;
+  tmuxIngress?: { routes: ReadonlyArray<{ target_agent_id: string; allow_mcp_ingress?: boolean }> };
+}): ReadonlySet<string> | undefined {
+  if (config.tmuxIngress === undefined) return undefined;
+  return new Set([
+    ...config.tmuxIngress.routes.filter((route) => route.allow_mcp_ingress === true).map((route) => route.target_agent_id),
+    // simulated canaries have no route on purpose
+    ...config.agents.filter((agent) => agent.status === "simulated").map((agent) => agent.id)
+  ]);
+}
+
 function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): AgentSessionRegistry | undefined {
   if (config === undefined) return undefined;
   return new AgentSessionRegistry(config.providers.map((provider) => new ShellAgentSessionProvider({
@@ -561,6 +595,7 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     ...(config.agentNativeCallPath === undefined ? {} : { agentNativeCallPath: config.agentNativeCallPath }),
     ...(config.agentManagedInboxRoot === undefined ? {} : { agentManagedInboxRoot: config.agentManagedInboxRoot }),
     workspaceRoots: provider.workspace_roots,
+    ...(provider.cloud_sessions === undefined ? {} : { cloudSessions: provider.cloud_sessions }),
     ...(provider.fresh_session === undefined ? {} : { freshSessionCwds: provider.fresh_session.workspace_cwd }),
     ...(provider.fresh_session?.task_sessions === undefined ? {} : { freshTaskSessions: provider.fresh_session.task_sessions }),
     ...(provider.fresh_session?.access_profiles === undefined ? {} : { createSessionProfiles: provider.fresh_session.access_profiles }),

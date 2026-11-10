@@ -546,3 +546,110 @@ test("catalog filters archive and title after authorization and before paginatio
   const all=await instance.list({workspaceId:"workspace.allowed",archive:"include",limit:10});
   assert.equal(all.sessions.length,3);
 });
+
+test("cloud sessions are reachable only when listed and only as delivery", async () => {
+  const calls = [];
+  const instance = new ShellAgentSessionProvider({
+    agentType: "claude",
+    agentSessionPath: "/bridge/agent-session.sh",
+    agentSendPath: "/bridge/agent-send.sh",
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    meshSocket: "socket",
+    workspaceRoots: { "workspace.allowed": ["/workspace"] },
+    cloudSessions: { "workspace.allowed": ["session_abc123"] },
+    run: async (command, args) => {
+      calls.push({ command, args: [...args] });
+      if (command === process.execPath) return { code: 0, stdout: JSON.stringify({ status: "queued" }), stderr: "" };
+      return { code: 3, stdout: "", stderr: "not found" };
+    }
+  });
+  const scope = { workspaceId: "workspace.allowed", sessionId: "cse_abc123" };
+  assert.equal((await instance.get(scope)).session_id, "cse_abc123");
+  assert.equal((await instance.status(scope)).state, "unknown");
+  assert.equal(calls.length, 0);
+  const sent = await instance.send({ ...scope, message: "hello", messageId: "m", contextId: "c", correlationId: "task-cloud", idempotencyKey: "i" });
+  assert.equal(sent.ok, true);
+  assert.match(sent.reply, /no reply comes back/);
+  const native = calls.find((call) => call.command === process.execPath).args;
+  assert.deepEqual(native.slice(1, 7), ["--agent", "claude", "--cloud", "--delivery-only", "--session", "session_abc123"]);
+  assert.match(native.at(-1), /grants no approval/);
+  assert.equal(await instance.get({ workspaceId: "workspace.allowed", sessionId: "cse_other" }), undefined);
+});
+
+test("urgent steers an active Codex session as delivery only", async () => {
+  let native;
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command.endsWith("agent-session.sh") && args.includes("inspect")) {
+        return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      }
+      if (command.endsWith("agent-session.sh") && args.includes("writer-status")) {
+        return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+      }
+      if (command === process.execPath) {
+        native = args;
+        return { code: 0, stdout: JSON.stringify({ status: "steered" }), stderr: "" };
+      }
+      throw new Error("unexpected command");
+    }
+  });
+  const result = await instance.send({
+    sessionId: "session-new", workspaceId: "workspace.allowed", message: "stop", urgent: true,
+    messageId: "message-urgent", contextId: "context", correlationId: "task-urgent", idempotencyKey: "idem-urgent"
+  });
+  assert.equal(result.ok, true);
+  assert.match(result.reply, /^Steered/);
+  assert.ok(native.includes("--steer-or-queue") && native.includes("--delivery-only"));
+});
+
+test("status reports the script output and falls back to unknown", async () => {
+  const output = { state: "busy", last_activity_at: "2026-11-01T00:00:00Z", last_step: "tool: Bash", checklist: [] };
+  for (const [code, stdout, expected] of [[0, JSON.stringify(output), "busy"], [1, "", "unknown"], [0, "not json", "unknown"]]) {
+    let script;
+    const { instance } = provider({
+      agentNativeCallPath: "/bridge/agent-native-call.mjs",
+      run: async (command, args) => { script = args[0]; return { code, stdout, stderr: "" }; }
+    });
+    assert.equal((await instance.status({ workspaceId: "workspace.allowed", sessionId: "session-new" })).state, expected);
+    assert.equal(script, "/bridge/agent-session-status.mjs");
+  }
+});
+
+test("urgent with a live writer doesn't wait behind a queued send", async () => {
+  let release;
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command.endsWith("agent-session.sh") && args.includes("inspect")) {
+        return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      }
+      if (command.endsWith("agent-session.sh") && args.includes("writer-status")) {
+        return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+      }
+      if (command === process.execPath && args.includes("--steer-or-queue")) {
+        return { code: 0, stdout: JSON.stringify({ status: "steered", held: false }), stderr: "" };
+      }
+      return new Promise((done) => { release = () => done({ code: 0, stdout: "late", stderr: "" }); });
+    }
+  });
+  const base = { sessionId: "session-new", workspaceId: "workspace.allowed", message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" };
+  const stuck = instance.send(base);
+  await new Promise((done) => setTimeout(done, 20));
+  assert.match((await instance.send({ ...base, urgent: true })).reply, /^Steered/);
+  release();
+  await stuck;
+});
+
+test("a held delivery is not reported as queued", async () => {
+  const { instance } = provider({
+    agentNativeCallPath: "/bridge/agent-native-call.mjs",
+    run: async (command, args) => {
+      if (command === process.execPath) return { code: 0, stdout: JSON.stringify({ status: "queued", held: true }), stderr: "" };
+      if (args.includes("inspect")) return { code: 0, stdout: JSON.stringify({ agent_type: "codex", sessions: [sessions[0]] }), stderr: "" };
+      return { code: 0, stdout: JSON.stringify({ agent: "codex", sessionId: "session-new", writers: [{ pid: 42, kind: "codex" }] }), stderr: "" };
+    }
+  });
+  const result = await instance.send({ sessionId: "session-new", workspaceId: "workspace.allowed", urgent: true, message: "m", messageId: "m", contextId: "c", correlationId: "t", idempotencyKey: "i" });
+  assert.match(result.reply, /^Held/);
+});

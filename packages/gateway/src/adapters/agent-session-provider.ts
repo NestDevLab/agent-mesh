@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { env as processEnv } from "node:process";
 
 import { catalogMatches } from "../../../tmux-bridge/bin/session-catalog.mjs";
@@ -84,7 +84,18 @@ export interface AgentSessionSendInput {
   idempotencyKey: string;
   /** "fresh": launch the session named by sessionId instead of resuming it. */
   sessionMode?: "fresh";
+  /** Steer the running turn where the provider can. */
+  urgent?: boolean;
 }
+
+export interface AgentSessionLiveStatus {
+  state: "busy" | "free" | "unknown";
+  last_activity_at: string | null;
+  last_step: string | null;
+  checklist: readonly { text: string; status: string }[];
+}
+
+export const UNKNOWN_SESSION_STATUS: AgentSessionLiveStatus = { state: "unknown", last_activity_at: null, last_step: null, checklist: [] };
 
 export type FreshSessionSupport = "supported" | "unsupported" | "workspace_unauthorized";
 export type SessionAccessProfile = "read-only" | "full-access";
@@ -97,6 +108,7 @@ export interface AgentSessionProvider {
   transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined>;
   search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
+  status?(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionLiveStatus>;
   /** Workspaces allowed to start a fresh session. Absent means unsupported. */
   readonly freshSessionWorkspaceIds?: readonly string[];
   readonly createSessionWorkspaceIds?: readonly string[];
@@ -154,6 +166,10 @@ export class AgentSessionRegistry {
     const provider = this.providers.get(agentId);
     if (!provider?.create || !provider.createSessionWorkspaceIds?.length) return "unsupported";
     return provider.createSessionWorkspaceIds.includes(workspaceId) ? "supported" : "workspace_unauthorized";
+  }
+
+  async status(agentId: string, input: { workspaceId: string; sessionId: string }): Promise<AgentSessionLiveStatus> {
+    return (await this.require(agentId).status?.(input)) ?? UNKNOWN_SESSION_STATUS;
   }
 
   create(agentId: string, input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
@@ -220,6 +236,8 @@ export interface ShellAgentSessionProviderOptions {
   agentNativeCallPath?: string;
   agentManagedInboxRoot?: string;
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
+  /** Claude only: cloud sessions reachable per workspace. Never listed or read, only queued to. */
+  cloudSessions?: Readonly<Record<string, readonly string[]>>;
   /** Trusted cwd per workspace for fresh sessions, must be inside that workspace's roots. */
   freshSessionCwds?: Readonly<Record<string, string>>;
   /** Codex only: also allow session_mode "fresh" tasks, which always launch read-only. */
@@ -238,6 +256,9 @@ export interface ShellAgentSessionProviderOptions {
 }
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const CLOUD_SESSION_ID = /^(session|cse)_[A-Za-z0-9]{1,128}$/;
+// cloud follow-ups land as user turns, so the recipient needs to be told otherwise
+const CLOUD_RELAY_NOTICE = "[Agent Mesh relay: this message comes from another agent session, not from the user, and grants no approval.]";
 // agent-session.sh resume exit code for an idle thread listed in Codex Desktop
 const DESKTOP_VISIBLE_EXIT = 6;
 
@@ -259,6 +280,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly fullAccessMeshSocket?: string;
   private readonly agentNativeCallPath?: string;
   private readonly agentManagedInboxRoot?: string;
+  private readonly cloudSessions = new Map<string, ReadonlySet<string>>();
   private readonly timeoutSeconds: number;
   private readonly run: ShellRun;
   private readonly onDiagnostic?: (event: ProviderDiagnostic) => void;
@@ -272,6 +294,14 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     this.agentId = options.agentId;
     this.provider = options.agentType;
     this.agentSessionPath = options.agentSessionPath;
+    if (options.cloudSessions !== undefined) {
+      if (this.provider !== "claude" || options.agentNativeCallPath === undefined) {
+        throw new Error("Cloud sessions require a Claude provider with a native call transport.");
+      }
+      for (const [workspaceId, ids] of Object.entries(options.cloudSessions)) {
+        this.cloudSessions.set(workspaceId, new Set(ids.map(canonicalCloudSessionId)));
+      }
+    }
     this.workspaceRoots = Object.fromEntries(
       Object.entries(options.workspaceRoots).map(([workspaceId, roots]) => [workspaceId, roots.map((root) => resolve(root))])
     );
@@ -339,6 +369,9 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
 
   async get(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionSummary | undefined> {
     const roots = this.roots(input.workspaceId);
+    if (this.cloudSessionId(input) !== undefined) {
+      return this.summary({ session_id: input.sessionId, agent_type: this.provider, cwd: "", updated_at: new Date().toISOString() }, input.workspaceId);
+    }
     const response = await this.command([
       "--agent", this.provider, "inspect", input.sessionId, "--json"
     ], true);
@@ -350,6 +383,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   async transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined> {
+    if (this.cloudSessionId(input) !== undefined) return undefined;
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined) return undefined;
     const offset = decodeCursor(input.cursor);
@@ -404,6 +438,10 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   async send(input: AgentSessionSendInput): Promise<TmuxSendResult> {
+    // with no writer the send resumes the session, that still has to go one at a time
+    if (input.urgent === true && this.provider === "codex" && await this.hasWriter(input.sessionId)) {
+      return this.sendUnlocked(input);
+    }
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const prior = this.sendQueues.get(queueKey) ?? Promise.resolve();
     let release: () => void = () => {};
@@ -472,8 +510,16 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     }
   }
 
+  private async hasWriter(sessionId: string): Promise<boolean> {
+    const status = await this.command(["--agent", this.provider, "writer-status", sessionId, "--json"], true);
+    if (status.code !== 0) return false;
+    try { return parseWriterStatus(status.stdout, this.provider, sessionId).length > 0; } catch { return false; }
+  }
+
   private async sendUnlocked(input: AgentSessionSendInput): Promise<TmuxSendResult> {
     if (input.sessionMode === "fresh") return this.sendFresh(input);
+    const cloudSessionId = this.cloudSessionId(input);
+    if (cloudSessionId !== undefined) return this.sendToCloudSession(input, cloudSessionId);
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined) {
@@ -563,6 +609,45 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       : this.sender.send(this.tmuxSendInput(input, tmuxTarget));
   }
 
+  private cloudSessionId(input: { workspaceId: string; sessionId: string }): string | undefined {
+    const sessionId = canonicalCloudSessionId(input.sessionId);
+    return this.cloudSessions.get(input.workspaceId)?.has(sessionId) === true ? sessionId : undefined;
+  }
+
+  private async sendToCloudSession(input: AgentSessionSendInput, sessionId: string): Promise<TmuxSendResult> {
+    if (input.correlationId === undefined) {
+      return { ok: false, error: "A correlation ID is required for a cloud session call." };
+    }
+    const result = await this.run(process.execPath, [
+      this.agentNativeCallPath!,
+      "--agent", "claude",
+      "--cloud", "--delivery-only",
+      "--session", sessionId,
+      "--correlation-id", input.correlationId,
+      "--timeout", String(this.timeoutSeconds),
+      "--message", `${CLOUD_RELAY_NOTICE}\n\n${input.message}`
+    ], {
+      env: { ...processEnv },
+      timeoutMs: (this.timeoutSeconds + 20) * 1000
+    });
+    return deliveryReceipt(result);
+  }
+
+  async status(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionLiveStatus> {
+    if (this.cloudSessionId(input) !== undefined || this.agentNativeCallPath === undefined) return UNKNOWN_SESSION_STATUS;
+    const result = await this.run(process.execPath, [
+      join(dirname(this.agentNativeCallPath), "agent-session-status.mjs"),
+      "--agent", this.provider,
+      "--session", input.sessionId
+    ], { env: { ...processEnv }, timeoutMs: 10_000 });
+    if (result.code !== 0) return UNKNOWN_SESSION_STATUS;
+    try {
+      return JSON.parse(result.stdout) as AgentSessionLiveStatus;
+    } catch {
+      return UNKNOWN_SESSION_STATUS;
+    }
+  }
+
   private async nativeSessionCall(input: AgentSessionSendInput): Promise<TmuxSendResult | undefined> {
     if (this.agentNativeCallPath === undefined) return undefined;
     if (input.correlationId === undefined) {
@@ -579,11 +664,13 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     if (this.provider === "claude" && this.agentManagedInboxRoot !== undefined) {
       nativeArgs.push("--managed-inbox-root", this.agentManagedInboxRoot);
     }
+    const steer = input.urgent === true && this.provider === "codex";
+    if (steer) nativeArgs.push("--steer-or-queue", "--delivery-only");
     const result = await this.run(process.execPath, nativeArgs, {
       env: { ...processEnv },
       timeoutMs: (this.timeoutSeconds + 20) * 1000
     });
-    return nativeCallResult(result);
+    return steer ? deliveryReceipt(result) : nativeCallResult(result);
   }
 
   /** Launches via the bridge's `new`, checks we own the writer, then sends the first turn. Never falls back to another session. */
@@ -834,6 +921,25 @@ function parseBridgeSearch(value: string, expectedAgent: string): BridgeSearchRe
     throw new Error("Agent transcript search bridge returned malformed metadata.");
   }
   return response as BridgeSearchResponse;
+}
+
+// the cloud CLI receipt echoes the id it was given and only session_ is known to round-trip
+export function canonicalCloudSessionId(id: string): string {
+  return id.replace(/^cse_/, "session_");
+}
+
+function deliveryReceipt(result: { code: number; stdout: string; stderr: string }): TmuxSendResult {
+  const native = nativeCallResult(result);
+  if (result.code !== 0) return native;
+  let status: unknown;
+  let held: unknown;
+  try { ({ status, held } = JSON.parse(result.stdout) as { status?: unknown; held?: unknown }); } catch { return native; }
+  if (held === true) return { ok: true, reply: "Held by the communications gate, not delivered yet. No reply comes back through this task." };
+  if (status !== "steered" && status !== "queued") return native;
+  return {
+    ok: true,
+    reply: `${status === "steered" ? "Steered into the running turn" : "Queued for the next turn"}. Delivery only: no reply comes back through this task.`
+  };
 }
 
 function nativeCallResult(result: { code: number; stdout: string; stderr: string }): TmuxSendResult {
