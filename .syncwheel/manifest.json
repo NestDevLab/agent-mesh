@@ -111,7 +111,12 @@
       },
       "meta": {
         "purpose": "Provide per-item work ledger leases with fencing"
-      }
+      },
+      "integration_commits": [
+        "218be32ef2e6007e32fcadd63152673afedddb85",
+        "d4b87d4cf51d4f47c1eec0b678778e459ed18e9e",
+        "985e17fccfb3df7d823e7c9cc1123401c369f19c"
+      ]
     },
     {
       "id": "cloud-group-sessions",
