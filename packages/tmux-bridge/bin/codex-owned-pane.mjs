@@ -15,7 +15,7 @@ function processIdentity(procRoot, pid) {
     const fields = raw.slice(raw.lastIndexOf(")") + 1).trim().split(/\s+/);
     const ppid = Number(fields[1]);
     if (!Number.isSafeInteger(ppid) || !/^\d+$/.test(fields[19] ?? "")) throw denied();
-    return { ppid, start: fields[19] };
+    return { ppid, start: fields[19], state: fields[0] };
 }
 
 function readLockAcl(path) {
@@ -27,13 +27,18 @@ export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", cod
   if (!Number.isSafeInteger(panePid) || panePid <= 0 || !isAbsolute(cwd) || resolve(cwd) !== cwd || !isAbsolute(codexHome)) throw denied();
   const processInfo = pid => processIdentity(procRoot, pid);
   const gone = pid => {
-    try { lstatSync(`${procRoot}/${pid}`); return false; }
+    // Linux zombies have already closed every descriptor and cannot hold a
+    // writer lock. Their proc entry can outlive exe/cmdline until reaped.
+    try { lstatSync(`${procRoot}/${pid}`); return processInfo(pid).state === "Z"; }
     catch (error) { return error.code === "ENOENT"; }
   };
   const inventory = new Map();
   for (const entry of readdirSync(procRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    try { inventory.set(Number(entry.name), processInfo(entry.name)); }
+    try {
+      const info = processInfo(entry.name);
+      if (info.state !== "Z") inventory.set(Number(entry.name), info);
+    }
     catch (error) { if (!gone(entry.name)) throw denied("inventory.stat", error.code); }
   }
   if (!inventory.has(panePid)) throw denied();

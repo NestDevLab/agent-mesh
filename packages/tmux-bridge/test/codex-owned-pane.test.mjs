@@ -255,3 +255,14 @@ for (const scenario of [
     syncBuiltinESMExports();
   }
 });
+
+for (const state of ["Z", "S"]) test(`missing executable is excluded only for a proven zombie (${state})`, async t => {
+  const f = await fixture(t);
+  await f.process(90, 1, "service");
+  await unlink(join(f.procRoot, "90/exe"));
+  await writeFile(join(f.procRoot, "90/cmdline"), "");
+  const stat = await readFile(join(f.procRoot, "90/stat"), "utf8");
+  await writeFile(join(f.procRoot, "90/stat"), stat.replace(") S ", `) ${state} `));
+  if (state === "Z") assert.equal(discoverOwnedCodexThread(f.options).sessionId, id);
+  else assert.throws(() => discoverOwnedCodexThread(f.options), error => error.proofStage === "inventory.exe");
+});
