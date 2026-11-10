@@ -231,5 +231,7 @@ Each batch is one small PR and leaves existing behaviour unchanged.
 
 The lifecycle beat (#97) consumes the same module, as described in section 2.
 
+[Per-item work leases](ledger-item-lock.md) are a separate, opt-in coordination API for writers.
+
 Private adapters and their configuration are rolled out from the private ops hub, outside this
 repo.

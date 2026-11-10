@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Call external work-ledger adapters; keep only per-consumer opaque cursors."""
+"""Call work-ledger adapters and manage opt-in local item leases."""
 from __future__ import annotations
 import argparse
 from contextlib import contextmanager
@@ -319,6 +319,8 @@ def conformance(adapter, scheme):
     return {'schema': SCHEMA, 'scheme': scheme, 'outcome': 'pass'}
 
 def main():
+    from ledger_item_lock import add_parser, cli as lock_cli
+
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('adapters').add_argument('--json', action='store_true')
@@ -335,7 +337,10 @@ def main():
         sub.add_argument('--json', action='store_true')
     check = commands.add_parser('conformance')
     check.add_argument('--scheme', required=True)
+    add_parser(commands)
     args = parser.parse_args()
+    if args.command == 'lock':
+        return lock_cli(args)
     try:
         configured = adapters()
         if args.command == 'adapters':
