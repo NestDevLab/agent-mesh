@@ -29,6 +29,19 @@ class MeshGroupsTest(unittest.TestCase):
         self.first = GroupActor(session_id="runtime-a:session-1")
         self.second = GroupActor(session_id="runtime-b:session-2")
 
+    def test_idempotent_group_creation_serializes_concurrent_retries(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(GroupStore(self.state).ensure_group, self.admin,
+                                   "Example", "request-one") for _ in range(2)]
+            results = [future.result(timeout=10) for future in futures]
+        self.assertEqual(len({result["group"]["group_id"] for result in results}), 1)
+        self.assertEqual(sorted(result["created"] for result in results), [False, True])
+        self.assertEqual(len(self.store.list_groups(self.admin)), 1)
+        with self.assertRaises(GroupConflictError):
+            self.store.ensure_group(self.admin, "Different", "request-one")
+        with self.assertRaises(GroupAccessError):
+            self.store.ensure_group(self.first, "Example", "request-two")
+
     def cli(self, *args, message=None, success=True):
         result = subprocess.run([sys.executable, str(BIN / "agent-mesh"), "group", *args, "--json"],
                                 input=message, text=True, capture_output=True, timeout=10,
