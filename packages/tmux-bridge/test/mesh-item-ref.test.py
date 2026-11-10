@@ -37,7 +37,7 @@ spec.loader.exec_module(module)
 module.validate('work.test:item')
 """
         import subprocess
-        subprocess.run([sys.executable, '-I', '-c', code, str(ROOT / 'bin/ledger_item_lock.py')], check=True)
+        subprocess.run([sys.executable, '-I', '-B', '-c', code, str(ROOT / 'bin/ledger_item_lock.py')], check=True)
 
 
 if __name__ == '__main__':
