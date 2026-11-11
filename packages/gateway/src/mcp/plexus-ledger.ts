@@ -207,12 +207,15 @@ print(encoded)
 `;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOptions): void {
-  const isOwner = () => options.principal.kind === "user" && options.principal.plexusLedgerOwner === true;
-  if (!isOwner()) return;
+  const mayRead = () => (options.principal.kind === "user" && options.principal.plexusLedgerOwner === true) ||
+    (options.principal.kind === "service" && options.principal.plexusLedgerReadDelegate === true &&
+      validLedgerReadGrants(options.principal.ledgerReadGrants, options.principal.allowedWorkspaceIds) &&
+      options.principal.ledgerReadGrants.length > 0);
+  if (!mayRead()) return;
   const workspace = z.string().min(1).max(128).optional();
   const invoke = async (tool: "mesh_plexus_work_items" | "mesh_plexus_ledger_sessions", input: Row) => {
     try {
-      if (!isOwner() || !options.principal.allowedTools.includes(tool) || !options.plexusLedgerReader ||
+      if (!mayRead() || !options.principal.allowedTools.includes(tool) || !options.plexusLedgerReader ||
           !options.rateLimiter.consume(options.principal.id, tool)) throw new Error("Plexus read is not authorized.");
       const grants = options.principal.ledgerReadGrants;
       if (!validLedgerReadGrants(grants, options.principal.allowedWorkspaceIds)) throw new Error("Plexus read grant is required.");

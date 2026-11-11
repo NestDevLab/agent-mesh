@@ -426,9 +426,9 @@ explicitly. Refs use the versioned Unicode 15.0 item-reference contract (up to 5
 there is no normalization, truncation, prefix grant or authority inferred from a
 link. Existing group grants and item leases remain separate.
 
-These tools are owner-only. Configure the owner's opaque verified principal ID
+The user path is owner-only. Configure the owner's opaque verified principal ID
 as `plexusLedger.ownerPrincipalId` in private runtime configuration. Only that
-user principal can discover or invoke the tools; workspace/ref grants alone do
+user principal can discover or invoke the tools through the user path; workspace/ref grants alone do
 not confer ownership. The server reloads the owner designation for every request
 and checks it before any graph or adapter read. Tool arguments cannot nominate an
 owner. Core `workItems` still rejects callers with a scope; the wrapper does not
@@ -448,3 +448,27 @@ Runtime authorization is reloaded for every request, so changing or revoking a
 configured grant is checked on the next page as well. Responses omit machine
 paths from the ledger-sessions view. Native identities and cloud links require
 independent session grants, and group links grant no visibility or lease.
+
+
+### Explicit read-only service delegation
+
+An Access service identity may expose the two Plexus reads only through an explicit
+runtime binding with `kind: "service"`, `plexusLedgerReadDelegate: true`, nonempty
+`ledgerReadGrants`, and the individual read tools in `allowedTools`. The flag is
+rejected on users, without grants, or with any other allowed tool. Delegation does
+not set `plexusLedgerOwner` or change the existing user owner pin. The principal is
+still derived from the verified service assertion's `common_name`; never bind a
+browser-provided selector.
+
+Delegated principals register only `mesh_plexus_work_items` and
+`mesh_plexus_ledger_sessions`; facade mutation calls are denied even if an injected
+principal has an extra tool. Each invocation rechecks delegation, allowed tools,
+workspace and exact ledger/session/group grants. Removing the delegate flag or a
+grant denies the next request; no write tool is added. Service credentials identify
+the application server, not its end user. A consuming application must enforce its
+own Space/user authorization before releasing any complete result, and configure
+separate workspace/grant boundaries where visibility differs.
+
+No Access policy, service token, binding or runtime restart is provisioned by this
+source change. Keep service tokens server-side and send them to Access, which still
+must supply a signature/audience/expiry-verified assertion to the origin.

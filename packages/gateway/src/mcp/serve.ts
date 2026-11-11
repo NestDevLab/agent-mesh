@@ -637,7 +637,7 @@ function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
   }
 }
 
-function validateBinding(
+export function validateBinding(
   binding: CloudflareAccessBinding,
   index: number,
   agents: readonly RuntimeAgent[]
@@ -652,6 +652,9 @@ function validateBinding(
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||
     (binding.ledgerReadGrants !== undefined && !validLedgerReadGrants(binding.ledgerReadGrants, binding.allowedWorkspaceIds)) ||
+    (binding.plexusLedgerReadDelegate !== undefined && (binding.plexusLedgerReadDelegate !== true ||
+      binding.kind !== "service" || !binding.ledgerReadGrants?.length || !binding.allowedTools.length ||
+      binding.allowedTools.some(tool => tool !== "mesh_plexus_work_items" && tool !== "mesh_plexus_ledger_sessions"))) ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
         binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))

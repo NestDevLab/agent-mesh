@@ -29,6 +29,8 @@ export interface CloudflareAccessBinding {
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
   ledgerReadGrants?: readonly LedgerReadGrant[];
+  /** Explicit service-only, read-only Plexus delegation; never inferred from a grant. */
+  plexusLedgerReadDelegate?: true;
   allowedGoogleAccounts?: readonly GoogleWorkspaceAccountAlias[];
 }
 
@@ -173,6 +175,7 @@ export function resolveCloudflareAccessPrincipal(
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
     allowedDomainIds: [...binding.allowedDomainIds],
     ...(ownerPrincipalId === undefined ? {} : { plexusLedgerOwner: identity.kind === "user" && principalId === ownerPrincipalId }),
+    ...(identity.kind === "service" && binding.plexusLedgerReadDelegate === true ? { plexusLedgerReadDelegate: true as const } : {}),
     ...(binding.ledgerReadGrants === undefined ? {} : { ledgerReadGrants: binding.ledgerReadGrants.map(g => ({ ...g, ledger_refs: [...g.ledger_refs], session_ids: [...g.session_ids], ...(g.group_refs === undefined ? {} : { group_refs: [...g.group_refs] }) })) })
   };
 }
