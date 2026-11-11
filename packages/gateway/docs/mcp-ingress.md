@@ -455,14 +455,22 @@ independent session grants, and group links grant no visibility or lease.
 An Access service identity may expose the two Plexus reads only through an explicit
 runtime binding with `kind: "service"`, `plexusLedgerReadDelegate: true`, nonempty
 `ledgerReadGrants`, and the individual read tools in `allowedTools`. The flag is
-rejected on users, without grants, or with any other allowed tool. Delegation does
+rejected on users, without grants, with any other allowed tool, or with a nonempty
+`allowedGoogleAccounts` list. An omitted or empty Google account list grants no Google access. Delegation does
 not set `plexusLedgerOwner` or change the existing user owner pin. The principal is
 still derived from the verified service assertion's `common_name`; never bind a
 browser-provided selector.
 
-Delegated principals register only `mesh_plexus_work_items` and
-`mesh_plexus_ledger_sessions`; facade mutation calls are denied even if an injected
-principal has an extra tool. Each invocation rechecks delegation, allowed tools,
+Delegation is confined across **every MCP profile**, even when their Access
+audiences are identical. The `/agent-mesh` endpoint and `workspace` hub expose only
+`mesh_plexus_work_items` and `mesh_plexus_ledger_sessions`. The `google-workspace`
+and `memory` hubs register no tools for a delegated service. In particular, no
+Google tool, memory recall or operator-complete tool, or `memory_backend_status`
+is exposed, regardless of injected account grants or the configured memory runner.
+Direct calls to unregistered tools are denied without invoking any runner.
+
+The mesh registration early return and facade mutation guard remain independent
+lines of confinement, including when an injected principal has an extra tool. Each invocation rechecks delegation, allowed tools,
 workspace and exact ledger/session/group grants. Removing the delegate flag or a
 grant denies the next request; no write tool is added. Service credentials identify
 the application server, not its end user. A consuming application must enforce its
