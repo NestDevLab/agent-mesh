@@ -33,7 +33,8 @@
       "group-ref-public",
       "ledger-read-query",
       "plexus-work-items",
-      "codex-blank-session"
+      "codex-blank-session",
+      "controller-activity-safety"
     ],
     "strategy": "cherry-pick"
   },
@@ -376,6 +377,22 @@
       },
       "meta": {
         "purpose": "Fix blank Codex creation and owned-pane first turn"
+      }
+    },
+    {
+      "id": "controller-activity-safety",
+      "branch": "pr/controller-activity-safety",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Complete scoped controller readiness: replace per-Director recap wakeups with activity-based safety; existing sender retains global recap"
       }
     }
   ],
