@@ -460,6 +460,12 @@ rejected on users, without grants, with any other allowed tool, or with a nonemp
 not set `plexusLedgerOwner` or change the existing user owner pin. The principal is
 still derived from the verified service assertion's `common_name`; never bind a
 browser-provided selector.
+Verified user assertions (email present) still require a nonempty `sub`. For service
+assertions without email, a nonempty `common_name` remains mandatory; a nonempty
+`sub` is retained as subject, otherwise `common_name` supplies the subject. Origin
+signature, issuer, audience and expiry validation and the nonempty identity-subject
+check remain unchanged.
+
 
 Delegation is confined across **every MCP profile**, even when their Access
 audiences are identical. The `/agent-mesh` endpoint and `workspace` hub expose only

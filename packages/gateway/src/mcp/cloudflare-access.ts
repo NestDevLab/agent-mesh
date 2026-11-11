@@ -130,15 +130,14 @@ function reportCloudflareAccessAuthenticationError(error: unknown): void {
 }
 
 export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAccessIdentity {
-  if (typeof payload.sub !== "string" || payload.sub.length === 0) {
-    throw new Error("Cloudflare Access assertion has no subject.");
-  }
+  const subject = typeof payload.sub === "string" ? payload.sub : "";
   const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
   const commonName =
     typeof payload.common_name === "string" ? payload.common_name.trim() : "";
   if (email.length > 0) {
+    if (subject.length === 0) throw new Error("Cloudflare Access assertion has no subject.");
     return {
-      subject: payload.sub,
+      subject,
       kind: "user",
       selector: email,
       ...(payload.exp === undefined ? {} : { expiresAt: payload.exp })
@@ -148,7 +147,7 @@ export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAcc
     throw new Error("Cloudflare Access service assertion has no common_name.");
   }
   return {
-    subject: payload.sub,
+    subject: subject || commonName,
     kind: "service",
     selector: commonName,
     ...(payload.exp === undefined ? {} : { expiresAt: payload.exp })
