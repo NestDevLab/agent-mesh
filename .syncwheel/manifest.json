@@ -33,8 +33,7 @@
       "group-ref-public",
       "ledger-read-query",
       "plexus-work-items",
-      "codex-blank-session",
-      "session-links-verify"
+      "codex-blank-session"
     ],
     "strategy": "cherry-pick"
   },
@@ -378,24 +377,6 @@
       "meta": {
         "purpose": "Fix blank Codex creation and owned-pane first turn"
       }
-    },
-    {
-      "id": "session-links-verify",
-      "branch": "pr/session-links-verify",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "38a9f2d04224c113737007b1fbbacaf181178cf4",
-        "0e25b653ec58f743072756e18291767624a0831c",
-        "f36a0dfdd2922347c9be61422ee0945613b99e26"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {}
     }
   ],
   "syncwheel_tracking": "git-tracked",
