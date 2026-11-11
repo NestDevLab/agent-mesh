@@ -53,3 +53,15 @@ metadata without acquiring, replacing or renewing any role claim. It permits
 multiple native Directors to be catalogued for one project. An existing live claim
 on the same identity still prevents conflicting role/project metadata. Operational
 state writers continue to require their exact active claim token.
+
+## Cloud catalog labels
+
+`catalog register|update` accepts an existing `claude-cloud:<scope>:<native-id>`
+identity. Use `cloud register` first for a new attested cloud identity. Cloud
+catalog operations change only role/project/title/status metadata, never native
+adoption, activity, transport state or leases. Native role claims remain restricted
+to native UUID identities. Cloud summary and runtime mutation options are refused.
+
+`catalog list` includes cloud identities with the same role/project/archive filters.
+When stored evidence exists, each row includes `sessionLink` with `link`, `status`,
+`lastKnown` and `checkedAt`; listing never probes or fabricates fresh link evidence.

@@ -31,7 +31,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import * as plexus from "./plexus.mjs";
-import { catalogList, catalogUpdate, roleOperation } from "./session-catalog.mjs";
+import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from "./session-catalog.mjs";
 
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 
@@ -145,8 +145,9 @@ try {
       else if (subcommand === "backfill") {
         printResult(discoverNodes(stateDir, { ...values, full: true }), { json: true });
       } else if (["register", "update"].includes(subcommand)) {
-        const id = plexus.parseSessionId(values.session);
+        const id = parseCatalogSessionId(values.session);
         if (subcommand === "register" && !loadGraph(stateDir).nodes.some(n => plexus.sessionIdOf(n) === id)) {
+          if (id.startsWith("claude-cloud:")) throw new Error("cloud identity must already exist; use cloud register first");
           const [agent, uuid] = id.split(":");
           adoptNode(stateDir, { agent, "runtime-uuid": uuid, class: "unclassified" });
         }
