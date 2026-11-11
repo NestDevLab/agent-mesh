@@ -66,3 +66,11 @@ test('migrated refs preserve other links and deduplicate duplicate runtime nodes
   assert.equal(report.events.filter(e=>e.type==='link.opened').length,1);
   assert.equal(report.events.filter(e=>e.type==='link.closed').length,0);
 });
+
+test('explicit scope echoes capability and never observes or mutates another identity', () => {
+  const graph={nodes:[node('a'),node('b',b)]};
+  const session=`claude:${a}`;
+  const report=verifyLinks(graph,{[session]:{status:'missing'}},{session,apply:true,makeEvent:event});
+  assert.equal(report.result.session,session);assert.equal(report.result.results.length,1);assert.equal(report.events.length,1);assert.equal(report.events[0].node.id,'a');
+  assert.throws(()=>verifyLinks(graph,{}, {session:'claude:33333333-3333-4333-8333-333333333333'}),/no classified/);
+});

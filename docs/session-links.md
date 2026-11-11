@@ -34,3 +34,16 @@ Source roots use the existing `CLAUDE_SESSION_ROOT`,
 `CLAUDE_SESSION_METADATA_ROOT`, and `CODEX_STATE_DB` environment variables, plus
 `CLAUDE_DESKTOP_SESSION_ROOT` for Desktop records. Defaults derive from the current
 user home. Fixtures must override all four roots.
+
+## Self observation and catalog metadata
+
+`links verify --session <exact-session-id>` restricts both native reads and graph
+writes to nodes of that classified session. The JSON `session` field echoes the
+requested scope (null for a full scan). Unknown or unclassified requested sessions
+fail before native reads or graph writes. Successor resolution stays available.
+
+`catalog register|update --label-only --role director --project <slug>` declares
+metadata without acquiring, replacing or renewing any role claim. It permits
+multiple native Directors to be catalogued for one project. An existing live claim
+on the same identity still prevents conflicting role/project metadata. Operational
+state writers continue to require their exact active claim token.

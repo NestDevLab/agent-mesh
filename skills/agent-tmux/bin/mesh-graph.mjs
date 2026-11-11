@@ -92,6 +92,7 @@ const { values, positionals } = parseArgs({
     source: { type: "string" },
     evidence: { type: "string" },
     input: { type: "string" },
+    "label-only": { type: "boolean", default: false },
     apply: { type: "boolean", default: false },
     "all-history": { type: "boolean", default: false },
     "retention-days": { type: "string" },
@@ -126,10 +127,10 @@ try {
     case "links": {
       if (subcommand !== "verify") throw new Error("unknown links operation");
       const verify = graph => {
-        const sessions = [...new Set(linkTargets(graph).map(n => successor(graph, n)).filter(t => !t.error).map(t => t.session))];
+        const sessions = [...new Set(linkTargets(graph, { session: values.session }).map(n => successor(graph, n)).filter(t => !t.error).map(t => t.session))];
         const probe = spawnSync(process.env.PYTHON || "python3", [join(dirname(fileURLToPath(import.meta.url)), "session-link-sources.py")], { input: JSON.stringify(sessions), encoding: "utf8", timeout: 30000, maxBuffer: 16 * 1024 * 1024 });
         if (probe.status !== 0 || probe.error) throw new Error(`link source inspection failed: ${probe.error?.message || probe.stderr}`);
-        return { graph, ...verifyLinks(graph, JSON.parse(probe.stdout), { apply: values.apply, makeEvent: event }) };
+        return { graph, ...verifyLinks(graph, JSON.parse(probe.stdout), { apply: values.apply, session: values.session, makeEvent: event }) };
       };
       const report = values.apply ? mutate(stateDir, verify) : verify(loadGraph(stateDir)).result;
       if (values.json) printResult(report, { json: true });
@@ -1559,7 +1560,7 @@ function fail(message) {
 }
 
 function printHelp() {
-  process.stdout.write(`Session links:\n  mesh-graph links verify [--apply] [--json] [--state <dir>]\n\n`);
+  process.stdout.write(`Session links:\n  mesh-graph links verify [--session <agent:uuid>] [--apply] [--json] [--state <dir>]\n\n`);
   process.stdout.write(`Cloud sessions:\n  mesh-graph cloud register --session claude-cloud:<account-scope>:<cloud-id> --evidence <opaque-ref> [--title <title>] [--state <dir>]\n  mesh-graph cloud get --session claude-cloud:<account-scope>:<cloud-id> [--state <dir>]\n\n`);
   process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status>]\n  mesh-graph catalog list [--role <role> --project <slug> --archive exclude|include|only --title <text>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
