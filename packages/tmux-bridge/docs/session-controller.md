@@ -47,16 +47,25 @@ read-only follower for one bounded observation pass, including worker turn resul
 PR/CI snapshots use read-only `gh pr list`. These adapters run outside the short
 Plexus lock; all enqueue attempts are fenced under the exact claim.
 
-Open `threads.*.wait.until` deadlines, Amsterdam recaps at 08:30/13:30/18:30, and a project
-without an observed recap for six hours create events. `recap.marked_at` is the
-canonical recap watermark. Queue acceptance never counts as a completed recap.
-Safety requests are limited to one per six hours. Timezone-aware recap calculation
-covers summer and winter; a delayed poll catches a slot within 90 minutes.
+Open `threads.*.wait.until` deadlines and six hours without observed project
+activity create events. Activity comes from native catalog `last_activity_at`,
+unresolved thread activity, or new ledger, external input and PR/CI transitions.
+Lease renewals, polling timestamps and recap watermarks do not count as activity.
+Unknown activity starts a six-hour observation window; future timestamps cannot
+postpone the safety check. Safety requests are limited to one per six hours.
+Pending legacy recap or stale safety observations move into `retired_pending`
+receipts without losing their payloads. Unknown in-flight batches still require
+explicit reconciliation before any further delivery.
+
+This loop never schedules or sends a Director recap. A single global recap at
+08:30/13:30/18:30 Europe/Amsterdam belongs to the existing host digest workflow,
+which supplies the model-written cross-project text and delivery policy. Do not
+add a second sender or enable this loop as a substitute for that integration.
 
 Routine new digests receive one bounded `codex exec --sandbox read-only` triage,
 with schema-constrained output and no worker/schedule/message authorization. The
 Codex CLI keeps its configured model routing. Quiet digests are acknowledged
-without waking a Director. Actionable routine digests and judgment/deadline/recap
+without waking a Director. Actionable routine digests and judgment/deadline/safety
 events go only to the affected project's currently claimed Director in the runtime
 selected by the authoritative fallback mode file. Claude mode routes to Claude;
 Codex mode routes to Codex. An absent, ambiguous or expired claim blocks delivery

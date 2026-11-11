@@ -102,8 +102,8 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(len(state['pending']), 3)
 
     def test_real_deadline_closed_exclusion_and_six_hour_safety(self):
-        self.director.write_text(json.dumps({'recap': {'marked_at': self.now - 21601}, 'threads': {
-            'live': {'wait': {'until': self.now - 1}}, 'closed': {'wait': {'until': self.now - 1}, 'resolved': True},
+        self.director.write_text(json.dumps({'threads': {
+            'live': {'last_activity_at': self.now - 21601, 'wait': {'until': self.now - 1}}, 'closed': {'wait': {'until': self.now - 1}, 'resolved': True},
             'future': {'wait': {'until': self.now + 60}}}}))
         state = {}
         c.observe(self.project, state, self.now)
@@ -181,12 +181,66 @@ class ControllerTest(unittest.TestCase):
         self.assertFalse(ps['pending'])
         self.assertNotIn('dispatching',ps)
 
-    def test_amsterdam_slots_survive_dst_and_delayed_poll(self):
+    def test_recap_slots_do_not_wake_directors(self):
         for month, hour in [(1, 7), (7, 6)]:
             now = dt.datetime(2026, month, 2, hour, 30, 15, tzinfo=dt.timezone.utc).timestamp()
             state = {'observed_at': now - 60}
             c.observe(self.project, state, now)
-            self.assertEqual([x['kind'] for x in state['pending'].values()], ['recap'])
+            self.assertFalse(state.get('pending'))
+
+    def test_activity_not_recap_or_lease_controls_safety(self):
+        self.director.write_text(json.dumps({'recap': {'marked_at': self.now}, 'threads': {}}))
+        for active, expect_safety in [(self.now - 21601, True), (self.now - 1, False)]:
+            catalog = {'sessions': [{'project': 'example', 'role': 'director',
+                        'last_activity_at': active, 'last_seen_at': self.now,
+                        'metadata_updated_at': self.now}]}
+            state = {}
+            c.observe(self.project, state, self.now, catalog)
+            self.assertEqual(bool(state.get('pending')), expect_safety)
+        state = {}
+        c.observe(self.project, state, self.now)
+        c.observe(self.project, state, self.now + 21600)
+        self.assertEqual([x['kind'] for x in state['pending'].values()], ['safety'])
+
+    def test_input_and_other_projects_do_not_create_false_idle_activity(self):
+        state = {}
+        catalog = {'sessions': [{'project': 'other', 'last_activity_at': self.now},
+                   {'project': 'example', 'role': 'global-controller', 'last_activity_at': self.now},
+                   {'project': 'example', 'last_activity_at': self.now + 999999}]}
+        c.observe(self.project, state, self.now, catalog)
+        c.observe(self.project, state, self.now + 21600, catalog)
+        self.assertTrue(state['pending'])
+        self.ledger.write_text('actual work')
+        c.observe(self.project, state, self.now + 21601, catalog)
+        self.assertEqual([x['kind'] for x in state['pending'].values()], ['ledger'])
+        self.assertTrue(state['retired_pending'])
+
+    def test_safety_pending_and_acknowledged_requests_remain_bounded(self):
+        state = {}
+        catalog = {'sessions': [{'project': 'example', 'last_activity_at': self.now - 21601}]}
+        c.observe(self.project, state, self.now, catalog)
+        original = copy.deepcopy(state['pending'])
+        c.observe(self.project, state, self.now + 25000, catalog)
+        self.assertEqual(state['pending'], original)
+        state['seen'] = {identity: self.now + 25000 for identity in original}
+        state['pending'] = {}
+        state['safety_requested_at'] = self.now + 25000
+        c.observe(self.project, state, self.now + 25001, catalog)
+        self.assertFalse(state['pending'])
+        c.observe(self.project, state, self.now + 46600, catalog)
+        self.assertEqual([x['kind'] for x in state['pending'].values()], ['safety'])
+
+    def test_legacy_pending_is_preserved_and_unknown_dispatch_is_not_retried(self):
+        pending = {'old-recap': {'kind': 'recap', 'value': 'old-slot'},
+                   'old-safety': {'kind': 'safety', 'value': {'no_recap_since': self.now - 30000}}}
+        state = {'pending': copy.deepcopy(pending)}
+        c.observe(self.project, state, self.now)
+        self.assertFalse(state['pending'])
+        self.assertEqual({k: v['item'] for k, v in state['retired_pending'].items()}, pending)
+        state = {'pending': copy.deepcopy(pending), 'dispatching': {'keys': ['old-recap']}}
+        c.observe(self.project, state, self.now)
+        self.assertEqual(state['pending'], {'old-recap': pending['old-recap']})
+        self.assertIn('dispatching', state)
 
     def test_routing_requires_exact_live_director_claim_and_mode(self):
         def row(runtime):
