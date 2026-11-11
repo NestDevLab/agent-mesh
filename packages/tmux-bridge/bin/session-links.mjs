@@ -28,7 +28,7 @@ export function verifyLinks(graph, observations, { apply = false, at = new Date(
     const target = successor(graph, node);
     const observed = target.error ? { status: 'dead', reason: target.error } : observations[target.session] || { status: 'missing', reason: 'native-evidence-unavailable' };
     const prior = node.sessionLink;
-    const changed = observed.status === 'ok' && (prior?.link !== observed.link || prior?.resolvedSession !== target.session);
+    const changed = observed.status === 'ok' && (prior?.link !== observed.link || prior?.resolvedSession !== target.session || prior?.status !== 'ok');
     const result = { nodeId: node.id, session: sessionIdOf(node), resolvedSession: target.session, role: node.catalogRole || 'unclassified', project: node.catalogProject || null, title: node.catalogTitle || node.title, ...observed, status: changed ? 'changed' : observed.status, chain: target.chain, previousLink: prior?.link || null };
     results.push(result);
     if (!apply) continue;
