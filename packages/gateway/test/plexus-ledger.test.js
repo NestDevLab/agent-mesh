@@ -16,7 +16,7 @@ const hidden = "22222222-2222-4222-8222-222222222222";
 const local = `codex:${native}`;
 const cloud = "claude-cloud:test:cse_SYNTHETIC";
 const refs = Array.from({ length: 671 }, (_, i) => `work:ITEM-${String(i + 1).padStart(4, "0")}`);
-function harness() {
+function harness(overrides = {}) {
   const grant = { workspace_id: "workspace.test", ledger_refs: [...refs], session_ids: [local, cloud], group_refs: ["group:visible"] };
   const graph = { migrated: true, lastSeq: 7, nodes: [
     { id: "local", agent: "codex", runtimeUuid: native, title: "Visible", updatedAt: "2030-01-01T00:00:00Z", domains: [] },
@@ -40,7 +40,7 @@ function harness() {
     return args.includes("show") ? JSON.stringify(graph) : JSON.stringify({ items: items.filter(i => allowed.includes(i.ref)), missing: [], errors: [] });
   });
   const principal = { id: "principal", kind: "user", plexusLedgerOwner: true, requesterId: "requester", allowedTools: ["mesh_plexus_work_items", "mesh_plexus_ledger_sessions"],
-    allowedWorkspaceIds: ["workspace.test"], allowedDomainIds: [], allowedAgentIds: [], ledgerReadGrants: [grant] };
+    allowedWorkspaceIds: ["workspace.test"], allowedDomainIds: [], allowedAgentIds: [], ledgerReadGrants: [grant], ...overrides };
   const handlers = new Map();
   const options = { principal, plexusLedgerReader: reader, rateLimiter: { consume: () => true } };
   registerPlexusLedgerTools({ registerTool(name, config, handler) { handlers.set(name, { config, handler }); } }, options);
@@ -490,12 +490,61 @@ test("core still rejects a scoped caller before requesting ledger data", async (
 test("owner designation is bound to verified identity, not scoped grants or binding claims", () => {
   for(const kind of ["user","service"]) {
     const h = harness(), selector = kind === "user" ? "owner@example.test" : "test-service";
-    const binding = {...h.principal,kind,selector,plexusLedgerOwner:true};
+    const binding = {...h.principal,kind,selector,plexusLedgerOwner:true,...(kind === "service" ? {plexusLedgerReadDelegate:true} : {})};
     const auth = {extra:{cloudflareAccessIdentity:{kind,subject:"test",selector}}};
     const scoped = resolveCloudflareAccessPrincipal(auth,[binding]);
     assert.equal(scoped.plexusLedgerOwner,undefined);
     assert.equal(resolveCloudflareAccessPrincipal(auth,[binding],scoped.id).plexusLedgerOwner,kind === "user");
     assert.equal(resolveCloudflareAccessPrincipal(auth,[binding],"different-principal").plexusLedgerOwner,false);
     assert.equal(resolveCloudflareAccessPrincipal(auth,[binding],undefined).plexusLedgerOwner,undefined);
+  }
+});
+
+
+test("explicit service delegation reads exact grants without acquiring owner status", async () => {
+  const h = harness({kind:"service", plexusLedgerOwner:false, plexusLedgerReadDelegate:true});
+  assert.equal(h.handlers.size,2);
+  assert.equal((await h.invoke("mesh_plexus_work_items",{limit:1})).total,671);
+  assert.equal((await h.invoke("mesh_plexus_ledger_sessions",{ref:refs[0]})).sessions.length,2);
+  const count=h.calls.length;
+  for(const input of [{workspace_id:"other"},{ref:"work:OUTSIDE"}]) {
+    assert.equal((await h.invoke(input.ref ? "mesh_plexus_ledger_sessions" : "mesh_plexus_work_items",input)).isError,true);
+  }
+  assert.equal(h.calls.length,count);
+  h.principal.plexusLedgerReadDelegate=undefined;
+  assert.equal((await h.invoke("mesh_plexus_work_items")).isError,true);
+  assert.equal(h.calls.length,count);
+});
+
+test("service discovery requires delegation plus grants and each allowed tool", async () => {
+  for(const overrides of [ {kind:"service"}, {kind:"service",plexusLedgerReadDelegate:true,ledgerReadGrants:[]},
+    {kind:"service",plexusLedgerReadDelegate:true,ledgerReadGrants:undefined} ]) {
+    assert.equal(harness(overrides).handlers.size,0);
+  }
+  const h=harness({kind:"service",plexusLedgerReadDelegate:true,allowedTools:["mesh_plexus_work_items"]});
+  assert.deepEqual([...h.handlers.keys()],["mesh_plexus_work_items"]);
+});
+
+test("verified service binding propagates delegation independently of the user owner pin", async () => {
+  const h=harness();
+  const binding={...h.principal,kind:"service",selector:"test-service",plexusLedgerReadDelegate:true};
+  const p=resolveCloudflareAccessPrincipal({extra:{cloudflareAccessIdentity:{kind:"service",subject:"test",selector:binding.selector}}},[binding],"other-owner");
+  assert.equal(p.plexusLedgerReadDelegate,true);assert.equal(p.plexusLedgerOwner,false);
+  const {registerMeshMcpTools}=await import("../src/mcp/mesh-mcp.ts");
+  const registered=new Map();
+  registerMeshMcpTools({registerTool(name,config,handler){registered.set(name,{config,handler});}},
+    {...h.options,principal:{...p,allowedTools:[...p.allowedTools,"mesh_send"]},gateway:{},agents:[]});
+  assert.deepEqual([...registered.keys()],["mesh_plexus_work_items","mesh_plexus_ledger_sessions"]);
+  assert.ok([...registered.values()].every(t=>t.config.annotations.readOnlyHint===true));
+});
+
+test("runtime binding rejects user delegation, missing grants, non-booleans and non-read tools", async () => {
+  const {validateBinding}=await import("../src/mcp/serve.ts");
+  const h=harness(), valid={...h.principal,kind:"service",selector:"test-service",plexusLedgerReadDelegate:true};
+  assert.doesNotThrow(()=>validateBinding(valid,0,[]));
+  for(const change of [{kind:"user"},{ledgerReadGrants:undefined},{ledgerReadGrants:[]},
+    {plexusLedgerReadDelegate:false},{plexusLedgerReadDelegate:"true"},{allowedTools:[]},
+    {allowedTools:["mesh_send"]},{allowedTools:["mesh_plexus_work_items","mesh_submit"]}]) {
+    assert.throws(()=>validateBinding({...valid,...change},0,[]),/Invalid MCP runtime binding/);
   }
 });
