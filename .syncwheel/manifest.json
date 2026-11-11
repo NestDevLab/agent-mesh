@@ -34,7 +34,8 @@
       "ledger-read-query",
       "plexus-work-items",
       "codex-blank-session",
-      "controller-activity-safety"
+      "controller-activity-safety",
+      "plexus-service-delegate"
     ],
     "strategy": "cherry-pick"
   },
@@ -395,6 +396,22 @@
       },
       "meta": {
         "purpose": "Complete scoped controller readiness: replace per-Director recap wakeups with activity-based safety; existing sender retains global recap"
+      }
+    },
+    {
+      "id": "plexus-service-delegate",
+      "branch": "codex/plexus-service-delegate",
+      "base": "031bd7d6c1c6519cc94510652301c40b6756f434",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Explicit scoped read-only service delegation"
       }
     }
   ],
