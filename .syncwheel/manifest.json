@@ -33,8 +33,7 @@
       "group-ref-public",
       "ledger-read-query",
       "plexus-work-items",
-      "codex-blank-session",
-      "cloud-director-catalog"
+      "codex-blank-session"
     ],
     "strategy": "cherry-pick"
   },
@@ -378,22 +377,6 @@
       "meta": {
         "purpose": "Fix blank Codex creation and owned-pane first turn"
       }
-    },
-    {
-      "id": "cloud-director-catalog",
-      "branch": "pr/cloud-director-catalog",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "d0a0dcc1f2c7190d730d415a088f509ac0576e31"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {}
     }
   ],
   "syncwheel_tracking": "git-tracked",
