@@ -9,8 +9,8 @@ from titles or stale claims.
 Claude evidence priority is the newest transcript `bridgeSessionId`, a live
 process metadata file, then the newest matching Desktop record. `cse_` IDs are
 normalized to `session_` links. Desktop archive evidence is preserved. Cloud
-identities require matching native evidence; an attested ID alone does not prove
-availability. Bridge-spawn directories alone contain no authoritative local
+identities supply their own link when no Desktop record matches. This preserves
+the registered identity and does not prove remote availability. Bridge-spawn directories alone contain no authoritative local
 session association and do not establish a working link.
 
 Codex links are thread IDs: the native SQLite row must exist and be unarchived.
@@ -23,8 +23,14 @@ reachability: this command makes no network calls and never restarts Remote Cont
 Without `--apply` the graph is unchanged. Apply appends replayable node events
 containing `sessionLink` with checked/changed timestamps and a `session-link:` ref
 through existing graph links. Historical refs stay in the link event history.
-Missing/dead/archived outcomes preserve prior refs as historical evidence; consumers
-must consult `sessionLink.status`. No node is closed, archived or granted a role.
+Missing/dead/archived outcomes retain the last known link from `sessionLink.link`,
+then current `session-link:session_*` refs (authoritative open graph links when
+migrated, node refs otherwise). Migrated refs prefer the newest `since` timestamp
+with a stable identity tie-break; legacy refs use lexical order. An observed link
+is also retained when neither store has prior evidence. Retained links carry
+`lastKnown: true` in JSON results and persisted metadata; status and reason remain
+as observed. Fresh successful observations clear `lastKnown`. Consumers must
+consult `sessionLink.status`; a retained URL is not remote reachability proof. No node is closed, archived or granted a role.
 
 JSON output includes `checkedAt`, `applied` and `results`, each with node/session,
 resolved session, role/project, status, evidence source, reason and successor chain.

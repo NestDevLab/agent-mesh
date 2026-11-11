@@ -37,6 +37,10 @@ test('native fixtures: transcript priority, pid liveness, Desktop archive, Codex
     writeFileSync(desktopPath,JSON.stringify({cliSessionId:a,bridgeSessionIds:['cse_Desktop'],isArchived:false}));
     const env={...process.env,CLAUDE_SESSION_ROOT:transcripts,CLAUDE_SESSION_METADATA_ROOT:metadata,CLAUDE_DESKTOP_SESSION_ROOT:desktop,CODEX_STATE_DB:db};
     const run=(sessions)=>{const p=spawnSync('python3',['bin/session-link-sources.py'],{cwd:new URL('..',import.meta.url),env,input:JSON.stringify(sessions),encoding:'utf8'});assert.equal(p.status,0,p.stderr);return JSON.parse(p.stdout);};
+    for (const nativeId of ['cse_CloudFixture', 'session_CloudFixture']) {
+      const cloud=`claude-cloud:fixture:${nativeId}`;
+      assert.deepEqual(run([cloud])[cloud],{status:'ok',link:'https://claude.ai/code/session_CloudFixture',source:'cloud-identity',reason:'remote-reachability-unverified'});
+    }
     assert.match(run([`claude:${a}`])[`claude:${a}`].link,/session_New$/);
     rmSync(transcript); assert.equal(run([`claude:${a}`])[`claude:${a}`].source,'claude-pidfile');
     rmSync(join(metadata,`${process.pid}.json`)); assert.equal(run([`claude:${a}`])[`claude:${a}`].source,'claude-desktop');
@@ -73,4 +77,36 @@ test('explicit scope echoes capability and never observes or mutates another ide
   const report=verifyLinks(graph,{[session]:{status:'missing'}},{session,apply:true,makeEvent:event});
   assert.equal(report.result.session,session);assert.equal(report.result.results.length,1);assert.equal(report.events.length,1);assert.equal(report.events[0].node.id,'a');
   assert.throws(()=>verifyLinks(graph,{}, {session:'claude:33333333-3333-4333-8333-333333333333'}),/no classified/);
+});
+
+test('non-ok observations preserve prior links and observed status through repeated apply', () => {
+  for (const status of ['missing', 'dead', 'archived']) {
+    const link='https://claude.ai/code/session_PriorFixture';
+    const graph={nodes:[node('a',a,{refs:['session-link:session_OtherFixture'],sessionLink:{link}})]};
+    const observations={[`claude:${a}`]:{status,reason:'fixture-unavailable'}};
+    const report=verifyLinks(graph,observations,{apply:true,makeEvent:event});
+    assert.equal(report.result.results[0].link,link);
+    assert.equal(report.result.results[0].status,status);
+    assert.equal(report.result.results[0].lastKnown,true);
+    const stored=report.events[0].node;
+    assert.equal(stored.sessionLink.link,link);assert.equal(stored.sessionLink.reason,'fixture-unavailable');assert.equal(stored.sessionLink.lastKnown,true);
+    assert.equal(verifyLinks({nodes:[stored]},observations,{apply:true,makeEvent:event}).events[0].node.sessionLink.link,link);
+    assert.equal(graph.nodes[0].sessionLink.link,link);
+  }
+});
+test('null prior recovers current refs from the authoritative store only', () => {
+  const n=node('a',a,{sessionLink:{link:null},refs:['session-link:session_LegacyFixture']});
+  const observations={[`claude:${a}`]:{status:'missing',reason:'fixture-unavailable'}};
+  assert.equal(verifyLinks({nodes:[n]},observations).result.results[0].link,'https://claude.ai/code/session_LegacyFixture');
+  const graph={migrated:true,nodes:[n],links:[
+    {session:`claude:${a}`,ref:'session-link:session_ClosedFixture',until:'2026-01-03',since:'2026-01-03'},
+    {session:`claude:${b}`,ref:'session-link:session_ForeignFixture',until:null,since:'2026-01-04'},
+    {session:`claude:${a}`,ref:'session-link:session_OldFixture',until:null,since:'2026-01-01'},
+    {session:`claude:${a}`,ref:'session-link:session_CurrentFixture',until:null,since:'2026-01-02'},
+  ]};
+  const recovered=verifyLinks(graph,observations,{apply:true,makeEvent:event});
+  assert.equal(recovered.result.results[0].link,'https://claude.ai/code/session_CurrentFixture');assert.equal(recovered.events[0].node.sessionLink.lastKnown,true);
+  const none=verifyLinks({...graph,links:[]},observations).result.results[0];assert.equal(none.link,null);assert.equal(none.lastKnown,false);
+  const fresh=verifyLinks({nodes:[recovered.events[0].node]},{[`claude:${a}`]:{status:'ok',link:'https://claude.ai/code/session_FreshFixture'}},{apply:true,makeEvent:event});
+  assert.equal(fresh.events[0].node.sessionLink.lastKnown,false);
 });

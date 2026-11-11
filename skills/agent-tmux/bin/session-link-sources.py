@@ -53,6 +53,10 @@ def collect(sessions):
             is_cloud = agent == 'claude-cloud'
             cloud_id = bridge(uuid.split(':', 1)[1]) if is_cloud else None
             matching = [row for _, _, row in desktop_rows if (row.get('cliSessionId') == uuid if not is_cloud else cloud_id in [bridge(v) for v in row.get('bridgeSessionIds', [])] or cloud_id == bridge(row.get('remoteControlSpawn', {}).get('ccrSessionId')))]
+            if is_cloud and not matching:
+                result[session] = dict(status='ok', link='https://claude.ai/code/' + cloud_id,
+                                       source='cloud-identity', reason='remote-reachability-unverified')
+                continue
             chosen = None
             found_transcript = False
             if not is_cloud:
