@@ -130,6 +130,9 @@ function reportCloudflareAccessAuthenticationError(error: unknown): void {
 }
 
 export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAccessIdentity {
+  if (Object.hasOwn(payload, "sub") && typeof payload.sub !== "string") {
+    throw new Error("Cloudflare Access assertion has an invalid subject claim.");
+  }
   const subject = typeof payload.sub === "string" ? payload.sub : "";
   const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
   const commonName =

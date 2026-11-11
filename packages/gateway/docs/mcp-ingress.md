@@ -462,7 +462,8 @@ still derived from the verified service assertion's `common_name`; never bind a
 browser-provided selector.
 Verified user assertions (email present) still require a nonempty `sub`. For service
 assertions without email, a nonempty `common_name` remains mandatory; a nonempty
-`sub` is retained as subject, otherwise `common_name` supplies the subject. Origin
+`sub` is retained as subject. Only an absent or empty-string `sub` allows
+`common_name` to supply the subject; a present non-string `sub` is rejected. Origin
 signature, issuer, audience and expiry validation and the nonempty identity-subject
 check remain unchanged.
 
