@@ -221,3 +221,12 @@ test('incremental discovery collects an explicit native summary without refreshi
   assert.equal(rows[0].summary_updated_at,'2026-10-01T10:00:00Z');
  } finally {await rm(root,{recursive:true,force:true});}
 });
+
+test('explicit label-only catalog metadata never takes a claim from another runtime', () => fixture(async state => {
+ const held=(await ok(state,...claim(a))).claim;
+ await ok(state,'catalog','update','--session',b,'--role','director','--project','example','--label-only');
+ const rows=(await ok(state,'catalog','list','--role','director')).sessions;
+ assert.equal(rows.length,2);
+ const claims=(await ok(state,'role','list')).claims;assert.equal(claims.length,1);assert.equal(claims[0].id,held.id);assert.equal(claims[0].session,a);
+ assert.notEqual((await run(state,'catalog','update','--session',a,'--role','director','--project','other','--label-only')).code,0);
+}));

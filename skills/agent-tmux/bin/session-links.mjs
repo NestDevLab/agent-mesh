@@ -1,9 +1,16 @@
 /** Deterministic link verification; native reads are injected and events remain replayable. */
-import { sessionIdOf, refDiffEvents } from './plexus.mjs';
+import { sessionIdOf, parseSessionId, parseCloudSessionId, refDiffEvents } from './plexus.mjs';
 
-export function linkTargets(graph) {
-  return graph.nodes.filter(n => (n.catalogRole && n.catalogRole !== 'unclassified') || n.cloudIdentity)
+export function linkTargets(graph, { session } = {}) {
+  if (session !== undefined) {
+    if (session.startsWith('claude-cloud:')) parseCloudSessionId(session);
+    else session = parseSessionId(session);
+  }
+  const nodes = graph.nodes.filter(n => (n.catalogRole && n.catalogRole !== 'unclassified') || n.cloudIdentity)
+    .filter(n => session === undefined || sessionIdOf(n) === session)
     .sort((a, b) => a.id.localeCompare(b.id));
+  if (session !== undefined && !nodes.length) throw new Error('requested session has no classified catalog or cloud node');
+  return nodes;
 }
 export function successor(graph, node) {
   const chain = [], seen = new Set();
@@ -22,9 +29,9 @@ export function successor(graph, node) {
   }
   return { session, chain, error: 'session-identity-unavailable' };
 }
-export function verifyLinks(graph, observations, { apply = false, at = new Date().toISOString(), makeEvent } = {}) {
+export function verifyLinks(graph, observations, { apply = false, session, at = new Date().toISOString(), makeEvent } = {}) {
   const events = [], results = [], refSubjects = new Set();
-  for (const node of linkTargets(graph)) {
+  for (const node of linkTargets(graph, { session })) {
     const target = successor(graph, node);
     const observed = target.error ? { status: 'dead', reason: target.error } : observations[target.session] || { status: 'missing', reason: 'native-evidence-unavailable' };
     const prior = node.sessionLink;
@@ -46,5 +53,5 @@ export function verifyLinks(graph, observations, { apply = false, at = new Date(
       else events[events.length - 1].node.refs = refs;
     }
   }
-  return { events, result: { checkedAt: at, applied: apply, results } };
+  return { events, result: { checkedAt: at, applied: apply, session: session || null, results } };
 }

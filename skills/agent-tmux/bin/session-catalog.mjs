@@ -84,7 +84,8 @@ export function catalogUpdate(graph, session, options, makeEvent) {
   for (const node of nodes) {
     const targetRole = role ?? node.catalogRole;
     const targetProject = project ?? node.catalogProject;
-    if (SINGLETONS.has(targetRole) && !(graph.roleClaims || []).some(c => c.session === session && c.role === targetRole && c.project === targetProject && claimState(c) === 'active')) throw new Error('singleton labels require an active role claim');
+    if (options['label-only'] && (graph.roleClaims || []).some(c => c.session === session && claimState(c) === 'active' && (c.role !== targetRole || c.project !== targetProject))) throw new Error('catalog label conflicts with own live claim');
+    if (!options['label-only'] && SINGLETONS.has(targetRole) && !(graph.roleClaims || []).some(c => c.session === session && c.role === targetRole && c.project === targetProject && claimState(c) === 'active')) throw new Error('singleton labels require an active role claim');
   }
   const events = nodes.map(node => makeEvent('node.upserted', { node: { ...node,
     ...(role !== undefined ? { catalogRole: role } : {}), ...(project !== undefined ? { catalogProject: project } : {}),
