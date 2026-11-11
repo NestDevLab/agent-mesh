@@ -49,6 +49,15 @@ for (const profile of ["workspace", "google-workspace", "memory"]) {
       else assert.ok(result.error || result.result?.isError);
     }
     assert.deepEqual(effects,{google:0,memory:0,status:0,plexus:profile==="workspace"?2:0});
+    // Defense in depth when an injected principal bypasses the Access resolver.
+    delete principal.plexusLedgerReadDelegate;
+    const revoked=await request("tools/list");
+    assert.deepEqual((revoked.result?.tools??[]).map(t=>t.name),[]);
+    for(const name of [...reads,"memory_search","memory_backend_status","google_drive_search"]){
+      const denied=await request("tools/call",name,{workspace_id:"workspace.example",ref:"work:EXAMPLE-1",query:"example"});
+      assert.ok(denied.error || denied.result?.isError);
+    }
+    assert.deepEqual(effects,{google:0,memory:0,status:0,plexus:profile==="workspace"?2:0});
   });
 }
 test("delegate runtime binding rejects Google account grants, but permits an empty account list",()=>{

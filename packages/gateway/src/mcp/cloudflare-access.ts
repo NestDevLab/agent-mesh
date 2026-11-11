@@ -1,4 +1,4 @@
-import type { LedgerReadGrant } from "./plexus-ledger.js";
+import { isPlexusServicePrincipal, type LedgerReadGrant } from "./plexus-ledger.js";
 import { createHash, webcrypto } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
@@ -165,6 +165,9 @@ export function resolveCloudflareAccessPrincipal(
     throw new Error("Verified Cloudflare Access identity is missing.");
   }
   const binding = resolveCloudflareAccessBinding(authInfo, bindings);
+  if (isPlexusServicePrincipal(binding) && binding.plexusLedgerReadDelegate !== true) {
+    throw new Error("Plexus service delegation is disabled.");
+  }
   const principalId = cloudflarePrincipalId(identity.kind, identity.selector);
   return {
     id: principalId,

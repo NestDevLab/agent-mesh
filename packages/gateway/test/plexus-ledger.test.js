@@ -490,7 +490,7 @@ test("core still rejects a scoped caller before requesting ledger data", async (
 test("owner designation is bound to verified identity, not scoped grants or binding claims", () => {
   for(const kind of ["user","service"]) {
     const h = harness(), selector = kind === "user" ? "owner@example.test" : "test-service";
-    const binding = {...h.principal,kind,selector,plexusLedgerOwner:true};
+    const binding = {...h.principal,kind,selector,plexusLedgerOwner:true,...(kind === "service" ? {plexusLedgerReadDelegate:true} : {})};
     const auth = {extra:{cloudflareAccessIdentity:{kind,subject:"test",selector}}};
     const scoped = resolveCloudflareAccessPrincipal(auth,[binding]);
     assert.equal(scoped.plexusLedgerOwner,undefined);

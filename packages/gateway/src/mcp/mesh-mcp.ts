@@ -1,4 +1,4 @@
-import { registerPlexusLedgerTools, type LedgerReadGrant, type PlexusLedgerReader } from "./plexus-ledger.js";
+import { isPlexusServicePrincipal, registerPlexusLedgerTools, type LedgerReadGrant, type PlexusLedgerReader } from "./plexus-ledger.js";
 import type { WorkspaceWorkerRouter } from "./workspace-worker.js";
 import { randomUUID } from "crypto";
 import {
@@ -564,7 +564,7 @@ export class MeshMcpFacade {
   }
 
   private assertAllowed(tool: MeshMcpTool): void {
-    if ((this.options.principal.kind === "service" && this.options.principal.plexusLedgerReadDelegate === true) ||
+    if (isPlexusServicePrincipal(this.options.principal) ||
         !this.options.principal.allowedTools.includes(tool)) {
       throw new Error(`MCP principal is not allowed to use ${tool}.`);
     }
@@ -654,7 +654,7 @@ export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
 /** Registers the Agent Mesh surface on a standalone or aggregated MCP server. */
 export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions): void {
   registerPlexusLedgerTools(server, options);
-  if (options.principal.kind === "service" && options.principal.plexusLedgerReadDelegate === true) return;
+  if (isPlexusServicePrincipal(options.principal)) return;
   const facade = new MeshMcpFacade(options);
 
   if (options.principal.allowedTools.includes("mesh_list_agents")) server.registerTool(

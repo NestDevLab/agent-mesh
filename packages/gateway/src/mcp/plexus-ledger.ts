@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { MeshMcpOptions } from "./mesh-mcp.js";
+import type { MeshMcpOptions, MeshMcpPrincipal } from "./mesh-mcp.js";
 
 const SESSION = /^(?:(?:codex|claude):[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|claude-cloud:[a-z][a-z0-9-]{0,63}:(?:session|cse)_[A-Za-z0-9]{1,128})$/i;
 const exec = promisify(execFile);
@@ -43,6 +43,15 @@ export interface LedgerReadGrant {
   ledger_refs: readonly string[];
   session_ids: readonly string[];
   group_refs?: readonly string[];
+}
+/** Declared Plexus service scope is independent of its current enable flag.
+ * Empty/revoked grants still reserve the profile: disabling reads must never
+ * select an implicit Google or memory service profile instead. */
+export function isPlexusServicePrincipal(principal: Pick<MeshMcpPrincipal,
+  "kind" | "allowedTools" | "ledgerReadGrants" | "plexusLedgerReadDelegate">): boolean {
+  return principal.kind === "service" && (principal.plexusLedgerReadDelegate === true ||
+    principal.ledgerReadGrants !== undefined || principal.allowedTools.some(tool =>
+      tool === "mesh_plexus_work_items" || tool === "mesh_plexus_ledger_sessions"));
 }
 export interface PlexusLedgerConfig { bridgeRoot: string; ownerPrincipalId?: string; timeoutMs?: number; maxResultBytes?: number }
 export interface PlexusLedgerReader {

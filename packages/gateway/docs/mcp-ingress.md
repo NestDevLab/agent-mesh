@@ -469,6 +469,20 @@ Google tool, memory recall or operator-complete tool, or `memory_backend_status`
 is exposed, regardless of injected account grants or the configured memory runner.
 Direct calls to unregistered tools are denied without invoking any runner.
 
+The enable flag is not the service profile discriminator. A service declaring
+Plexus tools or `ledgerReadGrants` (including an empty list) remains reserved for
+Plexus even without the flag. The Access principal resolver denies that identity
+when `plexusLedgerReadDelegate` is absent, before any mesh or hub tool dispatch.
+The hub, mesh registration and facade also confine this declared scope if a
+principal is injected directly. Nonempty Google account grants and unrelated
+mesh tools are invalid for this reserved scope, even after disabling the flag.
+Removing only the flag is therefore a read revocation, not a transition into an
+implicit memory/Google profile. Removing the entire binding separately denies the
+same verified credential without invalidating unrelated bindings. Service profile
+reclassification is a separate privilege change: do not erase all Plexus scope
+metadata as a revocation recipe; revoke the flag or remove the binding instead.
+
+
 The mesh registration early return and facade mutation guard remain independent
 lines of confinement, including when an injected principal has an extra tool. Each invocation rechecks delegation, allowed tools,
 workspace and exact ledger/session/group grants. Removing the delegate flag or a

@@ -1,4 +1,4 @@
-import { ShellPlexusLedgerReader, validLedgerReadGrants, type PlexusLedgerConfig } from "./plexus-ledger.js";
+import { isPlexusServicePrincipal, ShellPlexusLedgerReader, validLedgerReadGrants, type PlexusLedgerConfig } from "./plexus-ledger.js";
 import { MaintenanceAdmission } from "./maintenance-admission.js";
 import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -653,7 +653,8 @@ export function validateBinding(
     !Array.isArray(binding.allowedDomainIds) ||
     (binding.ledgerReadGrants !== undefined && !validLedgerReadGrants(binding.ledgerReadGrants, binding.allowedWorkspaceIds)) ||
     (binding.plexusLedgerReadDelegate !== undefined && (binding.plexusLedgerReadDelegate !== true ||
-      binding.kind !== "service" || !binding.ledgerReadGrants?.length || !binding.allowedTools.length ||
+      binding.kind !== "service" || !binding.ledgerReadGrants?.length || !binding.allowedTools.length)) ||
+    (isPlexusServicePrincipal(binding) && (
       (binding.allowedGoogleAccounts !== undefined && binding.allowedGoogleAccounts.length > 0) ||
       binding.allowedTools.some(tool => tool !== "mesh_plexus_work_items" && tool !== "mesh_plexus_ledger_sessions"))) ||
     (binding.allowedGoogleAccounts !== undefined &&

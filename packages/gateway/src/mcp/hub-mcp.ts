@@ -16,7 +16,7 @@ import {
   type MeshMcpHttpOptions,
   type MeshMcpPrincipal
 } from "./mesh-mcp.js";
-import { registerPlexusLedgerTools } from "./plexus-ledger.js";
+import { isPlexusServicePrincipal, registerPlexusLedgerTools } from "./plexus-ledger.js";
 import { registerMemoryRecallTools, type MemoryRecallRunner } from "./memory-recall.js";
 
 export type McpHubProfile = "google-workspace" | "memory" | "workspace";
@@ -43,7 +43,7 @@ export function createMcpHubHandler(options: McpHubOptions): McpHttpHandler {
 
     // Profiles may share one Access audience. Service delegation must stay
     // confined here too, independently of Google grants or memory runner mode.
-    if (principal.mesh.kind === "service" && principal.mesh.plexusLedgerReadDelegate === true) {
+    if (isPlexusServicePrincipal(principal.mesh)) {
       if (options.profile === "workspace") registerPlexusLedgerTools(server, { ...options, principal: principal.mesh });
       return server;
     }
