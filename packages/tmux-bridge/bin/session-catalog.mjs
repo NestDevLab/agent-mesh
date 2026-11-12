@@ -62,7 +62,6 @@ export function catalogMatches(row, options = {}) {
 export function catalogList(graph, options = {}) {
   const grouped = new Map();
   for (const node of graph.nodes) {
-    if (node.cloudIdentity) continue;
     const session = sessionIdOf(node);
     if (!session) continue;
     const prior = grouped.get(session);
