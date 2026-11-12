@@ -10,6 +10,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
+import { GOAL_RESUME_MODES, reconcileCodexGoal } from "./codex-goal.mjs";
 
 let activeComms;
 let enqueueStarted = false;
@@ -25,6 +26,8 @@ const { values } = parseArgs({
     "steer-or-queue": { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
     "no-resume": { type: "boolean", default: false },
+    goal: { type: "string" },
+    "goal-resume": { type: "string", default: "blocked" },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
@@ -33,7 +36,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--delivery-only]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--goal TEXT] [--goal-resume blocked|any|off] (Codex only) [--delivery-only]");
   process.exit(0);
 }
 
@@ -51,6 +54,12 @@ if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains u
 if (values["steer-or-queue"] && (agent !== "codex" || values.cloud)) {
   fail("--steer-or-queue requires --agent codex without --cloud", 2);
 }
+if (!GOAL_RESUME_MODES.includes(values["goal-resume"])) fail("--goal-resume must be blocked, any or off", 2);
+if (values.goal !== undefined && !values.goal.trim()) fail("--goal requires a non-empty objective", 2);
+if (agent !== "codex" && (values.goal !== undefined || values["goal-resume"] !== "blocked")) {
+  fail("--goal and --goal-resume are supported only for Codex", 2);
+}
+const goalOptions = agent === "codex" ? { objective: values.goal?.trim(), resume: values["goal-resume"] } : undefined;
 if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
   fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
 }
@@ -73,7 +82,9 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
   correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume, ...(values.cloud ? { cloud: true } : {}),
-  ...(values["steer-or-queue"] ? { steer_first: true } : {}) });
+  ...(values["steer-or-queue"] ? { steer_first: true } : {}),
+  ...(goalOptions?.objective ? { goal: goalOptions.objective } : {}),
+  ...(goalOptions && goalOptions.resume !== "blocked" ? { goal_resume: goalOptions.resume } : {}) });
 activeComms = comms;
 if (comms.status !== 'send') {
   await comms.complete(false);
@@ -167,10 +178,14 @@ if (agent === "codex") {
   activeComms = undefined;
 }
 
+// The message is already accepted, so a goal failure is reported, never turned into a resend.
+const goal = goalOptions ? await applyGoal(sessionId, goalOptions) : undefined;
+
 // Queue acknowledgement is transport proof, never proof that the turn ran.
 if (values["delivery-only"]) {
   console.log(JSON.stringify({ status: deliveryMethod === "steer" ? "steered" : "queued", agent, sessionId, correlationId,
     ...(values["steer-or-queue"] ? { deliveryMethod, ...(steeredTurnId ? { turnId: steeredTurnId } : {}) } : {}),
+    ...(goal ? { goal } : {}),
     ...(resume && deliveryMethod === "queue" ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
   process.exit(0);
 }
@@ -413,6 +428,16 @@ async function appendManagedInbox(path, record) {
     await handle.sync();
   } finally {
     await handle.close();
+  }
+}
+
+async function applyGoal(id, options) {
+  if (options.resume === "off" && !options.objective) return undefined;
+  const timeout = Number(process.env.AGENT_GOAL_TIMEOUT_MS || 30000);
+  try {
+    return await reconcileCodexGoal(id, options, timeout);
+  } catch (error) {
+    return { action: "error", error: error.message };
   }
 }
 
