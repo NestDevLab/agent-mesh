@@ -37,7 +37,8 @@
       "controller-activity-safety",
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
-      "codex-goal-reactivation"
+      "codex-goal-reactivation",
+      "oikuma-user-plexus-profile-20261112"
     ],
     "strategy": "cherry-pick"
   },
@@ -436,6 +437,22 @@
       },
       "meta": {
         "purpose": "Reactivate blocked Codex goals on send and watch stalled goals"
+      }
+    },
+    {
+      "id": "oikuma-user-plexus-profile-20261112",
+      "branch": "pr/oikuma-user-plexus-profile-20261112",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Add isolated user authenticated Plexus read profile"
       }
     }
   ],
