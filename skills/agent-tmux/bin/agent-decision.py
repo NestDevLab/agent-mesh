@@ -92,7 +92,10 @@ def answer_command(record, args, root):
 
 def request_message(record, config, args, root):
     return (config.get('messagePrefix', '') + "Decision request for the owner. Show it once as one card with these "
-            "options and keep the option ids. Silence isn't an answer.\n" +
+            "options and keep the option ids. Silence isn't an answer. If the owner picks the write-in option, "
+            "ask them in the chat right away for their answer in one line (or post an editable text card if the "
+            "host has one) and pass their words with --text; a typed reply to the open card counts as that "
+            "answer.\n" +
             json.dumps({'card': record['card'], 'from': record['from']}, ensure_ascii=False) +
             f"\nOnce the owner picks: {answer_command(record, args, root)} --option <option id> "
             '--by <owner> --card <card message id> [--text "<their words, for the write-in option>"]')

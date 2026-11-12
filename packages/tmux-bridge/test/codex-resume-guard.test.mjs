@@ -98,7 +98,7 @@ test("resume of a thread an app-server serves points to codex queue", async () =
 
   const direct = await run(f, ["--agent", "codex", "resume", f.id], env);
   assert.equal(direct.code, 4, direct.stderr);
-  assert.match(direct.stderr, new RegExp(`codex queue --thread ${f.id}`));
+  assert.match(direct.stderr, new RegExp(`codex queue --thread ${f.id} --message <text> --resume`));
 
   // the governed parent must report the refusal itself, before any Limen dispatch
   const policy = join(f.home, "policy.json");
@@ -106,7 +106,7 @@ test("resume of a thread an app-server serves points to codex queue", async () =
   const governed = await run(f, ["--agent", "codex", "--profile", "developer", "--limen-config", policy, "resume", f.id],
     { ...env, LIMEN_BIN: "/bin/false" });
   assert.equal(governed.code, 4, governed.stderr);
-  assert.match(governed.stderr, new RegExp(`codex queue --thread ${f.id}`));
+  assert.match(governed.stderr, new RegExp(`codex queue --thread ${f.id} --message <text> --resume`));
   assert.doesNotMatch(governed.stderr, /Limen governed launch/);
 });
 
@@ -118,7 +118,7 @@ test("resume refuses an idle Desktop-visible thread unless explicitly allowed", 
   const refused = await run(f, ["--agent", "codex", "resume", f.id]);
   assert.equal(refused.code, 6, refused.stderr);
   assert.match(refused.stderr, /visible in Codex Desktop/);
-  assert.match(refused.stderr, new RegExp(`codex queue --thread ${f.id}`));
+  assert.match(refused.stderr, new RegExp(`codex queue --thread ${f.id} --message <text> --resume`));
   assert.match(refused.stderr, /--allow-desktop-thread/);
   assert.equal(tmux("has-session", "-t", `mesh-codex-${f.id.slice(0, 8)}`), null);
 

@@ -120,3 +120,10 @@ test('cloud off gate never invokes provider', async t => {
   assert.notEqual((await f.invoke()).code, 0);
   assert.deepEqual(await f.calls(), []);
 });
+
+
+test('Claude cloud rejects the Codex-only hold flag', async () => {
+  await assert.rejects(exec(process.execPath, [join(bin, "agent-native-call.mjs"), '--agent', 'claude', '--session', 'session_Synthetic123',
+    '--correlation-id', 'cloud-hold', '--message', 'Synthetic', '--cloud', '--delivery-only', '--no-resume']),
+    error => error.code === 2 && /only for Codex/.test(error.stderr));
+});

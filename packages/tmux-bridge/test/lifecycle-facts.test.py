@@ -5,6 +5,8 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -33,6 +35,94 @@ class LifecycleFacts(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / f'{ID}.jsonl'
+
+
+    def native_rows(self, name, text=False):
+        content = ([{'type': 'text', 'text': 'Commentary only.'}] if text else [])
+        return [
+            {'type': 'user', 'message': {'content': 'Review the sample'}},
+            {'type': 'assistant', 'message': {'stop_reason': 'tool_use', 'content': content + [
+                {'type': 'tool_use', 'id': 'call-1', 'name': name, 'input': {}}]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'call-1', 'content': 'done'}]}},
+        ]
+
+    def attention(self, records):
+        self.path.write_text(encoded(*records))
+        old = time.time() - 3 * 3600
+        os.utime(self.path, (old, old))
+        result = subprocess.run(['node', str(BIN / 'mesh-graph.mjs'), 'discover',
+                                 '--agent', 'claude', '--state', str(Path(self.temp.name) / 'graph'), '--json'],
+                                env={**os.environ, 'CLAUDE_SESSION_ROOT': self.temp.name,
+                                     'MESH_DOMAIN_ROOTS_FILE': ''}, text=True, capture_output=True, check=True)
+        return json.loads(result.stdout)['nodes'][0]['attention']['state']
+
+    def test_terminal_no_reply_completes_before_tool_result_and_reopens_for_human(self):
+        for text in (False, True):
+            with self.subTest(text=text):
+                records = self.native_rows('mcp__fixture__no_reply_needed', text)
+                self.path.write_text(encoded(*records[:2]))
+                first = watch.read_appended_facts('claude', ID, self.path, None)
+                self.assertFalse(first['turn_active'])
+                with self.path.open('a') as handle:
+                    handle.write(encoded(records[2]))
+                facts = watch.read_appended_facts('claude', ID, self.path, first)
+                self.assertEqual((facts['turn_active'], facts['last_outcome'], facts['last_event_kind']),
+                                 (False, 'no_reply', 'turn_complete'))
+                self.assertNotEqual(self.attention(records), 'stalled-abandoned')
+                events = [event for record in records for event in watch.events_for('claude', record, ID)]
+                completion = events[-1]
+                self.assertEqual(completion['outcome'], 'no_reply')
+                self.assertNotIn('reply', completion)
+                for mode, config, expected in (
+                    ('steer', {}, ['NOREPLY']), ('child', {}, []),
+                    ('observe', {'follower': {'observeQuestionAndErrorOnly': True}}, []),
+                    ('observe', {}, ['NOREPLY']),
+                ):
+                    out, pending = follow.derive('claude:' + ID, {'mode': mode}, events, {}, config)
+                    self.assertEqual([item['kind'] for item in out], expected)
+                    self.assertFalse(pending['active'])
+                    for item in out:
+                        self.assertNotIn('Commentary', item['body'])
+                watch.update_facts(facts, 'claude', ID, records[0])
+                self.assertTrue(facts['turn_active'])
+                self.assertEqual(facts['last_event_kind'], 'human_message')
+
+    def test_nonterminal_tools_and_interruption_remain_stalled(self):
+        for name in ('Bash', 'mcp__fixture__post_message', 'no_reply_needed', 'local__no_reply_needed'):
+            with self.subTest(tool=name):
+                records = self.native_rows(name)
+                self.path.write_text(encoded(*records))
+                facts = watch.read_appended_facts('claude', ID, self.path, None)
+                self.assertTrue(facts['turn_active'])
+                self.assertEqual(facts['last_event_kind'], 'tool')
+                self.assertEqual(self.attention(records), 'stalled-abandoned')
+        records = self.native_rows('Bash') + [
+            {'type': 'user', 'message': {'content': '[Request interrupted by user]'}}]
+        self.path.write_text(encoded(*records))
+        facts = watch.read_appended_facts('claude', ID, self.path, None)
+        self.assertTrue(facts['turn_active'])
+        self.assertEqual(self.attention(records), 'stalled-abandoned')
+
+    def test_cached_old_facts_are_reparsed_in_full_once(self):
+        records = self.native_rows('mcp__fixture__no_reply_needed', True)
+        self.path.write_text(encoded(records[0]) + '{}\n' * 100 + encoded(*records[1:]))
+        prior = watch.read_appended_facts('claude', ID, self.path, None, full=True)
+        prior.update(turn_active=True, last_event_kind='tool', last_outcome=None)
+        cache = Path(self.temp.name) / 'cache.json'
+        watch.save_state(cache, {'version': 1, 'claude': {ID: prior}})
+        with patch.object(watch, 'transcript_candidates', return_value=[(ID, self.path)]), \
+             patch.object(watch, 'claude_metadata', return_value={}), \
+             patch.object(watch, 'bridge_parents', return_value={}), \
+             patch.object(watch, 'DISCOVERY_BOOTSTRAP_BYTES', 100):
+            facts, _ = watch.discover_transcripts('claude', cache)
+            self.assertFalse(facts[0]['turn_active'])
+            self.assertEqual(facts[0]['last_outcome'], 'no_reply')
+            self.assertTrue(facts[0]['history_complete'])
+            self.assertEqual(facts[0]['human_turns'], 1)
+            with patch.object(watch, 'update_facts', side_effect=AssertionError('unchanged transcript reparsed')):
+                again, _ = watch.discover_transcripts('claude', cache)
+            self.assertEqual(again, facts)
 
     def test_summary_only_accepts_explicit_assistant_marker(self):
         marker = '[[mesh-summary: Reviewing the cache fix.]]'

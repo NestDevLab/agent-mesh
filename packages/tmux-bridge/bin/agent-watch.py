@@ -347,7 +347,11 @@ def discover_transcripts(agent: str, cache_path: Path | None = None, *, full: bo
             # Migrate old mixed caches: native metadata is refreshed separately.
             metadata_keys = {"name", "source", "thread_source", "archived", "pinned", "metadata_updated_at_ns", "created_at_ms", "status", "waitingFor", "hostSessionId", "entrypoint", "kind", "startedAt", "updatedAt", "live_writer", "parent", "origin"}
             prior = {key: value for key, value in prior.items() if key not in metadata_keys}
-        item = read_appended_facts(agent, session_id, path, prior, full=full)
+        # Parser upgrades must reach unchanged sessions without truncating history.
+        reparse = agent == "claude" and prior is not None and prior.get("facts_version") != 2
+        item = read_appended_facts(agent, session_id, path, prior, full=full or reparse)
+        if agent == "claude":
+            item["facts_version"] = 2
         if cache_path:
             entries[session_id] = dict(item)
         item.update(metadata.get(session_id, {}))
@@ -777,6 +781,7 @@ def claude_events(
     if not isinstance(content, list):
         return
 
+    terminal_no_reply = False
     final_message_seen = False
     final_reply = ""
     for block in content:
@@ -811,6 +816,7 @@ def claude_events(
         elif record_type == "assistant" and block_type == "tool_use":
             body = clipped(json.dumps(block.get("input") or {}, ensure_ascii=False, sort_keys=True), 260)
             name = str(block.get("name") or "unknown")
+            terminal_no_reply |= bool(re.fullmatch(r"mcp__.+__no_reply_needed", name))
             yield event(
                 timestamp=timestamp,
                 agent="claude",
@@ -823,7 +829,9 @@ def claude_events(
                 question = question_text(block.get("input"))
                 if question:
                     yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="question", body=question, tool_name=name)
-    if final_message_seen:
+    if terminal_no_reply:
+        yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete", outcome="no_reply")
+    elif final_message_seen:
         yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete", outcome="replied", reply=final_reply)
     elif record_type == "assistant" and message.get("stop_reason") not in {None, "end_turn", "tool_use"}:
         yield event(timestamp=timestamp, agent="claude", session_id=session_id, kind="turn_complete", outcome="error", error={"message": str(message.get("stop_reason")), "code": "unknown"})

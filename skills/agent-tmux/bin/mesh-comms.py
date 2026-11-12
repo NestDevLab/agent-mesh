@@ -98,7 +98,7 @@ def status(db):
 def validate(spec):
     spec = dict(spec)
     if spec.get('kind') == 'native':
-        spec.setdefault('resume', False)
+        spec.setdefault('resume', spec.get('runtime') == 'codex')
     if spec.get('kind') not in ('native', 'tmux', 'inbox') or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', str(spec.get('runtime', ''))):
         raise ValueError('unsupported comms transport/runtime')
     if not isinstance(spec.get('destination'), str) or not spec['destination']:
@@ -254,6 +254,8 @@ def command(spec):
             args += ['--managed-inbox-root', spec['inbox_root']]
         if spec.get('resume'):
             args += ['--resume']
+        elif spec['runtime'] == 'codex' and spec.get('resume') is False:
+            args += ['--no-resume']
         return args
     if spec['kind'] == 'tmux':
         args = [str(BIN/'agent-send.sh'), '--agent', spec['runtime'], '--quiet', '--submit-only']
@@ -332,6 +334,15 @@ def admit(db, spec):
     if mode == 'off' and not exempt:
         raise ValueError('inter-session communications are off; message rejected, nothing stored')
     previous = db.execute('SELECT digest,status FROM deliveries WHERE id=?', (ident,)).fetchone()
+    if spec['kind'] == 'native' and spec['runtime'] == 'codex' and spec.get('resume'):
+        # Older defaults stored resume=False. Preserve their IDs, payloads and holds,
+        # including native specs without a correlation (whose ID hashes the payload).
+        legacy = {**spec, 'resume': False}
+        legacy_id = identity(legacy)
+        legacy_digest = hashlib.sha256(encode(legacy).encode()).hexdigest()
+        row = previous or db.execute('SELECT digest,status FROM deliveries WHERE id=?', (legacy_id,)).fetchone()
+        if row and row[0] == legacy_digest:
+            ident, digest, previous = legacy_id, legacy_digest, row
     if previous:
         if previous[0] != digest:
             raise ValueError('correlation reused with different payload')

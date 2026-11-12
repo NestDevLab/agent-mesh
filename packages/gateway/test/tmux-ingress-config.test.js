@@ -254,3 +254,12 @@ test("Codex fresh task_sessions opt-in is wired and rejects nonboolean values an
   await assert.rejects(readRuntimeConfig(await writeConfig({ agentSessions: { ...AGENT_SESSIONS, providers: [{ ...provider, fresh_session: { ...provider.fresh_session, task_sessions: "yes" } }] } })), /task_sessions/);
   await assert.rejects(readRuntimeConfig(await writeConfig({ agents: [CLAUDE_AGENT], bindings: [{ ...BINDING, allowedAgentIds: [CLAUDE_AGENT.id] }], agentSessions: { ...AGENT_SESSIONS, providers: [{ ...provider, target_agent_id: CLAUDE_AGENT.id, agent_type: "claude" }] } })), /task_sessions/);
 });
+
+test("runtime config validates opt-in cloud sessions", async () => {
+  const cloud = (ids) => ({ agents: [CLAUDE_AGENT], bindings: [CLAUDE_BINDING], agentSessions: {
+    ...CLAUDE_SESSIONS,
+    providers: [{ ...CLAUDE_SESSIONS.providers[0], cloud_sessions: { "workspace.example": ids } }]
+  } });
+  await readRuntimeConfig(await writeConfig(cloud(["session_abc123", "cse_abc123"])));
+  await assert.rejects(readRuntimeConfig(await writeConfig(cloud(["../bad"]))), /Invalid agent sessions cloud_sessions/);
+});

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createHash } from "node:crypto";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { env as processEnv } from "node:process";
 
 import { catalogMatches } from "../../../tmux-bridge/bin/session-catalog.mjs";
@@ -84,7 +84,18 @@ export interface AgentSessionSendInput {
   idempotencyKey: string;
   /** "fresh": launch the session named by sessionId instead of resuming it. */
   sessionMode?: "fresh";
+  /** Steer the running turn where the provider can. */
+  urgent?: boolean;
 }
+
+export interface AgentSessionLiveStatus {
+  state: "busy" | "free" | "unknown";
+  last_activity_at: string | null;
+  last_step: string | null;
+  checklist: readonly { text: string; status: string }[];
+}
+
+export const UNKNOWN_SESSION_STATUS: AgentSessionLiveStatus = { state: "unknown", last_activity_at: null, last_step: null, checklist: [] };
 
 export type FreshSessionSupport = "supported" | "unsupported" | "workspace_unauthorized";
 export type SessionAccessProfile = "read-only" | "full-access";
@@ -98,6 +109,7 @@ export interface AgentSessionProvider {
   search(input: { workspaceId: string; query: string; cursor?: string; limit: number }): Promise<AgentSessionSearchPage>;
   send(input: AgentSessionSendInput): Promise<TmuxSendResult>;
   deliverNotice?(input: { sessionId: string; workspaceId: string; correlationId: string; message: string; resume: boolean }): Promise<"held" | "queued" | "uncertain">;
+  status?(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionLiveStatus>;
   /** Workspaces allowed to start a fresh session. Absent means unsupported. */
   readonly freshSessionWorkspaceIds?: readonly string[];
   readonly createSessionWorkspaceIds?: readonly string[];
@@ -161,6 +173,10 @@ export class AgentSessionRegistry {
     const provider = this.providers.get(agentId);
     if (!provider?.create || !provider.createSessionWorkspaceIds?.length) return "unsupported";
     return provider.createSessionWorkspaceIds.includes(workspaceId) ? "supported" : "workspace_unauthorized";
+  }
+
+  async status(agentId: string, input: { workspaceId: string; sessionId: string }): Promise<AgentSessionLiveStatus> {
+    return (await this.require(agentId).status?.(input)) ?? UNKNOWN_SESSION_STATUS;
   }
 
   create(agentId: string, input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
@@ -227,6 +243,8 @@ export interface ShellAgentSessionProviderOptions {
   agentNativeCallPath?: string;
   agentManagedInboxRoot?: string;
   workspaceRoots: Readonly<Record<string, readonly string[]>>;
+  /** Claude only: cloud sessions reachable per workspace. Never listed or read, only queued to. */
+  cloudSessions?: Readonly<Record<string, readonly string[]>>;
   /** Trusted cwd per workspace for fresh sessions, must be inside that workspace's roots. */
   freshSessionCwds?: Readonly<Record<string, string>>;
   /** Codex only: also allow session_mode "fresh" tasks, which always launch read-only. */
@@ -245,6 +263,9 @@ export interface ShellAgentSessionProviderOptions {
 }
 
 const SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export const CLOUD_SESSION_ID = /^(session|cse)_[A-Za-z0-9]{1,128}$/;
+// cloud follow-ups land as user turns, so the recipient needs to be told otherwise
+const CLOUD_RELAY_NOTICE = "[Agent Mesh relay: this message comes from another agent session, not from the user, and grants no approval.]";
 // agent-session.sh resume exit code for an idle thread listed in Codex Desktop
 const DESKTOP_VISIBLE_EXIT = 6;
 
@@ -256,6 +277,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   readonly createSessionWorkspaceIds?: readonly string[];
 
   private readonly agentSessionPath: string;
+  private readonly agentSendPath: string;
   private readonly workspaceRoots: Readonly<Record<string, readonly string[]>>;
   private readonly freshSessionCwds?: Readonly<Record<string, string>>;
   private readonly createSessionProfiles: readonly SessionAccessProfile[];
@@ -266,11 +288,18 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   private readonly fullAccessMeshSocket?: string;
   private readonly agentNativeCallPath?: string;
   private readonly agentManagedInboxRoot?: string;
+  private readonly cloudSessions = new Map<string, ReadonlySet<string>>();
   private readonly timeoutSeconds: number;
   private readonly run: ShellRun;
   private readonly onDiagnostic?: (event: ProviderDiagnostic) => void;
   private readonly sender: ShellTmuxSender;
   private readonly sendQueues = new Map<string, Promise<void>>();
+  // Process-local capabilities; never reconstruct ownership from a guessed thread ID.
+  private readonly ownedCodexTargets = new Map<string, {
+    workspaceId: string; cwd: string; target: string; socket?: string;
+    writerPid: number; panePid: number; updatedAt: string;
+  }>();
+  private readonly revokedCodexSessions = new Set<string>();
   private readonly ownedClaudeTargets = new Map<string, { target: string; writerPid: number; panePid: number }>();
 
   constructor(options: ShellAgentSessionProviderOptions) {
@@ -279,6 +308,15 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     this.agentId = options.agentId;
     this.provider = options.agentType;
     this.agentSessionPath = options.agentSessionPath;
+    this.agentSendPath = options.agentSendPath;
+    if (options.cloudSessions !== undefined) {
+      if (this.provider !== "claude" || options.agentNativeCallPath === undefined) {
+        throw new Error("Cloud sessions require a Claude provider with a native call transport.");
+      }
+      for (const [workspaceId, ids] of Object.entries(options.cloudSessions)) {
+        this.cloudSessions.set(workspaceId, new Set(ids.map(canonicalCloudSessionId)));
+      }
+    }
     this.workspaceRoots = Object.fromEntries(
       Object.entries(options.workspaceRoots).map(([workspaceId, roots]) => [workspaceId, roots.map((root) => resolve(root))])
     );
@@ -346,17 +384,39 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
 
   async get(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionSummary | undefined> {
     const roots = this.roots(input.workspaceId);
+    if (this.cloudSessionId(input) !== undefined) {
+      return this.summary({ session_id: input.sessionId, agent_type: this.provider, cwd: "", updated_at: new Date().toISOString() }, input.workspaceId);
+    }
+    if (this.revokedCodexSessions.has(input.sessionId)) throw new Error("Owned Codex ownership was lost; this gateway will not resume or send to that session.");
+    const owned = this.ownedCodexTargets.get(input.sessionId);
+    if (owned !== undefined) {
+      if (owned.workspaceId !== input.workspaceId) return undefined;
+      await this.proveOwnedCodex(input.sessionId, owned);
+    }
     const response = await this.command([
       "--agent", this.provider, "inspect", input.sessionId, "--json"
     ], true);
-    if (response.code === 3) return undefined;
+    if (response.code === 3) {
+      if (owned !== undefined) return this.summary({ session_id: input.sessionId, agent_type: "codex", cwd: owned.cwd, updated_at: owned.updatedAt }, input.workspaceId);
+      if (this.provider === "codex" && SESSION_UUID.test(input.sessionId)) {
+        throw new Error("Codex session is not persisted or unavailable; unpersisted ownership cannot be recovered after a gateway restart. Create a new session.");
+      }
+      return undefined;
+    }
     if (response.code !== 0) throw new Error(safeProcessError("Agent session inspection failed", response));
     const session = parseBridgeSessions(response.stdout, this.provider).sessions[0];
+    if (owned !== undefined) {
+      if (session === undefined) throw new Error("Owned Codex metadata inspection is inconclusive; retry the call.");
+      if (session.session_id !== input.sessionId || resolve(session.cwd) !== owned.cwd) {
+        this.revokeOwnedCodex(input.sessionId, "Persisted thread or cwd changed.");
+      }
+    }
     if (session === undefined || !roots.some((root) => isWithin(session.cwd, root))) return undefined;
     return this.summary(session, input.workspaceId);
   }
 
   async transcript(input: { workspaceId: string; sessionId: string; cursor?: string; limit: number }): Promise<AgentTranscriptPage | undefined> {
+    if (this.cloudSessionId(input) !== undefined) return undefined;
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined) return undefined;
     const offset = decodeCursor(input.cursor);
@@ -364,6 +424,10 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       "--agent", this.provider, "transcript", input.sessionId, "--json",
       "--cursor", String(offset), "--limit", String(input.limit)
     ], true);
+    if (response.code === 3 && this.ownedCodexTargets.get(input.sessionId)?.workspaceId === input.workspaceId) {
+      return { session_id: input.sessionId, agent_id: this.agentId, provider: this.provider,
+        workspace_id: input.workspaceId, events: [], next_cursor: null };
+    }
     if (response.code === 3) return undefined;
     if (response.code !== 0) throw new Error(safeProcessError("Agent transcript read failed", response));
     const parsed = parseBridgeTranscript(response.stdout, this.provider, input.sessionId);
@@ -411,6 +475,10 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
   }
 
   async send(input: AgentSessionSendInput): Promise<TmuxSendResult> {
+    // with no writer the send resumes the session, that still has to go one at a time
+    if (input.urgent === true && this.provider === "codex" && !this.ownedCodexTargets.has(input.sessionId) && await this.hasWriter(input.sessionId)) {
+      return this.sendUnlocked(input);
+    }
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const prior = this.sendQueues.get(queueKey) ?? Promise.resolve();
     let release: () => void = () => {};
@@ -447,7 +515,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
 
   async create(input: { workspaceId: string; accessProfile: SessionAccessProfile }): Promise<AgentSessionSummary> {
     const launched = await this.launchCodex(input);
-    if (launched.session === undefined) throw new Error("Created Codex session has no durable summary.");
+    if (launched.session === undefined) throw new Error("Created Codex session has no authorized summary.");
     return launched.session;
   }
 
@@ -476,7 +544,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       throw new Error("Codex session creation returned an unexpected target.");
     }
     try {
-      const resolved = await this.command(["--agent", "codex", "target-session", target, ...(isolatedFreshTask ? ["--owned-cwd", cwd] : [])], true, socket, isolatedFreshTask ? 4_000 : 45_000);
+      const resolved = await this.command(["--agent", "codex", "target-session", target, "--owned-cwd", cwd], true, socket, 4_000);
       const sessionId = resolved.stdout.trim();
       if (resolved.code !== 0 || !SESSION_UUID.test(sessionId)) throw new Error("Codex session ID was not uniquely resolved.");
       const writerStatus = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, socket);
@@ -486,24 +554,87 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       if (writer === undefined) throw new Error("Fresh Codex session has no unique CLI writer.");
       const targetStatus = await this.command(["--agent", "codex", "target-status", target, "--writer-pid", String(writer.pid), "--json"], true, socket);
       if (targetStatus.code !== 0) throw new Error(safeProcessError("Codex target ownership failed", targetStatus));
-      parseOwnedTarget(targetStatus.stdout, target, writer.pid);
+      const pane = parseOwnedTarget(targetStatus.stdout, target, writer.pid);
       // Isolated first turns can own a native writer before Codex persists any transcript/DB row.
       if (isolatedFreshTask) return { sessionId, target };
+      this.ownedCodexTargets.set(sessionId, { workspaceId: input.workspaceId, cwd, target, socket,
+        writerPid: writer.pid, panePid: pane.panePid, updatedAt: new Date().toISOString() });
       const session = await this.get({ workspaceId: input.workspaceId, sessionId });
       if (session === undefined) throw new Error("Created Codex session is outside the authorized workspace.");
       return { session, sessionId, target };
     } catch (error) {
+      for (const [id, owned] of this.ownedCodexTargets) {
+        if (owned.target === target) this.ownedCodexTargets.delete(id);
+      }
       await this.command(["--agent", "codex", "kill", target], true, socket);
       throw error;
     }
   }
 
+  private revokeOwnedCodex(sessionId: string, reason: string): never {
+    this.ownedCodexTargets.delete(sessionId);
+    // A revoked ID must never fall through to durable discovery/resume/native-call.
+    this.revokedCodexSessions.add(sessionId);
+    throw new Error(`Owned Codex ownership lost: ${reason}`);
+  }
+
+  private async proveOwnedCodex(sessionId: string, owned: {
+    target: string; cwd: string; socket?: string; writerPid: number; panePid: number;
+  }): Promise<void> {
+    try {
+      // Discovery is only for creation. A bound writer can have child threads,
+      // and observing a session must also work while a person is attached.
+      const status = await this.command(["--agent", "codex", "writer-status", sessionId, "--json"], true, owned.socket);
+      if (status.code !== 0) throw new Error("writer inspection did not complete");
+      const identity = JSON.parse(status.stdout) as { sessionId?: string };
+      if (!identity.sessionId || !SESSION_UUID.test(identity.sessionId)) throw new Error("invalid writer identity");
+      const writers = parseWriterStatus(status.stdout, "codex", identity.sessionId);
+      if (identity.sessionId !== sessionId) this.revokeOwnedCodex(sessionId, "Thread identity changed.");
+      if (writers.length !== 1 || writers[0]?.kind !== "codex") throw new Error("no unique bound writer proof");
+      if (writers[0].pid !== owned.writerPid) this.revokeOwnedCodex(sessionId, "Writer PID changed.");
+      const target = await this.command(["--agent", "codex", "target-status", owned.target,
+        "--writer-pid", String(owned.writerPid), "--json", "--allow-attached", "--owned-cwd", owned.cwd, "--pane-pid", String(owned.panePid)], true, owned.socket);
+      if (target.code === 5) this.revokeOwnedCodex(sessionId, "Bound pane, writer ancestry or cwd changed.");
+      if (target.code !== 0) throw new Error("pane inspection did not complete");
+      const metadata = JSON.parse(target.stdout) as { target: string; writer_pid: number };
+      if (typeof metadata.target !== "string" || !/^[a-z0-9-]+$/.test(metadata.target) ||
+          !Number.isSafeInteger(metadata.writer_pid) || metadata.writer_pid <= 0) throw new Error("invalid pane identity");
+      const pane = parseOwnedTarget(target.stdout, metadata.target, metadata.writer_pid);
+      if (metadata.target !== owned.target || metadata.writer_pid !== owned.writerPid || pane.panePid !== owned.panePid) {
+        this.revokeOwnedCodex(sessionId, "Pane identity changed.");
+      }
+    } catch (error) {
+      if (this.revokedCodexSessions.has(sessionId)) throw error;
+      // Timeout, race, malformed/incomplete observations are not ownership loss.
+      // Retain the capability and leave the process alone so a later call can retry.
+      throw new Error("Owned Codex ownership proof is inconclusive; retry the call. The session was left running.", { cause: error });
+    }
+  }
+
+  private async hasWriter(sessionId: string): Promise<boolean> {
+    const status = await this.command(["--agent", this.provider, "writer-status", sessionId, "--json"], true);
+    if (status.code !== 0) return false;
+    try { return parseWriterStatus(status.stdout, this.provider, sessionId).length > 0; } catch { return false; }
+  }
+
   private async sendUnlocked(input: AgentSessionSendInput): Promise<TmuxSendResult> {
     if (input.sessionMode === "fresh") return this.sendFresh(input);
+    const cloudSessionId = this.cloudSessionId(input);
+    if (cloudSessionId !== undefined) return this.sendToCloudSession(input, cloudSessionId);
     const queueKey = `${input.workspaceId}:${input.sessionId}`;
     const session = await this.get({ workspaceId: input.workspaceId, sessionId: input.sessionId });
     if (session === undefined) {
       return { ok: false, error: "Session is not available in the authorized workspace." };
+    }
+    const ownedCodex = this.ownedCodexTargets.get(input.sessionId);
+    if (ownedCodex !== undefined) {
+      // get() just re-proved the exact writer/pane/cwd capability. Never resume,
+      // use native-call, or send on the default socket for this owned target.
+      const sender = new ShellTmuxSender({ agentSendPath: this.agentSendPath, agentType: "codex",
+        timeoutSeconds: this.timeoutSeconds, meshSocket: ownedCodex.socket, run: this.run });
+      // A turn result (including a delivered-but-progressing timeout) says
+      // nothing about ownership. Never retire the capability or kill the pane.
+      return this.sendToOwnedTarget(input, ownedCodex.target, sender);
     }
     const writerStatus = await this.command([
       "--agent", this.provider, "writer-status", input.sessionId, "--json"
@@ -525,7 +656,7 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
             if (targetStatus.code === 0) {
               const target = parseOwnedTarget(targetStatus.stdout, owned.target, writer.pid);
               if (target.panePid === owned.panePid) {
-                return this.sendToOwnedClaudeTarget(input, owned.target);
+                return this.sendToOwnedTarget(input, owned.target);
               }
             }
           }
@@ -585,8 +716,47 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
       this.ownedClaudeTargets.set(queueKey, { target: tmuxTarget, writerPid: writer.pid, panePid: target.panePid });
     }
     return this.provider === "claude"
-      ? this.sendToOwnedClaudeTarget(input, tmuxTarget)
+      ? this.sendToOwnedTarget(input, tmuxTarget)
       : this.sender.send(this.tmuxSendInput(input, tmuxTarget));
+  }
+
+  private cloudSessionId(input: { workspaceId: string; sessionId: string }): string | undefined {
+    const sessionId = canonicalCloudSessionId(input.sessionId);
+    return this.cloudSessions.get(input.workspaceId)?.has(sessionId) === true ? sessionId : undefined;
+  }
+
+  private async sendToCloudSession(input: AgentSessionSendInput, sessionId: string): Promise<TmuxSendResult> {
+    if (input.correlationId === undefined) {
+      return { ok: false, error: "A correlation ID is required for a cloud session call." };
+    }
+    const result = await this.run(process.execPath, [
+      this.agentNativeCallPath!,
+      "--agent", "claude",
+      "--cloud", "--delivery-only",
+      "--session", sessionId,
+      "--correlation-id", input.correlationId,
+      "--timeout", String(this.timeoutSeconds),
+      "--message", `${CLOUD_RELAY_NOTICE}\n\n${input.message}`
+    ], {
+      env: { ...processEnv },
+      timeoutMs: (this.timeoutSeconds + 20) * 1000
+    });
+    return deliveryReceipt(result);
+  }
+
+  async status(input: { workspaceId: string; sessionId: string }): Promise<AgentSessionLiveStatus> {
+    if (this.cloudSessionId(input) !== undefined || this.agentNativeCallPath === undefined) return UNKNOWN_SESSION_STATUS;
+    const result = await this.run(process.execPath, [
+      join(dirname(this.agentNativeCallPath), "agent-session-status.mjs"),
+      "--agent", this.provider,
+      "--session", input.sessionId
+    ], { env: { ...processEnv }, timeoutMs: 10_000 });
+    if (result.code !== 0) return UNKNOWN_SESSION_STATUS;
+    try {
+      return JSON.parse(result.stdout) as AgentSessionLiveStatus;
+    } catch {
+      return UNKNOWN_SESSION_STATUS;
+    }
   }
 
   private async nativeSessionCall(input: AgentSessionSendInput): Promise<TmuxSendResult | undefined> {
@@ -605,10 +775,19 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     if (this.provider === "claude" && this.agentManagedInboxRoot !== undefined) {
       nativeArgs.push("--managed-inbox-root", this.agentManagedInboxRoot);
     }
+    const steer = input.urgent === true && this.provider === "codex";
+    if (steer) nativeArgs.push("--steer-or-queue");
     const result = await this.run(process.execPath, nativeArgs, {
       env: { ...processEnv },
       timeoutMs: (this.timeoutSeconds + 20) * 1000
     });
+    if (steer && result.code === 0) {
+      try {
+        const receipt: unknown = JSON.parse(result.stdout);
+        if (typeof receipt === "object" && receipt !== null && !Array.isArray(receipt) &&
+            (receipt as { held?: unknown }).held === true) return deliveryReceipt(result);
+      } catch {}
+    }
     return nativeCallResult(result);
   }
 
@@ -666,21 +845,37 @@ export class ShellAgentSessionProvider implements AgentSessionProvider {
     } catch (error) {
       return failed(error instanceof Error ? error.message : String(error));
     }
-    return this.sendToOwnedClaudeTarget(input, target);
+    return this.sendToOwnedTarget(input, target);
   }
 
-  private async sendToOwnedClaudeTarget(input: AgentSessionSendInput, target: string): Promise<TmuxSendResult> {
-    const result = await this.sender.send(this.tmuxSendInput(input, target));
+  private async sendToOwnedTarget(input: AgentSessionSendInput, target: string, sender = this.sender): Promise<TmuxSendResult> {
+    const result = await sender.send(this.tmuxSendInput(input, target));
     if (result.result_error_code !== "result_uncorrelated" || input.correlationId === undefined) return result;
     const token = createHash("sha256").update(input.correlationId).digest("hex").slice(0, 16);
     const begin = `[[R:${token}]]`;
     const end = `[[/R:${token}]]`;
     try {
-      const page = await this.search({ workspaceId: input.workspaceId, query: begin, limit: 20 });
-      const matches = page.results
-        .filter((session) => session.session_id === input.sessionId)
-        .flatMap((session) => session.matches)
-        .filter((event) => event.role === "assistant");
+      let matches: AgentTranscriptEvent[];
+      if (this.provider === "codex") {
+        // Read only this owned thread; a global transcript search is both
+        // unnecessary and too slow for the first-turn recovery boundary.
+        matches = [];
+        let cursor: string | undefined;
+        for (let pageNumber = 0; pageNumber < 20; pageNumber++) {
+          const page = await this.transcript({ workspaceId: input.workspaceId, sessionId: input.sessionId, cursor, limit: 500 });
+          if (page === undefined) return result;
+          matches.push(...page.events.filter(event => event.role === "assistant"));
+          if (page.next_cursor === null) break;
+          if (pageNumber === 19 || page.next_cursor === cursor) return result;
+          cursor = page.next_cursor;
+        }
+      } else {
+        const page = await this.search({ workspaceId: input.workspaceId, query: begin, limit: 20 });
+        matches = page.results
+          .filter((session) => session.session_id === input.sessionId)
+          .flatMap((session) => session.matches)
+          .filter((event) => event.role === "assistant");
+      }
       const replies = matches.map((event) => {
         const start = event.text.indexOf(begin);
         if (start < 0 || event.text.indexOf(begin, start + begin.length) >= 0) return undefined;
@@ -860,6 +1055,25 @@ function parseBridgeSearch(value: string, expectedAgent: string): BridgeSearchRe
     throw new Error("Agent transcript search bridge returned malformed metadata.");
   }
   return response as BridgeSearchResponse;
+}
+
+// the cloud CLI receipt echoes the id it was given and only session_ is known to round-trip
+export function canonicalCloudSessionId(id: string): string {
+  return id.replace(/^cse_/, "session_");
+}
+
+function deliveryReceipt(result: { code: number; stdout: string; stderr: string }): TmuxSendResult {
+  const native = nativeCallResult(result);
+  if (result.code !== 0) return native;
+  let status: unknown;
+  let held: unknown;
+  try { ({ status, held } = JSON.parse(result.stdout) as { status?: unknown; held?: unknown }); } catch { return native; }
+  if (held === true) return { ok: true, reply: "Held by the communications gate, not delivered yet. No reply comes back through this task." };
+  if (status !== "steered" && status !== "queued") return native;
+  return {
+    ok: true,
+    reply: `${status === "steered" ? "Steered into the running turn" : "Queued for the next turn"}. Delivery only: no reply comes back through this task.`
+  };
 }
 
 function nativeCallResult(result: { code: number; stdout: string; stderr: string }): TmuxSendResult {

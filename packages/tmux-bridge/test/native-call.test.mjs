@@ -195,7 +195,8 @@ console.log(JSON.stringify([{ pid: ${pid}, kind: "interactive", sessionId: "${se
 
 for (const writerKind of ["desktop", "cli"]) {
 for (const deliveryOnly of [false, true]) {
-test(`managed Claude ${writerKind} inbox ${deliveryOnly ? "acknowledges delivery without a result" : "returns a correlated result"}`, async (t) => {
+for (const replyTool of deliveryOnly ? [false] : [false, true]) {
+test(`managed Claude ${writerKind} inbox ${deliveryOnly ? "acknowledges delivery without a result" : replyTool ? "takes a marked reply from a messaging tool" : "returns a correlated result"}`, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "mesh-native-claude-managed-"));
   const procRoot = join(root, "proc");
   const ownerPid = 8552;
@@ -257,8 +258,13 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
     assert.equal(JSON.parse(delivered).prompt, "Visible request");
     return;
   }
+  assert.match(delivered, /temporary bridge/);
   await appendFile(transcript, [
     { type: "user", message: { content: `AGENT_MESH_INBOX {"prompt":"[MESH:${token}]"}` } },
+    ...(replyTool ? [{ type: "assistant", message: { stop_reason: "tool_use", content: [
+      { type: "tool_use", name: "SendMessage", input: { to: "peer", message: `Please answer: [[R:${token}]] ... [[/R:${token}]]` } },
+      { type: "tool_use", name: "SendMessage", input: { to: "peer", message: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` } }
+    ] } }] : []),
     { type: "assistant", message: { stop_reason: "end_turn", content: [] } },
     { type: "assistant", message: { stop_reason: "end_turn", content: [
       { type: "text", text: `[[R:${token}]] CLAUDE_MANAGED_OK [[/R:${token}]]` }
@@ -270,12 +276,14 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
 });
 
 }
+}
 
 }
 
 
-test("explicit native resume requests daemon activation without claiming execution", async () => {
-  for (const resume of [false, true]) {
+test("Codex queues wake by default and allow an explicit hold without claiming execution", async () => {
+  for (const flags of [[], ["--resume"], ["--no-resume"]]) {
+    const resume = !flags.includes("--no-resume");
     const value = await fixture("success");
     const log = join(value.root, "queue-args.json");
     await writeFile(value.codex, `#!/usr/bin/env node
@@ -285,7 +293,7 @@ console.error('synthetic resume diagnostic');
 `);
     await chmod(value.codex, 0o755);
     const result = await exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
-      "--correlation-id", "resume-fixture", "--delivery-only", ...(resume ? ["--resume"] : []), "--message", "Continue"],
+      "--correlation-id", "resume-fixture", "--delivery-only", ...flags, "--message", "Continue"],
       {env: {...process.env, MESH_COMMS_STATE: join(value.root, "comms"),
       CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
     const args = JSON.parse(await readFile(log, "utf8"));
@@ -298,4 +306,11 @@ console.error('synthetic resume diagnostic');
     assert.equal(ack.resumeVerified, resume ? false : undefined);
     assert.equal(ack.resumeDiagnostic, resume ? true : undefined);
   }
+});
+
+
+test("native resume flags are mutually exclusive before delivery", async () => {
+  await assert.rejects(exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
+    "--correlation-id", "conflict", "--message", "Continue", "--resume", "--no-resume"]),
+    error => error.code === 2 && /mutually exclusive/.test(error.stderr));
 });

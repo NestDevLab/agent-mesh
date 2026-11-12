@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { appendFile, chmod, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -421,4 +421,96 @@ test("changes explicit head baseline is quiet and retains later changes", async 
     const invalid = await run(state, ["query", "changes", "--input", JSON.stringify(input)]);
     assert.notEqual(invalid.code, 0);
   }
+});
+
+async function itemsFixture(t, items, { pageSize = 2 } = {}) {
+  const state = await mkdtemp(join(tmpdir(), "plexus-items-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  const adapter = join(state, "adapter.py");
+  await writeFile(adapter, `import json, sys
+items = json.loads(${JSON.stringify(JSON.stringify(items))})
+request = json.load(sys.stdin)
+if sys.argv[1] == "capabilities":
+    print(json.dumps({"schema": "agent-mesh.ledger-adapter.v1", "schemes": ["work"], "operations": ["describe", "changes"], "sessionField": False}))
+    sys.exit()
+assert request.get("fields") is True
+start = int(request["cursor"] or 0)
+page = items[start:start + ${pageSize}]
+print(json.dumps({"schema": "agent-mesh.ledger-adapter.v1", "items": page, "errors": [], "cursor": str(start + len(page)), "more": start + len(page) < len(items)}))
+`);
+  const ledgers = join(state, "ledgers.json");
+  await writeFile(ledgers, JSON.stringify({ schemaVersion: 1, adapters: [{ scheme: "work", command: ["python3", adapter] }] }));
+  const claudeHome = join(state, "claude");
+  await mkdir(join(claudeHome, "sessions"), { recursive: true });
+  await writeFile(join(claudeHome, "sessions", "1.json"), JSON.stringify({ sessionId: CLAUDE, bridgeSessionId: "session_Remote1" }));
+  const environment = { MESH_LEDGERS_FILE: ledgers, CLAUDE_CONFIG_DIR: claudeHome };
+  return { state, environment };
+}
+
+const workItem = (id, fields, ranks = {}, status = "open") => ({
+  ref: `work:${id}`, title: `Item ${id}`, status, updatedAt: "2030-01-01T00:00:00Z", fields,
+  ...(Object.keys(ranks).length ? { sortKeys: ranks } : {}),
+});
+
+const refsOf = (result) => result.items.map((item) => item.ref.split(":")[1]);
+
+test("items query sorts ledger fields live and joins open session links", async (t) => {
+  const { state, environment } = await itemsFixture(t, [
+    workItem("a", { due: "2030-02-01", priority: "low", project: "one" }, { priority: 3 }),
+    workItem("b", { due: "2030-01-01", priority: "low", size: "big", project: "two" }, { priority: 3, size: 4 }),
+    workItem("c", { due: "2030-01-01", priority: "urgent", size: "big", project: "one" }, { priority: 0, size: 4 }),
+    workItem("d", { due: "2030-01-01", priority: "urgent", size: "small", project: "two" }, { priority: 0, size: 1 }),
+    workItem("e", { priority: "urgent", project: "one" }, { priority: 0 }),
+    workItem("f", { due: "2029-01-01" }, {}, "done"),
+  ]);
+  await ok(state, ["migrate", "--apply"]);
+  await ok(state, ["link", "open", "--agent", "claude", "--runtime-uuid", CLAUDE, "--ref", "work:d", "--role", "owns"]);
+  await ok(state, ["link", "open", "--agent", "codex", "--runtime-uuid", CODEX, "--ref", "work:d", "--role", "works-on"]);
+  await ok(state, ["link", "open", "--agent", "codex", "--runtime-uuid", CODEX, "--ref", "group:team", "--role", "works-on"]);
+
+  const byDefault = await query(state, "items", {}, environment);
+  assert.deepEqual(refsOf(byDefault), ["d", "c", "b", "a", "e"]);
+  assert.deepEqual(byDefault.sort, ["due:asc", "priority:asc", "size:asc"]);
+  const joined = byDefault.items[0];
+  assert.deepEqual(joined.sessions.map((session) => [session.role, session.harness, session.nativeId, session.url]), [
+    ["owns", "claude", CLAUDE, "https://claude.ai/code/session_Remote1"],
+    ["works-on", "codex", CODEX, undefined],
+  ]);
+  assert.deepEqual(joined.groups, ["group:team"]);
+  assert.equal(joined.sortKeys, undefined);
+
+  const descending = await query(state, "items", { sort: ["due:desc"] }, environment);
+  assert.equal(refsOf(descending).at(-1), "e", "missing values stay last in descending order");
+  const bySessions = await query(state, "items", { sort: "sessions:desc,project" }, environment);
+  assert.equal(refsOf(bySessions)[0], "d");
+});
+
+test("items query filters on any field and refuses bad input before reading ledgers", async (t) => {
+  const { state, environment } = await itemsFixture(t, [
+    workItem("a", { due: "2030-02-01", project: "one", waiting: true }),
+    workItem("b", { due: "2030-01-01", project: "two", waiting: false }),
+    workItem("c", { project: "one", waiting: false }),
+    workItem("d", { due: "2029-01-01", project: "one" }, {}, "done"),
+  ]);
+  const refs = async (input) => refsOf(await query(state, "items", input, environment));
+  assert.deepEqual(await refs({ filter: { project: "one" } }), ["a", "c"]);
+  assert.deepEqual(await refs({ filter: { project: ["one", "two"], waiting: true } }), ["a"]);
+  assert.deepEqual(await refs({ filter: { due: { lte: "2030-01-15" } } }), ["b"]);
+  assert.deepEqual(await refs({ filter: { due: { exists: false } } }), ["c"]);
+  assert.deepEqual(await refs({ filter: { status: "done" } }), ["d"]);
+  assert.deepEqual(await refs({ includeClosed: true, limit: 1 }), ["d"]);
+
+  for (const input of [{ sort: ["bad key"] }, { filter: { due: { nope: 1 } } }, { limit: 0 }, { scope: scopeA }]) {
+    const refused = await run(state, ["query", "items", "--input", JSON.stringify(input)], { MESH_LEDGERS_FILE: join(state, "absent.json") });
+    assert.notEqual(refused.code, 0, JSON.stringify(input));
+    assert.doesNotMatch(refused.stderr, /ledger listing/);
+  }
+});
+
+test("items query fails instead of returning a partial list when an adapter breaks", async (t) => {
+  const { state, environment } = await itemsFixture(t, [{ ...workItem("a", { nested: { no: 1 } }) }]);
+  const result = await run(state, ["query", "items", "--input", "{}"], environment);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /ledger listing failed/);
 });

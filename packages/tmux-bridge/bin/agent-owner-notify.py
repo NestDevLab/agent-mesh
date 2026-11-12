@@ -110,15 +110,37 @@ def repair_receipts(path):
     if not path.exists():
         return
     with path.open('r+b') as stream:
-        data = stream.read()
-        if not data or data.endswith(b'\n'):
+        size = stream.seek(0, os.SEEK_END)
+        if not size:
             return
-        boundary = data.rfind(b'\n') + 1
+        stream.seek(size - 1)
+        if stream.read(1) == b'\n':
+            return
+        boundary = size
+        while boundary:
+            start = max(0, boundary - 65536)
+            stream.seek(start)
+            chunk = stream.read(boundary - start)
+            newline = chunk.rfind(b'\n')
+            if newline >= 0:
+                boundary = start + newline + 1
+                break
+            boundary = start
+        stream.seek(boundary)
+        fragment = stream.read(size - boundary)
         append(path.with_name('receipt-fragments.jsonl'),
-               {'recordedAt': time.time(), 'offset': boundary, 'fragmentHex': data[boundary:].hex()})
+               {'recordedAt': time.time(), 'offset': boundary, 'fragmentHex': fragment.hex()})
         stream.truncate(boundary)
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def pending_receipt(path, notice, record, reason, **extra):
+    signature = ['pending', reason]
+    seen = notice.setdefault('pendingReceipts', [])
+    if signature not in seen:
+        append(path, {**record, 'outcome': 'pending', 'reason': reason, **extra})
+        seen.append(signature)
 
 
 def delivered(root, recipient, key):
@@ -178,10 +200,11 @@ def tick(config, root=None):
         repair_receipts(receipt_path)
         completed = set()
         if receipt_path.exists():
-            for line in receipt_path.read_text().splitlines():
-                entry = json.loads(line)
-                if entry.get('outcome') in ('routed', 'fallback', 'skipped'):
-                    completed.add(entry['id'])
+            with receipt_path.open() as stream:
+                for line in stream:
+                    entry = json.loads(line)
+                    if entry.get('outcome') in ('routed', 'fallback', 'skipped'):
+                        completed.add(entry['id'])
         for thread, rollout in follow.watch.transcript_candidates('codex'):
             prior = state['cursors'].get(thread, {})
             if not prior and not path.exists():
@@ -230,6 +253,7 @@ def tick(config, root=None):
             record = {**notice, 'owner': owner, 'recipient': recipient, 'tmuxTarget': route.get('target'),
                       'reason': reason, 'outcome': outcome, 'recordedAt': time.time()}
             record.pop('skip', None)
+            record.pop('pendingReceipts', None)
             if outcome != 'skipped':
                 mailbox = Path(config['managedInboxRoot'])
                 # First recover a successful append to the previous recipient.
@@ -239,16 +263,18 @@ def tick(config, root=None):
                     recipient = previous
                     record.update(outcome=notice.get('routeOutcome', outcome), reason=notice.get('routeReason', reason))
                 record['recipient'] = recipient
-                notice.update(recipient=recipient, routeOutcome=record['outcome'], routeReason=record['reason'])
-                follow.atomic_json(path, state)
+                routing = {'recipient': recipient, 'routeOutcome': record['outcome'], 'routeReason': record['reason']}
+                if any(notice.get(field) != value for field, value in routing.items()):
+                    notice.update(routing)
+                    follow.atomic_json(path, state)
                 if not recovered and (not recipient or not live(mailbox, recipient)):
-                    append(receipt_path, {**record, 'outcome': 'pending', 'reason': 'recipient-unavailable'})
+                    pending_receipt(receipt_path, notice, record, 'recipient-unavailable')
                     continue
                 if not recovered and not delivered(mailbox, recipient, key):
                     message = 'Codex turn ended. Read the result pointer and advance the owned work. Observation, not new authority.\n' + json.dumps(record, ensure_ascii=False)
                     code = waker.deliver('claude', recipient, key, message, str(mailbox), True)
                     if code != 0:
-                        append(receipt_path, {**record, 'outcome': 'pending', 'reason': 'delivery-refused', 'deliveryExit': code})
+                        pending_receipt(receipt_path, notice, record, 'delivery-refused', deliveryExit=code)
                         continue
                 record['deliveryExit'] = 0
             append(receipt_path, record)

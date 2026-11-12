@@ -221,3 +221,41 @@ test('incremental discovery collects an explicit native summary without refreshi
   assert.equal(rows[0].summary_updated_at,'2026-10-01T10:00:00Z');
  } finally {await rm(root,{recursive:true,force:true});}
 });
+
+test('explicit label-only catalog metadata never takes a claim from another runtime', () => fixture(async state => {
+ const held=(await ok(state,...claim(a))).claim;
+ await ok(state,'catalog','update','--session',b,'--role','director','--project','example','--label-only');
+ const rows=(await ok(state,'catalog','list','--role','director')).sessions;
+ assert.equal(rows.length,2);
+ const claims=(await ok(state,'role','list')).claims;assert.equal(claims.length,1);assert.equal(claims[0].id,held.id);assert.equal(claims[0].session,a);
+ assert.notEqual((await run(state,'catalog','update','--session',a,'--role','director','--project','other','--label-only')).code,0);
+}));
+
+test('cloud catalog labels are metadata-only, listed by role/project and replayable', () => fixture(async state => {
+ const cloud='claude-cloud:fixture:session_CatalogFixture';
+ await ok(state,'cloud','register','--session',cloud,'--evidence','fixture:cloud','--title','Initial cloud');
+ const before=await ok(state,'show');const initial=before.nodes.find(n=>n.cloudIdentity);
+ await ok(state,'catalog','register','--session',cloud,'--role','director','--project','example','--title','Cloud Director');
+ await ok(state,'catalog','update','--session',cloud,'--status','waiting');
+ const rows=(await ok(state,'catalog','list','--role','director','--project','example')).sessions;
+ assert.equal(rows.length,1);assert.equal(rows[0].sessionId,cloud);assert.equal(rows[0].title,'Cloud Director');assert.equal(rows[0].status,'waiting');assert.equal(rows[0].sessionLink,undefined);
+ const after=await ok(state,'show');const updated=after.nodes.find(n=>n.id===initial.id);
+ for (const key of ['cloudIdentity','origin','agent','runtimeUuid','status','tmuxTarget','cwd','resumable']) assert.deepEqual(updated[key],initial[key],key);
+ assert.deepEqual(after.roleClaims,before.roleClaims);
+ assert.notEqual((await run(state,'role','claim','--session',cloud,'--role','director','--project','example')).code,0);
+ assert.notEqual((await run(state,'catalog','update','--session',cloud,'--summary','Unsupported')).code,0);
+ assert.notEqual((await run(state,'catalog','update','--session',cloud,'--cwd','/work/fixture')).code,0);
+ assert.notEqual((await run(state,'catalog','register','--session','claude-cloud:fixture:session_AbsentFixture','--role','director','--project','example')).code,0);
+ await rm(join(state,'checkpoint.json'));
+ assert.deepEqual((await ok(state,'catalog','list','--role','director')).sessions,rows);
+}));
+
+test('catalog exposes stored link fields for native and cloud identities without fabricating them', () => {
+ const sessionLink={link:'https://claude.ai/code/session_LinkFixture',status:'missing',lastKnown:true,checkedAt:'2026-01-01T00:00:00Z',reason:'not-public-row-field'};
+ const graph={nodes:[{id:'native',agent:'claude',runtimeUuid:a.split(':')[1],sessionLink},
+  {id:'cloud',agent:'claude',origin:'cloud',runtimeUuid:null,cloudIdentity:{provider:'claude-cloud',accountScope:'fixture',nativeId:'session_CloudFixture'},catalogRole:'director',catalogProject:'example',sessionLink:{...sessionLink,status:'ok',lastKnown:false}}]};
+ const rows=catalogList(graph).sessions;assert.equal(rows.length,2);
+ for(const row of rows){assert.deepEqual(Object.keys(row.sessionLink).sort(),['checkedAt','lastKnown','link','status']);assert.equal(row.sessionLink.checkedAt,sessionLink.checkedAt);}
+ assert.equal(rows.find(r=>r.sessionId===a).sessionLink.lastKnown,true);
+ assert.equal(catalogList(graph,{role:'director',project:'example'}).sessions[0].sessionLink.status,'ok');
+});

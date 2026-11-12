@@ -1,3 +1,4 @@
+import { isPlexusServicePrincipal, ShellPlexusLedgerReader, validLedgerReadGrants, type PlexusLedgerConfig } from "./plexus-ledger.js";
 import { MaintenanceAdmission } from "./maintenance-admission.js";
 import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -24,6 +25,7 @@ import { ShellTmuxSender } from "../adapters/shell-tmux-sender.js";
 import { TmuxTransportAdapter, type TmuxRoute } from "../adapters/tmux-transport-adapter.js";
 import {
   AgentSessionRegistry,
+  CLOUD_SESSION_ID,
   ShellAgentSessionProvider
 } from "../adapters/agent-session-provider.js";
 import { AgentSessionTransportAdapter } from "../adapters/agent-session-transport-adapter.js";
@@ -41,6 +43,7 @@ import {
 } from "./mesh-mcp.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import { MeshTaskStore, type MeshTaskRecord } from "./mesh-task-store.js";
+import { UnixGroupGateway, validGroupGrants } from "./mesh-groups.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8790;
@@ -110,11 +113,19 @@ export async function reconcileTerminalReturn(
     correlationId: receipt.id, message, resume: route.resume });
 }
 
+export function createTerminalReturnSender(configPath: string, sessionRegistry: AgentSessionRegistry | undefined) {
+  return async (task: MeshTaskRecord) => {
+    const current = await readRuntimeConfig(configPath);
+    return reconcileTerminalReturn(task, current.bindings, sessionRegistry);
+  };
+}
+
 interface RuntimeAgent extends MeshAgentRecord {
   provider: MeshMcpAgent["provider"];
 }
 
 interface RuntimeConfig {
+  plexusLedger?: PlexusLedgerConfig;
   stateDir: string;
   agents: RuntimeAgent[];
   contexts: MeshContextRecord[];
@@ -129,6 +140,7 @@ interface RuntimeConfig {
   tmuxIngress?: TmuxIngressConfig;
   agentSessions?: AgentSessionsConfig;
   workspaceWorkers?: WorkspaceWorkerRoute[];
+  groups?: { socketPath: string };
 }
 
 interface TmuxIngressConfig {
@@ -151,6 +163,8 @@ interface AgentSessionsConfig {
     target_agent_id: string;
     agent_type: "codex" | "claude";
     workspace_roots: Record<string, string[]>;
+    /** Opt-in, Claude only. Exact cloud session ids per workspace. */
+    cloud_sessions?: Record<string, string[]>;
     /** Opt-in. Fresh sessions only ever start in these dirs. */
     fresh_session?: {
       workspace_cwd: Record<string, string>;
@@ -203,15 +217,22 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ? {}
       : { adapters: runtimeAdapters(config.tmuxIngress, sessionRegistry, stateDir) })
   });
-  const bindings = config.bindings;
+  const resolvePrincipal = async (authInfo: Parameters<typeof resolveCloudflareAccessPrincipal>[0]) => {
+    const current = await readRuntimeConfig(configPath);
+    return resolveCloudflareAccessPrincipal(authInfo, current.bindings, current.plexusLedger?.ownerPrincipalId);
+  };
+  const plexusLedgerReader = config.plexusLedger === undefined ? undefined : new ShellPlexusLedgerReader(config.plexusLedger);
   const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
+  const groupGateway = config.groups === undefined ? undefined : new UnixGroupGateway(config.groups.socketPath);
   const taskCoordinator = new MeshTaskCoordinator({
     store: new MeshTaskStore({ stateDir }),
     execute: (task, hooks) => task.worker_id === undefined
       ? executeMeshTask(gateway, task, undefined, { bindSession: hooks.bindSession })
       : workspaceWorkers === undefined ? Promise.reject(new Error("workspace_worker_unavailable")) : workspaceWorkers.execute(task, hooks),
-    deliverReturn: (task) => reconcileTerminalReturn(task, bindings, sessionRegistry)
+    deliverReturn: createTerminalReturnSender(configPath, sessionRegistry)
   });
+  const targets = meshSendTargets(config);
+  const sendTargets = targets === undefined ? {} : { meshSendTargets: targets };
   const handlers = new Map<string, ReturnType<typeof requireCloudflareAccess>>();
   const meshHandler = requireCloudflareAccess(
     createMeshMcpHandler({
@@ -222,11 +243,14 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
         provider,
         capabilities
       })),
+      ...sendTargets,
       taskCoordinator,
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
+      ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
-      resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
+      resolvePrincipal
     }),
     new CloudflareAccessAuthenticator({ teamDomain, audience })
   );
@@ -246,17 +270,22 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       agents: config.agents.map(({ id, name, provider, capabilities }) => ({
         id, name, provider, capabilities
       })),
+      ...sendTargets,
       taskCoordinator,
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
+      ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
       memoryRunner,
-      resolvePrincipal: (authInfo) => {
-        const binding = resolveCloudflareAccessBinding(authInfo, bindings);
+      resolvePrincipal: async (authInfo) => {
+        const current = await readRuntimeConfig(configPath);
+        const currentBindings = current.bindings;
+        const binding = resolveCloudflareAccessBinding(authInfo, currentBindings);
         return {
-          mesh: resolveCloudflareAccessPrincipal(authInfo, bindings),
+          mesh: resolveCloudflareAccessPrincipal(authInfo, currentBindings, current.plexusLedger?.ownerPrincipalId),
           allowedGoogleAccounts: binding.allowedGoogleAccounts ?? []
         };
       }
@@ -424,11 +453,17 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     if (!validated.ok) throw new Error(`Invalid MCP runtime context at index ${index}.`);
     return validated.value!;
   });
+  if (parsed.plexusLedger !== undefined) new ShellPlexusLedgerReader(parsed.plexusLedger);
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
+  validateHumanGroupActors(parsed.bindings);
   validateGoogleWorkspace(parsed.googleWorkspace);
   validateMemoryRecall(parsed.memoryRecall);
   validateTmuxIngress(parsed.tmuxIngress, agents);
   validateAgentSessions(parsed.agentSessions, agents, contexts);
+  if (parsed.groups !== undefined && (typeof parsed.groups !== "object" || parsed.groups === null || Array.isArray(parsed.groups) ||
+      typeof parsed.groups.socketPath !== "string" || !isAbsolute(parsed.groups.socketPath))) {
+    throw new Error("Invalid group broker socket configuration.");
+  }
   if (parsed.workspaceWorkers !== undefined) {
     new WorkspaceWorkerRouter(parsed.workspaceWorkers);
     for (const route of parsed.workspaceWorkers) {
@@ -445,7 +480,9 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
     ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
     ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions }),
-    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers })
+    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers }),
+    ...(parsed.groups === undefined ? {} : { groups: parsed.groups }),
+    ...(parsed.plexusLedger === undefined ? {} : { plexusLedger: parsed.plexusLedger })
   };
 }
 
@@ -568,8 +605,23 @@ function validateAgentSessions(
         throw new Error(`Unknown agent sessions workspace at index ${index}: ${workspaceId}`);
       }
     }
+    if (provider.cloud_sessions !== undefined) validateCloudSessions(provider, index, value.agentNativeCallPath);
     if (provider.fresh_session !== undefined) validateFreshSession(provider, index, value.meshSocket);
     seen.add(provider.target_agent_id);
+  }
+}
+
+function validateCloudSessions(provider: AgentSessionsConfig["providers"][number], index: number, nativeCallPath?: string): void {
+  const sessions = provider.cloud_sessions;
+  if (
+    provider.agent_type !== "claude" || nativeCallPath === undefined ||
+    typeof sessions !== "object" || sessions === null || Array.isArray(sessions) ||
+    Object.entries(sessions).some(([workspaceId, ids]) => (
+      !Object.hasOwn(provider.workspace_roots, workspaceId) || !Array.isArray(ids) || ids.length === 0 ||
+      ids.some((id) => typeof id !== "string" || !CLOUD_SESSION_ID.test(id))
+    ))
+  ) {
+    throw new Error(`Invalid agent sessions cloud_sessions at index ${index}.`);
   }
 }
 
@@ -615,6 +667,18 @@ function isWithinRoot(path: string, root: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
+export function meshSendTargets(config: {
+  agents: ReadonlyArray<{ id: string; status?: string }>;
+  tmuxIngress?: { routes: ReadonlyArray<{ target_agent_id: string; allow_mcp_ingress?: boolean }> };
+}): ReadonlySet<string> | undefined {
+  if (config.tmuxIngress === undefined) return undefined;
+  return new Set([
+    ...config.tmuxIngress.routes.filter((route) => route.allow_mcp_ingress === true).map((route) => route.target_agent_id),
+    // simulated canaries have no route on purpose
+    ...config.agents.filter((agent) => agent.status === "simulated").map((agent) => agent.id)
+  ]);
+}
+
 function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): AgentSessionRegistry | undefined {
   if (config === undefined) return undefined;
   return new AgentSessionRegistry(config.providers.map((provider) => new ShellAgentSessionProvider({
@@ -625,6 +689,7 @@ function createAgentSessionRegistry(config: AgentSessionsConfig | undefined): Ag
     ...(config.agentNativeCallPath === undefined ? {} : { agentNativeCallPath: config.agentNativeCallPath }),
     ...(config.agentManagedInboxRoot === undefined ? {} : { agentManagedInboxRoot: config.agentManagedInboxRoot }),
     workspaceRoots: provider.workspace_roots,
+    ...(provider.cloud_sessions === undefined ? {} : { cloudSessions: provider.cloud_sessions }),
     ...(provider.fresh_session === undefined ? {} : { freshSessionCwds: provider.fresh_session.workspace_cwd }),
     ...(provider.fresh_session?.task_sessions === undefined ? {} : { freshTaskSessions: provider.fresh_session.task_sessions }),
     ...(provider.fresh_session?.access_profiles === undefined ? {} : { createSessionProfiles: provider.fresh_session.access_profiles }),
@@ -653,7 +718,7 @@ function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
   }
 }
 
-function validateBinding(
+export function validateBinding(
   binding: CloudflareAccessBinding,
   index: number,
   agents: readonly RuntimeAgent[]
@@ -673,6 +738,14 @@ function validateBinding(
       !binding.allowedWorkspaceIds.includes(route.workspace_id) || typeof route.resume !== "boolean" ||
       (route.resume && agents.find((agent) => agent.id === route.agent_id)?.provider !== "codex") ||
       typeof route.session_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(route.session_id)))) ||
+    (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds, binding.kind)) ||
+    (binding.manageAllGroups !== undefined && typeof binding.manageAllGroups !== "boolean") ||
+    (binding.ledgerReadGrants !== undefined && !validLedgerReadGrants(binding.ledgerReadGrants, binding.allowedWorkspaceIds)) ||
+    (binding.plexusLedgerReadDelegate !== undefined && (binding.plexusLedgerReadDelegate !== true ||
+      binding.kind !== "service" || !binding.ledgerReadGrants?.length || !binding.allowedTools.length)) ||
+    (isPlexusServicePrincipal(binding) && (
+      (binding.allowedGoogleAccounts !== undefined && binding.allowedGoogleAccounts.length > 0) ||
+      binding.allowedTools.some(tool => tool !== "mesh_plexus_work_items" && tool !== "mesh_plexus_ledger_sessions"))) ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
         binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))
@@ -682,6 +755,21 @@ function validateBinding(
   const exposed = new Set(agents.map((agent) => agent.id));
   if (binding.allowedAgentIds.some((agentId) => !exposed.has(agentId))) {
     throw new Error(`MCP runtime binding ${index} refers to an unknown agent.`);
+  }
+}
+
+/** A human actor must resolve to one signed user identity across all bindings. */
+export function validateHumanGroupActors(bindings: readonly CloudflareAccessBinding[]): void {
+  const owners = new Map<string, string>();
+  for (const binding of bindings) {
+    for (const grant of binding.groupGrants ?? []) {
+      if (!grant.session_id.startsWith("human:")) continue;
+      if (binding.kind !== "user") throw new Error("Human group actors require a user principal.");
+      const owner = cloudflarePrincipalId(binding.kind, binding.selector);
+      const previous = owners.get(grant.session_id);
+      if (previous !== undefined && previous !== owner) throw new Error("Human group actor has conflicting user bindings.");
+      owners.set(grant.session_id, owner);
+    }
   }
 }
 

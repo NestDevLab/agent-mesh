@@ -24,6 +24,7 @@ const { values } = parseArgs({
     cloud: { type: "boolean", default: false },
     "steer-or-queue": { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
+    "no-resume": { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
@@ -32,7 +33,7 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue --delivery-only (Codex only)]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--delivery-only]");
   process.exit(0);
 }
 
@@ -42,10 +43,13 @@ const correlationId = required(values["correlation-id"], "--correlation-id");
 const message = required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
+if (values.resume && values["no-resume"]) fail("--resume and --no-resume are mutually exclusive", 2);
+if (values["no-resume"] && agent !== "codex") fail("--no-resume is supported only for Codex", 2);
+const resume = agent === "codex" && !values["no-resume"];
 if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
-if (values["steer-or-queue"] && (agent !== "codex" || !values["delivery-only"] || values.cloud)) {
-  fail("--steer-or-queue requires --agent codex --delivery-only without --cloud", 2);
+if (values["steer-or-queue"] && (agent !== "codex" || values.cloud)) {
+  fail("--steer-or-queue requires --agent codex without --cloud", 2);
 }
 if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
   fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
@@ -63,10 +67,12 @@ const anchor = `[MESH:${resultToken}]`;
 const resultBegin = `[[R:${resultToken}]]`;
 const resultEnd = `[[/R:${resultToken}]]`;
 const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the result protocol shown on the next line.\n` +
-  `Final result markers: ${resultBegin} ... ${resultEnd}\n${message}`;
+  `Final result markers: ${resultBegin} ... ${resultEnd}\n` +
+  `Put your reply between them in your final message. The sender is a temporary bridge that can't be messaged, ` +
+  `so don't answer with a messaging tool, the caller reads your reply from the task.\n${message}`;
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
-  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume, ...(values.cloud ? { cloud: true } : {}),
+  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume, ...(values.cloud ? { cloud: true } : {}),
   ...(values["steer-or-queue"] ? { steer_first: true } : {}) });
 activeComms = comms;
 if (comms.status !== 'send') {
@@ -133,7 +139,7 @@ if (agent === "codex") {
   if (deliveryMethod !== "steer") {
     enqueueStarted = true;
     const queued = await run(process.env.CODEX_BIN || "codex", [
-      "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
+      "queue", "--thread", sessionId, "--message", protocolMessage, ...(resume ? ["--resume"] : [])
     ], (timeoutSeconds + 15) * 1000);
     if (queued.code !== 0) {
       if (codexSessionIsNotDirectlyWritable(queued)) {
@@ -141,7 +147,7 @@ if (agent === "codex") {
       }
       fail(safeError("Codex native queue failed", queued), 1);
     }
-    resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
+    resumeDiagnostic = Boolean(resume && queued.stderr?.trim());
     deliveryMethod = "queue";
   }
 } else {
@@ -165,7 +171,7 @@ if (agent === "codex") {
 if (values["delivery-only"]) {
   console.log(JSON.stringify({ status: deliveryMethod === "steer" ? "steered" : "queued", agent, sessionId, correlationId,
     ...(values["steer-or-queue"] ? { deliveryMethod, ...(steeredTurnId ? { turnId: steeredTurnId } : {}) } : {}),
-    ...(values.resume ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
+    ...(resume && deliveryMethod === "queue" ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
   process.exit(0);
 }
 
@@ -195,6 +201,11 @@ while (Date.now() < deadline) {
       const assistantText = agent === "codex" ? messageText(record, "assistant") : claudeMessageText(record, "assistant");
       if (!state.anchorSeen) {
         continue;
+      }
+      if (agent === "claude") {
+        // a marked reply sent through a tool is final, the turn can go on for minutes after it
+        const marked = claudeMarkedToolText(record, resultBegin, resultEnd);
+        if (marked) finish([marked], resultBegin, resultEnd);
       }
       if (assistantText) {
         const bodies = agent === "claude"
@@ -365,6 +376,15 @@ function claudeMessageText(record, role) {
     .filter((part) => part?.type === "text" && typeof part.text === "string")
     .map((part) => part.text);
   return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+function claudeMarkedToolText(record, begin, end) {
+  if (record?.type !== "assistant" || !Array.isArray(record?.message?.content)) return undefined;
+  return record.message.content
+    .filter((part) => part?.type === "tool_use" && typeof part.input?.message === "string")
+    .map((part) => part.input.message)
+    // the prompt quotes both markers, a session forwarding it verbatim isn't replying
+    .find((text) => text.trimStart().startsWith(begin) && text.includes(end));
 }
 
 async function requireManagedClaudeInbox(id, correlation, configuredRoot) {

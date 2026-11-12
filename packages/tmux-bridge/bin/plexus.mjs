@@ -335,6 +335,131 @@ export function ledgerSessions(graph, input = {}, scope = null) {
   return { refs, sessions };
 }
 
+// ---------------------------------------------------------------------------
+// Work items: the ledgers own every field, the graph only adds who works on what.
+
+const CLOSED_ITEM_STATUSES = new Set(["done", "cancelled", "deleted"]);
+const DEFAULT_ITEM_SORT = ["due:asc", "priority:asc", "size:asc"];
+const ITEM_SORT_KEY = /^([A-Za-z0-9._-]{1,128})(?::(asc|desc))?$/;
+const ITEM_FILTER_OPERATORS = new Set(["eq", "ne", "in", "lt", "lte", "gt", "gte", "contains", "exists"]);
+const ITEM_COLLATOR = new Intl.Collator("en", { numeric: true, sensitivity: "base" });
+
+function itemValue(item, field) {
+  if (field === "sessions") return item.sessions.length;
+  if (field === "groups") return item.groups.join(",") || undefined;
+  const value = item.fields?.[field] ?? item[field];
+  return value === "" || value === null || typeof value === "object" ? undefined : value;
+}
+
+function compareItemValues(a, b) {
+  if (typeof a === "string" && typeof b === "string") return ITEM_COLLATOR.compare(a, b);
+  if (typeof a === typeof b) return Number(a) - Number(b);
+  // Ranked values sort before anything an adapter could not rank.
+  if (typeof a === "number") return -1;
+  if (typeof b === "number") return 1;
+  return ITEM_COLLATOR.compare(String(a), String(b));
+}
+
+function parseItemSort(sort = DEFAULT_ITEM_SORT) {
+  const keys = typeof sort === "string" ? sort.split(",") : sort;
+  if (!Array.isArray(keys) || !keys.length || keys.length > 8) throw new Error("sort must list 1 to 8 fields");
+  return keys.map((key) => {
+    const match = typeof key === "string" && ITEM_SORT_KEY.exec(key.trim());
+    if (!match) throw new Error("sort entries must be field or field:asc|desc");
+    return { field: match[1], direction: match[2] || "asc" };
+  });
+}
+
+function compareItems(keys) {
+  return (a, b) => {
+    for (const { field, direction } of keys) {
+      const [x, y] = [a, b].map((item) => item.sortKeys?.[field] ?? itemValue(item, field));
+      // Missing values stay last in both directions, otherwise desc would lead with blanks.
+      if (x === undefined || y === undefined) {
+        if (x !== y) return x === undefined ? 1 : -1;
+        continue;
+      }
+      const order = compareItemValues(x, y);
+      if (order) return direction === "desc" ? -order : order;
+    }
+    return ITEM_COLLATOR.compare(a.ref, b.ref);
+  };
+}
+
+function checkItemFilter(filter) {
+  if (!filter || typeof filter !== "object" || Array.isArray(filter)) throw new Error("filter must be an object");
+  for (const condition of Object.values(filter)) {
+    if (!condition || typeof condition !== "object" || Array.isArray(condition)) continue;
+    for (const operator of Object.keys(condition)) {
+      if (!ITEM_FILTER_OPERATORS.has(operator)) throw new Error(`unknown filter operator '${operator}'`);
+    }
+  }
+  return filter;
+}
+
+function matchesItemFilter(item, field, condition) {
+  const value = itemValue(item, field);
+  const same = (expected) => value !== undefined && String(value) === String(expected);
+  if (Array.isArray(condition)) return condition.some(same);
+  if (condition === null || typeof condition !== "object") return same(condition);
+  const range = (operand) => (value === undefined ? NaN : compareItemValues(value, operand));
+  return Object.entries(condition).every(([operator, operand]) => ({
+    eq: () => same(operand),
+    ne: () => !same(operand),
+    in: () => Array.isArray(operand) && operand.some(same),
+    lt: () => range(operand) < 0,
+    lte: () => range(operand) <= 0,
+    gt: () => range(operand) > 0,
+    gte: () => range(operand) >= 0,
+    contains: () => value !== undefined && String(value).toLowerCase().includes(String(operand).toLowerCase()),
+    exists: () => (value !== undefined) === Boolean(operand),
+  })[operator]());
+}
+
+function itemSessionView(link, sessions, remoteSessions) {
+  const session = sessions.get(link.session);
+  const nativeId = session?.nativeId || link.session.split(":").at(-1);
+  const remote = session?.cloudIdentity?.nativeId || (session?.harness === "claude" ? remoteSessions[nativeId] : null);
+  return {
+    session: link.session, role: link.role, harness: session?.harness || link.session.split(":")[0], nativeId,
+    title: session?.title ?? null, status: session?.status ?? null,
+    ...(remote ? { url: `https://claude.ai/code/${remote.replace(/^cse_/, "session_")}` } : {}),
+  };
+}
+
+/** `read` is called once the input is known to be valid and returns {items, errors, remoteSessions}. */
+export function workItems(graph, input = {}, scope = null, read) {
+  if (scope) throw new Error("work items are available to local callers only");
+  const sort = parseItemSort(input.sort);
+  const filter = checkItemFilter(input.filter ?? {});
+  if (input.limit !== undefined && !(Number.isInteger(input.limit) && input.limit > 0)) throw new Error("limit must be a positive integer");
+  const { items, errors = [], remoteSessions = {} } = read();
+  const ctx = context(graph);
+  const live = ctx.links.filter((link) => link.until === null);
+  const roleOrder = [...LINK_ROLES];
+  const groupsOf = new Map();
+  const linksOf = new Map();
+  for (const link of live) {
+    if (link.ref.startsWith("group:")) groupsOf.set(link.session, [...(groupsOf.get(link.session) || []), link.ref]);
+    linksOf.set(link.ref, [...(linksOf.get(link.ref) || []), link]);
+  }
+  const joined = items.map(({ sessions: _declared, ...item }) => {
+    const links = (linksOf.get(item.ref) || []).sort((a, b) =>
+      roleOrder.indexOf(a.role) - roleOrder.indexOf(b.role) || a.session.localeCompare(b.session));
+    const groups = [...new Set(links.flatMap((link) => groupsOf.get(link.session) || []))].sort();
+    return { ...item, sessions: links.map((link) => itemSessionView(link, ctx.sessions, remoteSessions)), groups };
+  });
+  const matched = joined
+    .filter((item) => "status" in filter || input.includeClosed || !CLOSED_ITEM_STATUSES.has(item.status))
+    .filter((item) => Object.entries(filter).every(([field, condition]) => matchesItemFilter(item, field, condition)))
+    .sort(compareItems(sort));
+  const shown = input.limit ? matched.slice(0, input.limit) : matched;
+  return {
+    total: matched.length, count: shown.length, sort: sort.map(({ field, direction }) => `${field}:${direction}`),
+    items: shown.map(({ sortKeys: _ranks, ...item }) => item), errors,
+  };
+}
+
 export function sessionLedgers(graph, input = {}, scope = null) {
   const ctx = context(graph, scope);
   if (input.launchId !== undefined) return { links: [] };

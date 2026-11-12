@@ -202,3 +202,21 @@ test("registered Access requester can submit through the real gateway", async ()
     await rm(stateDir, { recursive: true, force: true });
   }
 });
+
+test("service claims with empty or absent sub use the verified common_name as subject", () => {
+  for (const sub of ["", undefined]) {
+    const identity=cloudflareIdentityFromClaims({...(sub===undefined?{}:{sub}),common_name:"example-client-id",exp:1_800_000_000});
+    assert.deepEqual(identity,{kind:"service",selector:"example-client-id",subject:"example-client-id",expiresAt:1_800_000_000});
+    const serviceBinding={kind:"service",selector:"example-client-id",allowedTools:[],allowedAgentIds:[],allowedWorkspaceIds:[],allowedDomainIds:[]};
+    assert.equal(resolveCloudflareAccessPrincipal({extra:{cloudflareAccessIdentity:identity}},[serviceBinding]).kind,"service");
+  }
+});
+test("user claims still require their own subject even with a common_name", () => {
+  for(const sub of ["",undefined])assert.throws(()=>cloudflareIdentityFromClaims({...(sub===undefined?{}:{sub}),email:"user@example.test",common_name:"service-name"}),/no subject/);
+});
+test("service claims still need common_name independently of sub", () => {
+  for(const sub of ["",undefined,"service-subject"])assert.throws(()=>cloudflareIdentityFromClaims({...(sub===undefined?{}:{sub})}),/common_name/);
+});
+test("a nonempty signed service subject is retained", () => {
+  assert.deepEqual(cloudflareIdentityFromClaims({sub:"signed-subject",common_name:"example-client-id"}),{kind:"service",subject:"signed-subject",selector:"example-client-id"});
+});

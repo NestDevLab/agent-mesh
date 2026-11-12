@@ -626,3 +626,21 @@ writes and does not advance its cursor. `linkSessions: false` disables sync.
 
 The lower-level operation is `mesh-graph ledger sync --input <json|->`, with an
 `items` array. Both entry points use the same Plexus links, not a separate store.
+
+`mesh-graph query items --input '{...}'` lists work items read live from the
+adapters (`mesh-ledger list`, which never moves a cursor) joined with the open
+Plexus links of each ref. Nothing is stored. Adapters that support it answer a
+`changes` request carrying `fields: true` with two optional flat item maps:
+`fields` (name to scalar) and `sortKeys` (name to numeric rank, for values whose
+order is not alphabetical).
+
+- `sort`: `["due:asc", "priority", "size"]` is the default. Any field works, and
+  so do `sessions` (count) and `groups`. Missing values are always last.
+- `filter`: `{"project": "a", "state": ["x", "y"], "due": {"lte": "2030-01-31"}}`.
+  Operators are `eq`, `ne`, `in`, `lt`, `lte`, `gt`, `gte`, `contains`, `exists`,
+  and ranges compare raw values, not `sortKeys`.
+- Closed items are hidden unless `filter.status` or `includeClosed` is set.
+- `limit` caps the output. Scoped callers are refused.
+
+Each item carries `sessions` (`session`, `role`, `harness`, `nativeId`, `title`,
+`status`, plus `url` for a Claude session reachable remotely) and `groups`.

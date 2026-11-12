@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile, unlink, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./ts-extension-resolver.mjs";
@@ -305,3 +305,50 @@ test("cancel wins a paused failure and emits no failure callback", async () => {
   const final = await store.get(task.task_id);
   assert.equal(final.status, "cancelled"); assert.equal(final.error.code, "cancelled"); assert.deepEqual(calls, ["cancelled"]);
 });
+
+
+const { createTerminalReturnSender, readRuntimeConfig } = await import("../src/mcp/serve.ts");
+for (const change of ["unchanged", "route-revoked", "principal-revoked", "scope-revoked", "missing", "invalid"]) {
+  test(`terminal delivery revalidates current runtime configuration (${change})`, async t => {
+    const directory = await mkdtemp(join(tmpdir(), "mesh-return-revocation-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const configPath = join(directory, "runtime.json");
+    const binding = { ...principal, kind: "service", selector: "return.fixture", returnRoutes: [{ ...route }] };
+    const config = {
+      stateDir: directory,
+      agents: ["agent.sender", "agent.worker"].map(id => ({ id, name: id, provider: "codex", role: "worker",
+        status: "online", phase_1_active: true, capabilities: ["submit_request"], enabled_contexts: [route.workspace_id] })),
+      contexts: [{ id: route.workspace_id, name: "Example workspace", type: "workspace", parent_id: null,
+        owner_human: "Example owner", policy_profile: "private", status: "active" }],
+      bindings: [binding]
+    };
+    await writeFile(configPath, JSON.stringify(config));
+    await readRuntimeConfig(configPath);
+    let finish, sends = 0;
+    const running = new Promise(resolve => { finish = resolve; });
+    const registry = { ...sessionRegistry, async deliverNotice() { sends++; return "queued"; } };
+    const deliverReturn = createTerminalReturnSender(configPath, registry);
+    const caller = { ...principal, id: cloudflarePrincipalId(binding.kind, binding.selector) };
+    const store = new MeshTaskStore({ stateDir: directory });
+    const coordinator = new MeshTaskCoordinator({ store, execute: () => running, deliverReturn });
+    const facade = new MeshMcpFacade({ gateway: {}, principal: caller,
+      agents: config.agents, rateLimiter: new FixedWindowMeshMcpRateLimiter(), taskCoordinator: coordinator,
+      sessionRegistry: registry });
+    const { task } = await facade.submitTask(input);
+    await eventually(async () => (await store.get(task.task_id)).status === "working");
+    if (change === "route-revoked") binding.returnRoutes = [];
+    if (change === "principal-revoked") config.bindings = [{ ...binding, selector: "other.return.fixture" }];
+    if (change === "scope-revoked") binding.allowedWorkspaceIds = [];
+    if (change === "missing") await unlink(configPath);
+    else await writeFile(configPath, change === "invalid" ? "{" : JSON.stringify(config));
+    finish({ text: "completed after configuration change" });
+    const expected = change === "unchanged" ? "queued" : "uncertain";
+    const terminal = await eventually(async () => {
+      const current = await store.get(task.task_id);
+      return current.return_delivery?.status === expected && current;
+    });
+    assert.equal(terminal.status, "completed");
+    assert.equal(terminal.result.text, "completed after configuration change");
+    assert.equal(sends, change === "unchanged" ? 1 : 0);
+  });
+}

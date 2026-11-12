@@ -11,10 +11,11 @@ gateway's context, agent, policy, idempotency, audit, or transport controls.
 | Tool | Effect |
 | --- | --- |
 | `mesh_list_agents` | Lists the explicit endpoints exposed by the deployment and their capabilities. |
-| `mesh_send` | Sends an A2A request to one exposed endpoint. |
+| `mesh_send` | Transport probe for one exposed endpoint. It does not deliver to agent sessions: use `mesh_call` or `mesh_submit` with `session_id`. |
 | `mesh_delivery_status` | Reads recorded delivery lifecycle events. |
-| `mesh_call` | Submits a durable task and waits up to 120 seconds for its correlated result. |
+| `mesh_call` | Submits a durable task and waits at most 45 seconds (40 by default) for its correlated result. On a busy session with normal priority it returns right away. A task that isn't finished keeps running and is read with `mesh_task_get`. |
 | `mesh_submit` | Submits a durable task and immediately returns its handle. |
+| `mesh_session_status` | Reads one session's state (`busy`, `free`, `unknown`), title, last step, checklist, mesh queue length and last activity, without the transcript. |
 | `mesh_task_get` | Reads an owned task's status and result. |
 | `mesh_task_cancel` | Marks an owned task cancelled and ignores a late result. |
 | `mesh_thread_get` | Reads the ordered owned tasks in one context. |
@@ -69,6 +70,8 @@ instead of continuing one; see [Fresh sessions](#fresh-sessions). Omitting both
 fields keeps the static route. When `context_id` is omitted the gateway mints
 one, and it is excluded from the idempotency comparison, so an exact replay
 returns the original task.
+
+`mesh_call` and `mesh_submit` accept `priority`. `normal` (the default) leaves the message for the session's next turn. `urgent` needs `session_id` and steers a running Codex turn and returns its correlated reply through the task. A result timeout remains `result_timeout` and never triggers a second send after an accepted steer. Claude sessions can't be interrupted from the gateway. The message arrives without stopping the running turn, at the latest on the next one. The result keeps `delivery: "queued"` and explains this in `priority_note`. Results carry `session_state`, and `next_action` when the task isn't finished.
 
 ### Capability discovery
 
@@ -181,7 +184,8 @@ The MCP caller never receives a shell. It submits a prompt, and a local agent
 executes under its own sandbox and approval policy. `mesh_call` returns the
 correlated reply directly when it completes within the wait bound;
 `mesh_task_get` retrieves it later. `mesh_send` and `mesh_delivery_status`
-remain transport diagnostics. Point a route at a dedicated, least-privilege
+remain transport diagnostics, and when `tmuxIngress` is declared `mesh_send`
+rejects any target without an MCP-enabled route, except simulated agents. Point a route at a dedicated, least-privilege
 ingress session — never at an operator session.
 
 Keep this route off any profile that also reads untrusted content. A caller
@@ -402,3 +406,122 @@ because its result could not be collected.
 `mesh_call` and `mesh_submit` accept `access_mode` (default `read-only`; opt-in `workspace-write`).
 See [workspace-write-sessions.md](workspace-write-sessions.md) for exact policy, worker confinement,
 configuration, activation, rollback and acceptance limits. No repository is enabled implicitly.
+
+### Read-only Plexus ledger joins
+
+`mesh_plexus_work_items` delegates filtering and multi-key sorting to the existing
+`plexus.workItems` core. `mesh_plexus_ledger_sessions` delegates owns/works-on
+relations to `plexus.ledgerSessions`. Neither endpoint writes the ledger, graph,
+group store or consumer cursors. Only exact authorized refs are dispatched to storage-owned `query`, per scheme and batches of at most 200 that also fit the actual JSON-encoded request byte limit (including escaping), bounded by the protocol and optional adapter/configuration `maxRequestBytes`; adapters must advertise `query`. Missing, malformed, or incompatible responses fail closed without a broad-read fallback. Full scalar fields (including empty/long values) and canonical `sourceRevision` are preserved. Work-item fields are read through the configured
+storage-owned adapter on every call; the gateway has no metadata store.
+
+Before core filtering or sorting, each row must have the protocol's required
+`ref`, single-line `title`, normalized `status` and timezone-qualified ISO
+`updatedAt`. Optional canonical metadata is validated and unknown envelope keys
+are discarded. `sortKeys` contains at most 128 named finite numeric ranks;
+complete scalar `fields` retain empty, null and long values without the legacy
+1,024-character limit. Source-provided top-level aliases `priority`, `size`,
+`project` (strings) and `waiting_joseph` (boolean) are validated and preserved
+without rewriting raw fields. Invalid metadata rejects the complete read.
+
+If the dispatcher rejects a query response solely for exceeding its output byte
+limit, the reader discards that attempt and bisects its exact ref batch. Each
+successful sub-batch is validated independently before aggregation. Other errors
+and oversized singleton responses fail without retry or a broader query. These
+reads have per-item source revisions; the adapter protocol provides no atomic
+cross-batch snapshot token. Failed attempts contribute no rows to the result.
+
+The complete ephemeral result has a separate resource budget:
+`plexusLedger.maxResultBytes` defaults to 128 MiB and accepts 1 KiB through
+256 MiB. The collector and subprocess buffer enforce the same budget. Results
+above it fail atomically; no fields or refs are truncated and no partial page is
+returned. Grant cardinality (up to 10,000 refs) is an authorization bound, not a
+promise of unlimited result volume. A synthetic 10,000-row read with 6,000 scalar
+characters per row exercises the default budget beyond the former 16 MiB limit.
+
+Enable `plexusLedger: { "bridgeRoot": "/opt/mesh/bin" }` in private runtime
+configuration. The trusted directory contains `plexus.mjs`, `mesh-graph.mjs` and
+`mesh-ledger.py`. Tools stay denied without a static principal `ledgerReadGrants`
+entry containing `workspace_id`, exact `ledger_refs`, and independently granted
+`session_ids`; optional `group_refs` exposes only those group links. Each exact
+ref list admits up to 10,000 entries, so authorization is not limited by the
+200-item response page. Duplicate workspace grants and incompatible refs fail
+explicitly. Refs use the versioned Unicode 15.0 item-reference contract (up to 512 Unicode code points, printable non-whitespace item component, scheme permitting dot and plus);
+there is no normalization, truncation, prefix grant or authority inferred from a
+link. Existing group grants and item leases remain separate.
+
+The user path is owner-only. Configure the owner's opaque verified principal ID
+as `plexusLedger.ownerPrincipalId` in private runtime configuration. Only that
+user principal can discover or invoke the tools through the user path; workspace/ref grants alone do
+not confer ownership. The server reloads the owner designation for every request
+and checks it before any graph or adapter read. Tool arguments cannot nominate an
+owner. Core `workItems` still rejects callers with a scope; the wrapper does not
+expose an alternate path for scoped callers.
+
+Optional work-item arguments are `workspace_id`, `filter`, `sort` (an array such
+as `["due:asc", "priority:asc", "size:asc"]`), `include_closed`, `limit` (1–200),
+and `cursor`. Core owns field operators and ordering, including missing values.
+Authorization restricts both ledger rows and graph identities before core user
+predicates execute. Pagination occurs afterwards. Cursors bind the principal,
+exact grant, query and ephemeral result fingerprint; revocation or source changes
+invalidate the old cursor. No metadata or cursor state is persisted. Source item
+`updatedAt`, `graph_revision`, `grant_revision` and `result_revision` are distinct;
+the result fingerprint does not claim to be a canonical source revision.
+
+Runtime authorization is reloaded for every request, so changing or revoking a
+configured grant is checked on the next page as well. Responses omit machine
+paths from the ledger-sessions view. Native identities and cloud links require
+independent session grants, and group links grant no visibility or lease.
+
+
+### Explicit read-only service delegation
+
+An Access service identity may expose the two Plexus reads only through an explicit
+runtime binding with `kind: "service"`, `plexusLedgerReadDelegate: true`, nonempty
+`ledgerReadGrants`, and the individual read tools in `allowedTools`. The flag is
+rejected on users, without grants, with any other allowed tool, or with a nonempty
+`allowedGoogleAccounts` list. An omitted or empty Google account list grants no Google access. Delegation does
+not set `plexusLedgerOwner` or change the existing user owner pin. The principal is
+still derived from the verified service assertion's `common_name`; never bind a
+browser-provided selector.
+Verified user assertions (email present) still require a nonempty `sub`. For service
+assertions without email, a nonempty `common_name` remains mandatory; a nonempty
+`sub` is retained as subject. Only an absent or empty-string `sub` allows
+`common_name` to supply the subject; a present non-string `sub` is rejected. Origin
+signature, issuer, audience and expiry validation and the nonempty identity-subject
+check remain unchanged.
+
+
+Delegation is confined across **every MCP profile**, even when their Access
+audiences are identical. The `/agent-mesh` endpoint and `workspace` hub expose only
+`mesh_plexus_work_items` and `mesh_plexus_ledger_sessions`. The `google-workspace`
+and `memory` hubs register no tools for a delegated service. In particular, no
+Google tool, memory recall or operator-complete tool, or `memory_backend_status`
+is exposed, regardless of injected account grants or the configured memory runner.
+Direct calls to unregistered tools are denied without invoking any runner.
+
+The enable flag is not the service profile discriminator. A service declaring
+Plexus tools or `ledgerReadGrants` (including an empty list) remains reserved for
+Plexus even without the flag. The Access principal resolver denies that identity
+when `plexusLedgerReadDelegate` is absent, before any mesh or hub tool dispatch.
+The hub, mesh registration and facade also confine this declared scope if a
+principal is injected directly. Nonempty Google account grants and unrelated
+mesh tools are invalid for this reserved scope, even after disabling the flag.
+Removing only the flag is therefore a read revocation, not a transition into an
+implicit memory/Google profile. Removing the entire binding separately denies the
+same verified credential without invalidating unrelated bindings. Service profile
+reclassification is a separate privilege change: do not erase all Plexus scope
+metadata as a revocation recipe; revoke the flag or remove the binding instead.
+
+
+The mesh registration early return and facade mutation guard remain independent
+lines of confinement, including when an injected principal has an extra tool. Each invocation rechecks delegation, allowed tools,
+workspace and exact ledger/session/group grants. Removing the delegate flag or a
+grant denies the next request; no write tool is added. Service credentials identify
+the application server, not its end user. A consuming application must enforce its
+own Space/user authorization before releasing any complete result, and configure
+separate workspace/grant boundaries where visibility differs.
+
+No Access policy, service token, binding or runtime restart is provisioned by this
+source change. Keep service tokens server-side and send them to Access, which still
+must supply a signature/audience/expiry-verified assertion to the origin.

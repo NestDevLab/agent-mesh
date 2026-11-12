@@ -15,7 +15,7 @@ function processIdentity(procRoot, pid) {
     const fields = raw.slice(raw.lastIndexOf(")") + 1).trim().split(/\s+/);
     const ppid = Number(fields[1]);
     if (!Number.isSafeInteger(ppid) || !/^\d+$/.test(fields[19] ?? "")) throw denied();
-    return { ppid, start: fields[19] };
+    return { ppid, start: fields[19], state: fields[0] };
 }
 
 function readLockAcl(path) {
@@ -26,14 +26,28 @@ function readLockAcl(path) {
 export function discoverOwnedCodexThread({ panePid, cwd, procRoot = "/proc", codexHome, readAcl = readLockAcl }) {
   if (!Number.isSafeInteger(panePid) || panePid <= 0 || !isAbsolute(cwd) || resolve(cwd) !== cwd || !isAbsolute(codexHome)) throw denied();
   const processInfo = pid => processIdentity(procRoot, pid);
+  const fullyExited = pid => {
+    if (processInfo(pid).state !== "Z") return false;
+    const status = readFileSync(`${procRoot}/${pid}/status`, "utf8");
+    const threads = status.match(/^Threads:[^\n]*$/gm) ?? [];
+    // A zombie leader can still have live workers with shared descriptors.
+    return threads.length === 1 && /^Threads:\s+1\s*$/.test(threads[0]);
+  };
   const gone = pid => {
-    try { lstatSync(`${procRoot}/${pid}`); return false; }
+    // Fully exited single-thread Linux zombies have closed descriptors and cannot hold a
+    // writer lock. Their proc entry can outlive exe/cmdline until reaped.
+    try { lstatSync(`${procRoot}/${pid}`); }
     catch (error) { return error.code === "ENOENT"; }
+    try { return fullyExited(pid); }
+    catch { return false; }
   };
   const inventory = new Map();
   for (const entry of readdirSync(procRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
-    try { inventory.set(Number(entry.name), processInfo(entry.name)); }
+    try {
+      const info = processInfo(entry.name);
+      if (!fullyExited(entry.name)) inventory.set(Number(entry.name), info);
+    }
     catch (error) { if (!gone(entry.name)) throw denied("inventory.stat", error.code); }
   }
   if (!inventory.has(panePid)) throw denied();
