@@ -68,12 +68,40 @@ await appendFile(process.env.SYNTHETIC_QUEUE_CALLS, JSON.stringify(process.argv.
   }
   return {
     requests,
+    removeTranscript: () => rm(join(sessions, `rollout-${session}.jsonl`)),
+    removeSessions: () => rm(sessions, { recursive: true, force: true }),
+    corruptTranscript: () => writeFile(join(sessions, `rollout-${session}.jsonl`), 'not-json\n'),
     invoke: ({ message = 'Synthetic response', extra = [], flags = ['--steer-or-queue', '--delivery-only'] } = {}) => run(process.execPath,
       [join(bin, 'agent-native-call.mjs'), '--agent', 'codex', '--session', session, '--correlation-id', 'return-test',
         '--message', message, '--timeout', '3', ...flags, ...extra]),
     gate: action => run('python3', [join(bin, 'mesh-comms.py'), action, '--scope', 'codex', '--reason', 'synthetic gate', '--by', 'test']),
     queueCalls: async () => { try { return (await readFile(calls, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse); } catch (error) { if (error.code === 'ENOENT') return []; throw error; } },
   };
+}
+
+test('a complete local transcript scan can refuse Codex delivery before any attempt', async t => {
+  const f = await fixture(t);
+  await f.removeTranscript();
+  const result = await f.invoke();
+  assert.equal(result.code, 78);
+  const receipt = JSON.parse(result.stdout);
+  assert.equal(receipt.reason, 'codex_local_transcript_absent');
+  assert.deepEqual(receipt.delivery, { attempted: false, readBack: false });
+  assert.deepEqual(receipt.discovery, { scope: 'codex-local-transcripts', complete: true });
+  assert.deepEqual(f.requests, []);
+  assert.deepEqual(await f.queueCalls(), []);
+});
+
+for (const mode of ['missing-root', 'malformed']) {
+  test(`Codex ${mode} is not classified as proven absence`, async t => {
+    const f = await fixture(t);
+    if (mode === 'missing-root') await f.removeSessions();
+    else await f.corruptTranscript();
+    const result = await f.invoke();
+    assert.notEqual(result.code, 78);
+    assert.deepEqual(f.requests, []);
+    assert.deepEqual(await f.queueCalls(), []);
+  });
 }
 
 test('composed native response steers an active turn once under concurrent deduplication', async t => {

@@ -105,7 +105,17 @@ const claudeInbox = agent === "claude"
   : undefined;
 
 const initialTranscripts = await resolveTranscripts(agent, sessionId);
-if (initialTranscripts.length === 0) fail(`no ${agent} transcript for session ${sessionId}`, 1);
+if (initialTranscripts.length === 0) {
+  // A complete negative scan proves only that this local adapter cannot send;
+  // it does not make any statement about the session on another host.
+  if (agent === "codex" && await codexTranscriptDefinitelyAbsent(sessionId)) {
+    process.stdout.write(`${JSON.stringify({ status: "blocked", reason: "codex_local_transcript_absent",
+      agent, sessionId, correlationId, delivery: { attempted: false, readBack: false },
+      discovery: { scope: "codex-local-transcripts", complete: true } })}\n`);
+    fail("Codex local transcript absent; no delivery attempted", 78);
+  }
+  fail(`no ${agent} transcript for session ${sessionId}`, 1);
+}
 const offsets = new Map();
 for (const transcript of initialTranscripts) offsets.set(transcript, (await stat(transcript)).size);
 let resumeDiagnostic = false;
@@ -297,6 +307,18 @@ async function resolveTranscripts(agentName, id) {
   }
   candidates.sort((left, right) => left.mtime - right.mtime);
   return candidates.map((candidate) => candidate.path);
+}
+
+async function codexTranscriptDefinitelyAbsent(id) {
+  const root = process.env.CODEX_SESSION_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions");
+  try {
+    const entries = await readdir(root, { recursive: true, withFileTypes: true });
+    // A matching filename of any kind is ambiguous, even if unreadable or
+    // malformed; leave it for an operator rather than failing over.
+    return !entries.some((entry) => entry.name.includes(id) && entry.name.endsWith(".jsonl"));
+  } catch {
+    return false;
+  }
 }
 
 async function transcriptSessionId(path) {
