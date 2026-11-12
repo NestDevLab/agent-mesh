@@ -283,9 +283,7 @@
       "target_branch": "pr/group-gateway-conversation",
       "integration_branch": "main-integration",
       "commits": [
-        "592185f49b51999280f143bf05e1cb0c98f4d36a",
-        "bf9d96d53a51e17a72f06ff2d22d85ac0fe6044e",
-        "95b9667719d2f46b928aa147c6fc27cb7d0796e9"
+        "06d62b3848f5057a860b686b0b5abbb36354c227"
       ],
       "state": "published",
       "publication": {
