@@ -100,7 +100,7 @@ test("cloud registrations grant no writer or role and are excluded from scoped g
   assert.match((await run(state, ["query", "resume", "--input", JSON.stringify({ session: id, scope: scopeA })])).stderr, /not found/);
   const resume = await query(state, "resume", { session: id });
   assert.deepEqual([resume.resumable, resume.writer.state, resume.commands], [false, "unknown", []]);
-  assert.notEqual((await run(state, ["role", "claim", "--session", id, "--role", "director", "--project", "team-a"])).code, 0);
+  assert.equal((await ok(state, ["role", "claim", "--session", id, "--role", "director", "--project", "team-a"])).claim.session, id);
   assert.notEqual((await run(state, ["claim", "--id", cloud.node.id, "--role", "orchestrator", "--domain", "team-a"])).code, 0);
 });
 
