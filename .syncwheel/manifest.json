@@ -37,7 +37,8 @@
       "controller-activity-safety",
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
-      "codex-goal-on-send"
+      "codex-goal-on-send",
+      "codex-goal-reactivation"
     ],
     "strategy": "cherry-pick"
   },
@@ -428,6 +429,24 @@
       "integration_branch": "main-integration",
       "commits": [
         "b90f70fc13a236dc1ea2ec42d9aebaaa76b65891"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Reactivate blocked Codex goals on send and watch stalled goals"
+      }
+    },
+    {
+      "id": "codex-goal-reactivation",
+      "branch": "feat/codex-goal-reactivation",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "d55fb32f6c7842689671176b73b6adc9851bae88"
       ],
       "state": "published",
       "publication": {
