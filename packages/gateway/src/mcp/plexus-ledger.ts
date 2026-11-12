@@ -213,7 +213,7 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
           ...(input.view === undefined ? {} : { offset }) };
         if (input.format === "md") {
           if (!options.plexusLedgerReader.render) throw new Error("Ledger view renderer unavailable.");
-          return { content: [{ type: "text" as const, text: await options.plexusLedgerReader.render(result) }] };
+          return { structuredContent: result, content: [{ type: "text" as const, text: await options.plexusLedgerReader.render(result) }] };
         }
         return response(result);
       }

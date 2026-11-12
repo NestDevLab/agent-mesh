@@ -17,7 +17,7 @@ const DEFAULT_FIELDS = {
 };
 
 export function ledgerViewValue(value, path) {
-  if (typeof path !== "string" || !/^[A-Za-z0-9._-]{1,128}$/.test(path)) throw new Error("Invalid view field path.");
+  if (typeof path !== "string" || !path.length || Array.from(path).length > 1024 || /[\p{Cc}\p{Cs}]/u.test(path)) throw new Error("Invalid view field path.");
   const parts = path.split(".");
   if (parts.some(part => !part || ["__proto__", "prototype", "constructor"].includes(part))) throw new Error("Unsafe view field path.");
   function walk(current, index) {
@@ -29,7 +29,8 @@ export function ledgerViewValue(value, path) {
     return own(current, parts[index]) ? walk(current[parts[index]], index + 1) : undefined;
   }
   const direct = walk(value, 0);
-  const found = direct === undefined && own(value?.fields, path) ? value.fields[path] : direct;
+  const rawKey = path.startsWith("fields.") ? path.slice(7) : path;
+  const found = direct === undefined && own(value?.fields, rawKey) ? value.fields[rawKey] : direct;
   if (Array.isArray(found)) {
     const entries = found.flat(Infinity).filter(entry => scalar(entry) && entry !== null && entry !== "");
     return entries.length ? entries : undefined;

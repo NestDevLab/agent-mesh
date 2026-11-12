@@ -368,11 +368,12 @@ function compareItemValues(a, b) {
   return ITEM_COLLATOR.compare(String(a), String(b));
 }
 
-function parseItemSort(sort = DEFAULT_ITEM_SORT) {
+function parseItemSort(sort = DEFAULT_ITEM_SORT, arbitraryFields = false) {
   const keys = typeof sort === "string" ? sort.split(",") : sort;
   if (!Array.isArray(keys) || !keys.length || keys.length > 8) throw new Error("sort must list 1 to 8 fields");
   return keys.map((key) => {
-    const match = typeof key === "string" && ITEM_SORT_KEY.exec(key.trim());
+    const match = typeof key === "string" && (arbitraryFields ? /^(.*?)(?::(asc|desc))?$/.exec(key.trim()) : ITEM_SORT_KEY.exec(key.trim()));
+    if (arbitraryFields && match) ledgerViewValue({}, match[1]);
     if (!match) throw new Error("sort entries must be field or field:asc|desc");
     return { field: match[1], direction: match[2] || "asc" };
   });
@@ -473,7 +474,7 @@ export function workItems(graph, input = {}, scope = null, read) {
 
 function validateViewInput(input, profile) {
   validateLedgerViewProfile(profile);
-  const sort = parseItemSort(input.sort ?? LEDGER_VIEW_SORT);
+  const sort = parseItemSort(input.sort ?? LEDGER_VIEW_SORT, true);
   const filter = checkItemFilter(input.filter ?? {});
   for (const field of [...sort.map(key => key.field), ...Object.keys(filter)]) ledgerViewValue({}, field);
   if (input.limit !== undefined && !(Number.isInteger(input.limit) && input.limit > 0)) throw new Error("limit must be a positive integer");

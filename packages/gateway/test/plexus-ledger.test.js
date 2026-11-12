@@ -573,6 +573,8 @@ test("versioned Markdown is rendered from the same paginated core view", async (
   const h = harness();
   const result = await h.handlers.get("mesh_plexus_work_items").handler({ view: "plexus.ledger-view/v1", format: "md", limit: 1 });
   assert.equal(result.isError, undefined);
+  assert.ok(result.structuredContent.next_cursor);
+  assert.equal(result.structuredContent.schema, "plexus.ledger-view/v1");
   assert.match(result.content[0].text, /^# Ledger view/);
   assert.equal(result.content[0].text.split("\n").filter(line => /^\d+\./.test(line)).length, 1);
 });

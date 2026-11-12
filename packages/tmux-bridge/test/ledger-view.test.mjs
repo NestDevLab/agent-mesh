@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { ledgerView, ledgerViewRows, renderLedgerView } from "../bin/plexus.mjs";
 import { ledgerViewValue, validateLedgerViewProfile } from "../bin/ledger-view.mjs";
@@ -117,4 +122,43 @@ test("the published JSON schema requires explicit fields in each normalized row"
   for (const key of schema.required) assert.ok(Object.hasOwn(result, key), key);
   for (const key of schema.$defs.item.required) assert.ok(Object.hasOwn(result.items[0], key), key);
   for (const key of schema.$defs.thread.required) assert.ok(Object.hasOwn(result.items[0].thread, key), key);
+});
+
+
+test("raw field names support Unicode, spaces and literal dots without prototype traversal", () => {
+  const rows = [item("b", { "étiquette libre": "z", "literal.key": "value" }), item("a", { "étiquette libre": "a" })];
+  assert.deepEqual(refs(ledgerViewRows({ items: rows }, { sort: ["étiquette libre:asc"] })), ["work:a", "work:b"]);
+  assert.deepEqual(refs(ledgerViewRows({ items: rows }, { filter: { "fields.literal.key": "value" } })), ["work:b"]);
+});
+
+
+test("CLI view joins the real dispatcher and renders JSON or Markdown without persistent writes", async t => {
+  const root = await mkdtemp(join(tmpdir(), "ledger-view-cli-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const adapter = join(root, "adapter.mjs"), config = join(root, "adapters.json"), settings = join(root, "view.json");
+  await writeFile(adapter, `
+import {readFileSync} from 'node:fs';
+const request = JSON.parse(readFileSync(0,'utf8'));
+const items = [{ref:'work:a',title:'Example',status:'open',updatedAt:'2030-01-01T00:00:00Z'}];
+let result;
+if(process.argv[2]==='capabilities') result={schemes:['work'],operations:['describe','changes','query'],sessionField:true};
+else if(process.argv[2]==='query') result={items:items.filter(i=>request.refs.includes(i.ref)).map(i=>({...i,fields:{id:'a',project:'example',wait:true,custom:'x'.repeat(6000),blank:''},sourceRevision:'sha256:'+'a'.repeat(64)})),missing:[],errors:[]};
+else result={items,cursor:'quiet',more:false,errors:[]};
+console.log(JSON.stringify({schema:'agent-mesh.ledger-adapter.v1',...result}));
+`);
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, adapters: [{ scheme: "work", command: [process.execPath, adapter] }] }));
+  await writeFile(settings, JSON.stringify(profile));
+  const exec = promisify(execFile);
+  const options = { env: { ...process.env, XDG_STATE_HOME: join(root, "state"), MESH_GROUPS_STATE: join(root, "groups"),
+    MESH_LEDGERS_FILE: config, PYTHONDONTWRITEBYTECODE: "1" } };
+  const command = [fileURLToPath(new URL("../bin/mesh-graph.mjs", import.meta.url)), "query", "view", "--config", settings];
+  const json = JSON.parse((await exec(process.execPath, [...command, "--format", "json", "--filter", "fields.blank="], options)).stdout);
+  assert.equal(json.total, 0);
+  const result = JSON.parse((await exec(process.execPath, [...command, "--format", "json"], options)).stdout);
+  assert.equal(result.total, 1);
+  assert.equal(result.items[0].fields.custom.length, 6000);
+  assert.equal(result.items[0].fields.blank, "");
+  const md = (await exec(process.execPath, [...command, "--format", "md"], options)).stdout;
+  assert.equal(md, renderLedgerView(result, profile));
+  assert.deepEqual((await readdir(root)).sort(), ["adapter.mjs", "adapters.json", "view.json"]);
 });
