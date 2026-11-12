@@ -38,7 +38,8 @@
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
       "oikuma-user-plexus-profile-20261112",
-      "grant-authority"
+      "grant-authority",
+      "partial-ledger-view"
     ],
     "strategy": "cherry-pick"
   },
@@ -452,6 +453,22 @@
         "enabled": true
       },
       "meta": {}
+    },
+    {
+      "id": "partial-ledger-view",
+      "branch": "fix/partial-ledger-view",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Preserve valid ledger rows and report per-item errors"
+      }
     }
   ],
   "syncwheel_tracking": "git-tracked",
