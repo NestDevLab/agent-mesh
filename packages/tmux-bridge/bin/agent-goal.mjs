@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
+import { goalCommand, liveClaudeSessions, readClaudeGoal, typeClaudeGoal } from "./claude-goal.mjs";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 import { withCodexAppServer } from "./codex-app-server.mjs";
 
@@ -106,11 +107,13 @@ async function claudeSessionCwd(sessionId) {
 }
 
 async function claudeGoal(action, sessionId, objective, budget, timeout) {
-  if (action === "get") throw new Error("get is unsupported for claude; inspect /goal in the owning session");
   if (budget !== undefined) throw new Error("--token-budget is unsupported for claude");
+  if (action === "get") return { agent: "claude", sessionId, ...readClaudeGoal(sessionId) };
   if (action === "set" && /^(clear|stop|off|reset|none|cancel)$/i.test(objective.trim())) {
     throw new Error("objective is a Claude /goal clear alias; use goal clear explicitly");
   }
+  const live = liveClaudeSessions().get(sessionId);
+  if (live) return await typeClaudeGoal(live, goalCommand(action, objective), timeout);
   const cwd = await claudeSessionCwd(sessionId);
   const ownership = inspectClaudeSessionOwnership(sessionId);
   if (ownership.state !== "free") {

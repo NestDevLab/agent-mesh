@@ -403,6 +403,7 @@ agent-session.sh --agent codex goal set SESSION_ID --objective "All checks pass"
 agent-session.sh --agent codex goal get SESSION_ID --json
 agent-session.sh --agent codex goal clear SESSION_ID
 agent-session.sh --agent claude goal set SESSION_ID --objective "All checks pass"
+agent-session.sh --agent claude goal get SESSION_ID --json
 agent-session.sh --agent claude goal clear SESSION_ID
 ```
 
@@ -410,11 +411,17 @@ Codex connects to the existing app-server over its WebSocket control socket, usi
 the remote socket discovery described below (or `CODEX_REMOTE_SOCK`); it never
 starts a server. It resumes the thread before calling `thread/goal/set|get|clear`.
 Set requires a nonempty objective; an optional token budget must be a positive
-safe integer. Claude supports set and clear only, without a token budget, and
-refuses live writers or unknown ownership. Its stopped-session `claude -p
---resume` invocation runs `/goal <objective>` or `/goal clear`; setting a goal
-starts work immediately, as described in the [Claude goal documentation](https://code.claude.com/docs/en/goal).
-Claude results report process completion, not verified persistent goal state.
+safe integer.
+
+Claude has no token budget. `get` reads the latest `goal_status` record in the
+session transcript and reports `none`, `active`, `achieved` or `cleared`. For a
+running session listed in `~/.claude/sessions`, set and clear type `/goal` into
+its tmux pane (sessions the bridge launched record one) and wait for the new
+goal state; a busy session exits 6 and a session running outside tmux exits 3,
+because a slash command sent as a message arrives as plain text. A stopped
+session runs `claude -p --resume` with `/goal <objective>` or `/goal clear`,
+refusing live writers or unknown ownership; that result reports process
+completion, not verified goal state. See the [Claude goal documentation](https://code.claude.com/docs/en/goal).
 Both providers time out after 30 seconds (`AGENT_GOAL_TIMEOUT_MS`, maximum
 600000); timeout exits 124 with an unknown outcome, so inspect before retrying.
 
@@ -430,7 +437,9 @@ codex` therefore reconciles the goal after the message is accepted:
 | `--goal-resume off` | leaves the goal alone |
 | `--goal TEXT` | sets or replaces the objective and makes it `active` |
 
-Limited and complete goals are never touched. The result lands in the receipt as
+Limited and complete goals are never touched. For `--agent claude`, only
+`--goal TEXT` applies: after the message is accepted it is typed as `/goal` into
+the live tmux-hosted session, and `--goal-resume` is rejected. The result lands in the receipt as
 `goal: {action, before, after}`; a goal failure is reported there and never turns
 an accepted delivery into a resend.
 
@@ -444,6 +453,12 @@ overrides the path) and checks each goal idle longer than `--idle-minutes` for a
 running turn. An `active` goal with no running turn is `stalled`; `--nudge` sets
 it active again, which starts a goal turn. Blocked goals, and paused ones with
 `--include-paused`, are reported as `waiting` and left to their owner.
+
+`goal-watch --agent claude` scans transcripts instead: a session whose latest
+goal is still unmet and whose transcript has been idle beyond `--idle-minutes`
+is `stalled` when its process is running and not busy, or `orphaned` when no
+process owns it. `--nudge` retypes `/goal <condition>` into stalled sessions
+hosted in tmux; orphaned ones are only reported.
 
 ## Steering a running turn
 

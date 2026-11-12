@@ -152,6 +152,11 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         for change in ({'runtime': 'claude'}, {'goal': ' '}, {'goal': 3}, {'goal_resume': 'always'}):
             with self.assertRaisesRegex(ValueError, 'invalid goal options'):
                 c.validate({**spec, **change})
+        claude = {**self.spec(runtime='claude'), 'goal': 'Finish the release'}
+        self.assertIn('--goal', c.command(c.validate(claude)))
+        for change in ({'goal_resume': 'off'}, {'kind': 'tmux'}):
+            with self.assertRaisesRegex(ValueError, 'invalid goal options'):
+                c.validate({**claude, **change})
 
     def test_cloud_validation_and_replay_command(self):
         spec = {**self.spec(), 'destination': 'session_Synthetic123', 'cloud': True}

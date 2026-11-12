@@ -109,7 +109,8 @@ def validate(spec):
         raise ValueError('invalid Claude cloud destination')
     if 'steer_first' in spec and (spec['steer_first'] is not True or spec['kind'] != 'native' or spec['runtime'] != 'codex' or spec.get('cloud')):
         raise ValueError('invalid steer-or-queue destination')
-    if ('goal' in spec or 'goal_resume' in spec) and (spec['kind'] != 'native' or spec['runtime'] != 'codex' or
+    claude_goal = spec['runtime'] == 'claude' and not spec.get('cloud') and 'goal_resume' not in spec
+    if ('goal' in spec or 'goal_resume' in spec) and (spec['kind'] != 'native' or not (spec['runtime'] == 'codex' or claude_goal) or
                                                     ('goal' in spec and (not isinstance(spec['goal'], str) or not spec['goal'].strip())) or
                                                     spec.get('goal_resume', 'blocked') not in ('blocked', 'any', 'off')):
         raise ValueError('invalid goal options')

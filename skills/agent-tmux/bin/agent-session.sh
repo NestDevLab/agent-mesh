@@ -11,7 +11,7 @@
 #   agent-session.sh --agent <NAME> search <QUERY> [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> writer-status <SESSION_ID> [--json]
 #   agent-session.sh --agent <codex|claude> goal set|get|clear <SESSION_ID> [--objective TEXT] [--token-budget N] [--json]
-#   agent-session.sh --agent codex goal-watch [--idle-minutes N] [--max-age-hours N] [--include-paused] [--nudge] [--json]
+#   agent-session.sh --agent <codex|claude> goal-watch [--idle-minutes N] [--max-age-hours N] [--include-paused] [--nudge] [--json]
 #   agent-session.sh --agent codex steer <SESSION_ID> --message TEXT [--json]
 #   agent-session.sh --agent claude target-status <TMUX_NAME> --writer-pid <PID> --json
 #   agent-session.sh --agent codex target-session <TMUX_NAME>
@@ -664,8 +664,7 @@ case "$cmd" in
         ;;
 
     goal-watch)
-        [[ "$AGENT_NAME" == "codex" ]] || { echo "ERROR: goal-watch is supported only for Codex" >&2; exit 2; }
-        exec node "$SCRIPT_DIR/agent-goal-watch.mjs" "$@"
+        exec node "$SCRIPT_DIR/agent-goal-watch.mjs" --agent "$AGENT_NAME" "$@"
         ;;
 
     steer)

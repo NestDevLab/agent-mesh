@@ -1,16 +1,18 @@
 #!/usr/bin/env node
-/** Report Codex goals that stopped advancing and optionally restart the ones Codex dropped. */
+/** Report Codex or Claude goals that stopped advancing and optionally restart the dropped ones. */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
+import { goalCommand, liveClaudeSessions, readClaudeGoal, typeClaudeGoal } from "./claude-goal.mjs";
 import { withCodexAppServer } from "./codex-app-server.mjs";
 
 try {
   const { values } = parseArgs({
     options: {
+      agent: { type: "string", default: "codex" },
       "idle-minutes": { type: "string", default: "20" },
       "max-age-hours": { type: "string", default: "48" },
       "include-paused": { type: "boolean", default: false },
@@ -21,12 +23,17 @@ try {
     strict: true,
   });
   if (values.help) {
-    console.log("Usage: agent-goal-watch.mjs [--idle-minutes N] [--max-age-hours N] [--include-paused] [--nudge] [--json]");
+    console.log("Usage: agent-goal-watch.mjs [--agent codex|claude] [--idle-minutes N] [--max-age-hours N] [--include-paused] [--nudge] [--json]");
     process.exit(0);
   }
   const idleMinutes = positive(values["idle-minutes"], "--idle-minutes");
   const maxAgeHours = positive(values["max-age-hours"], "--max-age-hours");
   const now = Date.now();
+  if (!["codex", "claude"].includes(values.agent)) throw Object.assign(new Error("--agent must be codex or claude"), { exitCode: 2 });
+  if (values.agent === "claude") {
+    print(await watchClaude(idleMinutes, maxAgeHours, values.nudge, now), values.json);
+    process.exit();
+  }
   const goals = readGoals(values["include-paused"]).filter((goal) => {
     const idle = now - goal.updated_at_ms;
     return idle >= idleMinutes * 60_000 && idle <= maxAgeHours * 3_600_000;
@@ -71,15 +78,59 @@ try {
     }
     return rows;
   });
-  if (values.json) console.log(JSON.stringify({ goals: report }));
-  else if (report.length === 0) console.log("no stalled or waiting goals");
-  else for (const row of report) {
-    console.log(`${row.threadId} ${row.state ?? "unknown"} (${row.status}, idle ${row.idleMinutes}m)` +
-      `${row.nudged ? " nudged" : ""}${row.error ? ` error: ${row.error}` : ""} ${row.objective}`);
-  }
+  print(report, values.json);
 } catch (error) {
   console.error(`agent-goal-watch: ${error.message}`);
   process.exitCode = error.exitCode || 1;
+}
+
+function print(report, json) {
+  if (json) console.log(JSON.stringify({ goals: report }));
+  else if (report.length === 0) console.log("no stalled or waiting goals");
+  else for (const row of report) {
+    console.log(`${row.threadId ?? row.sessionId} ${row.state ?? "unknown"} (${row.status}, idle ${row.idleMinutes}m)` +
+      `${row.nudged ? " nudged" : ""}${row.error ? ` error: ${row.error}` : ""} ${row.objective}`);
+  }
+}
+
+// Claude has no goal database: the latest goal_status attachment in each recent transcript is the state.
+async function watchClaude(idleMinutes, maxAgeHours, nudge, now) {
+  const root = process.env.CLAUDE_SESSION_ROOT
+    || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+  const lastActivity = new Map();
+  for (const project of readdirSync(root, { withFileTypes: true })) {
+    if (!project.isDirectory()) continue;
+    for (const name of readdirSync(join(root, project.name))) {
+      const id = name.match(/^([0-9a-f-]{36})\.jsonl$/i)?.[1];
+      if (!id) continue;
+      const mtime = statSync(join(root, project.name, name)).mtimeMs;
+      if (mtime > (lastActivity.get(id) ?? 0)) lastActivity.set(id, mtime);
+    }
+  }
+  const live = liveClaudeSessions();
+  const timeout = Number(process.env.AGENT_GOAL_TIMEOUT_MS || 30000);
+  const rows = [];
+  for (const [sessionId, mtime] of lastActivity) {
+    const idle = now - mtime;
+    if (idle < idleMinutes * 60_000 || idle > maxAgeHours * 3_600_000) continue;
+    const goal = readClaudeGoal(sessionId);
+    if (goal.state !== "active") continue;
+    const record = live.get(sessionId);
+    if (record?.status === "busy") continue;
+    const row = { sessionId, status: goal.state, objective: goal.condition.slice(0, 160), idleMinutes: Math.floor(idle / 60_000) };
+    // Without a live process nothing can resume the goal; it waits for someone to reopen the session.
+    row.state = record ? "stalled" : "orphaned";
+    if (nudge && record) {
+      try {
+        row.nudged = (await typeClaudeGoal(record, goalCommand("set", goal.condition), timeout)).status === "submitted";
+      } catch (error) {
+        row.nudged = false;
+        row.error = error.message;
+      }
+    }
+    rows.push(row);
+  }
+  return rows;
 }
 
 function readGoals(includePaused) {

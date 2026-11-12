@@ -142,11 +142,10 @@ for (const kind of ["interactive", "remote-control"]) {
   });
 }
 
-test("Claude refuses unknown ownership, unsupported get and token budget", async (t) => {
+test("Claude refuses unknown ownership, a clear alias and token budget", async (t) => {
   const f = await fixture(t);
   for (const [action, args, extra, error] of [
     ["set", ["--objective", "Ship it"], { BAD_INVENTORY: "1" }, /ownership is unknown/],
-    ["get", [], {}, /unsupported for claude/],
     ["set", ["--objective", "Ship it", "--token-budget", "1"], {}, /unsupported for claude/],
     ["set", ["--objective", "clear"], {}, /clear alias/],
   ]) {
