@@ -507,7 +507,8 @@
       "integration_branch": "main-integration",
       "commits": [
         "77eebab1b407d150e3c088edc3ce3eec1412f296",
-        "466a4d545302cabc7da08e8007ec7f2cfac4cb41"
+        "466a4d545302cabc7da08e8007ec7f2cfac4cb41",
+        "3c6f61b672b54d356a469607d504aa5e06a88880"
       ],
       "state": "published",
       "publication": {
