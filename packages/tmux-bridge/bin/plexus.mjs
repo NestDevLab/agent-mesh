@@ -500,7 +500,7 @@ export function ledgerViewRows(joined, input = {}, profile = {}) {
   if (joined.errors?.length) throw new Error("ledger source returned errors");
   const rows = buildLedgerViewRows(joined.items, profile, { groups: joined.groupMetadata ?? [],
     sourceItems: joined.sourceItems ?? joined.items, fallback: input.fallback ?? "director" });
-  const excluded = new Set(Object.hasOwn(filter, "state") ? [] : profile.excludeStates ?? []);
+  const excluded = new Set(input.includeClosed || Object.hasOwn(filter, "state") || Object.hasOwn(filter, "status") ? [] : profile.excludeStates ?? []);
   const matched = rows.filter(row => !excluded.has(row.state))
     .filter(row => Object.entries(filter).every(([field, condition]) => matchesItemFilter(row, field, condition, ledgerViewValue)))
     .sort(compareItems(sort, ledgerViewValue));

@@ -44,7 +44,9 @@ test("view filters nested session/group paths and arbitrary raw fields using exi
   assert.equal(filtered.items[0].fields.unknown, null);
   assert.deepEqual(filtered.items[0].owners, [session.session]);
   assert.deepEqual(refs(ledgerViewRows({ items }, { filter: { owners: { exists: false } } }, profile)), ["work:b"]);
-  assert.deepEqual(refs(ledgerViewRows({ items }, { filter: { "groups.ref": { in: ["group:example"] } } }, profile)), ["work:a"]);
+  const groupMetadata = [{ group_id: "example", source_ref: "group:example", name: "Example", role_key: null,
+    ledger_links: [{ ref: "work:a", lead: null }] }];
+  assert.deepEqual(refs(ledgerViewRows({ items, groupMetadata }, { filter: { "groups.ref": { in: ["group:example"] } } }, profile)), ["work:a"]);
 });
 
 test("historical project fallback is distinct from the default Director thread", () => {
@@ -161,4 +163,36 @@ console.log(JSON.stringify({schema:'agent-mesh.ledger-adapter.v1',...result}));
   const md = (await exec(process.execPath, [...command, "--format", "md"], options)).stdout;
   assert.equal(md, renderLedgerView(result, profile));
   assert.deepEqual((await readdir(root)).sort(), ["adapter.mjs", "adapters.json", "view.json"]);
+});
+
+
+test("explicit closed requests override profile exclusions through the normal join", () => {
+  const archived = item("a", {}, { state: "filed", status: "done" });
+  const configured = { ...profile, excludeStates: ["filed"] };
+  const graph = { nodes: [], links: [], lastSeq: 0 };
+  const read = () => ({ items: [archived], errors: [] });
+  assert.equal(ledgerView(graph, {}, null, read, configured).total, 0);
+  for (const input of [{ includeClosed: true }, { filter: { status: "done" } }, { filter: { state: "filed" } }]) {
+    assert.deepEqual(refs(ledgerView(graph, input, null, read, configured)), ["work:a"]);
+  }
+});
+
+test("session group links never imply an item-group association or project fallback", () => {
+  const graph = { lastSeq: 1, nodes: [{ id: "session", agent: "codex", runtimeUuid: session.nativeId }], links: [
+    { session: session.session, ref: "work:a", role: "owns", until: null },
+    { session: session.session, ref: "work:b", role: "owns", until: null },
+    { session: session.session, ref: "group:example", role: "discusses", until: null }
+  ] };
+  const configured = { ...profile, groups: { "group:example": { name: "Example", project: "p" } } };
+  const read = () => ({ items: [item("a"), item("b")], errors: [], groups: [
+    { group_id: "example", source_ref: "group:example", name: "Example", role_key: "director", ledger_links: [{ ref: "work:a", lead: true }] }
+  ] });
+  const result = ledgerView(graph, {}, null, read, configured);
+  const a = result.items.find(row => row.ref === "work:a"),b = result.items.find(row => row.ref === "work:b");
+  assert.equal(a.groups.length, 1);
+  assert.equal(a.thread.resolution, "director");
+  assert.deepEqual(b.groups, []);
+  assert.equal(b.project, null);
+  assert.equal(b.thread.resolution, "missing");
+  assert.deepEqual(b.owners, [session.session]);
 });

@@ -117,7 +117,7 @@ function sessionRows(item) {
 
 function linkedGroups(item, metadata, profile) {
   const associations = metadata.filter(group => group.ledger_links?.some(link => link.ref === item.ref));
-  const refs = new Set([...(item.groups ?? []), ...associations.map(group => group.source_ref || `group:${group.group_id}`)]);
+  const refs = new Set(associations.map(group => group.source_ref || `group:${group.group_id}`));
   return [...refs].sort().map(ref => {
     const source = associations.find(group => (group.source_ref || `group:${group.group_id}`) === ref);
     const link = source?.ledger_links.find(link => link.ref === item.ref);
