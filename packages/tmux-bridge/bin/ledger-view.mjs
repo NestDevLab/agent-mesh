@@ -208,7 +208,7 @@ export function renderLedgerView(view, profile = {}) {
   validateLedgerViewProfile(profile);
   if (view.schema !== LEDGER_VIEW_SCHEMA || view.profile_revision !== ledgerViewProfileRevision(profile)) throw new Error("Ledger view/profile revision mismatch.");
   const config = profile.markdown ?? {};
-  const labels = { none: "—", undated: "No due date", thread: "thread", missing: "No thread", director: "Director", ...config.labels };
+  const labels = { none: "—", undated: "No due date", thread: "thread", missing: "No thread", director: "Director", directorFallback: "Director fallback", projectFallback: "Project fallback", ...config.labels };
   const summary = Object.fromEntries(Object.entries(view.summary ?? {}).map(([key, value]) => [key, String(value)]));
   const lines = [...(config.headerLines ?? [`# ${config.title ?? "Ledger view"}`, ""])].map(line => template(line, summary));
   const pattern = config.rowTemplate ?? "{number}. **{id}** {title} · {due} · {priority} · {state} · {owners} · {groups} · {thread}";
@@ -239,9 +239,10 @@ export function renderLedgerView(view, profile = {}) {
       priority: mapped("priority", row.priority), state: mapped("state", row.state), size: mapped("size", row.size),
       owners, groups, project: row.projectName ?? labels.none, reason: config.missingReasons?.[row.thread.missingReason] ?? row.thread.missingReason ?? "", ...labels };
     for (const key of Object.keys(values)) values[key] = escapeMarkdown(values[key]);
+    values.fallback = row.thread.resolution === "director" ? labels.directorFallback : labels.projectFallback;
     values.url = row.thread.url ?? "";
     if (["item", "session"].includes(row.thread.resolution)) values.thread = template(config.itemThreadTemplate ?? "[{thread}]({url})", values);
-    else if (row.thread.url) values.thread = template(config.fallbackTemplate ?? "{missing} ({reason}) → [{director} {project}]({url})", values);
+    else if (row.thread.url) values.thread = template(config.fallbackTemplate ?? "{fallback} ({reason}) → [{project}]({url})", values);
     else values.thread = template(config.missingTemplate ?? "{missing} ({reason})", values);
     lines.push(template(pattern, values));
   }

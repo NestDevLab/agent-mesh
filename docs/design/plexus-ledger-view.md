@@ -68,3 +68,5 @@ contract. Consumer code must use the response's schema version and preserve the
 principal through every API request.
 
 Per-item adapter failures retain their authorized reference in `errors`. Valid items remain sortable and filterable. Markdown includes a separate item error section. Adapter diagnostics are replaced with fixed labels. Invalid transport, provider attribution, batch coverage, and unreferenced discovery failures still reject the request.
+
+Default CLI calls load the private profile from `$XDG_CONFIG_HOME/agent-mesh/ledger-view.json` (or `~/.config/agent-mesh/ledger-view.json`). Operators must deliver that profile through the owning configuration provider. The same profile can be selected explicitly with `--config` or `MESH_LEDGER_VIEW_CONFIG`. Item and session thread mappings take precedence over the project Director fallback. JSON reports the resolution and Markdown labels Director and project fallbacks explicitly.

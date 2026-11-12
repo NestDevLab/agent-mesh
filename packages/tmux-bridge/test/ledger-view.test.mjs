@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile, mkdtemp, readdir, rm } from "node:fs/promises";
+import { readFile, writeFile, mkdtemp, readdir, rm, mkdir } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -110,7 +110,7 @@ test("Markdown uses the same versioned data and rejects a mismatched profile", (
   const result = ledgerViewRows({ items: [item("a", { project: "example", custom: "extra" })] }, {}, profile);
   const md = renderLedgerView(result, profile);
   assert.match(md, /https:\/\/claude.ai\/code\/project\/project_example\?thread=thread_director/);
-  assert.match(md, /No thread \(unassigned\)/);
+  assert.match(md, /Director fallback \(unassigned\)/);
   assert.throws(() => renderLedgerView(result, {}), /revision mismatch/);
   const config = { ...profile, markdown: { title: "Example", rowTemplate: "{number}. {id} · {title} · {thread}" } };
   const escaped = ledgerViewRows({ items: [item("a", {}, { title: "**literal**" })] }, {}, config);
@@ -172,6 +172,24 @@ console.log(JSON.stringify({schema:'agent-mesh.ledger-adapter.v1',...result}));
   assert.match(partialMd, /work:broken/);
   assert.ok(!partialMd.includes("private diagnostic"));
   assert.deepEqual((await readdir(root)).sort(), ["adapter.mjs", "adapters.json", "view.json"]);
+  const configHome = join(root, "config");
+  await mkdir(join(configHome, "agent-mesh"), { recursive: true });
+  const defaultProfile = join(configHome, "agent-mesh", "ledger-view.json");
+  await writeFile(defaultProfile, JSON.stringify(profile));
+  const defaultCommand = [command[0], "query", "view"];
+  const defaults = { ...options, env: { ...options.env, XDG_CONFIG_HOME: configHome, MESH_LEDGER_VIEW_CONFIG: "" } };
+  delete defaults.env.MESH_LEDGER_VIEW_CONFIG;
+  const fallback = JSON.parse((await exec(process.execPath, [...defaultCommand, "--format", "json"], defaults)).stdout);
+  assert.equal(fallback.items[0].thread.resolution, "director");
+  assert.equal(fallback.items[0].thread.url, "https://claude.ai/code/project/project_example?thread=thread_director");
+  const fallbackMd = (await exec(process.execPath, [...defaultCommand, "--format", "md"], defaults)).stdout;
+  assert.match(fallbackMd, /Director fallback/);
+  assert.ok(!fallbackMd.includes("No thread"));
+  await writeFile(defaultProfile, JSON.stringify({ ...profile, itemThreads: { "work:a": { chan: "project_example", cmsg: "thread_item" } } }));
+  const own = JSON.parse((await exec(process.execPath, [...defaultCommand, "--format", "json"], defaults)).stdout);
+  assert.equal(own.items[0].thread.resolution, "item");
+  assert.equal(own.items[0].thread.cmsg, "thread_item");
+
 });
 
 
