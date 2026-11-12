@@ -109,7 +109,10 @@ test("Claude goal set and clear type /goal into an idle tmux-hosted session", as
   assert.equal(JSON.parse(clear.stdout).goal.state, "cleared");
   assert.deepEqual((await f.sends()).map((args) => args.slice(-2)),
     [["mesh-claude-x:@1.%1", "/goal All checks pass"], ["mesh-claude-x:@1.%1", "/goal clear"]]);
-  assert.deepEqual((await f.sends())[0].slice(0, 4), ["--agent", "claude", "--submit-only", "--quiet"]);
+  const [first, second] = await f.sends();
+  assert.deepEqual(first.slice(0, 5), ["--agent", "claude", "--submit-only", "--quiet", "--correlation-id"]);
+  assert.match(first[5], /^goal-[0-9a-f-]{36}$/);
+  assert.notEqual(first[5], second[5]);
 });
 
 test("Claude goal set refuses busy, non-tmux and failed sends on live sessions", async (t) => {

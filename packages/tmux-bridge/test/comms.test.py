@@ -237,6 +237,16 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         self.assertEqual(result.returncode, 4, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'queued')
 
+    def test_submit_only_correlation_sends_a_repeated_prompt_again(self):
+        c.change('queue', 'claude', 'test', 'test')
+        send = lambda *extra: subprocess.run([str(BIN/'agent-send.sh'), '--agent', 'claude', *extra, 'absent-test-target', '/goal Ship'],
+                                             capture_output=True, text=True, timeout=5)
+        receipts = [json.loads(send('--submit-only').stdout), json.loads(send('--submit-only').stdout)]
+        self.assertTrue(receipts[1].get('duplicate'))
+        fresh = [json.loads(send('--submit-only', '--correlation-id', f'goal-{n}').stdout) for n in (1, 2)]
+        self.assertEqual([r['status'] for r in fresh], ['queued', 'queued'])
+        self.assertNotEqual(fresh[0]['id'], fresh[1]['id'])
+
     def test_inbox_pending_records_are_held_not_delivered(self):
         c.change('queue', 'claude', 'test', 'test')
         spec = importlib.util.spec_from_file_location('inbox', BIN/'agent-inbox-native.py')

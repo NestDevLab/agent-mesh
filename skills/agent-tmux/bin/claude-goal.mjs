@@ -1,6 +1,7 @@
 /** Read Claude goal state from transcripts and type /goal into live tmux-hosted sessions. */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -95,7 +96,8 @@ export async function typeClaudeGoal(record, command, timeout) {
   const sender = process.env.AGENT_GOAL_SENDER || fileURLToPath(new URL("./agent-send.sh", import.meta.url));
   const started = new Date().toISOString();
   const result = await new Promise((resolve, reject) => {
-    const child = spawn("bash", [sender, "--agent", "claude", "--submit-only", "--quiet", record.tmux, command],
+    const child = spawn("bash", [sender, "--agent", "claude", "--submit-only", "--quiet",
+      "--correlation-id", `goal-${randomUUID()}`, record.tmux, command],
       { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
     const timer = setTimeout(() => {
