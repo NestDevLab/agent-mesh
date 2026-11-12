@@ -26,7 +26,11 @@ export type AuthorityResult =
 export interface CommitMetadata { actor: string; reason: string }
 
 class AuthorityError extends Error {
-  constructor(readonly code: string) { super(code); }
+  readonly code: string;
+  constructor(code: string) {
+    super(code);
+    this.code = code;
+  }
 }
 function object(value: unknown): ObjectValue {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AuthorityError("invalid_config");

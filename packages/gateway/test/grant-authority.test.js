@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./ts-extension-resolver.mjs";
 const authorityUrl = new URL("../src/mcp/grant-authority.ts", import.meta.url).href;
+const resolverUrl = new URL("./ts-extension-resolver.mjs", import.meta.url).href;
 const cliUrl = new URL("../src/mcp/grant-authority-cli.ts", import.meta.url);
 const { authorizationProjection, authorizationDigest, init, commit, readAuthority, verify, reincarnate } = await import(authorityUrl);
 const details = { actor: "test-operator", reason: "synthetic grant update" };
@@ -22,7 +23,7 @@ async function fixture(t) {
   return { dir, path, live };
 }
 function run(source, args = []) {
-  const child = spawn(process.execPath, ["--input-type=module", "-e", source, ...args], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--import", resolverUrl, "--input-type=module", "-e", source, ...args], { stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
   child.stdout.on("data", data => { stdout += data; });
   child.stderr.on("data", data => { stderr += data; });
@@ -209,7 +210,8 @@ test("explicit recovery changes incarnation, journals the reason and needs a fre
 test("CLI defaults to config stateDir and status succeeds only after commit", async t => {
   const { dir, path, live } = await fixture(t);
   await writeFile(path, JSON.stringify({ ...live, stateDir: dir }));
-  const cli = args => run(`process.argv = [process.execPath, ${JSON.stringify(cliUrl.pathname)}, ...JSON.parse(process.argv[1])];
+  // parseArgs drops only argv[0] under `node -e`, so the script path must not be in argv.
+  const cli = args => run(`process.argv = [process.execPath, ...JSON.parse(process.argv[1])];
     await import(${JSON.stringify(cliUrl.href)});`, [JSON.stringify(args)]).done;
   assert.equal((await cli(["init", "--config", path])).code, 0);
   const uncommitted = await cli(["status", "--config", path]);
