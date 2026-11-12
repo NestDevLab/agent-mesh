@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import "./ts-extension-resolver.mjs";
@@ -131,6 +131,25 @@ test("a crash after journal fsync but before state rename retains the previous c
   assert.equal((await verify(dir, live)).ok, true);
   assert.deepEqual(await verify(dir, revoked), { ok: false, reason: "digest_mismatch" });
   assert.equal(JSON.parse((await readFile(join(dir, "journal.jsonl"), "utf8")).trim().split("\n").at(-1)).revision, "3");
+
+  const after = await commit(dir, path, details);
+  assert.equal(after.revision, "4");
+  const revisions = (await readFile(join(dir, "journal.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line).revision);
+  assert.equal(new Set(revisions).size, revisions.length);
+});
+
+test("a torn journal tail is dropped while a corrupt committed line fails closed", async t => {
+  const { dir, path } = await fixture(t);
+  await init(dir);
+  await commit(dir, path, details);
+  const journalPath = join(dir, "journal.jsonl");
+  await writeFile(journalPath, (await readFile(journalPath, "utf8")) + '{"revision":"9');
+  assert.equal((await commit(dir, path, details)).revision, "3");
+  const lines = (await readFile(journalPath, "utf8")).trim().split("\n");
+  assert.deepEqual(lines.map(line => JSON.parse(line).revision), ["1", "2", "3"]);
+  lines.splice(1, 0, "not-json");
+  await writeFile(journalPath, lines.join("\n") + "\n");
+  await assert.rejects(commit(dir, path, details), /corrupt_journal/);
 });
 
 test("two child writers contend on a held lock and serialize increasing revisions", { timeout: 30000 }, async t => {
@@ -200,4 +219,15 @@ test("CLI defaults to config stateDir and status succeeds only after commit", as
   const status = await cli(["status", "--config", path]);
   assert.equal(status.code, 0);
   assert.equal(JSON.parse(status.stdout).revision, "2");
+});
+
+test("authority files are group-readable but writable only by their owner", async t => {
+  const { dir, path } = await fixture(t);
+  const authority = join(dir, "authority");
+  await init(authority);
+  await commit(authority, path, details);
+  const mode = async name => (await stat(join(authority, name))).mode & 0o777;
+  assert.equal((await stat(authority)).mode & 0o777 & ~0o750, 0);
+  assert.equal(await mode("state.json") & ~0o640, 0);
+  assert.equal(await mode("journal.jsonl") & ~0o640, 0);
 });

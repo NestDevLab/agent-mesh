@@ -86,8 +86,30 @@ export async function verify(dir: string, config: unknown): Promise<AuthorityRes
     return state.digest === authorizationDigest(config) ? state : { ok: false, reason: "digest_mismatch" };
   } catch { return { ok: false, reason: "invalid_config" }; }
 }
+async function journalHighWater(dir: string, incarnation: string): Promise<bigint> {
+  let text: string;
+  try { text = await readFile(join(dir, "journal.jsonl"), "utf8"); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0n;
+    throw new AuthorityError("authority_io_error");
+  }
+  const lines = text.split("\n");
+  // Only a final line without its newline can be a torn append; anything else unparsable is corruption.
+  lines.pop();
+  let highest = 0n;
+  for (const line of lines) {
+    let entry: unknown;
+    try { entry = JSON.parse(line); } catch { throw new AuthorityError("corrupt_journal"); }
+    if (typeof entry !== "object" || entry === null) throw new AuthorityError("corrupt_journal");
+    const { incarnation: owner, revision } = entry as ObjectValue;
+    if (typeof revision !== "string" || !/^[1-9][0-9]{0,19}$/.test(revision)) throw new AuthorityError("corrupt_journal");
+    if (owner === incarnation && BigInt(revision) > highest) highest = BigInt(revision);
+  }
+  return highest;
+}
 async function locked<T>(dir: string, action: () => Promise<T>): Promise<T> {
-  try { await mkdir(dir, { recursive: true, mode: 0o700 }); }
+  // Root writes the authority and the gateway only reads it through its group, so it can never advance or restore it.
+  try { await mkdir(dir, { recursive: true, mode: 0o750 }); }
   catch { throw new AuthorityError("authority_io_error"); }
   // The persistent inode is never unlinked. Kernel flock releases on exit; stdin EOF also releases after parent death.
   const child = spawn("flock", ["--exclusive", join(dir, "writer.lock"), process.execPath, "-e",
@@ -115,15 +137,18 @@ function metadata(value: CommitMetadata): void {
   }
 }
 async function publish(dir: string, state: AuthorityState, previousRevision: string | null, details: CommitMetadata): Promise<void> {
-  const journal = await open(join(dir, "journal.jsonl"), "a", 0o600);
+  const journal = await open(join(dir, "journal.jsonl"), "a+", 0o640);
   try {
+    const content = await journal.readFile("utf8");
+    // A torn tail never reached a state rename, so dropping it loses no committed revision.
+    if (content.length && !content.endsWith("\n")) await journal.truncate(Buffer.byteLength(content.slice(0, content.lastIndexOf("\n") + 1)));
     await journal.writeFile(JSON.stringify({ incarnation: state.incarnation, revision: state.revision,
       previousRevision, digest: state.digest, actor: details.actor, reason: details.reason, at: state.committedAt }) + "\n");
     await journal.sync();
   } finally { await journal.close(); }
   const temporary = join(dir, `.state-${randomUUID()}.tmp`);
   try {
-    const file = await open(temporary, "wx", 0o600);
+    const file = await open(temporary, "wx", 0o640);
     try { await file.writeFile(JSON.stringify(state) + "\n"); await file.sync(); }
     finally { await file.close(); }
     await rename(temporary, join(dir, "state.json"));
@@ -160,11 +185,14 @@ export async function commit(dir: string, configPath: string, details: CommitMet
   metadata(details);
   return locked(dir, async () => {
     const previous = await loadState(dir);
+    const journaled = await journalHighWater(dir, previous.incarnation);
+    const base = journaled > BigInt(previous.revision) ? journaled : BigInt(previous.revision);
+    if (base + 1n >= MAX_REVISION) throw new AuthorityError("revision_exhausted");
     let digest: string;
     try { digest = authorizationDigest(JSON.parse(await readFile(configPath, "utf8"))); }
     catch { throw new AuthorityError("invalid_config"); }
     const state: AuthorityState = { format: FORMAT, incarnation: previous.incarnation,
-      revision: (BigInt(previous.revision) + 1n).toString(), digest, committedAt: new Date().toISOString() };
+      revision: (base + 1n).toString(), digest, committedAt: new Date().toISOString() };
     await publish(dir, state, previous.revision, details);
     return state;
   });
