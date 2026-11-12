@@ -3,7 +3,10 @@
 #
 # Usage:
 #   agent-send.sh [--quiet] --agent <NAME> [--correlation-id <ID>]
-#     [--result-token <TOKEN>] <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
+#     [--result-token <TOKEN>] [--submit-only] <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
+#
+# --submit-only returns once the turn starts. With it, --correlation-id may be
+# given without --result-token to send the same prompt again.
 #
 # --agent defaults to "codex". Prints the agent reply to stdout and streams
 # readable pane progress to stderr unless --quiet is supplied.
@@ -96,9 +99,12 @@ _comms_abort() {
 }
 trap '_comms_abort' EXIT
 
-if [[ -n "$CORRELATION_ID" || -n "$RESULT_TOKEN" ]]; then
-    [[ -n "$CORRELATION_ID" && "$CORRELATION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] \
-        || { echo "ERROR: invalid or missing correlation ID" >&2; exit 1; }
+[[ -z "$CORRELATION_ID" || "$CORRELATION_ID" =~ ^[A-Za-z0-9._:-]+$ ]] \
+    || { echo "ERROR: invalid or missing correlation ID" >&2; exit 1; }
+# A submit-only send collects no result, so its correlation only keys delivery
+# dedup and the prompt goes in unwrapped (slash commands must stay first).
+if [[ -n "$RESULT_TOKEN" || ( -n "$CORRELATION_ID" && "$SUBMIT_ONLY" != true ) ]]; then
+    [[ -n "$CORRELATION_ID" ]] || { echo "ERROR: invalid or missing correlation ID" >&2; exit 1; }
     [[ -n "$RESULT_TOKEN" && "$RESULT_TOKEN" =~ ^[a-f0-9]{16}$ ]] \
         || { echo "ERROR: invalid or missing result token" >&2; exit 1; }
     # The short first line is a stable terminal anchor even when the actual

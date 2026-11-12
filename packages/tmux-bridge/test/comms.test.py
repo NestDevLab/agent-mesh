@@ -152,6 +152,11 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         for change in ({'runtime': 'claude'}, {'goal': ' '}, {'goal': 3}, {'goal_resume': 'always'}):
             with self.assertRaisesRegex(ValueError, 'invalid goal options'):
                 c.validate({**spec, **change})
+        claude = {**self.spec(runtime='claude'), 'goal': 'Finish the release'}
+        self.assertIn('--goal', c.command(c.validate(claude)))
+        for change in ({'goal_resume': 'off'}, {'kind': 'tmux'}):
+            with self.assertRaisesRegex(ValueError, 'invalid goal options'):
+                c.validate({**claude, **change})
 
     def test_cloud_validation_and_replay_command(self):
         spec = {**self.spec(), 'destination': 'session_Synthetic123', 'cloud': True}
@@ -231,6 +236,16 @@ c.observe_inbox(spec, gate.receipt['id'], True)
                                 capture_output=True, text=True, timeout=5)
         self.assertEqual(result.returncode, 4, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'queued')
+
+    def test_submit_only_correlation_sends_a_repeated_prompt_again(self):
+        c.change('queue', 'claude', 'test', 'test')
+        send = lambda *extra: subprocess.run([str(BIN/'agent-send.sh'), '--agent', 'claude', *extra, 'absent-test-target', '/goal Ship'],
+                                             capture_output=True, text=True, timeout=5)
+        receipts = [json.loads(send('--submit-only').stdout), json.loads(send('--submit-only').stdout)]
+        self.assertTrue(receipts[1].get('duplicate'))
+        fresh = [json.loads(send('--submit-only', '--correlation-id', f'goal-{n}').stdout) for n in (1, 2)]
+        self.assertEqual([r['status'] for r in fresh], ['queued', 'queued'])
+        self.assertNotEqual(fresh[0]['id'], fresh[1]['id'])
 
     def test_inbox_pending_records_are_held_not_delivered(self):
         c.change('queue', 'claude', 'test', 'test')

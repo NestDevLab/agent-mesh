@@ -119,7 +119,9 @@ test('invalid goal options send nothing', async t => {
   assert.equal((await f.send(['--goal', '   '])).code, 2);
   assert.equal((await f.send(['--goal-resume', 'always'])).code, 2);
   assert.equal((await f.run('agent-native-call.mjs', ['--agent', 'claude', '--session', session, '--correlation-id', 'goal-claude',
-    '--message', 'x', '--goal', 'Ship'])).code, 2);
+    '--message', 'x', '--goal-resume', 'any'])).code, 2);
+  assert.equal((await f.run('agent-native-call.mjs', ['--agent', 'claude', '--session', 'session_Synthetic1', '--cloud',
+    '--delivery-only', '--correlation-id', 'goal-cloud', '--message', 'x', '--goal', 'Ship'])).code, 2);
   assert.deepEqual(f.requests, []);
 });
 

@@ -606,7 +606,7 @@ nothing was sent, so fall back to `codex queue --thread <id> --message <text> --
 inspect before retrying. Exit 0 proves acceptance only, confirm in the transcript.
 Claude sessions have no steer.
 
-### Codex goals
+### Goals
 
 Codex continues a goal only while it is `active`; a goal the model set to `blocked`
 stays blocked after the next message. `agent-native-call.mjs --agent codex`
@@ -616,6 +616,12 @@ resumes paused, `off` skips) and reports it as `goal` in the receipt. Pass
 going instead of stopping after one reply. `agent-session.sh --agent codex
 goal-watch [--nudge]` lists goals idle beyond `--idle-minutes`; `--nudge`
 restarts only active goals with no running turn.
+
+Claude goals live in the transcript (`goal get` reads them). Set, clear and
+`agent-native-call.mjs --agent claude --goal` type `/goal` into a live session's
+tmux pane; a session outside tmux exits 3, so type `/goal` there yourself.
+`goal-watch --agent claude --nudge` retypes stalled unmet goals and reports
+orphaned ones whose process is gone.
 
 ### Codex threads that belong to Desktop
 
