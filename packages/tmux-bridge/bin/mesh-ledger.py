@@ -348,6 +348,93 @@ def conformance(adapter, scheme):
             raise ProtocolError('unchanged cursor must stay quiet')
     return {'schema': SCHEMA, 'scheme': scheme, 'outcome': 'pass'}
 
+def query_items(refs, *, max_result_bytes=128 * MAX_BYTES):
+    """Read exact source-owned query batches without persisting consumer cursors."""
+    if not isinstance(refs, list) or len(refs) > 10000 or any(not isinstance(ref, str) for ref in refs):
+        raise ProtocolError('invalid exact query refs')
+    if len(set(refs)) != len(refs):
+        raise ProtocolError('duplicate exact query refs')
+    if type(max_result_bytes) is not int or not 1024 <= max_result_bytes <= 256 * MAX_BYTES:
+        raise ProtocolError('invalid exact query result budget')
+    module = globals()
+    configured = adapters()
+    request = {'refs': refs}
+    result = {'items': [], 'missing': [], 'errors': []}
+    result_limit = max_result_bytes
+    result_bytes = len(json.dumps(result).encode()) + 1
+    def query_pages(adapter, refs):
+        try:
+            page = module['invoke'](adapter, 'query', {'refs': refs})
+        except module['ProtocolError'] as error:
+            if str(error) != 'adapter output exceeds size limit' or len(refs) == 1:
+                raise
+            middle = len(refs) // 2
+            yield from query_pages(adapter, refs[:middle])
+            yield from query_pages(adapter, refs[middle:])
+            return
+        yield refs, page
+    def batches(refs, limit):
+        base = len(json.dumps({'refs': []}).encode())
+        batch, used = [], base
+        for ref in refs:
+            encoded = len(json.dumps(ref).encode())
+            addition = encoded + (2 if batch else 0)
+            if batch and (len(batch) == 200 or used + addition > limit):
+                yield batch
+                batch, used, addition = [], base, encoded
+            if used + addition > limit:
+                raise ValueError('query ref exceeds adapter request limit')
+            batch.append(ref)
+            used += addition
+        if batch:
+            yield batch
+    groups = {}
+    for ref in request['refs']:
+        groups.setdefault(ref.split(':', 1)[0], []).append(ref)
+    for scheme, refs in groups.items():
+        adapter = configured.get(scheme)
+        if adapter is None:
+            raise ValueError('adapter unavailable')
+        caps = module['invoke'](adapter, 'capabilities', {})
+        if 'query' not in caps.get('operations', []):
+            raise ValueError('exact query unsupported')
+        limits = [module['MAX_BYTES'], adapter.get('maxRequestBytes', module['MAX_BYTES']), caps.get('maxRequestBytes', module['MAX_BYTES'])]
+        if any(type(limit) is not int or limit < 1 for limit in limits):
+            raise ValueError('invalid adapter request limit')
+        for batch, page in (page for request_batch in batches(refs, min(limits)) for page in query_pages(adapter, request_batch)):
+            if any(not isinstance(page.get(key), list) for key in result):
+                raise ValueError('invalid query page')
+            expected, seen = set(batch), set()
+            for row in page['items']:
+                ref = row.get('ref') if isinstance(row, dict) else None
+                if not isinstance(ref, str) or ref not in expected or ref.split(':', 1)[0] != scheme or ref in seen:
+                    raise ValueError('query item outside provider batch')
+                seen.add(ref)
+            for ref in page['missing']:
+                if not isinstance(ref, str) or ref not in expected or ref in seen:
+                    raise ValueError('invalid query missing ref')
+                seen.add(ref)
+            for error in page['errors']:
+                ref = error.get('ref') if isinstance(error, dict) else None
+                if not isinstance(ref, str) or ref not in expected or ref in seen:
+                    raise ValueError('invalid query error ref')
+                seen.add(ref)
+            if seen != expected:
+                raise ValueError('query batch coverage mismatch')
+            for key in result:
+                for entry in page[key]:
+                    result_bytes += len(json.dumps(entry, ensure_ascii=True).encode()) + 2
+            if result_bytes > result_limit:
+                raise ValueError('complete ledger result exceeds configured byte budget')
+            result['items'].extend(page['items'])
+            result['missing'].extend(page['missing'])
+            result['errors'].extend({'ref': e['ref'], 'error': 'adapter query error'} for e in page['errors'])
+    encoded = json.dumps(result, ensure_ascii=True)
+    if len(encoded.encode()) + 1 > result_limit:
+        raise ValueError('complete ledger result exceeds configured byte budget')
+    return result
+
+
 def main():
     from ledger_item_lock import add_parser, cli as lock_cli
 
@@ -368,6 +455,12 @@ def main():
     listing = commands.add_parser('list')
     listing.add_argument('--scheme')
     listing.add_argument('--json', action='store_true')
+    query = commands.add_parser('query')
+    selection = query.add_mutually_exclusive_group(required=True)
+    selection.add_argument('--all', action='store_true')
+    selection.add_argument('--refs', nargs='+')
+    query.add_argument('--max-result-bytes', type=int, default=128 * MAX_BYTES)
+    query.add_argument('--json', action='store_true')
     check = commands.add_parser('conformance')
     check.add_argument('--scheme', required=True)
     add_parser(commands)
@@ -378,6 +471,16 @@ def main():
         configured = adapters()
         if args.command == 'adapters':
             result = {'adapters': [capabilities(adapter, scheme) for scheme, adapter in configured.items()], 'status': 'ok' if configured else 'no-adapter'}
+        elif args.command == 'query':
+            refs = args.refs
+            if args.all:
+                refs = []
+                for scheme, adapter in configured.items():
+                    entries, errors = list_items(adapter, scheme)
+                    if errors:
+                        raise ProtocolError('canonical ref discovery failed')
+                    refs.extend(entry['ref'] for entry in entries)
+            result = {'schema': SCHEMA, **query_items(refs, max_result_bytes=args.max_result_bytes)}
         elif args.command == 'describe':
             if len(args.refs) > 200:
                 raise ProtocolError('at most 200 refs may be described')

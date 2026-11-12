@@ -92,6 +92,13 @@ const { values, positionals } = parseArgs({
     source: { type: "string" },
     evidence: { type: "string" },
     input: { type: "string" },
+    config: { type: "string" },
+    sort: { type: "string" },
+    filter: { type: "string", multiple: true },
+    format: { type: "string" },
+    fallback: { type: "string" },
+    limit: { type: "string" },
+    "include-closed": { type: "boolean", default: false },
     "label-only": { type: "boolean", default: false },
     apply: { type: "boolean", default: false },
     "all-history": { type: "boolean", default: false },
@@ -112,7 +119,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "changes"] };
+const SUBCOMMANDS = { links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -209,9 +216,20 @@ try {
       if (subcommand !== "sync") throw new Error("ledger operation must be sync");
       printResult(syncLedgerLinks(stateDir, values), { ...values, json: true });
       break;
-    case "query":
-      process.stdout.write(`${JSON.stringify(runQuery(stateDir, subcommand, values))}\n`);
+    case "query": {
+      if (values.format !== undefined && !["json", "md"].includes(values.format)) throw new Error("format must be json or md");
+      if (values.format === "md" && (subcommand !== "view" || values.json)) throw new Error("Markdown format requires query view without --json");
+      const profile = subcommand === "view" ? readViewProfile(values.config) : undefined;
+      const result = runQuery(stateDir, subcommand, values, profile);
+      if (values.format === "md") {
+        if (subcommand !== "view" || values.json) throw new Error("Markdown format requires query view without --json");
+        process.stdout.write(plexus.renderLedgerView(result, profile));
+      } else {
+        if (values.format !== undefined && values.format !== "json") throw new Error("format must be json or md");
+        process.stdout.write(`${JSON.stringify(result)}\n`);
+      }
       break;
+    }
     case "ref":
       printResult(updateRef(stateDir, subcommand, values), values);
       break;
@@ -1563,7 +1581,7 @@ function fail(message) {
 function printHelp() {
   process.stdout.write(`Session links:\n  mesh-graph links verify [--session <agent:uuid>] [--apply] [--json] [--state <dir>]\n\n`);
   process.stdout.write(`Cloud sessions:\n  mesh-graph cloud register --session claude-cloud:<account-scope>:<cloud-id> --evidence <opaque-ref> [--title <title>] [--state <dir>]\n  mesh-graph cloud get --session claude-cloud:<account-scope>:<cloud-id> [--state <dir>]\n\n`);
-  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status> --label-only]\n  mesh-graph catalog list [--role <role> --project <slug> --archive exclude|include|only --title <text>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
+  process.stdout.write(`Usage:\n  mesh-graph catalog register|update --session <agent:uuid> [--role <role> --project <slug> --title <title> --status <status> --label-only]\n  mesh-graph catalog list [--role <role> --project <slug> --archive exclude|include|only --title <text>]\n  mesh-graph catalog backfill --agent codex|claude\n  mesh-graph role claim|heartbeat|check|release --session <agent:uuid> --role <role> --project <slug> [--claim-id <id> --ttl <seconds> --take-over <claim-id> --reason <reason>]\n  mesh-graph role list\n  mesh-graph add --agent <agent> --tmux-target <target> [--class <class>] [--domains domain,...] [--cwd <cwd>] ...\n  mesh-graph adopt --agent codex|claude --runtime-uuid <uuid> --class orchestrator|worker|observer|ephemeral [--domains domain,...] [--state <dir>] [--json]\n  mesh-graph discover --agent codex|claude [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph registry [--registry-out <path>] [--open-window-days 14] [--json]\n  mesh-graph sweep [--registry-out <path>] [--agent codex|claude] [--quiet-after seconds] [--state <dir>] [--json]\n  mesh-graph compact [--retention-days 30 | --all-history] [--apply] [--state <dir>] [--json]\n  mesh-graph claim --id <node-id> --role orchestrator --domain <domain> [--take-over <incumbent-id>] [--state <dir>] [--json]\n  mesh-graph ref add|remove (--id <node-id> | --runtime-uuid <uuid>) --ref <opaque-ref> [--state <dir>] [--json]\n  mesh-graph ledger sync --input <json|-> [--state <dir>]\n  mesh-graph migrate [--apply] [--state <dir>]\n  mesh-graph link open|close|touch (--agent codex|claude --runtime-uuid <uuid> | --id <node-id>) --ref <opaque-ref> [--role <role>] [--source <source>] [--title <title>] [--evidence a,b]\n  mesh-graph link close|touch --link-id <link-id>\n  mesh-graph edge end --id <edge-id>\n  mesh-graph renew --from <agent:uuid> --to <agent:uuid>\n  mesh-graph query view --format json|md [--sort field:asc,field:desc --filter JSON --config FILE --fallback director|project]\n  mesh-graph query ledger-sessions|session-ledgers|neighbours|subgraph|resume|search|items|changes [--input <json>]\n  mesh-graph link|summary|close|purge|show ...\n\nClasses are explicit; discovery defaults to unclassified. Domain roots come only from MESH_DOMAIN_ROOTS_FILE private JSON configuration: a JSON array, { roots: [...] }, or { domains: [...] }. Sweep reconciles persisted sessions with live tmux targets. A missing target becomes quiet with dirty, clean, or unknown worktree evidence; sweep never closes a node. Claims fail on a live primary unless the human explicitly names --take-over. Refs are opaque, may be shared by multiple nodes, and are never resolved or arbitrated.\n`);
 }
 
 function pendingResolutions(graph, events) {
@@ -1734,7 +1752,7 @@ function migrateStore(statePath, options) {
   });
 }
 
-function runQuery(statePath, name, options) {
+function runQuery(statePath, name, options, profile) {
   let input = {};
   if (options.input !== undefined) {
     try {
@@ -1745,6 +1763,26 @@ function runQuery(statePath, name, options) {
     if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("--input must be a JSON object");
   }
   const { scope = null, ...query } = input;
+  if (name === "view") {
+    if (options.sort !== undefined) query.sort = options.sort;
+    if (options.fallback !== undefined) query.fallback = options.fallback;
+    if (options.limit !== undefined) query.limit = Number(options.limit);
+    if (options["include-closed"]) query.includeClosed = true;
+    for (const filter of options.filter ?? []) {
+      let extra;
+      if (filter.trim().startsWith("{")) extra = JSON.parse(filter);
+      else {
+        const separator = filter.indexOf("=");
+        if (separator < 1) throw new Error("filter must be a JSON object or field=value");
+        let value = filter.slice(separator + 1);
+        try { value = JSON.parse(value); } catch { /* A bare value remains a string. */ }
+        extra = { [filter.slice(0, separator)]: value };
+      }
+      if (!extra || typeof extra !== "object" || Array.isArray(extra)) throw new Error("filter must be an object");
+      query.filter = { ...query.filter, ...extra };
+    }
+    return plexus.ledgerView(loadGraph(statePath), query, scope, readLedgerViewData, profile);
+  }
   if (name === "changes") {
     // Quiet head uses the existing validated checkpoint, never a second cache.
     if (query.initial !== undefined) return plexus.changes(loadGraph(statePath), [], query, scope);
@@ -1755,6 +1793,32 @@ function runQuery(statePath, name, options) {
   const handler = QUERIES[name];
   if (!handler) throw new Error(`unknown query '${name}'`);
   return handler(loadGraph(statePath), query, scope);
+}
+
+function readViewProfile(explicitPath) {
+  const file = explicitPath ?? process.env.MESH_LEDGER_VIEW_CONFIG ??
+    join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-mesh", "ledger-view.json");
+  if (!existsSync(file) && explicitPath === undefined && process.env.MESH_LEDGER_VIEW_CONFIG === undefined) return {};
+  const info = statSync(file);
+  if (!info.isFile() || info.size > 8 * 1024 * 1024) throw new Error("Invalid ledger view configuration file");
+  return plexus.validateLedgerViewProfile(JSON.parse(readFileSync(file, "utf8")));
+}
+
+function readLedgerViewData() {
+  const directory = dirname(fileURLToPath(import.meta.url));
+  const listing = spawnSync("python3", [join(directory, "mesh-ledger.py"), "query", "--all", "--json"],
+    { encoding: "utf8", timeout: 120_000, maxBuffer: 128 * 1024 * 1024,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  if (listing.status !== 0 || listing.error) throw new Error("exact ledger query failed");
+  const result = JSON.parse(listing.stdout);
+  if (!Array.isArray(result.items) || result.errors?.length) throw new Error("exact ledger query returned errors");
+  const groups = spawnSync("python3", [join(directory, "mesh-groups.py"), "list", "--json"],
+    { encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
+  if (groups.status !== 0 || groups.error) throw new Error("group metadata query failed");
+  const metadata = JSON.parse(groups.stdout);
+  if (!Array.isArray(metadata.groups)) throw new Error("invalid group metadata response");
+  return { items: result.items, errors: result.errors, groups: metadata.groups };
 }
 
 function probeWriter(session) {

@@ -501,3 +501,19 @@ separate workspace/grant boundaries where visibility differs.
 No Access policy, service token, binding or runtime restart is provisioned by this
 source change. Keep service tokens server-side and send them to Access, which still
 must supply a signature/audience/expiry-verified assertion to the origin.
+
+
+### Versioned ledger views
+
+The existing `mesh_plexus_work_items` tool accepts `view: "plexus.ledger-view/v1"`
+with `format: "json" | "md"` and `fallback: "director" | "project"`. This mode requires
+an authenticated user owner on every request, before any ledger read. Existing service
+read delegation retains its original query contract. The versioned response follows
+`packages/tmux-bridge/schemas/plexus-ledger-view-v1.schema.json` and the shared CLI
+`mesh-graph query view`. Both use the Plexus join, sorter, filters and Markdown renderer.
+
+`plexusLedger.viewConfig` optionally points to a private view profile. Project aliases,
+thread mappings, Director fallbacks, display labels and ranks belong there. A profile
+revision change invalidates outstanding cursors. Exact ledger, session and group grants
+are applied before predicates and pagination. Group membership grants no visibility.
+Raw scalar ledger fields remain intact, and missing relationships remain explicit nulls.

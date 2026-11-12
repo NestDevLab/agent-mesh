@@ -6,6 +6,12 @@
 
 import { createHmac, randomUUID } from "node:crypto";
 import { posix } from "node:path";
+import { createHash } from "node:crypto";
+import {
+  LEDGER_VIEW_SCHEMA, LEDGER_VIEW_SORT, buildLedgerViewRows,
+  ledgerViewProfileRevision, ledgerViewValue, validateLedgerViewProfile
+} from "./ledger-view.mjs";
+export { renderLedgerView, ledgerViewProfileRevision, validateLedgerViewProfile } from "./ledger-view.mjs";
 
 export const LINK_ROLES = new Set(["owns", "works-on", "reviews", "coordinates", "discusses", "observes", "mentioned"]);
 export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operator|legacy-node-refs|ui:[A-Za-z0-9._:-]{1,128}|hook:[a-z-]{1,32})$/;
@@ -352,6 +358,8 @@ function itemValue(item, field) {
 }
 
 function compareItemValues(a, b) {
+  if (Array.isArray(a)) a = a.map(String).join("\u0000");
+  if (Array.isArray(b)) b = b.map(String).join("\u0000");
   if (typeof a === "string" && typeof b === "string") return ITEM_COLLATOR.compare(a, b);
   if (typeof a === typeof b) return Number(a) - Number(b);
   // Ranked values sort before anything an adapter could not rank.
@@ -370,10 +378,10 @@ function parseItemSort(sort = DEFAULT_ITEM_SORT) {
   });
 }
 
-function compareItems(keys) {
+function compareItems(keys, valueOf = itemValue) {
   return (a, b) => {
     for (const { field, direction } of keys) {
-      const [x, y] = [a, b].map((item) => item.sortKeys?.[field] ?? itemValue(item, field));
+      const [x, y] = [a, b].map((item) => item.sortKeys?.[field] ?? valueOf(item, field));
       // Missing values stay last in both directions, otherwise desc would lead with blanks.
       if (x === undefined || y === undefined) {
         if (x !== y) return x === undefined ? 1 : -1;
@@ -382,7 +390,9 @@ function compareItems(keys) {
       const order = compareItemValues(x, y);
       if (order) return direction === "desc" ? -order : order;
     }
-    return ITEM_COLLATOR.compare(a.ref, b.ref);
+    const order = ITEM_COLLATOR.compare(a.ref, b.ref);
+    if (order || a.ref === b.ref) return order;
+    return a.ref < b.ref ? -1 : 1;
   };
 }
 
@@ -397,21 +407,22 @@ function checkItemFilter(filter) {
   return filter;
 }
 
-function matchesItemFilter(item, field, condition) {
-  const value = itemValue(item, field);
-  const same = (expected) => value !== undefined && String(value) === String(expected);
+function matchesItemFilter(item, field, condition, valueOf = itemValue) {
+  const value = valueOf(item, field);
+  const values = Array.isArray(value) ? value : [value];
+  const same = (expected) => values.some(entry => entry !== undefined && String(entry) === String(expected));
   if (Array.isArray(condition)) return condition.some(same);
   if (condition === null || typeof condition !== "object") return same(condition);
-  const range = (operand) => (value === undefined ? NaN : compareItemValues(value, operand));
+  const range = (operand, compare) => values.some(entry => entry !== undefined && compare(compareItemValues(entry, operand)));
   return Object.entries(condition).every(([operator, operand]) => ({
     eq: () => same(operand),
     ne: () => !same(operand),
     in: () => Array.isArray(operand) && operand.some(same),
-    lt: () => range(operand) < 0,
-    lte: () => range(operand) <= 0,
-    gt: () => range(operand) > 0,
-    gte: () => range(operand) >= 0,
-    contains: () => value !== undefined && String(value).toLowerCase().includes(String(operand).toLowerCase()),
+    lt: () => range(operand, order => order < 0),
+    lte: () => range(operand, order => order <= 0),
+    gt: () => range(operand, order => order > 0),
+    gte: () => range(operand, order => order >= 0),
+    contains: () => values.some(entry => entry !== undefined && String(entry).toLowerCase().includes(String(operand).toLowerCase())),
     exists: () => (value !== undefined) === Boolean(operand),
   })[operator]());
 }
@@ -458,6 +469,54 @@ export function workItems(graph, input = {}, scope = null, read) {
     total: matched.length, count: shown.length, sort: sort.map(({ field, direction }) => `${field}:${direction}`),
     items: shown.map(({ sortKeys: _ranks, ...item }) => item), errors,
   };
+}
+
+function validateViewInput(input, profile) {
+  validateLedgerViewProfile(profile);
+  const sort = parseItemSort(input.sort ?? LEDGER_VIEW_SORT);
+  const filter = checkItemFilter(input.filter ?? {});
+  for (const field of [...sort.map(key => key.field), ...Object.keys(filter)]) ledgerViewValue({}, field);
+  if (input.limit !== undefined && !(Number.isInteger(input.limit) && input.limit > 0)) throw new Error("limit must be a positive integer");
+  if (input.fallback !== undefined && !["director", "project"].includes(input.fallback)) throw new Error("Invalid app thread fallback.");
+  return { sort, filter };
+}
+
+/** The view reuses the same joins, filter operators and comparator as query items. */
+export function ledgerView(graph, input = {}, scope = null, read, profile = {}) {
+  if (scope) throw new Error("ledger views are available to local callers only");
+  validateViewInput(input, profile);
+  const source = read();
+  if (source.errors?.length) throw new Error("ledger source returned errors");
+  const includeClosed = input.includeClosed || Object.hasOwn(input.filter ?? {}, "status") || Object.hasOwn(input.filter ?? {}, "state");
+  const joined = workItems(graph, { includeClosed }, null, () => source);
+  return ledgerViewRows({ ...joined, sourceItems: source.items, groupMetadata: source.groups,
+    graphRevision: graph.lastSeq ?? null, groupsRevision: source.groupsRevision ?? null }, input, profile);
+}
+
+/** Accepts already joined records for deterministic historical fixture replay. */
+export function ledgerViewRows(joined, input = {}, profile = {}) {
+  const { sort, filter } = validateViewInput(input, profile);
+  if (joined.errors?.length) throw new Error("ledger source returned errors");
+  const rows = buildLedgerViewRows(joined.items, profile, { groups: joined.groupMetadata ?? [],
+    sourceItems: joined.sourceItems ?? joined.items, fallback: input.fallback ?? "director" });
+  const excluded = new Set(Object.hasOwn(filter, "state") ? [] : profile.excludeStates ?? []);
+  const matched = rows.filter(row => !excluded.has(row.state))
+    .filter(row => Object.entries(filter).every(([field, condition]) => matchesItemFilter(row, field, condition, ledgerViewValue)))
+    .sort(compareItems(sort, ledgerViewValue));
+  const shown = input.limit === undefined ? matched : matched.slice(0, input.limit);
+  const summary = { sourceItems: rows.length, excludedItems: rows.length - matched.length,
+    waitingItems: matched.filter(row => row.waitingOnOwner === true).length,
+    otherItems: matched.filter(row => row.waitingOnOwner !== true).length,
+    withThread: matched.filter(row => ["item", "session"].includes(row.thread.resolution)).length,
+    withoutThread: matched.filter(row => !["item", "session"].includes(row.thread.resolution)).length };
+  for (const reason of ["unassigned", "native-only", "session-closed", "app-thread-unmapped"]) {
+    summary[reason] = matched.filter(row => row.thread.missingReason === reason).length;
+  }
+  const result = { schema: LEDGER_VIEW_SCHEMA, profile_revision: ledgerViewProfileRevision(profile),
+    graph_revision: joined.graphRevision ?? null, groups_revision: joined.groupsRevision ?? null,
+    sort: sort.map(key => `${key.field}:${key.direction}`), total: matched.length, count: shown.length,
+    summary, items: shown.map(({ sortKeys, ...row }) => row), errors: [] };
+  return { ...result, result_revision: "sha256:" + createHash("sha256").update(JSON.stringify(result)).digest("hex") };
 }
 
 export function sessionLedgers(graph, input = {}, scope = null) {
