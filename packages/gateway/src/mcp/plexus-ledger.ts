@@ -223,8 +223,8 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
   if (options.principal.allowedTools.includes("mesh_plexus_work_items")) server.registerTool("mesh_plexus_work_items", {
     title: "Read Plexus work items", description: "Join current ledger fields and independently visible session links. Core owns all filtering and sorting. Pages recheck exact grants; stale cursors fail closed.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-    inputSchema: z.object({ workspace_id: workspace, filter: z.record(z.string().max(128), z.unknown()).optional(),
-      sort: z.array(z.string().min(1).max(140)).min(1).max(8).optional(), include_closed: z.boolean().optional(),
+    inputSchema: z.object({ workspace_id: workspace, filter: z.record(z.string().max(2048), z.unknown()).optional(),
+      sort: z.array(z.string().min(1).max(2054)).min(1).max(8).optional(), include_closed: z.boolean().optional(),
       limit: z.number().int().min(1).max(200).optional(), cursor: z.string().max(2048).optional(),
       view: z.literal("plexus.ledger-view/v1").optional(), format: z.enum(["json", "md"]).optional(),
       fallback: z.enum(["director", "project"]).optional() }).strict()

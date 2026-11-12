@@ -514,6 +514,7 @@ read delegation retains its original query contract. The versioned response foll
 
 `plexusLedger.viewConfig` optionally points to a private view profile. Project aliases,
 thread mappings, Director fallbacks, display labels and ranks belong there. A profile
-revision change invalidates outstanding cursors. Exact ledger, session and group grants
+revision change invalidates outstanding cursors. Markdown responses include the versioned
+JSON page in `structuredContent`, including `next_cursor`. Exact ledger, session and group grants
 are applied before predicates and pagination. Group membership grants no visibility.
 Raw scalar ledger fields remain intact, and missing relationships remain explicit nulls.

@@ -95,7 +95,7 @@ test("view rejects scope, malformed query and profile before requesting ledger d
   let reads = 0;
   const graph = { nodes: [], links: [], lastSeq: 0 },read = () => { reads++;return { items: [], errors: [] }; };
   assert.throws(() => ledgerView(graph, {}, {}, read, profile), /local callers/);
-  for (const input of [{ sort: ["bad key"] },{ filter: { due: { invalid: 1 } } },{ limit: 0 }]) {
+  for (const input of [{ sort: ["__proto__.value"] },{ filter: { due: { invalid: 1 } } },{ limit: 0 }]) {
     assert.throws(() => ledgerView(graph, input, null, read, profile));
   }
   assert.throws(() => ledgerView(graph, {}, null, read, { schema: "unknown" }));
