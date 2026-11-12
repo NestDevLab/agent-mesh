@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,7 @@ const fs = require('node:fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.SEND_LOG, JSON.stringify(args) + '\\n');
 const code = Number(process.env.SEND_EXIT || 0);
-if (code === 0) {
+if (code === 0 || process.env.SEND_RECORD) {
   const id = process.env.SEND_SESSION;
   const command = args.at(-1);
   const cleared = command === '/goal clear';
@@ -55,6 +55,7 @@ process.exit(code);
     await writeFile(join(root, "proc", String(pid), "stat"), `${pid} (claude) S ${Array(18).fill("0").join(" ")} 4242 0\n`);
     await writeFile(join(root, ".claude", "sessions", `${pid}.json`),
       JSON.stringify({ pid, sessionId: id, procStart: "4242", ...fields }));
+    return join(root, ".claude", "sessions", `${pid}.json`);
   };
   const env = {
     ...process.env, HOME: root, CLAUDE_CONFIG_DIR: join(root, ".claude"), CLAUDE_SESSION_ROOT: "",
@@ -146,4 +147,20 @@ test("Claude goal-watch nudges stalled live goals and reports orphaned ones", as
   assert.deepEqual(rows.map((row) => [row.sessionId, row.state, row.nudged]).sort(),
     [[ids.live, "stalled", true], [ids.dead, "orphaned", undefined]].sort());
   assert.deepEqual((await f.sends()).map((args) => args.at(-1)), ["/goal Finish the release"]);
+});
+
+test("Claude goal clear interrupts a busy goal loop and accepts a clear that starts no turn", async (t) => {
+  const f = await fixture(t);
+  await f.session(ids.busy, [goalRecord("Never met", false, { sentinel: true })]);
+  const registry = await f.live(ids.busy, { status: "busy", tmux: "mesh-claude-x:@6.%6" });
+  const tmux = join(f.root, "fake-tmux");
+  await writeFile(tmux, `#!/bin/sh\necho "$*" >> "${f.root}/tmux.log"\nsed -i 's/"busy"/"idle"/' "${registry}"\n`);
+  await chmod(tmux, 0o755);
+  const clear = await f.run(["goal", "clear", ids.busy, "--json"], { AGENT_GOAL_TMUX: tmux, SEND_EXIT: "6", SEND_RECORD: "1",
+    SEND_SESSION: ids.busy, SEND_TRANSCRIPT: f.transcript(ids.busy) });
+  assert.equal(clear.code, 0, clear.stderr);
+  assert.equal(JSON.parse(clear.stdout).goal.state, "cleared");
+  assert.equal((await readFile(join(f.root, "tmux.log"), "utf8")).trim(), "-L mesh send-keys -t mesh-claude-x:@6.%6 Escape");
+  const set = await f.run(["goal", "set", ids.busy, "--objective", "Ship"], { AGENT_GOAL_TMUX: tmux, SEND_EXIT: "6" });
+  assert.equal(set.code, 6);
 });

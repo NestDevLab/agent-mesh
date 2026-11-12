@@ -87,7 +87,10 @@ export async function typeClaudeGoal(record, command, timeout) {
     throw Object.assign(new Error(`Claude session ${record.sessionId} is live outside tmux; type ${command.split(" ")[0]} in that session`), { exitCode: 3 });
   }
   if (record.status === "busy") {
-    throw Object.assign(new Error(`Claude session ${record.sessionId} is busy; retry when it is idle`), { exitCode: 6 });
+    // An unmet goal keeps the session busy forever, so clear has to interrupt the loop first.
+    if (command !== "/goal clear" || !(await interrupt(record, timeout))) {
+      throw Object.assign(new Error(`Claude session ${record.sessionId} is busy; retry when it is idle`), { exitCode: 6 });
+    }
   }
   const sender = process.env.AGENT_GOAL_SENDER || fileURLToPath(new URL("./agent-send.sh", import.meta.url));
   const started = new Date().toISOString();
@@ -104,14 +107,31 @@ export async function typeClaudeGoal(record, command, timeout) {
     child.on("error", (error) => { clearTimeout(timer); reject(error); });
     child.on("close", (code) => { clearTimeout(timer); resolve({ code, stderr: stderr.trim() }); });
   });
-  if (result.code !== 0) {
+  const goal = await waitForGoal(record.sessionId, started, Math.min(timeout, result.code === 0 ? 10_000 : 3_000));
+  // `/goal clear` runs locally without starting a turn, which agent-send reports as not submitted.
+  if (result.code !== 0 && !(goal && (command === "/goal clear") === (goal.state === "cleared"))) {
     throw Object.assign(new Error(`typing /goal into ${record.tmux} failed (${result.code}): ${result.stderr}`), { exitCode: result.code === 4 ? 4 : 6 });
   }
-  const goal = await waitForGoal(record.sessionId, started, Math.min(timeout, 10_000));
   return {
     agent: "claude", sessionId: record.sessionId, status: "submitted", via: "tmux", target: record.tmux,
     goalStateVerified: Boolean(goal), ...(goal ? { goal } : {}),
   };
+}
+
+async function interrupt(record, timeout) {
+  const tmux = process.env.AGENT_GOAL_TMUX || "tmux";
+  const code = await new Promise((resolve) => {
+    const child = spawn(tmux, ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "send-keys", "-t", record.tmux, "Escape"], { stdio: "ignore" });
+    child.on("error", () => resolve(1));
+    child.on("close", resolve);
+  });
+  if (code !== 0) return false;
+  const deadline = Date.now() + Math.min(timeout, 15_000);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    if (liveClaudeSessions().get(record.sessionId)?.status !== "busy") return true;
+  }
+  return false;
 }
 
 async function waitForGoal(sessionId, since, budget) {
