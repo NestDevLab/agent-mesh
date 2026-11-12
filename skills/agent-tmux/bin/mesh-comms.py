@@ -109,6 +109,10 @@ def validate(spec):
         raise ValueError('invalid Claude cloud destination')
     if 'steer_first' in spec and (spec['steer_first'] is not True or spec['kind'] != 'native' or spec['runtime'] != 'codex' or spec.get('cloud')):
         raise ValueError('invalid steer-or-queue destination')
+    if ('goal' in spec or 'goal_resume' in spec) and (spec['kind'] != 'native' or spec['runtime'] != 'codex' or
+                                                    ('goal' in spec and (not isinstance(spec['goal'], str) or not spec['goal'].strip())) or
+                                                    spec.get('goal_resume', 'blocked') not in ('blocked', 'any', 'off')):
+        raise ValueError('invalid goal options')
     if len(encode(spec).encode()) > 1048576:
         raise ValueError('comms message exceeds one MiB')
     return spec
@@ -256,6 +260,10 @@ def command(spec):
             args += ['--resume']
         elif spec['runtime'] == 'codex' and spec.get('resume') is False:
             args += ['--no-resume']
+        if spec.get('goal'):
+            args += ['--goal', spec['goal']]
+        if spec.get('goal_resume'):
+            args += ['--goal-resume', spec['goal_resume']]
         return args
     if spec['kind'] == 'tmux':
         args = [str(BIN/'agent-send.sh'), '--agent', spec['runtime'], '--quiet', '--submit-only']

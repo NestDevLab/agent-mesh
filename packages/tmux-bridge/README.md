@@ -418,6 +418,33 @@ Claude results report process completion, not verified persistent goal state.
 Both providers time out after 30 seconds (`AGENT_GOAL_TIMEOUT_MS`, maximum
 600000); timeout exits 124 with an unknown outcome, so inspect before retrying.
 
+Codex keeps working on a goal only while its status is `active`. When the model
+sets its own goal to `blocked` to wait for input, the next message runs one turn
+and the goal stays blocked, so the work stalls. `agent-native-call.mjs --agent
+codex` therefore reconciles the goal after the message is accepted:
+
+| Option | Effect |
+| --- | --- |
+| default (`--goal-resume blocked`) | a `blocked` goal becomes `active` again |
+| `--goal-resume any` | also reactivates a `paused` goal |
+| `--goal-resume off` | leaves the goal alone |
+| `--goal TEXT` | sets or replaces the objective and makes it `active` |
+
+Limited and complete goals are never touched. The result lands in the receipt as
+`goal: {action, before, after}`; a goal failure is reported there and never turns
+an accepted delivery into a resend.
+
+```bash
+agent-session.sh --agent codex goal-watch --idle-minutes 20 --json
+agent-session.sh --agent codex goal-watch --nudge
+```
+
+`goal-watch` reads the local Codex goals database read-only (`CODEX_GOALS_DB`
+overrides the path) and checks each goal idle longer than `--idle-minutes` for a
+running turn. An `active` goal with no running turn is `stalled`; `--nudge` sets
+it active again, which starts a goal turn. Blocked goals, and paused ones with
+`--include-paused`, are reported as `waiting` and left to their owner.
+
 ## Steering a running turn
 
 ```bash
