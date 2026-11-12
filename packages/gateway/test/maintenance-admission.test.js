@@ -142,11 +142,11 @@ test("real MCP server gates mesh_send and task submission through every configur
   await new Promise(r => probe.listen(0, "127.0.0.1", r));
   const port = probe.address().port;
   await new Promise(r => probe.close(r));
-  const close = await startMeshMcpServer({ AGENT_MESH_MCP_HOST: "127.0.0.1", AGENT_MESH_MCP_PORT: String(port), AGENT_MESH_MCP_CONFIG: config, AGENT_MESH_MCP_TEAM_DOMAIN: "https://example.cloudflareaccess.com", AGENT_MESH_MCP_AUDIENCE: "test", AGENT_MESH_MCP_WORKSPACE_AUDIENCE: "workspace", AGENT_MESH_MCP_GOOGLE_WORKSPACE_AUDIENCE: "google", AGENT_MESH_MCP_MEMORY_AUDIENCE: "memory" });
+  const close = await startMeshMcpServer({ AGENT_MESH_MCP_HOST: "127.0.0.1", AGENT_MESH_MCP_PORT: String(port), AGENT_MESH_MCP_CONFIG: config, AGENT_MESH_MCP_TEAM_DOMAIN: "https://example.cloudflareaccess.com", AGENT_MESH_MCP_AUDIENCE: "test", AGENT_MESH_MCP_WORKSPACE_AUDIENCE: "workspace", AGENT_MESH_MCP_GOOGLE_WORKSPACE_AUDIENCE: "google", AGENT_MESH_MCP_MEMORY_AUDIENCE: "memory", AGENT_MESH_MCP_OIKUMA_AUDIENCE: "oikuma" });
   t.after(close);
   const control = { socketPath: join(dir, "maintenance-admission.sock") };
   assert.equal((await command(control, "status", owner)).owner, owner);
-  for (const path of ["/agent-mesh", "/workspace", "/google-workspace", "/memory"]) {
+  for (const path of ["/agent-mesh", "/workspace", "/google-workspace", "/memory", "/oikuma"]) {
     for (const name of ["mesh_send", "mesh_submit"]) {
       const response = await fetch(`http://127.0.0.1:${port}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: {} } }) });
       assert.equal(response.status, 503, path + " " + name);
@@ -154,6 +154,7 @@ test("real MCP server gates mesh_send and task submission through every configur
   }
   await command(control, "resume", owner);
   assert.equal((await fetch(`http://127.0.0.1:${port}/agent-mesh`)).status, 401);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/oikuma`)).status, 401);
 });
 
 

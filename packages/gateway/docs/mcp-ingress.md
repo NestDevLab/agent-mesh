@@ -501,3 +501,21 @@ separate workspace/grant boundaries where visibility differs.
 No Access policy, service token, binding or runtime restart is provisioned by this
 source change. Keep service tokens server-side and send them to Access, which still
 must supply a signature/audience/expiry-verified assertion to the origin.
+
+### Oikuma user-only Plexus profile (candidate)
+
+When `AGENT_MESH_MCP_OIKUMA_AUDIENCE` is set, `/oikuma` accepts only a signed,
+unexpired Access user assertion for that audience. It resolves the existing
+server-owned owner binding and exact workspace/ref grants; service identities
+are denied. Only the two Plexus read tools can be registered. The response is
+buffered, then the current principal and grants are resolved again before any
+bytes are released. An absent or changed binding, or an expired assertion,
+discards the response. The profile has no implicit activation or configuration.
+
+The recheck compares the two observed authorization snapshots. It does not detect
+revoke-and-restore between observations (ABA); a durable non-reusable revision or
+an equivalently qualified admission protocol is required before claiming that
+property. Signature/expiry alone do not prove immediate revocation of an Access
+session. The listener binds loopback, but an upstream proxy can still expose a
+route: a deployment must independently prove `/oikuma` is unavailable externally
+before enabling this profile. No bearer, assertion or user data may be logged.
