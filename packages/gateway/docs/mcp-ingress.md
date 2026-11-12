@@ -518,3 +518,40 @@ revision change invalidates outstanding cursors. Markdown responses include the 
 JSON page in `structuredContent`, including `next_cursor`. Exact ledger, session and group grants
 are applied before predicates and pagination. Group membership grants no visibility.
 Raw scalar ledger fields remain intact, and missing relationships remain explicit nulls.
+
+### Monotonic grant authority
+
+The standalone `agent-mesh-authority` CLI maintains `state.json` and an append-only
+`journal.jsonl` in `<stateDir>/authority`, outside the replaceable runtime config.
+Use `init --config <file>` once, then `commit --config <file> --reason <text>` after
+each authorization change or restore. Every commit advances the decimal u64
+revision, including identical regrants. `--actor <name>` defaults to `operator`;
+`--dir <directory>` overrides the config-derived authority location for every
+command. `init` and `reincarnate` require either `--dir` or `--config`.
+
+The digest covers the canonical, key-sorted binding authorization fields (including
+session, group, delegation and account scopes) and the ledger owner. Arrays retain
+their configured order. Unrelated runtime settings do not change the digest.
+`status --config <file>` emits JSON and exits successfully only when the current
+configuration matches valid authority state. Missing, corrupt, unknown-format,
+exhausted or mismatched authority fails closed. This store is standalone; ingress
+admission integration is a separate step.
+
+Writers require the system `flock` utility and a local filesystem supporting flock,
+atomic rename and fsync. All writers share a persistent lock inode; kernel locks
+release on process exit, including crashes. The helper also exits on parent pipe
+closure. Keep the authority directory restricted to trusted writers; do not remove
+or replace its lock file during use. Journal append and fsync precede temp-file
+fsync, atomic state rename and directory fsync. Readers observe one complete state
+via rename atomicity. A journal record alone is an intent, not proof of a published
+commit; a crash before rename retains the previous state. An uncertain write must
+be inspected, never blindly retried.
+
+After any host snapshot or authority restore, stop admission and explicitly run
+`reincarnate --reason <text>` with `--dir` or `--config`, then commit the intended
+configuration before resuming. Reincarnation creates a new UUID and resets the
+revision to `1`, invalidating every pending proof from the previous incarnation.
+Initialization and recovery publish an uncommitted digest sentinel; verification
+fails until the first configuration commit. Preserve the journal during recovery.
+The store cannot detect restoration of its own history; this recovery rule is
+mandatory, and stronger rollback detection requires an external monotonic witness.

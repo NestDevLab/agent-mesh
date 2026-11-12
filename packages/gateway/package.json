@@ -8,6 +8,9 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "agent-mesh-authority": "dist/mcp/grant-authority-cli.js"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start:mcp": "node dist/mcp/serve.js",
