@@ -34,6 +34,8 @@ const agentTmuxBundleFiles = [
   "bin/mesh-graph.mjs",
   "bin/plexus.mjs",
   "bin/session-catalog.mjs",
+  "bin/session-links.mjs",
+  "bin/session-link-sources.py",
   "bin/session-metadata.mjs",
   "bin/session-controller.py",
   "bin/mesh-ledger.py",

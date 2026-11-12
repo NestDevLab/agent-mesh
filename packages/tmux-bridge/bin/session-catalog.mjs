@@ -1,6 +1,6 @@
 /** Session labels and fenced singleton claims. The graph event log is authoritative. */
 import { randomUUID } from 'node:crypto';
-import { parseSessionId, sessionIdOf } from './plexus.mjs';
+import { parseSessionId, parseCloudSessionId, sessionIdOf } from './plexus.mjs';
 
 const SINGLETONS = new Set(['director', 'daily', 'holding-director', 'global-controller']);
 const SLUG = /^[a-z][a-z0-9-]{0,63}$/;
@@ -20,6 +20,13 @@ export function roleKey(role, project, session) {
 }
 export function claimState(claim, at = Date.now()) {
   return claim.status !== 'active' ? claim.status : Date.parse(claim.expiresAt) <= at ? 'stale' : 'active';
+}
+export function parseCatalogSessionId(value) {
+  if (typeof value === 'string' && value.startsWith('claude-cloud:')) {
+    parseCloudSessionId(value);
+    return value;
+  }
+  return parseSessionId(value);
 }
 function members(graph, session) {
   const nodes = graph.nodes.filter(node => sessionIdOf(node) === session);
@@ -55,7 +62,6 @@ export function catalogMatches(row, options = {}) {
 export function catalogList(graph, options = {}) {
   const grouped = new Map();
   for (const node of graph.nodes) {
-    if (node.cloudIdentity) continue;
     const session = sessionIdOf(node);
     if (!session) continue;
     const prior = grouped.get(session);
@@ -67,11 +73,19 @@ export function catalogList(graph, options = {}) {
     titleSource: node.catalogTitle ? 'operator' : node.title ? 'native' : 'unavailable',
     role: node.catalogRole || 'unclassified', project: node.catalogProject || null,
     status: node.catalogStatus || node.status,
+    ...(node.sessionLink ? { sessionLink: {
+      link: node.sessionLink.link ?? null, status: node.sessionLink.status ?? null,
+      lastKnown: node.sessionLink.lastKnown ?? null, checkedAt: node.sessionLink.checkedAt ?? null,
+    } } : {}),
     claims: claims.filter(c => c.session === session).map(c => ({ ...c, status: claimState(c) })),
   })).filter(row => catalogMatches(row, options) && (!options.project || row.project === options.project) && (!options.role || row.role === options.role) && (!options.status || row.status === options.status)).sort((a,b) => a.sessionId.localeCompare(b.sessionId)) };
 }
 export function catalogUpdate(graph, session, options, makeEvent) {
-  session = parseSessionId(session);
+  session = parseCatalogSessionId(session);
+  const cloud = session.startsWith('claude-cloud:');
+  if (cloud && ['agent', 'runtime-uuid', 'tmux-target', 'cwd', 'role-profile', 'summary', 'domains', 'domain', 'class'].some(key => options[key] !== undefined)) {
+    throw new Error('cloud catalog supports role, project, title and status metadata only');
+  }
   const nodes = members(graph, session);
   const role = options.role === undefined ? undefined : slug(options.role, 'role');
   const project = options.project === undefined ? undefined : slug(options.project, 'project');
@@ -81,10 +95,11 @@ export function catalogUpdate(graph, session, options, makeEvent) {
   if (options.status !== undefined && !['active','waiting','blocked','quiet','closed'].includes(options.status)) throw new Error('invalid catalog status');
   if (nodes.some(n => n.catalogStatus === 'superseded')) throw new Error('superseded sessions cannot be reclassified');
   // A label must never masquerade as a singleton grant, or move a granted role to another project.
-  for (const node of nodes) {
+  for (const node of cloud ? [] : nodes) {
     const targetRole = role ?? node.catalogRole;
     const targetProject = project ?? node.catalogProject;
-    if (SINGLETONS.has(targetRole) && !(graph.roleClaims || []).some(c => c.session === session && c.role === targetRole && c.project === targetProject && claimState(c) === 'active')) throw new Error('singleton labels require an active role claim');
+    if (options['label-only'] && (graph.roleClaims || []).some(c => c.session === session && claimState(c) === 'active' && (c.role !== targetRole || c.project !== targetProject))) throw new Error('catalog label conflicts with own live claim');
+    if (!options['label-only'] && SINGLETONS.has(targetRole) && !(graph.roleClaims || []).some(c => c.session === session && c.role === targetRole && c.project === targetProject && claimState(c) === 'active')) throw new Error('singleton labels require an active role claim');
   }
   const events = nodes.map(node => makeEvent('node.upserted', { node: { ...node,
     ...(role !== undefined ? { catalogRole: role } : {}), ...(project !== undefined ? { catalogProject: project } : {}),

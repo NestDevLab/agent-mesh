@@ -281,8 +281,9 @@ console.log(JSON.stringify([{ pid: ${ownerPid}, kind: "interactive", sessionId: 
 }
 
 
-test("explicit native resume requests daemon activation without claiming execution", async () => {
-  for (const resume of [false, true]) {
+test("Codex queues wake by default and allow an explicit hold without claiming execution", async () => {
+  for (const flags of [[], ["--resume"], ["--no-resume"]]) {
+    const resume = !flags.includes("--no-resume");
     const value = await fixture("success");
     const log = join(value.root, "queue-args.json");
     await writeFile(value.codex, `#!/usr/bin/env node
@@ -292,7 +293,7 @@ console.error('synthetic resume diagnostic');
 `);
     await chmod(value.codex, 0o755);
     const result = await exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
-      "--correlation-id", "resume-fixture", "--delivery-only", ...(resume ? ["--resume"] : []), "--message", "Continue"],
+      "--correlation-id", "resume-fixture", "--delivery-only", ...flags, "--message", "Continue"],
       {env: {...process.env, MESH_COMMS_STATE: join(value.root, "comms"),
       CODEX_BIN: value.codex, CODEX_SESSION_ROOT: join(value.root, "sessions")}});
     const args = JSON.parse(await readFile(log, "utf8"));
@@ -305,4 +306,11 @@ console.error('synthetic resume diagnostic');
     assert.equal(ack.resumeVerified, resume ? false : undefined);
     assert.equal(ack.resumeDiagnostic, resume ? true : undefined);
   }
+});
+
+
+test("native resume flags are mutually exclusive before delivery", async () => {
+  await assert.rejects(exec(process.execPath, [nativeCall, "--agent", "codex", "--session", sessionId,
+    "--correlation-id", "conflict", "--message", "Continue", "--resume", "--no-resume"]),
+    error => error.code === 2 && /mutually exclusive/.test(error.stderr));
 });

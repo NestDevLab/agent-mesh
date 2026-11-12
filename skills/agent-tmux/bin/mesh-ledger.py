@@ -7,6 +7,7 @@ from datetime import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -22,7 +23,9 @@ MAX_CURSOR_BYTES = 32 * MAX_BYTES
 STATUSES = {'open', 'active', 'waiting', 'blocked', 'done', 'cancelled', 'deleted'}
 SCHEME = re.compile(r'^[a-z][a-z0-9+.-]{0,63}$')
 NAME = re.compile(r'^[A-Za-z0-9._-]{1,128}$')
-FIELDS = {'ref', 'title', 'state', 'status', 'assignee', 'domain', 'nextAction', 'waitingOn', 'resumeCondition', 'sessions', 'updatedAt', 'url'}
+FIELDS = {'ref', 'title', 'state', 'status', 'assignee', 'domain', 'nextAction', 'waitingOn', 'resumeCondition', 'sessions', 'updatedAt', 'url', 'fields', 'sortKeys'}
+LIST_PAGE = 100
+LIST_MAX_PAGES = 1000
 
 class ProtocolError(Exception):
     pass
@@ -151,6 +154,16 @@ def iso(value):
         raise ProtocolError('invalid item timestamp') from None
     return value
 
+def flat_map(value, name, allowed):
+    if not isinstance(value, dict) or len(value) > 128:
+        raise ProtocolError('invalid item ' + name)
+    for key, entry in value.items():
+        if not NAME.fullmatch(key) or not isinstance(entry, allowed) or (bool not in allowed and isinstance(entry, bool)) or (isinstance(entry, float) and not math.isfinite(entry)):
+            raise ProtocolError('invalid item ' + name)
+        if isinstance(entry, str):
+            one_line(entry, name, 1024)
+    return value
+
 def item(raw, scheme):
     if not isinstance(raw, dict):
         raise ProtocolError('invalid item')
@@ -165,6 +178,10 @@ def item(raw, scheme):
     for key in ('state', 'assignee', 'domain', 'nextAction', 'resumeCondition', 'url'):
         if key in result:
             one_line(result[key], key)
+    if 'fields' in result:
+        flat_map(result['fields'], 'fields', (str, int, float, bool))
+    if 'sortKeys' in result:
+        flat_map(result['sortKeys'], 'sortKeys', (int, float))
     if 'waitingOn' in result:
         wait = result['waitingOn']
         if not isinstance(wait, dict) or not isinstance(wait.get('who'), str) or wait['who'] not in {'human', 'agent', 'external'}:
@@ -283,6 +300,19 @@ def changes(adapter, args, before_advance=None):
             save(path, state)
         return response
 
+def list_items(adapter, scheme):
+    """Read every current item with its metadata; never touches consumer cursors."""
+    items, cursor = {}, None
+    request = {'cursor': None, 'limit': LIST_PAGE, 'full': True, 'fields': True}
+    for _ in range(LIST_MAX_PAGES):
+        page = checked(invoke(adapter, 'changes', request), scheme, 'changes')
+        items.update((entry['ref'], entry) for entry in page['items'])
+        # Items the adapter cannot read stay pending, so a page of errors alone is the end.
+        if not page['more'] or not page['items']:
+            return list(items.values()), page['errors']
+        request = {'cursor': page['cursor'], 'limit': LIST_PAGE, 'fields': True}
+    raise ProtocolError('adapter listing did not terminate')
+
 def sync_links(items):
     if not items:
         return {'changed': False, 'events': 0, 'unresolved': []}
@@ -335,6 +365,9 @@ def main():
         sub.add_argument('--full', action='store_true')
         sub.add_argument('--filter', default='')
         sub.add_argument('--json', action='store_true')
+    listing = commands.add_parser('list')
+    listing.add_argument('--scheme')
+    listing.add_argument('--json', action='store_true')
     check = commands.add_parser('conformance')
     check.add_argument('--scheme', required=True)
     add_parser(commands)
@@ -360,6 +393,13 @@ def main():
                 page = checked(invoke(configured[scheme], 'describe', {'refs': refs}), scheme, 'describe', refs)
                 for key in ('items', 'missing', 'errors'):
                     result[key].extend(page[key])
+        elif args.command == 'list':
+            result = {'schema': SCHEMA, 'items': [], 'errors': []}
+            for scheme, adapter in configured.items():
+                if args.scheme in (None, scheme):
+                    items, errors = list_items(adapter, scheme)
+                    result['items'].extend(items)
+                    result['errors'].extend(errors)
         else:
             if not SCHEME.fullmatch(args.scheme):
                 raise ProtocolError('invalid scheme')

@@ -975,22 +975,48 @@ case "$cmd" in
         shift || true
         [[ ( "$AGENT_NAME" == "claude" || "$AGENT_NAME" == "codex" ) && "$TARGET" =~ ^[a-z0-9-]+$ ]] \
             || { echo "ERROR: target-status requires a safe target" >&2; exit 2; }
-        [[ "${1:-}" == "--writer-pid" && "${2:-}" =~ ^[1-9][0-9]*$ && "${3:-}" == "--json" && $# -eq 3 ]] \
+        [[ "${1:-}" == "--writer-pid" && "${2:-}" =~ ^[1-9][0-9]*$ && "${3:-}" == "--json" && $# -ge 3 ]] \
             || { echo "ERROR: target-status requires --writer-pid <PID> --json" >&2; exit 2; }
         WRITER_PID="$2"
+        shift 3
+        ALLOW_ATTACHED=false
+        OWNED_CWD=""
+        EXPECTED_PANE_PID=""
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                --allow-attached)
+                    [[ "$AGENT_NAME" == codex && "$ALLOW_ATTACHED" == false ]] || exit 2
+                    ALLOW_ATTACHED=true; shift ;;
+                --pane-pid)
+                    [[ "$AGENT_NAME" == codex && -z "$EXPECTED_PANE_PID" && "${2:-}" =~ ^[1-9][0-9]*$ ]] || exit 2
+                    EXPECTED_PANE_PID="$2"; shift 2 ;;
+                --owned-cwd)
+                    [[ "$AGENT_NAME" == codex && -z "$OWNED_CWD" && "${2:-}" =~ ^/[A-Za-z0-9_./-]+$ ]] || exit 2
+                    OWNED_CWD="$2"; shift 2 ;;
+                *) echo "ERROR: invalid target-status arguments" >&2; exit 2 ;;
+            esac
+        done
         PANES="$(mtmux list-panes -s -t "$TARGET" -F '#{session_name}|#{pane_pid}|#{pane_current_command}|#{pane_dead}|#{session_attached}' 2>/dev/null)" \
             || { echo "ERROR: target not found" >&2; exit 3; }
         [[ "$PANES" != *$'\n'* ]] \
             || { echo "ERROR: target has multiple panes" >&2; exit 4; }
         IFS='|' read -r ACTUAL_TARGET PANE_PID PANE_COMMAND PANE_DEAD ATTACHED <<< "$PANES"
+        # A complete observed pane identity can prove replacement even when
+        # the old writer no longer descends from that replacement pane.
+        if [[ -n "$EXPECTED_PANE_PID" && "$PANE_PID" =~ ^[1-9][0-9]*$ && "$ACTUAL_TARGET" =~ ^[a-z0-9-]+$ ]]; then
+            [[ "$PANE_PID" == "$EXPECTED_PANE_PID" && "$ACTUAL_TARGET" == "$TARGET" ]] \
+                || { echo "ERROR: bound pane identity changed" >&2; exit 5; }
+        fi
         [[ "$ACTUAL_TARGET" == "$TARGET" && "$PANE_PID" =~ ^[1-9][0-9]*$ \
-            && "$PANE_COMMAND" == "$AGENT_NAME" && "$PANE_DEAD" == "0" && "$ATTACHED" == "0" ]] \
+            && "$PANE_COMMAND" == "$AGENT_NAME" && "$PANE_DEAD" == "0" && ( "$ATTACHED" == "0" || ( "$ALLOW_ATTACHED" == true && "$ATTACHED" =~ ^[0-9]+$ ) ) ]] \
             || { echo "ERROR: target is not an unattended live $AGENT_NAME pane" >&2; exit 4; }
         PROC_ROOT="${AGENT_WRITER_PROC_ROOT:-/proc}"
         CURRENT_PID="$WRITER_PID"
         OWNER_FOUND=false
+        ANCESTRY_COMPLETE=false
         for ((DEPTH=0; DEPTH<32; DEPTH++)); do
             if [[ "$CURRENT_PID" == "$PANE_PID" ]]; then OWNER_FOUND=true; break; fi
+            if [[ "$CURRENT_PID" == 1 ]]; then ANCESTRY_COMPLETE=true; break; fi
             [[ -r "$PROC_ROOT/$CURRENT_PID/status" ]] || break
             NEXT_PID=""
             PPID_FIELDS=0
@@ -1001,11 +1027,21 @@ case "$cmd" in
                 NEXT_PID="$VALUE"
             done < "$PROC_ROOT/$CURRENT_PID/status"
             [[ "$PPID_FIELDS" == 1 ]] || NEXT_PID=""
+            if [[ "$NEXT_PID" == 0 ]]; then ANCESTRY_COMPLETE=true; break; fi
             CURRENT_PID="$NEXT_PID"
             [[ "$CURRENT_PID" =~ ^[1-9][0-9]*$ ]] || break
         done
+        if [[ "$OWNER_FOUND" != true && "$ANCESTRY_COMPLETE" == true && -n "$EXPECTED_PANE_PID" ]]; then
+            echo "ERROR: bound writer ancestry changed" >&2; exit 5
+        fi
         [[ "$OWNER_FOUND" == true ]] \
             || { echo "ERROR: $AGENT_NAME writer is not owned by target pane" >&2; exit 4; }
+        if [[ -n "$OWNED_CWD" ]]; then
+            WRITER_CWD="$(readlink "$PROC_ROOT/$WRITER_PID/cwd")" \
+                || { echo "ERROR: writer cwd proof is inconclusive" >&2; exit 4; }
+            [[ "$WRITER_CWD" == "$OWNED_CWD" ]] \
+                || { echo "ERROR: bound writer cwd changed" >&2; exit 5; }
+        fi
         printf '{"target":"%s","pane_pid":%s,"writer_pid":%s}\n' "$TARGET" "$PANE_PID" "$WRITER_PID"
         ;;
 

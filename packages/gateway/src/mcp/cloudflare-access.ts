@@ -1,3 +1,4 @@
+import { isPlexusServicePrincipal, type LedgerReadGrant } from "./plexus-ledger.js";
 import { createHash, webcrypto } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
@@ -30,6 +31,9 @@ export interface CloudflareAccessBinding {
   allowedDomainIds: readonly string[];
   groupGrants?: readonly GroupGrant[];
   manageAllGroups?: boolean;
+  ledgerReadGrants?: readonly LedgerReadGrant[];
+  /** Explicit service-only, read-only Plexus delegation; never inferred from a grant. */
+  plexusLedgerReadDelegate?: true;
   allowedGoogleAccounts?: readonly GoogleWorkspaceAccountAlias[];
 }
 
@@ -129,15 +133,17 @@ function reportCloudflareAccessAuthenticationError(error: unknown): void {
 }
 
 export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAccessIdentity {
-  if (typeof payload.sub !== "string" || payload.sub.length === 0) {
-    throw new Error("Cloudflare Access assertion has no subject.");
+  if (Object.hasOwn(payload, "sub") && typeof payload.sub !== "string") {
+    throw new Error("Cloudflare Access assertion has an invalid subject claim.");
   }
+  const subject = typeof payload.sub === "string" ? payload.sub : "";
   const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : "";
   const commonName =
     typeof payload.common_name === "string" ? payload.common_name.trim() : "";
   if (email.length > 0) {
+    if (subject.length === 0) throw new Error("Cloudflare Access assertion has no subject.");
     return {
-      subject: payload.sub,
+      subject,
       kind: "user",
       selector: email,
       ...(payload.exp === undefined ? {} : { expiresAt: payload.exp })
@@ -147,7 +153,7 @@ export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAcc
     throw new Error("Cloudflare Access service assertion has no common_name.");
   }
   return {
-    subject: payload.sub,
+    subject: subject || commonName,
     kind: "service",
     selector: commonName,
     ...(payload.exp === undefined ? {} : { expiresAt: payload.exp })
@@ -156,13 +162,17 @@ export function cloudflareIdentityFromClaims(payload: JWTPayload): CloudflareAcc
 
 export function resolveCloudflareAccessPrincipal(
   authInfo: AuthInfo,
-  bindings: readonly CloudflareAccessBinding[]
+  bindings: readonly CloudflareAccessBinding[],
+  ownerPrincipalId?: string
 ): MeshMcpPrincipal {
   const identity = authInfo.extra?.cloudflareAccessIdentity;
   if (!isCloudflareAccessIdentity(identity)) {
     throw new Error("Verified Cloudflare Access identity is missing.");
   }
   const binding = resolveCloudflareAccessBinding(authInfo, bindings);
+  if (isPlexusServicePrincipal(binding) && binding.plexusLedgerReadDelegate !== true) {
+    throw new Error("Plexus service delegation is disabled.");
+  }
   const principalId = cloudflarePrincipalId(identity.kind, identity.selector);
   return {
     id: principalId,
@@ -176,7 +186,10 @@ export function resolveCloudflareAccessPrincipal(
       ...grant, group_ids: [...grant.group_ids],
       ...(grant.ledger_refs === undefined ? {} : { ledger_refs: [...grant.ledger_refs] })
     })) }),
-    ...(binding.manageAllGroups === undefined ? {} : { manageAllGroups: binding.manageAllGroups })
+    ...(binding.manageAllGroups === undefined ? {} : { manageAllGroups: binding.manageAllGroups }),
+    ...(ownerPrincipalId === undefined ? {} : { plexusLedgerOwner: identity.kind === "user" && principalId === ownerPrincipalId }),
+    ...(identity.kind === "service" && binding.plexusLedgerReadDelegate === true ? { plexusLedgerReadDelegate: true as const } : {}),
+    ...(binding.ledgerReadGrants === undefined ? {} : { ledgerReadGrants: binding.ledgerReadGrants.map(g => ({ ...g, ledger_refs: [...g.ledger_refs], session_ids: [...g.session_ids], ...(g.group_refs === undefined ? {} : { group_refs: [...g.group_refs] }) })) })
   };
 }
 
