@@ -1,23 +1,4 @@
 {
-  "version": 1,
-  "defaults": {
-    "canonical_remote": "origin",
-    "publication_remote": "fork",
-    "base_branch": "main",
-    "base_ref": "origin/main",
-    "integration_membership": "required"
-  },
-  "integration": {
-    "branch": "main-integration",
-    "base": "origin/main",
-    "strategy": "cherry-pick",
-    "stacks": []
-  },
-  "stacks": [],
-  "syncwheel_worktree_root": "var/syncwheel",
-  "syncwheel_tracking": "git-tracked",
-  "repository_mode": "delivery",
-  "channels": [],
   "authority": {
     "mode": "ai-managed",
     "allow": [
@@ -26,5 +7,477 @@
     "deny": [
       "destructive_rewrite"
     ]
-  }
+  },
+  "channels": [],
+  "defaults": {
+    "base_branch": "main",
+    "base_ref": "origin/main",
+    "canonical_remote": "origin",
+    "integration_membership": "required",
+    "publication_remote": "fork"
+  },
+  "integration": {
+    "base": "origin/main",
+    "branch": "main-integration",
+    "stacks": [
+      "terminal-return-v1",
+      "urgent-native-reply",
+      "mesh-groups-v1",
+      "ledger-item-lock",
+      "cloud-group-sessions",
+      "group-message-route",
+      "groups-scoped-import",
+      "cloud-group-transport",
+      "group-gateway-conversation",
+      "group-ref-contract",
+      "group-ref-public",
+      "ledger-read-query",
+      "plexus-work-items",
+      "codex-blank-session",
+      "controller-activity-safety",
+      "plexus-service-delegate",
+      "plexus-ledger-view-v1",
+      "oikuma-user-plexus-profile-20261112",
+      "grant-authority",
+      "partial-ledger-view"
+    ],
+    "strategy": "cherry-pick"
+  },
+  "repository_mode": "delivery",
+  "stacks": [
+    {
+      "base": "origin/main",
+      "branch": "pr/terminal-return-v1",
+      "commits": [
+        "bf9d58b01f44e0d3c2acfbd32d87a9f93b9d8a4a",
+        "c38b448ef43f24d0a0a0db90dfc4434edc5736f2",
+        "2e825a64e494a342a575268be1f90769fed2247a",
+        "ad369ff513ce4d76bedf468b64e82016ff65073e",
+        "382d7ba1999e1e36a8332666066c675bce6e2a89",
+        "fd6ba2af6aadfa206c74072a643c1c5e931bec6b",
+        "36aeb69aaecabc5597b910e3a9d0dc71986d447e",
+        "b15ea9440b2149c1873a7cb8f51ae08f4a32ca90"
+      ],
+      "id": "terminal-return-v1",
+      "integration_branch": "main-integration",
+      "meta": {},
+      "publication": {
+        "enabled": true
+      },
+      "state": "published",
+      "target_branch": "main",
+      "target_remote": "origin"
+    },
+    {
+      "id": "urgent-native-reply",
+      "branch": "fix/urgent-native-reply",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "7c980ab2a834d7eb239c836be130420751e4f6e7",
+        "a73a8fa9322eb05832a2b069b2afc3a610e63c17"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Preserve correlated urgent native replies"
+      }
+    },
+    {
+      "id": "mesh-groups-v1",
+      "branch": "pr/mesh-groups-v1",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "7dbb518fbe63fe60b75717d37d20b1f324cb0464",
+        "1ab474707058c016364a7c503f0bbc749a4f1cfe",
+        "f058d58b2ff31cb21252cffb3c2e3dea22f54c84",
+        "473f21ef9bc128d36b2fb8fbca613f931984f54a",
+        "e60f2dcbd7ca4d9ecd61b12ea3946ff2dda6a834"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Add durable Mesh groups and shared conversation history"
+      },
+      "integration_commits": [
+        "0a6894d68d459f3cb74f28196790928ad0dd2c5f",
+        "692cfb5c6c18aeff712220efbf8f9e1932155a63",
+        "6e519c0ac82fcd109cc067a4a086633fe2115655",
+        "f5011e0c81f94e40d9f93b38aa25a535cd6f308f",
+        "c73c33b7755f0c6687bd6416505cfd14b6c6c3cf"
+      ]
+    },
+    {
+      "id": "ledger-item-lock",
+      "branch": "feat/ledger-item-lock",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "6288a817c1565078e7aab35fdc24756bd7e85779",
+        "31f5d52da0fc8b311b4601da80eb786b30787377",
+        "083cd3febd3edb1a1f37306faf00e57b9fddcd15"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Provide per-item work ledger leases with fencing"
+      },
+      "integration_commits": [
+        "218be32ef2e6007e32fcadd63152673afedddb85",
+        "d4b87d4cf51d4f47c1eec0b678778e459ed18e9e",
+        "985e17fccfb3df7d823e7c9cc1123401c369f19c"
+      ]
+    },
+    {
+      "id": "cloud-group-sessions",
+      "branch": "pr/cloud-group-sessions",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "505f9a7c1bd25e14a467206f8cabf4dc1bc8fd3c",
+        "c93e6234cd4a3445edd96800718b0b06838cc2fb"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Register provider-qualified cloud group sessions"
+      },
+      "integration_commits": [
+        "fedb891203f9e9d0bfca805aa06bfcc70a2c462f",
+        "5d1cce226c14d66fc87711d6d95c37e5446b6021"
+      ]
+    },
+    {
+      "id": "group-message-route",
+      "branch": "pr/group-message-route",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "1a2dc52998aff508aa12153b29300279ea9f24b8",
+        "6fa156625b385dc05509b1581a27b4dab7ad4e43",
+        "27f5e900d771ffcc7c8a80e202dab5482198a409",
+        "a8bcc49efc4fcaa845a9eb392d463cd869c75f8f",
+        "2e4863f880eef657bfd5c0d6ad9974f6d12fc3fc"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Group delivery with safe fallback"
+      },
+      "integration_commits": [
+        "fc453ecf9adad06f5db8352d1848ef326e4ffe6c",
+        "fe74f449bb2c0f01b1dfc5868003a742a82dc05f",
+        "cb6dcbef91fea1a2acdb8d72fff815f174f3423c",
+        "639476aeef1aa59a303a38afee8d3bcb8e10b890"
+      ]
+    },
+    {
+      "id": "groups-scoped-import",
+      "branch": "pr/groups-scoped-import",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "e0baf2e24ecc277f086485a2ec5bf4699b012ba5",
+        "de5c9479c57a852f1394fcf5dd7be1a219c1bcaf",
+        "062190fdd5518e154cdb81a1a9f6a2af321ac4a8",
+        "1557365318f297d7fbb82166ac322a8ab8d1423d",
+        "77ab969752f3e6b5066a70eaaba7bb2c68b041d9",
+        "e9263ea15aa3058e4a3f2c7070cd1fd2c5837a5f",
+        "34ddaa6ead1137116cf1e43e6d9a27965472b67f",
+        "7d380dc9631121d11dabf266ae14f6dee5c5e7cf"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Import selected legacy groups while checking full graph"
+      }
+    },
+    {
+      "id": "cloud-group-transport",
+      "branch": "pr/cloud-group-transport",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "cba7f181ef4e212a09b0f3c635eae32bc9d62d74",
+        "250689be67f0a735b2170da7299aac4b120b126d",
+        "5dfafaf438002fbbca1aefca899b1348ddfc50d0",
+        "80b3634912049d9e176cda1716ab0291166e132b",
+        "77faad77efeef15aaaad47cd502cb1544059b893"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Route group messages through verified cloud session bindings"
+      }
+    },
+    {
+      "id": "group-gateway-conversation",
+      "branch": "pr/group-gateway-conversation",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "ec90d93da3bea9fdb302770a75a6f0fc74a9b43b"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Add authenticated group conversation gateway tools"
+      }
+    },
+    {
+      "id": "group-ref-contract",
+      "branch": "syncwheel/draft/group-ref-contract",
+      "base": "pr/group-gateway-conversation",
+      "target_remote": "origin",
+      "target_branch": "pr/group-gateway-conversation",
+      "integration_branch": "main-integration",
+      "commits": [
+        "77f2509bb2c72d9f32e27a02e35793275d0a75b2",
+        "3b65cc4449a847af7a14c529fe15bacb249b2c77",
+        "12b173eab76025e1ba8114d1de2e77e61d76f4ce",
+        "18918f0531298ed3a7e6533870708897769982ef",
+        "7528a85c2814a0c1a565e59405164f6e37c643ef"
+      ],
+      "state": "draft",
+      "publication": {
+        "enabled": false
+      },
+      "meta": {
+        "purpose": "Align group and lease item references"
+      }
+    },
+    {
+      "id": "group-ref-public",
+      "branch": "pr/group-ref-public",
+      "base": "pr/group-gateway-conversation",
+      "target_remote": "origin",
+      "target_branch": "pr/group-gateway-conversation",
+      "integration_branch": "main-integration",
+      "commits": [
+        "06d62b3848f5057a860b686b0b5abbb36354c227"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Align group and lease item references"
+      }
+    },
+    {
+      "id": "ledger-read-query",
+      "branch": "feat/ledger-read-query",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "a956a55a6430e2bb727373e82b7cd1662067b72d",
+        "9048df8b00166889fd45096ac88a143a541aed25"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Authorized request-time ledger and Plexus reads"
+      }
+    },
+    {
+      "id": "plexus-work-items",
+      "branch": "pr/plexus-work-items",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "5c6426cd6ba7a286701646f1639f1215e14bfbcd"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Read open work items with sessions, sort and filter on live ledger fields"
+      }
+    },
+    {
+      "id": "codex-blank-session",
+      "branch": "fix/codex-blank-session",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "1c7b6a11d4b143589bfb5fa85bdade01a9b7566d",
+        "31b9bc53b0b08d369b7c8052947f2ca784e743e0",
+        "e465aa59105609358d620782a08d6c78c415e2c9",
+        "31d112a5c14f521a361f50cdab3cb86d50d97292",
+        "d306192a33a1be3d92fe9caf4465f4197a4098c6",
+        "93a7dcbc5b48f491411d4f636a5dd03934989c0c",
+        "7ef71ae1182ae00d8c5c497029b4576a8aeb797d",
+        "83b8706613d7151627bc014d46d9eeedbb5241f7",
+        "314f3086a8dfbf42e89f478b8417e204b7c6bd22"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Fix blank Codex creation and owned-pane first turn"
+      }
+    },
+    {
+      "id": "controller-activity-safety",
+      "branch": "pr/controller-activity-safety",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "4ec7f7d06459086c787c41ed00c0253b6a3f3953"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Complete scoped controller readiness: replace per-Director recap wakeups with activity-based safety; existing sender retains global recap"
+      }
+    },
+    {
+      "id": "plexus-service-delegate",
+      "branch": "codex/plexus-service-delegate",
+      "base": "031bd7d6c1c6519cc94510652301c40b6756f434",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "7cbc3dc4ff6ca6b0c86b71ffb0dcaef5c507b724",
+        "ee6e373e4941a3457c4665b1c9699af0320d5d18",
+        "e4732cde25d73cd546ced9f6aee38aa9631005af",
+        "4fe617215f2caa9eba7e21e11652d24b879500a7",
+        "9c6478b151a9dfdadee20ae9e5f8d127bcc78d49"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Explicit scoped read-only service delegation"
+      }
+    },
+    {
+      "id": "plexus-ledger-view-v1",
+      "branch": "feat/plexus-ledger-view-v1",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "a4f4b1ed63222fc7daccfac481d32462344e6266",
+        "8021218ce4154b14b49a24b451a4349937ba284f",
+        "d10a0292e939ee0755a347b09e07833e818a6b4b",
+        "af0551936ad49baa24ead5a21f76834bb9e68c5c",
+        "6738a53f4a5666578a64161b1fb6c3b72117d281"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Deterministic versioned ledger views for CLI and MCP"
+      }
+    },
+    {
+      "id": "oikuma-user-plexus-profile-20261112",
+      "branch": "pr/oikuma-user-plexus-profile-20261112",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "3614a97730538ee2567884396e5b9f3090d286b5"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Add isolated user authenticated Plexus read profile"
+      }
+    },
+    {
+      "id": "grant-authority",
+      "branch": "pr/grant-authority",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "bc3f9b04f511aa789c60e0d78bedd6a31e5b8668",
+        "00e1744184c8f7f0bb10e9b9f7eb49b4c862b478",
+        "bb6866c5551caae69e49c3e94b82669a61d262a4"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {}
+    },
+    {
+      "id": "partial-ledger-view",
+      "branch": "fix/partial-ledger-view",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "1dc166499d2cbd53647370f0c8b71d92f0c92503"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Preserve valid ledger rows and report per-item errors"
+      }
+    }
+  ],
+  "syncwheel_tracking": "git-tracked",
+  "syncwheel_worktree_root": "var/syncwheel",
+  "version": 1
 }

@@ -29,6 +29,46 @@ class MeshGroupsTest(unittest.TestCase):
         self.first = GroupActor(session_id="runtime-a:session-1")
         self.second = GroupActor(session_id="runtime-b:session-2")
 
+    def test_idempotent_group_creation_serializes_concurrent_retries(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(GroupStore(self.state).ensure_group, self.admin,
+                                   "Example", "request-one") for _ in range(2)]
+            results = [future.result(timeout=10) for future in futures]
+        self.assertEqual(len({result["group"]["group_id"] for result in results}), 1)
+        self.assertEqual(sorted(result["created"] for result in results), [False, True])
+        self.assertEqual(len(self.store.list_groups(self.admin)), 1)
+        with self.assertRaises(GroupConflictError):
+            self.store.ensure_group(self.admin, "Different", "request-one")
+        with self.assertRaises(GroupAccessError):
+            self.store.ensure_group(self.first, "Example", "request-two")
+
+    def test_route_uses_revision_cas_and_protects_members(self):
+        group = self.store.create_group(self.admin, "Example")["group_id"]
+        for actor in (self.first, self.second):
+            self.store.add_member(self.admin, group, actor.session_id)
+        first = self.cli("set-route", group, "--revision", "0", "--to", self.first.session_id,
+                         "--to", self.second.session_id)
+        self.assertEqual(first["revision"], 1)
+        with self.assertRaises(GroupConflictError):
+            self.store.set_route(self.admin, group, [self.second.session_id], 0)
+        with self.assertRaises(GroupConflictError):
+            self.store.remove_member(self.admin, group, self.first.session_id)
+        next_route = self.cli("set-route", group, "--revision", "1", "--to", self.second.session_id)
+        self.assertEqual(next_route["revision"], 2)
+        self.assertTrue(self.store.remove_member(self.admin, group, self.first.session_id)["changed"])
+        self.assertEqual(self.store.get_group(self.second, group)["route"]["destinations"], [self.second.session_id])
+
+    def test_existing_group_store_can_add_route_without_losing_members(self):
+        group = self.store.create_group(self.admin, "Existing")["group_id"]
+        self.store.add_member(self.admin, group, self.first.session_id)
+        with sqlite3.connect(self.store.path) as db:
+            db.execute("DROP TABLE group_route_members")
+            db.execute("DROP TABLE group_routes")
+        self.assertEqual(self.store.get_group(self.first, group)["route"]["revision"], 0)
+        route = self.cli("set-route", group, "--revision", "0", "--to", self.first.session_id)
+        self.assertEqual(route["revision"], 1)
+        self.assertEqual(self.store.get_group(self.first, group)["members"][0]["session_id"], self.first.session_id)
+
     def cli(self, *args, message=None, success=True):
         result = subprocess.run([sys.executable, str(BIN / "agent-mesh"), "group", *args, "--json"],
                                 input=message, text=True, capture_output=True, timeout=10,
