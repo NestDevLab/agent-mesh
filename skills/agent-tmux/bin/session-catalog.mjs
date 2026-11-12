@@ -112,7 +112,7 @@ export function catalogUpdate(graph, session, options, makeEvent) {
 /** One append-only event commits each whole transition, including inherited graph relationships. */
 export function roleOperation(graph, operation, options, makeEvent) {
   if (operation === 'list') return { events: [], result: { claims: (graph.roleClaims || []).filter(c => (!options.project || c.project === options.project) && (!options.role || c.role === options.role)).map(c => ({ ...c, status: claimState(c) })) } };
-  const session = parseSessionId(options.session);
+  const session = parseCatalogSessionId(options.session);
   const nodes = members(graph, session);
   const role = slug(options.role, 'role'), project = slug(options.project, 'project');
   const key = roleKey(role, project, session), at = new Date().toISOString();
