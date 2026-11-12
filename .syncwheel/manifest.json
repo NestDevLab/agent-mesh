@@ -35,7 +35,8 @@
       "plexus-work-items",
       "codex-blank-session",
       "controller-activity-safety",
-      "plexus-service-delegate"
+      "plexus-service-delegate",
+      "plexus-ledger-view-v1"
     ],
     "strategy": "cherry-pick"
   },
@@ -394,6 +395,22 @@
       },
       "meta": {
         "purpose": "Explicit scoped read-only service delegation"
+      }
+    },
+    {
+      "id": "plexus-ledger-view-v1",
+      "branch": "feat/plexus-ledger-view-v1",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Deterministic versioned ledger views for CLI and MCP"
       }
     }
   ],
