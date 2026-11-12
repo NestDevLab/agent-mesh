@@ -23,6 +23,8 @@ const agentTmuxBundleFiles = [
   "bin/agent-spawn.sh",
   "bin/agent-session.sh",
   "bin/agent-native-call.mjs",
+  "bin/codex-goal.mjs",
+  "bin/agent-goal-watch.mjs",
   "bin/agent-session-inbox.py",
   "bin/agent-inbox-native.py",
   "bin/codex-resume-options.py",
