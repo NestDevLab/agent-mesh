@@ -110,6 +110,8 @@ def parser():
     graph.add_argument("--snapshot", required=True, type=Path)
     graph.add_argument("--source", required=True, help="Stable name for the source graph")
     graph.add_argument("--role-map", type=Path, help="JSON object mapping legacy group refs to role keys")
+    graph.add_argument("--include-group", action="append", dest="include_groups",
+                       help="Import only these exact legacy group refs; repeat for each group")
     graph.add_argument("--apply", action="store_true")
     graph.add_argument("--plan-digest")
     return cli
@@ -155,6 +157,7 @@ def dispatch(args):
         if not isinstance(role_bindings, dict):
             raise ValueError("role bindings must map source refs to role keys")
         return store.import_graph(actor, snapshot, args.source, role_bindings=role_bindings,
+                                  include_groups=args.include_groups,
                                   expected_digest=args.plan_digest)
     raise ValueError("unknown group command")
 

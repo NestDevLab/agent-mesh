@@ -240,7 +240,7 @@ class GroupStore:
             )
             return [self._describe(db, row) for row in rows]
 
-    def import_graph(self, actor, snapshot, source, *, role_bindings=None, expected_digest=None):
+    def import_graph(self, actor, snapshot, source, *, role_bindings=None, include_groups=None, expected_digest=None):
         """Preview, or atomically import, a reviewed legacy snapshot without writing the graph."""
         self._require_manager(actor)
         if role_bindings is None:
@@ -250,7 +250,7 @@ class GroupStore:
         for ref, role in role_bindings.items():
             _one_line(ref, 256, "source reference")
             _matched(role, _ROLE_KEY, "role key")
-        plan = graph_import_plan(snapshot, source, role_bindings)
+        plan = graph_import_plan(snapshot, source, role_bindings, include_groups=include_groups)
         digest = plan["plan_digest"]
         apply = expected_digest is not None
         if apply and expected_digest != digest:

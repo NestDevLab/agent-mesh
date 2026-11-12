@@ -1315,6 +1315,21 @@ function ensureStateDir(statePath) {
 }
 
 function acquireLock(statePath) {
+  if (process.platform === "linux") {
+    const helper = join(dirname(fileURLToPath(import.meta.url)), "mesh-graph-lock.py");
+    const call = (operation, token) => {
+      const args = [helper, operation, "--state", statePath, "--pid", String(process.pid)];
+      if (token) args.push("--token", token);
+      const result = spawnSync("python3", args, { encoding: "utf8", timeout: 7500, maxBuffer: 65536 });
+      if (result.error || result.status !== 0) {
+        throw new Error(result.stderr?.trim() || "graph lock operation failed or timed out");
+      }
+      return JSON.parse(result.stdout);
+    };
+    const { token } = call("acquire");
+    if (typeof token !== "string" || !/^[a-f0-9]{32}$/.test(token)) throw new Error("invalid graph lock token");
+    return () => { call("release", token); };
+  }
   const lock = join(statePath, "graph.lock");
   const deadline = Date.now() + 5_000;
   while (true) {
