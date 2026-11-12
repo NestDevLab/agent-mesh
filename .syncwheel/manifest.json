@@ -464,7 +464,9 @@
       "target_remote": "origin",
       "target_branch": "main",
       "integration_branch": "main-integration",
-      "commits": [],
+      "commits": [
+        "1dc166499d2cbd53647370f0c8b71d92f0c92503"
+      ],
       "state": "published",
       "publication": {
         "enabled": true
