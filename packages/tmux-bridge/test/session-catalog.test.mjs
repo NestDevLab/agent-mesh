@@ -263,11 +263,27 @@ test('registered cloud sessions claim, heartbeat and release director roles with
  assert.equal((await ok(state,...claim(a))).claim.session,a);
 }));
 
+test('cloud and native sessions take over a director role from each other only by naming the claim', () => fixture(async state => {
+ const cloud='claude-cloud:fixture:session_TakeoverFixture';
+ await ok(state,'cloud','register','--session',cloud,'--evidence','fixture:cloud');
+ const first=(await ok(state,...claim(a))).claim;
+ assert.notEqual((await run(state,...claim(cloud))).code,0);
+ const next=(await ok(state,...claim(cloud,'--take-over',first.id,'--reason','Cloud successor'))).claim;
+ assert.equal(next.session,cloud);assert.equal(next.predecessor,first.id);
+ assert.notEqual((await run(state,...action('heartbeat',a,first.id))).code,0);
+ const last=(await ok(state,...claim(b,'--take-over',next.id,'--reason','Native successor'))).claim;
+ assert.equal(last.predecessor,next.id);
+ assert.notEqual((await run(state,...action('check',cloud,next.id))).code,0);
+ assert.notEqual((await run(state,...claim(cloud))).code,0);
+}));
+
 test('role claims reject malformed, unregistered and non-catalog cloud identities', () => fixture(async state => {
  await ok(state,'cloud','register','--session','claude-cloud:fixture:session_Registered','--evidence','fixture:cloud');
  for (const session of ['claude-cloud:fixture:session_Absent','claude-cloud:Fixture:session_Registered','claude-cloud:fixture:session_Bad-Id',
    'claude-cloud:fixture:other_Registered','codex-cloud:fixture:session_Registered','claude-cloud:fixture:session_Registered:extra','claude-cloud::session_Registered']) {
-  assert.notEqual((await run(state,...claim(session))).code,0,session);
+  const r=await run(state,...claim(session));
+  assert.notEqual(r.code,0,session);
+  assert.match(r.error,session.endsWith('_Absent')?/session not registered/:/session must be/,session);
  }
  assert.deepEqual((await ok(state,'role','list')).claims,[]);
 }));

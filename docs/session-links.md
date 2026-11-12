@@ -59,8 +59,9 @@ state writers continue to require their exact active claim token.
 `catalog register|update` accepts an existing `claude-cloud:<scope>:<native-id>`
 identity. Use `cloud register` first for a new attested cloud identity. Cloud
 catalog operations change only role/project/title/status metadata, never native
-adoption, activity, transport state or leases. Native role claims remain restricted
-to native UUID identities. Cloud summary and runtime mutation options are refused.
+adoption, activity, transport state or leases. `role claim|heartbeat|check|release`
+accepts the same exact cloud identity once it is registered; any other cloud form is
+refused. Cloud summary and runtime mutation options are refused.
 
 `catalog list` includes cloud identities with the same role/project/archive filters.
 When stored evidence exists, each row includes `sessionLink` with `link`, `status`,
