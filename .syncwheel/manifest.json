@@ -39,7 +39,8 @@
       "plexus-ledger-view-v1",
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
-      "partial-ledger-view"
+      "partial-ledger-view",
+      "ledger-thread-profile"
     ],
     "strategy": "cherry-pick"
   },
@@ -474,6 +475,22 @@
       },
       "meta": {
         "purpose": "Preserve valid ledger rows and report per-item errors"
+      }
+    },
+    {
+      "id": "ledger-thread-profile",
+      "branch": "fix/ledger-thread-profile",
+      "base": "fix/partial-ledger-view",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Display configured ledger thread links and explicit fallback labels"
       }
     }
   ],
