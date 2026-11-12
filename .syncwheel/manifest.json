@@ -37,7 +37,6 @@
       "controller-activity-safety",
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
-      "codex-goal-on-send",
       "codex-goal-reactivation"
     ],
     "strategy": "cherry-pick"
@@ -418,24 +417,6 @@
       },
       "meta": {
         "purpose": "Deterministic versioned ledger views for CLI and MCP"
-      }
-    },
-    {
-      "id": "codex-goal-on-send",
-      "branch": "feat/codex-goal-on-send",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "b90f70fc13a236dc1ea2ec42d9aebaaa76b65891"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Reactivate blocked Codex goals on send and watch stalled goals"
       }
     },
     {
