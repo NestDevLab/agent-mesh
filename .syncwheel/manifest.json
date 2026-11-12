@@ -40,7 +40,8 @@
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
       "partial-ledger-view",
-      "ledger-thread-profile"
+      "ledger-thread-profile",
+      "claude-goal-parity"
     ],
     "strategy": "cherry-pick"
   },
@@ -493,6 +494,24 @@
       },
       "meta": {
         "purpose": "Display configured ledger thread links and explicit fallback labels"
+      }
+    },
+    {
+      "id": "claude-goal-parity",
+      "branch": "feat/claude-goal-parity",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "c80e4998b26f2b575d32253e7e87bb86d9ca115a"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Claude goal parity"
       }
     }
   ],
