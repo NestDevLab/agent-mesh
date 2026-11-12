@@ -269,7 +269,7 @@ def derive(ref: str, selected: dict[str, str], events: list[dict[str, Any]], pen
                 body, line_kind = "turn completed without a reply", "NOREPLY"
             else:
                 body, line_kind = str(reply), "REPLY"
-            if (mode != "child" or line_kind != "REPLY") and (mode != "observe" or not observe_questions_only or line_kind == "ERROR"):
+            if (mode != "child" or line_kind not in {"REPLY", "NOREPLY"}) and (mode != "observe" or not observe_questions_only or line_kind == "ERROR"):
                 out.append({"event_id": event_id, "ref": ref, "kind": line_kind, "body": body, "timestamp": event.get("timestamp"), "selection": selected,
                             **({"completion": event["completion"]} if event.get("completion") else {}),
                             **({"turn_id": event.get("turn_id") or pending.get("turn_id")} if event.get("turn_id") or pending.get("turn_id") else {}),

@@ -1,3 +1,4 @@
+import { isPlexusServicePrincipal, ShellPlexusLedgerReader, validLedgerReadGrants, type PlexusLedgerConfig } from "./plexus-ledger.js";
 import { MaintenanceAdmission } from "./maintenance-admission.js";
 import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -54,6 +55,7 @@ interface RuntimeAgent extends MeshAgentRecord {
 }
 
 interface RuntimeConfig {
+  plexusLedger?: PlexusLedgerConfig;
   stateDir: string;
   agents: RuntimeAgent[];
   contexts: MeshContextRecord[];
@@ -146,6 +148,11 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       : { adapters: runtimeAdapters(config.tmuxIngress, sessionRegistry, stateDir) })
   });
   const bindings = config.bindings;
+  const resolvePrincipal = async (authInfo: Parameters<typeof resolveCloudflareAccessPrincipal>[0]) => {
+    const current = await readRuntimeConfig(configPath);
+    return resolveCloudflareAccessPrincipal(authInfo, current.bindings, current.plexusLedger?.ownerPrincipalId);
+  };
+  const plexusLedgerReader = config.plexusLedger === undefined ? undefined : new ShellPlexusLedgerReader(config.plexusLedger);
   const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
   const groupGateway = config.groups === undefined ? undefined : new UnixGroupGateway(config.groups.socketPath);
   const taskCoordinator = new MeshTaskCoordinator({
@@ -168,11 +175,12 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       })),
       ...sendTargets,
       taskCoordinator,
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
-      resolvePrincipal: (authInfo) => resolveCloudflareAccessPrincipal(authInfo, bindings)
+      resolvePrincipal
     }),
     new CloudflareAccessAuthenticator({ teamDomain, audience })
   );
@@ -194,6 +202,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       })),
       ...sendTargets,
       taskCoordinator,
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
       ...(groupGateway === undefined ? {} : { groupGateway }),
@@ -201,10 +210,12 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
       memoryRunner,
-      resolvePrincipal: (authInfo) => {
-        const binding = resolveCloudflareAccessBinding(authInfo, bindings);
+      resolvePrincipal: async (authInfo) => {
+        const current = await readRuntimeConfig(configPath);
+        const currentBindings = current.bindings;
+        const binding = resolveCloudflareAccessBinding(authInfo, currentBindings);
         return {
-          mesh: resolveCloudflareAccessPrincipal(authInfo, bindings),
+          mesh: resolveCloudflareAccessPrincipal(authInfo, currentBindings, current.plexusLedger?.ownerPrincipalId),
           allowedGoogleAccounts: binding.allowedGoogleAccounts ?? []
         };
       }
@@ -372,6 +383,7 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     if (!validated.ok) throw new Error(`Invalid MCP runtime context at index ${index}.`);
     return validated.value!;
   });
+  if (parsed.plexusLedger !== undefined) new ShellPlexusLedgerReader(parsed.plexusLedger);
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
   validateHumanGroupActors(parsed.bindings);
   validateGoogleWorkspace(parsed.googleWorkspace);
@@ -399,7 +411,8 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
     ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions }),
     ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers }),
-    ...(parsed.groups === undefined ? {} : { groups: parsed.groups })
+    ...(parsed.groups === undefined ? {} : { groups: parsed.groups }),
+    ...(parsed.plexusLedger === undefined ? {} : { plexusLedger: parsed.plexusLedger })
   };
 }
 
@@ -635,7 +648,7 @@ function validateMemoryRecall(value: RuntimeConfig["memoryRecall"]): void {
   }
 }
 
-function validateBinding(
+export function validateBinding(
   binding: CloudflareAccessBinding,
   index: number,
   agents: readonly RuntimeAgent[]
@@ -651,6 +664,12 @@ function validateBinding(
     !Array.isArray(binding.allowedDomainIds) ||
     (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds, binding.kind)) ||
     (binding.manageAllGroups !== undefined && typeof binding.manageAllGroups !== "boolean") ||
+    (binding.ledgerReadGrants !== undefined && !validLedgerReadGrants(binding.ledgerReadGrants, binding.allowedWorkspaceIds)) ||
+    (binding.plexusLedgerReadDelegate !== undefined && (binding.plexusLedgerReadDelegate !== true ||
+      binding.kind !== "service" || !binding.ledgerReadGrants?.length || !binding.allowedTools.length)) ||
+    (isPlexusServicePrincipal(binding) && (
+      (binding.allowedGoogleAccounts !== undefined && binding.allowedGoogleAccounts.length > 0) ||
+      binding.allowedTools.some(tool => tool !== "mesh_plexus_work_items" && tool !== "mesh_plexus_ledger_sessions"))) ||
     (binding.allowedGoogleAccounts !== undefined &&
       (!Array.isArray(binding.allowedGoogleAccounts) ||
         binding.allowedGoogleAccounts.some((value) => value !== "work" && value !== "personal")))

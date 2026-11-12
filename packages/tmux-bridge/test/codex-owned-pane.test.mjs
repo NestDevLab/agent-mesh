@@ -255,3 +255,37 @@ for (const scenario of [
     syncBuiltinESMExports();
   }
 });
+
+for (const state of ["Z", "S"]) test(`missing executable is excluded only for a proven zombie (${state})`, async t => {
+  const f = await fixture(t);
+  await f.process(90, 1, "service");
+  await unlink(join(f.procRoot, "90/exe"));
+  await writeFile(join(f.procRoot, "90/cmdline"), "");
+  const stat = await readFile(join(f.procRoot, "90/stat"), "utf8");
+  await writeFile(join(f.procRoot, "90/stat"), stat.replace(") S ", `) ${state} `));
+  await writeFile(join(f.procRoot, "90/status"), "Threads:\t1\n");
+  if (state === "Z") assert.equal(discoverOwnedCodexThread(f.options).sessionId, id);
+  else assert.throws(() => discoverOwnedCodexThread(f.options), error => error.proofStage === "inventory.exe");
+});
+
+for (const status of ["Threads:\t2\n", "", "Threads:\t1\nThreads:\t1\n", null]) test(`zombie leader fails closed without unique single-thread proof (${JSON.stringify(status)})`, async t => {
+  const f = await fixture(t);
+  await f.process(90, 1, "service");
+  await unlink(join(f.procRoot, "90/exe"));
+  const stat = await readFile(join(f.procRoot, "90/stat"), "utf8");
+  await writeFile(join(f.procRoot, "90/stat"), stat.replace(") S ", ") Z "));
+  if (status !== null) await writeFile(join(f.procRoot, "90/status"), status);
+  assert.throws(() => discoverOwnedCodexThread(f.options));
+});
+
+test("bound thread writer-status remains exact when the same pane holds a subagent thread", async t => {
+  const f = await fixture(t);
+  await f.lock(12, second, "8");
+  assert.throws(() => discoverOwnedCodexThread(f.options));
+  const status = fileURLToPath(new URL("../bin/session-writer-status.mjs", import.meta.url));
+  const response = spawnSync(process.execPath, [status, "--agent", "codex", "--session", id, "--json"], {
+    encoding: "utf8", env: { ...process.env, AGENT_WRITER_PROC_ROOT: f.procRoot, CODEX_HOME: f.codexHome }
+  });
+  assert.equal(response.status, 0, response.stderr);
+  assert.deepEqual(JSON.parse(response.stdout).writers.map(writer => writer.pid), [12]);
+});

@@ -73,6 +73,27 @@ test("item refs use the shared versioned Unicode policy and code-point limits", 
   assert.equal(validItemRef("x:e\u0301"), true);
 });
 
+test("group and ledger grants coexist without deriving group administration from ledger ownership", () => {
+  const groupGrant = { workspace_id: WORKSPACE, session_id: ACTOR,
+    group_ids: ["group_" + "a".repeat(32)], ledger_refs: ["work:item-1"] };
+  const ledgerGrant = { workspace_id: WORKSPACE, ledger_refs: ["work:item-1"], session_ids: [ACTOR] };
+  const binding = { kind: "user", selector: "owner@example.test", allowedTools: ["mesh_group_history", "mesh_plexus_work_items"],
+    allowedAgentIds: [], allowedWorkspaceIds: [WORKSPACE], allowedDomainIds: [],
+    groupGrants: [groupGrant], ledgerReadGrants: [ledgerGrant] };
+  const auth = { token: "test", clientId: "test", scopes: [],
+    extra: { cloudflareAccessIdentity: { subject: "test", kind: "user", selector: binding.selector } } };
+  const first = resolveCloudflareAccessPrincipal(auth, [binding]);
+  const owner = resolveCloudflareAccessPrincipal(auth, [binding], first.id);
+  assert.equal(owner.plexusLedgerOwner, true);
+  assert.equal(owner.manageAllGroups, undefined);
+  assert.deepEqual(owner.groupGrants, [groupGrant]);
+  assert.deepEqual(owner.ledgerReadGrants, [ledgerGrant]);
+  owner.groupGrants[0].ledger_refs.push("work:other");
+  owner.ledgerReadGrants[0].ledger_refs.push("work:another");
+  assert.deepEqual(groupGrant.ledger_refs, ["work:item-1"]);
+  assert.deepEqual(ledgerGrant.ledger_refs, ["work:item-1"]);
+});
+
 test("authenticated group history and append traverse a private broker without cross-group access", async t => {
   const root = await mkdtemp(join(tmpdir(), "group-mcp-test-"));
   const state = join(root, "groups"), graph = join(root, "agent-mesh", "graph"), sock = join(root, "broker.sock");

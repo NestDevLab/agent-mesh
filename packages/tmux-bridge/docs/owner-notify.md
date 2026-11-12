@@ -49,6 +49,12 @@ notifications are saved before advancing delivery, and a deterministic native
 `deliveryId` recovers an append followed by a crash before receipt persistence.
 Do not delete inbox records while an owner-notify delivery is pending.
 
-A torn final receipt is preserved in `receipt-fragments.jsonl` before repair.
+Receipt history is streamed without loading the whole file. Pending outcomes are
+recorded once per notice per outcome/reason pair, remembered in persisted state;
+delivery still retries every tick and records a final receipt on success. Routing
+fields are saved before delivery only when they change.
+
+A torn final receipt is preserved in `receipt-fragments.jsonl` before repair. Repair checks the final byte and scans backward only to the last
+newline when the tail is torn; complete history is left intact.
 After a refused delivery, a now-dead owner can fall back; an existing native
 inbox append is recovered before changing that recipient.

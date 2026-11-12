@@ -16,6 +16,7 @@ import {
   type MeshMcpHttpOptions,
   type MeshMcpPrincipal
 } from "./mesh-mcp.js";
+import { isPlexusServicePrincipal, registerPlexusLedgerTools } from "./plexus-ledger.js";
 import { registerMemoryRecallTools, type MemoryRecallRunner } from "./memory-recall.js";
 
 export type McpHubProfile = "google-workspace" | "memory" | "workspace";
@@ -40,6 +41,12 @@ export function createMcpHubHandler(options: McpHubOptions): McpHttpHandler {
     if (!isHubPrincipal(principal)) throw new Error("Verified MCP hub principal is missing.");
     const server = new McpServer({ name: profileName(options.profile), version: "0.9.0" });
 
+    // Profiles may share one Access audience. Service delegation must stay
+    // confined here too, independently of Google grants or memory runner mode.
+    if (isPlexusServicePrincipal(principal.mesh)) {
+      if (options.profile === "workspace") registerPlexusLedgerTools(server, { ...options, principal: principal.mesh });
+      return server;
+    }
     if (options.profile === "workspace") {
       registerMeshMcpTools(server, { ...options, principal: principal.mesh });
     }

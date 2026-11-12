@@ -1,3 +1,4 @@
+import { isPlexusServicePrincipal, registerPlexusLedgerTools, type LedgerReadGrant, type PlexusLedgerReader } from "./plexus-ledger.js";
 import type { WorkspaceWorkerRouter } from "./workspace-worker.js";
 import { randomUUID } from "crypto";
 import {
@@ -31,6 +32,8 @@ const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
 const MAX_LABEL_LENGTH = 64;
 
 export const MESH_MCP_TOOLS = [
+  "mesh_plexus_work_items",
+  "mesh_plexus_ledger_sessions",
   "mesh_list_agents",
   "mesh_send",
   "mesh_delivery_status",
@@ -86,6 +89,7 @@ export interface MeshMcpAgent {
 
 export interface MeshMcpOptions {
   gateway: MeshMcpGateway;
+  plexusLedgerReader?: PlexusLedgerReader;
   /** Verified, request-scoped identity. Never derive this from MCP arguments. */
   principal: MeshMcpPrincipal;
   /** Explicit allow-list supplied by the deployment, never inferred from a model name. */
@@ -113,6 +117,11 @@ export interface MeshMcpPrincipal {
   groupGrants?: readonly GroupGrant[];
   /** Explicit global administrator; independent of workspace-scoped group grants. */
   manageAllGroups?: boolean;
+  ledgerReadGrants?: readonly LedgerReadGrant[];
+  /** Server-verified owner role; never accepted from tool arguments or graph links. */
+  plexusLedgerOwner?: boolean;
+  /** Server-verified service binding; permits only the two scoped Plexus reads. */
+  plexusLedgerReadDelegate?: true;
 }
 
 export interface MeshMcpRateLimiter {
@@ -135,6 +144,8 @@ export class FixedWindowMeshMcpRateLimiter implements MeshMcpRateLimiter {
   constructor(
     limits: Readonly<Record<MeshMcpTool, number>> = {
       mesh_list_agents: 60,
+      mesh_plexus_work_items: 30,
+      mesh_plexus_ledger_sessions: 60,
       mesh_send: 10,
       mesh_delivery_status: 60,
       mesh_call: 6,
@@ -593,7 +604,8 @@ export class MeshMcpFacade {
   }
 
   private assertAllowed(tool: MeshMcpTool): void {
-    if (!this.options.principal.allowedTools.includes(tool)) {
+    if (isPlexusServicePrincipal(this.options.principal) ||
+        !this.options.principal.allowedTools.includes(tool)) {
       throw new Error(`MCP principal is not allowed to use ${tool}.`);
     }
     if (!this.options.rateLimiter.consume(this.options.principal.id, tool)) {
@@ -681,6 +693,8 @@ export function createMeshMcpServer(options: MeshMcpOptions): McpServer {
 
 /** Registers the Agent Mesh surface on a standalone or aggregated MCP server. */
 export function registerMeshMcpTools(server: McpServer, options: MeshMcpOptions): void {
+  registerPlexusLedgerTools(server, options);
+  if (isPlexusServicePrincipal(options.principal)) return;
   const facade = new MeshMcpFacade(options);
   registerGroupMcpTools(server, options);
 

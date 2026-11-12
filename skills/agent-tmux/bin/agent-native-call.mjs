@@ -24,6 +24,7 @@ const { values } = parseArgs({
     cloud: { type: "boolean", default: false },
     "steer-or-queue": { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
+    "no-resume": { type: "boolean", default: false },
     message: { type: "string" },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
@@ -42,6 +43,9 @@ const correlationId = required(values["correlation-id"], "--correlation-id");
 const message = required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
+if (values.resume && values["no-resume"]) fail("--resume and --no-resume are mutually exclusive", 2);
+if (values["no-resume"] && agent !== "codex") fail("--no-resume is supported only for Codex", 2);
+const resume = agent === "codex" && !values["no-resume"];
 if (values.resume && agent !== "codex") fail("--resume is supported only for Codex", 2);
 if (!/^[A-Za-z0-9._:-]+$/.test(correlationId)) fail("--correlation-id contains unsafe characters", 2);
 if (values["steer-or-queue"] && (agent !== "codex" || values.cloud)) {
@@ -68,7 +72,7 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
   `so don't answer with a messaging tool, the caller reads your reply from the task.\n${message}`;
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
-  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume: values.resume, ...(values.cloud ? { cloud: true } : {}),
+  correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume, ...(values.cloud ? { cloud: true } : {}),
   ...(values["steer-or-queue"] ? { steer_first: true } : {}) });
 activeComms = comms;
 if (comms.status !== 'send') {
@@ -135,7 +139,7 @@ if (agent === "codex") {
   if (deliveryMethod !== "steer") {
     enqueueStarted = true;
     const queued = await run(process.env.CODEX_BIN || "codex", [
-      "queue", "--thread", sessionId, "--message", protocolMessage, ...(values.resume ? ["--resume"] : [])
+      "queue", "--thread", sessionId, "--message", protocolMessage, ...(resume ? ["--resume"] : [])
     ], (timeoutSeconds + 15) * 1000);
     if (queued.code !== 0) {
       if (codexSessionIsNotDirectlyWritable(queued)) {
@@ -143,7 +147,7 @@ if (agent === "codex") {
       }
       fail(safeError("Codex native queue failed", queued), 1);
     }
-    resumeDiagnostic = Boolean(values.resume && queued.stderr?.trim());
+    resumeDiagnostic = Boolean(resume && queued.stderr?.trim());
     deliveryMethod = "queue";
   }
 } else {
@@ -167,7 +171,7 @@ if (agent === "codex") {
 if (values["delivery-only"]) {
   console.log(JSON.stringify({ status: deliveryMethod === "steer" ? "steered" : "queued", agent, sessionId, correlationId,
     ...(values["steer-or-queue"] ? { deliveryMethod, ...(steeredTurnId ? { turnId: steeredTurnId } : {}) } : {}),
-    ...(values.resume ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
+    ...(resume && deliveryMethod === "queue" ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
   process.exit(0);
 }
 

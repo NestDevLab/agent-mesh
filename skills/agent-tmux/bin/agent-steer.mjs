@@ -42,7 +42,7 @@ async function steerCodex(threadId, text, timeout) {
     const { data } = await request("thread/turns/list", { threadId, limit: 1, sortDirection: "desc", itemsView: "notLoaded" });
     const [turn] = data;
     if (turn?.status !== "inProgress") {
-      throw Object.assign(new Error(`thread ${threadId} has no active turn; nothing was sent, use codex queue`), { exitCode: NO_ACTIVE_TURN });
+      throw Object.assign(new Error(`thread ${threadId} has no active turn; nothing was sent, use codex queue --thread ${threadId} --message <text> --resume`), { exitCode: NO_ACTIVE_TURN });
     }
     const { turnId } = await request("turn/steer", {
       threadId,
