@@ -53,6 +53,59 @@ class LedgerCLI(unittest.TestCase):
     def changes(self, consumer='beat', **kwargs):
         return self.run_cli('changes', '--scheme', 'work', '--consumer', consumer, **kwargs)
 
+    def test_changes_errors_keep_only_provider_refs_and_fixed_diagnostics(self):
+        response = {'items': [], 'cursor': 'pending', 'more': True, 'errors': [
+            {'ref': 'work:broken', 'error': 'private diagnostic'},
+            {'ref': 'other:hidden', 'error': 'private diagnostic'}]}
+        result = ledger.checked(response, 'work', 'changes')
+        self.assertEqual(result['errors'], [
+            {'ref': 'work:broken', 'error': 'adapter item error'},
+            {'ref': None, 'error': 'adapter item error'}])
+
+    def test_listing_retains_errors_across_pages_without_cursor_writes(self):
+        row = {'ref': 'work:good', 'title': 'Good item', 'status': 'open',
+               'updatedAt': '2030-01-01T00:00:00Z'}
+        pages = [
+            {'items': [row], 'cursor': 'pending', 'more': True,
+             'errors': [{'ref': 'work:broken', 'error': 'private diagnostic'}]},
+            {'items': [], 'cursor': 'done', 'more': False, 'errors': []}]
+        with patch.object(ledger, 'invoke', side_effect=pages):
+            items, errors = ledger.list_items({}, 'work')
+        self.assertEqual(items, [row])
+        self.assertEqual(errors, [{'ref': 'work:broken', 'error': 'adapter item error'}])
+        self.assertFalse((self.root / 'state').exists())
+
+    def test_listing_rejects_stalled_pending_error_pages(self):
+        page = {'items': [], 'cursor': 'pending', 'more': True,
+                'errors': [{'ref': f'work:broken-{i}'} for i in range(200)]}
+        with patch.object(ledger, 'invoke', side_effect=[page, page]):
+            with self.assertRaisesRegex(ledger.ProtocolError, 'discovery stalled'):
+                ledger.list_items({}, 'work')
+
+    def test_listing_continues_past_an_error_only_advancing_page(self):
+        row = {'ref': 'work:good', 'title': 'Good item', 'status': 'open',
+               'updatedAt': '2030-01-01T00:00:00Z'}
+        pages = [
+            {'items': [], 'cursor': 'next', 'more': True, 'errors': [{'ref': 'work:broken'}]},
+            {'items': [row], 'cursor': 'done', 'more': False, 'errors': []}]
+        with patch.object(ledger, 'invoke', side_effect=pages):
+            items, errors = ledger.list_items({}, 'work')
+        self.assertEqual(items, [row])
+        self.assertEqual(errors, [{'ref': 'work:broken', 'error': 'adapter item error'}])
+
+    def test_reference_enumeration_is_source_owned_and_provider_bounded(self):
+        caps = {'operations': ['describe', 'changes', 'references'], 'schemes': ['work'], 'sessionField': True}
+        pages = [caps, {'refs': ['work:broken'], 'after': 'work:broken', 'more': True},
+                 {'refs': ['work:good'], 'after': 'work:good', 'more': False}]
+        with patch.object(ledger, 'invoke', side_effect=pages) as invoke:
+            self.assertEqual(ledger.discover_refs({}, 'work'), ['work:broken', 'work:good'])
+        self.assertEqual(invoke.call_args_list[-1].args[-1], {'limit': 200, 'after': 'work:broken'})
+        for refs in [['other:hidden'], ['work:a', 'work:a'], ['work:b', 'work:a']]:
+            with self.subTest(refs=refs), patch.object(ledger, 'invoke', side_effect=[caps,
+                    {'refs': refs, 'after': refs[-1], 'more': False}]):
+                with self.assertRaises(ledger.ProtocolError):
+                    ledger.discover_refs({}, 'work')
+
     def test_null_baseline_independent_consumers_and_explicit_full(self):
         self.write()
         self.assertEqual(self.changes()['items'], [])

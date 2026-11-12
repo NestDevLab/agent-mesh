@@ -245,6 +245,10 @@ export function renderLedgerView(view, profile = {}) {
     else values.thread = template(config.missingTemplate ?? "{missing} ({reason})", values);
     lines.push(template(pattern, values));
   }
+  if (view.errors?.length) {
+    lines.push("", "## Item errors", "");
+    for (const error of view.errors) lines.push(`- ${escapeMarkdown(error.ref)} · ${escapeMarkdown(error.error)}`);
+  }
   lines.push(...(config.footerLines ?? []).map(line => template(line, summary)));
   return lines.join("\n").replace(/\n*$/, "\n");
 }

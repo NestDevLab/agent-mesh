@@ -212,10 +212,18 @@ def item(raw, scheme):
 def checked(response, scheme, operation, requested=()):
     if not isinstance(response.get('items'), list) or len(response['items']) > 200 or not isinstance(response.get('errors', []), list):
         raise ProtocolError('invalid adapter page')
+    errors = []
+    for error in response.get('errors', []):
+        ref = error.get('ref') if isinstance(error, dict) else None
+        if operation == 'changes':
+            if (not isinstance(ref, str) or len(ref) > 512 or not ref.startswith(scheme + ':') or
+                    not ref[len(scheme) + 1:] or any(ch.isspace() or not ch.isprintable() for ch in ref)):
+                ref = None
+        elif ref not in requested:
+            ref = None
+        errors.append({'ref': ref, 'error': 'adapter item error'})
     result = {'schema': SCHEMA, 'items': [item(raw, scheme) for raw in response['items']],
-              # Adapter errors can contain diagnostics; expose only affected refs and a fixed label.
-              'errors': [{'ref': err.get('ref') if isinstance(err, dict) and err.get('ref') in requested else None,
-                          'error': 'adapter item error'} for err in response.get('errors', [])]}
+              'errors': errors}
     refs = [entry['ref'] for entry in result['items']]
     if len(refs) != len(set(refs)):
         raise ProtocolError('adapter page contains duplicate refs')
@@ -302,16 +310,48 @@ def changes(adapter, args, before_advance=None):
 
 def list_items(adapter, scheme):
     """Read every current item with its metadata; never touches consumer cursors."""
-    items, cursor = {}, None
+    items, errors, cursor = {}, {}, None
     request = {'cursor': None, 'limit': LIST_PAGE, 'full': True, 'fields': True}
     for _ in range(LIST_MAX_PAGES):
         page = checked(invoke(adapter, 'changes', request), scheme, 'changes')
         items.update((entry['ref'], entry) for entry in page['items'])
-        # Items the adapter cannot read stay pending, so a page of errors alone is the end.
-        if not page['more'] or not page['items']:
-            return list(items.values()), page['errors']
+        errors.update((error['ref'], error) for error in page['errors'])
+        for entry in page['items']:
+            errors.pop(entry['ref'], None)
+        if not page['more']:
+            return list(items.values()), list(errors.values())
+        if not page['items'] and page['cursor'] == request['cursor']:
+            raise ProtocolError('adapter discovery stalled; canonical references operation required')
         request = {'cursor': page['cursor'], 'limit': LIST_PAGE, 'fields': True}
     raise ProtocolError('adapter listing did not terminate')
+
+def discover_refs(adapter, scheme):
+    if 'references' not in capabilities(adapter, scheme)['operations']:
+        entries, errors = list_items(adapter, scheme)
+        if any(error['ref'] is None for error in errors):
+            raise ProtocolError('canonical ref discovery failed')
+        return list(dict.fromkeys([entry['ref'] for entry in entries] + [error['ref'] for error in errors]))
+    refs, after = [], None
+    for _ in range(LIST_MAX_PAGES):
+        page = invoke(adapter, 'references', {'limit': 200, 'after': after})
+        batch = page.get('refs')
+        if not isinstance(batch, list) or len(batch) > 200 or type(page.get('more')) is not bool:
+            raise ProtocolError('invalid reference page')
+        for ref in batch:
+            if (not isinstance(ref, str) or len(ref) > 512 or not ref.startswith(scheme + ':') or
+                    not ref[len(scheme) + 1:] or any(ch.isspace() or not ch.isprintable() for ch in ref) or
+                    after is not None and ref <= after):
+                raise ProtocolError('invalid provider reference')
+            after = ref
+            refs.append(ref)
+        if page.get('after') != (batch[-1] if batch else None) or page['more'] and not batch:
+            raise ProtocolError('invalid reference boundary')
+        if len(refs) > 10000:
+            raise ProtocolError('too many exact query refs')
+        if not page['more']:
+            return refs
+    raise ProtocolError('reference enumeration did not terminate')
+
 
 def sync_links(items):
     if not items:
@@ -508,10 +548,7 @@ def main():
             if args.all:
                 refs = []
                 for scheme, adapter in configured.items():
-                    entries, errors = list_items(adapter, scheme)
-                    if errors:
-                        raise ProtocolError('canonical ref discovery failed')
-                    refs.extend(entry['ref'] for entry in entries)
+                    refs.extend(discover_refs(adapter, scheme))
             result = {'schema': SCHEMA, **query_items(refs, max_result_bytes=args.max_result_bytes)}
         elif args.command == 'describe':
             if len(args.refs) > 200:

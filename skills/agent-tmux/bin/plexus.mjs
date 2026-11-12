@@ -487,7 +487,6 @@ export function ledgerView(graph, input = {}, scope = null, read, profile = {}) 
   if (scope) throw new Error("ledger views are available to local callers only");
   validateViewInput(input, profile);
   const source = read();
-  if (source.errors?.length) throw new Error("ledger source returned errors");
   const includeClosed = input.includeClosed || Object.hasOwn(input.filter ?? {}, "status") || Object.hasOwn(input.filter ?? {}, "state");
   const joined = workItems(graph, { includeClosed }, null, () => source);
   return ledgerViewRows({ ...joined, sourceItems: source.items, groupMetadata: source.groups,
@@ -497,7 +496,6 @@ export function ledgerView(graph, input = {}, scope = null, read, profile = {}) 
 /** Accepts already joined records for deterministic historical fixture replay. */
 export function ledgerViewRows(joined, input = {}, profile = {}) {
   const { sort, filter } = validateViewInput(input, profile);
-  if (joined.errors?.length) throw new Error("ledger source returned errors");
   const rows = buildLedgerViewRows(joined.items, profile, { groups: joined.groupMetadata ?? [],
     sourceItems: joined.sourceItems ?? joined.items, fallback: input.fallback ?? "director" });
   const excluded = new Set(input.includeClosed || Object.hasOwn(filter, "state") || Object.hasOwn(filter, "status") ? [] : profile.excludeStates ?? []);
@@ -516,7 +514,7 @@ export function ledgerViewRows(joined, input = {}, profile = {}) {
   const result = { schema: LEDGER_VIEW_SCHEMA, profile_revision: ledgerViewProfileRevision(profile),
     graph_revision: joined.graphRevision ?? null, groups_revision: joined.groupsRevision ?? null,
     sort: sort.map(key => `${key.field}:${key.direction}`), total: matched.length, count: shown.length,
-    summary, items: shown.map(({ sortKeys, ...row }) => row), errors: [] };
+    summary, items: shown.map(({ sortKeys, ...row }) => row), errors: joined.errors ?? [] };
   return { ...result, result_revision: "sha256:" + createHash("sha256").update(JSON.stringify(result)).digest("hex") };
 }
 
