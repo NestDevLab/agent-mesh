@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 sys.dont_write_bytecode = True
-from mesh_group_store import GroupActor, GroupStore
+from mesh_group_store import GroupAccessError, GroupActor, GroupStore
 
 
 MAX_GRAPH_BYTES = 32 * 1024 * 1024
@@ -36,6 +36,36 @@ def read_json(path, limit):
 def default_state_dir():
     state_home = os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state"
     return os.environ.get("MESH_GROUPS_STATE") or Path(state_home) / "agent-mesh" / "groups"
+
+
+def read_group_metadata(refs, *, ledger_refs, state=None):
+    """Read only explicitly granted group records and their granted item links."""
+    if not isinstance(refs, list) or not isinstance(ledger_refs, list):
+        raise ValueError("group metadata requires exact grant lists")
+    store = GroupStore(state or default_state_dir())
+    actor = GroupActor(manage=True)
+    permitted = set(ledger_refs)
+    groups, missing = {}, []
+    for ref in sorted(set(refs)):
+        if not isinstance(ref, str) or not ref.startswith("group:"):
+            raise ValueError("invalid group metadata grant")
+        if ref.startswith("group:group_"):
+            try:
+                found = [store.get_group(actor, ref.split(":", 1)[1])]
+            except GroupAccessError:
+                found = []
+        else:
+            found = store.list_groups(actor, source_ref=ref)
+        if not found:
+            missing.append(ref)
+        for group in found:
+            groups[group["group_id"]] = {
+                key: group[key] for key in ("group_id", "name", "role_key", "source_ref")
+            }
+            groups[group["group_id"]]["ledger_links"] = [
+                link for link in group["ledger_links"] if link["ref"] in permitted
+            ]
+    return {"groups": [groups[key] for key in sorted(groups)], "missing": missing}
 
 
 def is_cloud_session(session_id):

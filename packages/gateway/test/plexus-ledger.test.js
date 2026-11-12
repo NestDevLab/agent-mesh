@@ -37,6 +37,7 @@ function harness(overrides = {}) {
   const reader = new ShellPlexusLedgerReader({ bridgeRoot }, async (file, args, input) => {
     calls.push({ file, args, input });
     const allowed = input ? JSON.parse(input).refs : [];
+    if (args[1]?.includes("read_group_metadata")) return JSON.stringify({ groups: [{ group_id: "example", source_ref: "group:visible", name: "Example", role_key: "director", ledger_links: [{ ref: refs[0], lead: true }] }] });
     return args.includes("show") ? JSON.stringify(graph) : JSON.stringify({ items: items.filter(i => allowed.includes(i.ref)), missing: [], errors: [] });
   });
   const principal = { id: "principal", kind: "user", plexusLedgerOwner: true, requesterId: "requester", allowedTools: ["mesh_plexus_work_items", "mesh_plexus_ledger_sessions"],
@@ -547,4 +548,52 @@ test("runtime binding rejects user delegation, missing grants, non-booleans and 
     {allowedTools:["mesh_send"]},{allowedTools:["mesh_plexus_work_items","mesh_submit"]}]) {
     assert.throws(()=>validateBinding({...valid,...change},0,[]),/Invalid MCP runtime binding/);
   }
+});
+
+
+test("versioned view reuses exact scoped reads, canonical joins and nested core predicates", async () => {
+  const h = harness();
+  const result = await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1", filter: { "owners": local }, limit: 200 });
+  assert.equal(result.schema, "plexus.ledger-view/v1");
+  assert.equal(result.total, 1);
+  assert.deepEqual(result.sort, ["waitingOnOwner:desc", "due:asc", "priority:asc", "size:asc"]);
+  const row = result.items[0];
+  assert.equal(row.fields.long.length, 600);
+  assert.equal(row.fields.blank, "");
+  assert.deepEqual(row.owners, [local]);
+  assert.equal(row.groups.length, 1);
+  assert.equal(row.groups[0].name, "Example");
+  assert.equal(row.leadGroupRef, "group:visible");
+  assert.ok(row.sessions.every(s => s.nativeId !== hidden));
+  const metadata = h.calls.find(c => c.args[1]?.includes("read_group_metadata"));
+  assert.deepEqual(JSON.parse(metadata.input).groups, ["group:visible"]);
+});
+
+test("versioned Markdown is rendered from the same paginated core view", async () => {
+  const h = harness();
+  const result = await h.handlers.get("mesh_plexus_work_items").handler({ view: "plexus.ledger-view/v1", format: "md", limit: 1 });
+  assert.equal(result.isError, undefined);
+  assert.ok(result.structuredContent.next_cursor);
+  assert.equal(result.structuredContent.schema, "plexus.ledger-view/v1");
+  assert.match(result.content[0].text, /^# Ledger view/);
+  assert.equal(result.content[0].text.split("\n").filter(line => /^\d+\./.test(line)).length, 1);
+});
+
+test("versioned views remain owner-only before source access despite legacy service delegation", async () => {
+  const h = harness({ kind: "service", plexusLedgerOwner: false, plexusLedgerReadDelegate: true });
+  assert.equal((await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1" })).isError, true);
+  assert.equal(h.calls.length, 0);
+  assert.equal((await h.invoke("mesh_plexus_work_items", { format: "md" })).isError, true);
+  assert.equal(h.calls.length, 0);
+});
+
+test("versioned view cursors bind principal, exact grants, format and profile revision", async () => {
+  const h = harness();
+  const first = await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1", limit: 1 });
+  assert.ok(first.next_cursor);
+  assert.equal((await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1", cursor: first.next_cursor, format: "md" })).isError, true);
+  h.principal.plexusLedgerOwner = false;
+  const reads = h.calls.length;
+  assert.equal((await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1", cursor: first.next_cursor })).isError, true);
+  assert.equal(h.calls.length, reads);
 });

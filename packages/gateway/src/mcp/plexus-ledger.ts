@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { MeshMcpOptions, MeshMcpPrincipal } from "./mesh-mcp.js";
@@ -53,14 +54,18 @@ export function isPlexusServicePrincipal(principal: Pick<MeshMcpPrincipal,
     principal.ledgerReadGrants !== undefined || principal.allowedTools.some(tool =>
       tool === "mesh_plexus_work_items" || tool === "mesh_plexus_ledger_sessions"));
 }
-export interface PlexusLedgerConfig { bridgeRoot: string; ownerPrincipalId?: string; timeoutMs?: number; maxResultBytes?: number }
+export interface PlexusLedgerConfig { bridgeRoot: string; ownerPrincipalId?: string; timeoutMs?: number; maxResultBytes?: number; viewConfig?: string }
 export interface PlexusLedgerReader {
   read(operation: "items" | "ledger-sessions", input: Row, grant: LedgerReadGrant): Promise<Row>;
+  render?(view: Row): Promise<string>;
 }
 interface Core {
   workItems(graph: Row, input: Row, scope: null, read: () => Row): Row;
   ledgerSessions(graph: Row, input: Row, scope: null): Row;
   linkSubject(node: Row): string;
+  ledgerView(graph: Row, input: Row, scope: null, read: () => Row, profile: Row): Row;
+  renderLedgerView(view: Row, profile: Row): string;
+  validateLedgerViewProfile(profile: unknown): Row;
 }
 export function validLedgerReadGrants(value: unknown, workspaces: readonly string[]): value is LedgerReadGrant[] {
   if (!Array.isArray(value) || value.length > 100) return false;
@@ -90,7 +95,7 @@ export class ShellPlexusLedgerReader implements PlexusLedgerReader {
     }) {
     this.config = config;
     this.run = run;
-    if (!isAbsolute(config.bridgeRoot) || (config.ownerPrincipalId !== undefined &&
+    if (!isAbsolute(config.bridgeRoot) || (config.viewConfig !== undefined && !isAbsolute(config.viewConfig)) || (config.ownerPrincipalId !== undefined &&
         (typeof config.ownerPrincipalId !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(config.ownerPrincipalId))) ||
         !Number.isSafeInteger(config.timeoutMs ?? 30_000) ||
         (config.timeoutMs ?? 30_000) < 1 || (config.timeoutMs ?? 30_000) > 120_000 ||
@@ -100,6 +105,7 @@ export class ShellPlexusLedgerReader implements PlexusLedgerReader {
   }
   async read(operation: "items" | "ledger-sessions", input: Row, grant: LedgerReadGrant): Promise<Row> {
     const core = await import(pathToFileURL(join(this.config.bridgeRoot, "plexus.mjs")).href) as Core;
+    const profile = input.view === "plexus.ledger-view/v1" ? await this.profile(core) : undefined;
     const graph = JSON.parse(await this.run(process.execPath, [join(this.config.bridgeRoot, "mesh-graph.mjs"), "show", "--json"]));
     if (!Array.isArray(graph.nodes) || !Array.isArray(graph.links)) throw new Error("Invalid Plexus graph.");
     const refs = new Set(grant.ledger_refs), sessions = new Set(grant.session_ids), groups = new Set(grant.group_refs ?? []);
@@ -128,91 +134,44 @@ export class ShellPlexusLedgerReader implements PlexusLedgerReader {
     if (!Array.isArray(listing.missing) || listing.missing.some((ref: unknown) => typeof ref !== "string" || !refs.has(ref) || seen.has(ref)) ||
         new Set(listing.missing).size !== listing.missing.length || seen.size + listing.missing.length !== refs.size) throw new Error("Incomplete exact ledger query.");
     const items = checkedItems.map((item: Row) => ({ ...item, url: typeof item.url === "string" && /^(https?:\/\/|codex:\/\/threads\/)/.test(item.url) ? item.url : null }));
+    if (input.view === "plexus.ledger-view/v1") {
+      const metadata = grant.group_refs?.length ? JSON.parse(await this.run("python3", ["-c", GROUP_QUERY, this.config.bridgeRoot],
+        JSON.stringify({ groups: [...grant.group_refs], refs: [...grant.ledger_refs] }))) : { groups: [] };
+      if (!Array.isArray(metadata.groups)) throw new Error("Invalid group metadata.");
+      return core.ledgerView(scoped, { filter: input.filter, sort: input.sort, includeClosed: input.include_closed, fallback: input.fallback },
+        null, () => ({ items, errors: [], groups: metadata.groups }), profile!);
+    }
     const result = core.workItems(scoped, { filter: input.filter, sort: input.sort, includeClosed: input.include_closed }, null,
       () => ({ items, errors: [] }));
     return { ...result, graph_revision: graph.lastSeq ?? null };
   }
+  private async profile(core: Core): Promise<Row> {
+    if (this.config.viewConfig === undefined) return {};
+    const data = await readFile(this.config.viewConfig);
+    if (data.length > 8 * 1024 * 1024) throw new Error("Ledger view profile exceeds size limit.");
+    return core.validateLedgerViewProfile(JSON.parse(data.toString("utf8")));
+  }
+  async render(view: Row): Promise<string> {
+    const core = await import(pathToFileURL(join(this.config.bridgeRoot, "plexus.mjs")).href) as Core;
+    return core.renderLedgerView(view, await this.profile(core));
+  }
 }
+const GROUP_QUERY = `
+import json, sys, runpy
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+module = runpy.run_path(str(Path(sys.argv[1]) / 'mesh-groups.py'))
+request = json.load(sys.stdin)
+result = module['read_group_metadata'](request['groups'], ledger_refs=request['refs'])
+print(json.dumps(result, ensure_ascii=True))
+`;
 const EXACT_QUERY = `
 import json, sys, runpy
 from pathlib import Path
 module = runpy.run_path(str(Path(sys.argv[1]) / 'mesh-ledger.py'))
 request = json.load(sys.stdin)
-configured = module['adapters']()
-result = {'items': [], 'missing': [], 'errors': []}
-result_limit = int(sys.argv[2])
-result_bytes = len(json.dumps(result).encode()) + 1
-def query_pages(adapter, refs):
-    try:
-        page = module['invoke'](adapter, 'query', {'refs': refs})
-    except module['ProtocolError'] as error:
-        if str(error) != 'adapter output exceeds size limit' or len(refs) == 1:
-            raise
-        middle = len(refs) // 2
-        yield from query_pages(adapter, refs[:middle])
-        yield from query_pages(adapter, refs[middle:])
-        return
-    yield refs, page
-def batches(refs, limit):
-    base = len(json.dumps({'refs': []}).encode())
-    batch, used = [], base
-    for ref in refs:
-        encoded = len(json.dumps(ref).encode())
-        addition = encoded + (2 if batch else 0)
-        if batch and (len(batch) == 200 or used + addition > limit):
-            yield batch
-            batch, used, addition = [], base, encoded
-        if used + addition > limit:
-            raise ValueError('query ref exceeds adapter request limit')
-        batch.append(ref)
-        used += addition
-    if batch:
-        yield batch
-groups = {}
-for ref in request['refs']:
-    groups.setdefault(ref.split(':', 1)[0], []).append(ref)
-for scheme, refs in groups.items():
-    adapter = configured.get(scheme)
-    if adapter is None:
-        raise ValueError('adapter unavailable')
-    caps = module['invoke'](adapter, 'capabilities', {})
-    if 'query' not in caps.get('operations', []):
-        raise ValueError('exact query unsupported')
-    limits = [module['MAX_BYTES'], adapter.get('maxRequestBytes', module['MAX_BYTES']), caps.get('maxRequestBytes', module['MAX_BYTES'])]
-    if any(type(limit) is not int or limit < 1 for limit in limits):
-        raise ValueError('invalid adapter request limit')
-    for batch, page in (page for request_batch in batches(refs, min(limits)) for page in query_pages(adapter, request_batch)):
-        if any(not isinstance(page.get(key), list) for key in result):
-            raise ValueError('invalid query page')
-        expected, seen = set(batch), set()
-        for row in page['items']:
-            ref = row.get('ref') if isinstance(row, dict) else None
-            if not isinstance(ref, str) or ref not in expected or ref.split(':', 1)[0] != scheme or ref in seen:
-                raise ValueError('query item outside provider batch')
-            seen.add(ref)
-        for ref in page['missing']:
-            if not isinstance(ref, str) or ref not in expected or ref in seen:
-                raise ValueError('invalid query missing ref')
-            seen.add(ref)
-        for error in page['errors']:
-            ref = error.get('ref') if isinstance(error, dict) else None
-            if not isinstance(ref, str) or ref not in expected or ref in seen:
-                raise ValueError('invalid query error ref')
-            seen.add(ref)
-        if seen != expected:
-            raise ValueError('query batch coverage mismatch')
-        for key in result:
-            for entry in page[key]:
-                result_bytes += len(json.dumps(entry, ensure_ascii=True).encode()) + 2
-        if result_bytes > result_limit:
-            raise ValueError('complete ledger result exceeds configured byte budget')
-        result['items'].extend(page['items'])
-        result['missing'].extend(page['missing'])
-        result['errors'].extend({'ref': e['ref'], 'error': 'adapter query error'} for e in page['errors'])
-encoded = json.dumps(result, ensure_ascii=True)
-if len(encoded.encode()) + 1 > result_limit:
-    raise ValueError('complete ledger result exceeds configured byte budget')
-print(encoded)
+result = module['query_items'](request['refs'], max_result_bytes=int(sys.argv[2]))
+print(json.dumps(result, ensure_ascii=True))
 `;
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOptions): void {
@@ -226,6 +185,8 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
     try {
       if (!mayRead() || !options.principal.allowedTools.includes(tool) || !options.plexusLedgerReader ||
           !options.rateLimiter.consume(options.principal.id, tool)) throw new Error("Plexus read is not authorized.");
+      if (input.view !== undefined && !(options.principal.kind === "user" && options.principal.plexusLedgerOwner === true)) throw new Error("Ledger views require the owner principal.");
+      if (input.view === undefined && (input.format !== undefined || input.fallback !== undefined)) throw new Error("View options require an explicit schema version.");
       const grants = options.principal.ledgerReadGrants;
       if (!validLedgerReadGrants(grants, options.principal.allowedWorkspaceIds)) throw new Error("Plexus read grant is required.");
       const id = input.workspace_id ?? (grants.length === 1 ? grants[0]!.workspace_id : undefined);
@@ -235,7 +196,8 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
       const data = await options.plexusLedgerReader.read(operation, input, grant);
       if (operation === "items") {
         const policy = hash({ principal: options.principal.id, grant });
-        const query = hash({ filter: input.filter ?? {}, sort: input.sort ?? null, include_closed: input.include_closed ?? false });
+        const query = hash({ filter: input.filter ?? {}, sort: input.sort ?? null, include_closed: input.include_closed ?? false,
+          ...(input.view === undefined ? {} : { view: input.view, fallback: input.fallback ?? "director", format: input.format ?? "json" }) });
         const revision = hash(data);
         let offset = 0;
         if (input.cursor) {
@@ -247,7 +209,13 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
         const limit = input.limit ?? 100;
         const page = data.items.slice(offset, offset + limit);
         const next = offset + page.length < data.items.length ? Buffer.from(JSON.stringify({ policy, query, revision, offset: offset + page.length })).toString("base64url") : null;
-        return response({ ...data, count: page.length, items: page, next_cursor: next, grant_revision: policy, result_revision: revision });
+        const result = { ...data, count: page.length, items: page, next_cursor: next, grant_revision: policy, result_revision: revision,
+          ...(input.view === undefined ? {} : { offset }) };
+        if (input.format === "md") {
+          if (!options.plexusLedgerReader.render) throw new Error("Ledger view renderer unavailable.");
+          return { structuredContent: result, content: [{ type: "text" as const, text: await options.plexusLedgerReader.render(result) }] };
+        }
+        return response(result);
       }
       return response(data);
     } catch { return { isError: true as const, content: [{ type: "text" as const, text: "Plexus read denied, unavailable, or cursor stale." }] }; }
@@ -255,9 +223,11 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
   if (options.principal.allowedTools.includes("mesh_plexus_work_items")) server.registerTool("mesh_plexus_work_items", {
     title: "Read Plexus work items", description: "Join current ledger fields and independently visible session links. Core owns all filtering and sorting. Pages recheck exact grants; stale cursors fail closed.",
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-    inputSchema: z.object({ workspace_id: workspace, filter: z.record(z.string().max(128), z.unknown()).optional(),
-      sort: z.array(z.string().min(1).max(140)).min(1).max(8).optional(), include_closed: z.boolean().optional(),
-      limit: z.number().int().min(1).max(200).optional(), cursor: z.string().max(2048).optional() }).strict()
+    inputSchema: z.object({ workspace_id: workspace, filter: z.record(z.string().max(2048), z.unknown()).optional(),
+      sort: z.array(z.string().min(1).max(2054)).min(1).max(8).optional(), include_closed: z.boolean().optional(),
+      limit: z.number().int().min(1).max(200).optional(), cursor: z.string().max(2048).optional(),
+      view: z.literal("plexus.ledger-view/v1").optional(), format: z.enum(["json", "md"]).optional(),
+      fallback: z.enum(["director", "project"]).optional() }).strict()
   }, input => invoke("mesh_plexus_work_items", input));
   if (options.principal.allowedTools.includes("mesh_plexus_ledger_sessions")) server.registerTool("mesh_plexus_ledger_sessions", {
     title: "Read ledger session links", description: "Read independently authorized owns/works-on session identities for one exact ledger reference. Links grant no visibility or lease.",
