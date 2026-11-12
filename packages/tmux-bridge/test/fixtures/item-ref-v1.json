@@ -1,0 +1,21 @@
+{
+  "valid": [
+    "work.test:item",
+    "work+scheme:\ud83d\udcbb",
+    "tracker:item-1234",
+    "x:a:b",
+    "x:\u00e9",
+    "x:emoji-\ud83e\udded"
+  ],
+  "invalid": [
+    "x:",
+    "A:x",
+    "x:has space",
+    "x:line\n",
+    "x:\u200b",
+    "x:\u00a0",
+    "x:\ud800",
+    "x:\udc00",
+    "x:\u088f"
+  ]
+}

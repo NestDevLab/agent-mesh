@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import re
 from pathlib import Path
 import socket
 import socketserver
@@ -17,6 +16,7 @@ sys.dont_write_bytecode = True
 from mesh_group_dispatch import dispatch
 from mesh_group_store import GroupActor, GroupStore
 from ledger_item_lock import LeaseError, operation as lock_operation
+from mesh_item_ref import valid_item_ref
 
 MAX_REQUEST = 131072
 
@@ -79,9 +79,7 @@ def run_operation(store, request, *, inbox_root=None, cloud_bindings_path=None):
             operation = store.add_member if action == "admin_add" else store.remove_member
             return operation(manager, request["group"], session)
         ref = request["ref"]
-        if not isinstance(ref, str) or len(ref) > 256 or not re.fullmatch(
-            r"[a-z][a-z0-9-]{0,63}:[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}", ref
-        ):
+        if not valid_item_ref(ref):
             raise ValueError("ledger ref is not compatible with groups, graph and leases")
         if action == "admin_link":
             return store.link_ledger(manager, request["group"], ref, lead=request["lead"])

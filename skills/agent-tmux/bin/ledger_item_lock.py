@@ -11,6 +11,14 @@ import stat
 import sys
 import time
 import uuid
+try:
+    from mesh_item_ref import valid_item_ref
+except ModuleNotFoundError as error:
+    if error.name != 'mesh_item_ref':
+        raise
+    # Support callers loading this module by file path without altering sys.path.
+    from runpy import run_path
+    valid_item_ref = run_path(str(Path(__file__).with_name('mesh_item_ref.py')))['valid_item_ref']
 
 SCHEMA = 'agent-mesh.ledger-item-lock.v1'
 MAX_FENCE = (1 << 53) - 1  # JSON clients must be able to round-trip it exactly.
@@ -18,7 +26,6 @@ DEFAULT_TTL = 300
 MAX_TTL = 3600
 BOOTSTRAP_WAIT = 2.0
 OWNER = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:@/-]{0,319}')
-SCHEME = re.compile(r'[a-z][a-z0-9+.-]{0,63}')
 LEASE_ID = re.compile(r'[0-9a-f]{32}')
 
 
@@ -52,10 +59,7 @@ def clock():
 
 
 def validate(ref, owner=None, fence=None, lease_id=None, ttl=None):
-    scheme, _, item = ref.partition(':')
-    if len(ref) > 512 or not SCHEME.fullmatch(scheme) or not item or any(
-        ch.isspace() or not ch.isprintable() for ch in item
-    ):
+    if not valid_item_ref(ref):
         raise LeaseError('invalid item ref')
     if owner is not None and not OWNER.fullmatch(owner):
         raise LeaseError('invalid lease owner')

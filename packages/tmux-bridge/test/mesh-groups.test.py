@@ -29,6 +29,16 @@ class MeshGroupsTest(unittest.TestCase):
         self.first = GroupActor(session_id="runtime-a:session-1")
         self.second = GroupActor(session_id="runtime-b:session-2")
 
+    def test_group_links_follow_the_shared_item_ref_contract(self):
+        group = self.store.create_group(self.admin, "Example")["group_id"]
+        valid = "work.test:" + "🧭" * 502
+        self.assertEqual(len(valid), 512)
+        self.assertEqual(self.store.link_ledger(self.admin, group, valid, lead=True)["ref"], valid)
+        self.assertEqual(self.store.list_groups(self.admin, ledger_ref=valid)[0]["ledger_links"][0]["ref"], valid)
+        for invalid in (valid + "x", "work.test:\u200b", "work.test:\ud800", "work.test:two words"):
+            with self.assertRaises(ValueError):
+                self.store.link_ledger(self.admin, group, invalid, lead=False)
+
     def test_idempotent_group_creation_serializes_concurrent_retries(self):
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [pool.submit(GroupStore(self.state).ensure_group, self.admin,
