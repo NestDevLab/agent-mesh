@@ -597,3 +597,52 @@ test("versioned view cursors bind principal, exact grants, format and profile re
   assert.equal((await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1", cursor: first.next_cursor })).isError, true);
   assert.equal(h.calls.length, reads);
 });
+
+
+test("an authorized item error preserves good rows and appears in JSON and Markdown views", async () => {
+  const h = harness();
+  const run = h.reader.run;
+  h.reader.run = async (...args) => {
+    const data = JSON.parse(await run(...args));
+    if (args[2] && Array.isArray(data.items)) {
+      const failed = data.items.find(item => item.ref === refs[0]);
+      if (failed) {
+        data.items = data.items.filter(item => item.ref !== refs[0]);
+        data.errors.push({ ref: refs[0], error: "private diagnostic" });
+      }
+    }
+    return JSON.stringify(data);
+  };
+  const data = await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1", limit: 5 });
+  assert.equal(data.total, refs.length - 1);
+  assert.deepEqual(data.errors, [{ ref: refs[0], error: "adapter query error" }]);
+  assert.ok(!data.items.some(item => item.ref === refs[0]));
+  const rendered = await h.handlers.get("mesh_plexus_work_items").handler({ view: "plexus.ledger-view/v1", format: "md", limit: 5 });
+  assert.notEqual(rendered.isError, true);
+  assert.match(rendered.content[0].text, /Item errors/);
+  assert.ok(!rendered.content[0].text.includes("private diagnostic"));
+});
+
+for (const mode of ["foreign", "duplicate", "missing-overlap"]) {
+  test(`partial responses reject ${mode} error references`, async () => {
+    const h = harness();
+    const run = h.reader.run;
+    h.reader.run = async (...args) => {
+      const data = JSON.parse(await run(...args));
+      if (args[2] && Array.isArray(data.items) && data.items.some(item => item.ref === refs[0])) {
+        data.items = data.items.filter(item => item.ref !== refs[0]);
+        data.errors = [{ ref: mode === "foreign" ? "work:OUTSIDE" : refs[0] }];
+        if (mode === "duplicate") {
+          data.items = data.items.filter(item => item.ref !== refs[1]);
+          data.errors.push({ ref: refs[0] });
+        }
+        if (mode === "missing-overlap") {
+          data.items = data.items.filter(item => item.ref !== refs[1]);
+          data.missing.push(refs[0]);
+        }
+      }
+      return JSON.stringify(data);
+    };
+    assert.equal((await h.invoke("mesh_plexus_work_items", { view: "plexus.ledger-view/v1" })).isError, true);
+  });
+}

@@ -66,3 +66,5 @@ The owner is verified on each request before source reads. Exact ledger, session
 and group grants remain independent. Existing delegated legacy reads retain their
 contract. Consumer code must use the response's schema version and preserve the
 principal through every API request.
+
+Per-item adapter failures retain their authorized reference in `errors`. Valid items remain sortable and filterable. Markdown includes a separate item error section. Adapter diagnostics are replaced with fixed labels. Invalid transport, provider attribution, batch coverage, and unreferenced discovery failures still reject the request.

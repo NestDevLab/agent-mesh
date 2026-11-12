@@ -123,7 +123,7 @@ export class ShellPlexusLedgerReader implements PlexusLedgerReader {
     }
     const listing = JSON.parse(await this.run("python3", ["-c", EXACT_QUERY, this.config.bridgeRoot,
       String(this.config.maxResultBytes ?? 128 * 1024 * 1024)], JSON.stringify({ refs: grant.ledger_refs })));
-    if (!Array.isArray(listing.items) || !Array.isArray(listing.errors) || listing.errors.length) throw new Error("Ledger source unavailable.");
+    if (!Array.isArray(listing.items) || !Array.isArray(listing.errors)) throw new Error("Ledger source unavailable.");
     // Restrict the data supplied to the local-only core before it evaluates any user predicate.
     const seen = new Set<string>();
     const checkedItems = listing.items.map((raw: unknown) => canonicalItem.parse(raw));
@@ -132,17 +132,24 @@ export class ShellPlexusLedgerReader implements PlexusLedgerReader {
       seen.add(item.ref);
     }
     if (!Array.isArray(listing.missing) || listing.missing.some((ref: unknown) => typeof ref !== "string" || !refs.has(ref) || seen.has(ref)) ||
-        new Set(listing.missing).size !== listing.missing.length || seen.size + listing.missing.length !== refs.size) throw new Error("Incomplete exact ledger query.");
+        new Set(listing.missing).size !== listing.missing.length || seen.size + listing.missing.length + listing.errors.length !== refs.size) throw new Error("Incomplete exact ledger query.");
+    const failed = new Set<string>();
+    for (const error of listing.errors) {
+      if (typeof error?.ref !== "string" || !refs.has(error.ref) || seen.has(error.ref) ||
+          listing.missing.includes(error.ref) || failed.has(error.ref)) throw new Error("Invalid exact ledger query error.");
+      failed.add(error.ref);
+    }
+    const errors = listing.errors.map((error: Row) => ({ ref: error.ref, error: "adapter query error" }));
     const items = checkedItems.map((item: Row) => ({ ...item, url: typeof item.url === "string" && /^(https?:\/\/|codex:\/\/threads\/)/.test(item.url) ? item.url : null }));
     if (input.view === "plexus.ledger-view/v1") {
       const metadata = grant.group_refs?.length ? JSON.parse(await this.run("python3", ["-c", GROUP_QUERY, this.config.bridgeRoot],
         JSON.stringify({ groups: [...grant.group_refs], refs: [...grant.ledger_refs] }))) : { groups: [] };
       if (!Array.isArray(metadata.groups)) throw new Error("Invalid group metadata.");
       return core.ledgerView(scoped, { filter: input.filter, sort: input.sort, includeClosed: input.include_closed, fallback: input.fallback },
-        null, () => ({ items, errors: [], groups: metadata.groups }), profile!);
+        null, () => ({ items, errors, groups: metadata.groups }), profile!);
     }
     const result = core.workItems(scoped, { filter: input.filter, sort: input.sort, includeClosed: input.include_closed }, null,
-      () => ({ items, errors: [] }));
+      () => ({ items, errors }));
     return { ...result, graph_revision: graph.lastSeq ?? null };
   }
   private async profile(core: Core): Promise<Row> {

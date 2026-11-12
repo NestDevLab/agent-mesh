@@ -1811,7 +1811,7 @@ function readLedgerViewData() {
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
   if (listing.status !== 0 || listing.error) throw new Error("exact ledger query failed");
   const result = JSON.parse(listing.stdout);
-  if (!Array.isArray(result.items) || result.errors?.length) throw new Error("exact ledger query returned errors");
+  if (!Array.isArray(result.items) || !Array.isArray(result.errors)) throw new Error("invalid exact ledger query response");
   const groups = spawnSync("python3", [join(directory, "mesh-groups.py"), "list", "--json"],
     { encoding: "utf8", timeout: 30_000, maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } });
