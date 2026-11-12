@@ -37,7 +37,6 @@
       "controller-activity-safety",
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
-      "codex-goal-reactivation",
       "oikuma-user-plexus-profile-20261112"
     ],
     "strategy": "cherry-pick"
@@ -410,7 +409,8 @@
         "a4f4b1ed63222fc7daccfac481d32462344e6266",
         "8021218ce4154b14b49a24b451a4349937ba284f",
         "d10a0292e939ee0755a347b09e07833e818a6b4b",
-        "af0551936ad49baa24ead5a21f76834bb9e68c5c"
+        "af0551936ad49baa24ead5a21f76834bb9e68c5c",
+        "6738a53f4a5666578a64161b1fb6c3b72117d281"
       ],
       "state": "published",
       "publication": {
@@ -418,25 +418,6 @@
       },
       "meta": {
         "purpose": "Deterministic versioned ledger views for CLI and MCP"
-      }
-    },
-    {
-      "id": "codex-goal-reactivation",
-      "branch": "feat/codex-goal-reactivation",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "d55fb32f6c7842689671176b73b6adc9851bae88",
-        "a4f01d51b5abd5222cce4961c80092a77a4df280"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Reactivate blocked Codex goals on send and watch stalled goals"
       }
     },
     {
