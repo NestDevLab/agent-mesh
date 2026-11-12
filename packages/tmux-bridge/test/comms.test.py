@@ -144,6 +144,15 @@ c.observe_inbox(spec, gate.receipt['id'], True)
             with self.assertRaises(ValueError):
                 c.validate({**spec, **change})
 
+    def test_goal_validation_and_replay_command(self):
+        spec = {**self.spec(runtime='codex'), 'goal': 'Finish the release', 'goal_resume': 'any'}
+        args = c.command(c.validate(spec))
+        self.assertEqual(args[args.index('--goal') + 1], 'Finish the release')
+        self.assertEqual(args[args.index('--goal-resume') + 1], 'any')
+        for change in ({'runtime': 'claude'}, {'goal': ' '}, {'goal': 3}, {'goal_resume': 'always'}):
+            with self.assertRaisesRegex(ValueError, 'invalid goal options'):
+                c.validate({**spec, **change})
+
     def test_cloud_validation_and_replay_command(self):
         spec = {**self.spec(), 'destination': 'session_Synthetic123', 'cloud': True}
         self.assertEqual(c.validate(spec)['cloud'], True)
