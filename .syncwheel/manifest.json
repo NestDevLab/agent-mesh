@@ -40,7 +40,6 @@
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
       "partial-ledger-view",
-      "ledger-thread-profile",
       "cloud-role-claim",
       "controller-activity-safety-refresh"
     ],
@@ -477,26 +476,6 @@
       },
       "meta": {
         "purpose": "Preserve valid ledger rows and report per-item errors"
-      }
-    },
-    {
-      "id": "ledger-thread-profile",
-      "branch": "fix/ledger-thread-profile",
-      "base": "fix/partial-ledger-view",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "10b87714190533857914a5f63b7dfa9284552090",
-        "795a2996468ad8417557442bd385a0eb0ea8ac44",
-        "342899c5d2ff8868c17a39f71bfe7d7342deb3e7"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Display configured ledger thread links and explicit fallback labels"
       }
     },
     {
