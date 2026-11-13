@@ -21,7 +21,6 @@
     "branch": "main-integration",
     "stacks": [
       "terminal-return-v1",
-      "cloud-group-sessions",
       "group-message-route",
       "groups-scoped-import",
       "cloud-group-transport",
@@ -65,29 +64,6 @@
       "state": "published",
       "target_branch": "main",
       "target_remote": "origin"
-    },
-    {
-      "id": "cloud-group-sessions",
-      "branch": "pr/cloud-group-sessions",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "505f9a7c1bd25e14a467206f8cabf4dc1bc8fd3c",
-        "c93e6234cd4a3445edd96800718b0b06838cc2fb"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Register provider-qualified cloud group sessions"
-      },
-      "integration_commits": [
-        "fedb891203f9e9d0bfca805aa06bfcc70a2c462f",
-        "5d1cce226c14d66fc87711d6d95c37e5446b6021"
-      ]
     },
     {
       "id": "group-message-route",
