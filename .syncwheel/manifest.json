@@ -27,7 +27,6 @@
       "group-ref-contract",
       "group-ref-public",
       "ledger-read-query",
-      "codex-blank-session",
       "controller-activity-safety",
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
@@ -185,32 +184,6 @@
       },
       "meta": {
         "purpose": "Authorized request-time ledger and Plexus reads"
-      }
-    },
-    {
-      "id": "codex-blank-session",
-      "branch": "fix/codex-blank-session",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "1c7b6a11d4b143589bfb5fa85bdade01a9b7566d",
-        "31b9bc53b0b08d369b7c8052947f2ca784e743e0",
-        "e465aa59105609358d620782a08d6c78c415e2c9",
-        "31d112a5c14f521a361f50cdab3cb86d50d97292",
-        "d306192a33a1be3d92fe9caf4465f4197a4098c6",
-        "93a7dcbc5b48f491411d4f636a5dd03934989c0c",
-        "7ef71ae1182ae00d8c5c497029b4576a8aeb797d",
-        "83b8706613d7151627bc014d46d9eeedbb5241f7",
-        "314f3086a8dfbf42e89f478b8417e204b7c6bd22"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Fix blank Codex creation and owned-pane first turn"
       }
     },
     {
