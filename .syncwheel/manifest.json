@@ -55,7 +55,17 @@
       },
       "state": "published",
       "target_branch": "main",
-      "target_remote": "origin"
+      "target_remote": "origin",
+      "integration_commits": [
+        "fe221455d13cd4dd9d0b5a3ade659987bf4cae00",
+        "c38b448ef43f24d0a0a0db90dfc4434edc5736f2",
+        "2e825a64e494a342a575268be1f90769fed2247a",
+        "ad369ff513ce4d76bedf468b64e82016ff65073e",
+        "382d7ba1999e1e36a8332666066c675bce6e2a89",
+        "fd6ba2af6aadfa206c74072a643c1c5e931bec6b",
+        "36aeb69aaecabc5597b910e3a9d0dc71986d447e",
+        "b15ea9440b2149c1873a7cb8f51ae08f4a32ca90"
+      ]
     },
     {
       "id": "groups-scoped-import",
