@@ -26,7 +26,6 @@
       "group-gateway-conversation",
       "group-ref-contract",
       "group-ref-public",
-      "ledger-read-query",
       "controller-activity-safety",
       "plexus-service-delegate",
       "plexus-ledger-view-v1",
@@ -165,25 +164,6 @@
       },
       "meta": {
         "purpose": "Align group and lease item references"
-      }
-    },
-    {
-      "id": "ledger-read-query",
-      "branch": "feat/ledger-read-query",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "a956a55a6430e2bb727373e82b7cd1662067b72d",
-        "9048df8b00166889fd45096ac88a143a541aed25"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Authorized request-time ledger and Plexus reads"
       }
     },
     {
