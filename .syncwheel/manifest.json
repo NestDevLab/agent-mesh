@@ -40,7 +40,6 @@
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
       "partial-ledger-view",
-      "cloud-role-claim",
       "controller-activity-safety-refresh"
     ],
     "strategy": "cherry-pick"
@@ -476,26 +475,6 @@
       },
       "meta": {
         "purpose": "Preserve valid ledger rows and report per-item errors"
-      }
-    },
-    {
-      "id": "cloud-role-claim",
-      "branch": "fix/cloud-role-claim",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "77eebab1b407d150e3c088edc3ce3eec1412f296",
-        "466a4d545302cabc7da08e8007ec7f2cfac4cb41",
-        "3c6f61b672b54d356a469607d504aa5e06a88880"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Let registered cloud sessions hold role claims"
       }
     },
     {
