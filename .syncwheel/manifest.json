@@ -21,7 +21,6 @@
     "branch": "main-integration",
     "stacks": [
       "terminal-return-v1",
-      "urgent-native-reply",
       "mesh-groups-v1",
       "ledger-item-lock",
       "cloud-group-sessions",
@@ -68,25 +67,6 @@
       "state": "published",
       "target_branch": "main",
       "target_remote": "origin"
-    },
-    {
-      "id": "urgent-native-reply",
-      "branch": "fix/urgent-native-reply",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "7c980ab2a834d7eb239c836be130420751e4f6e7",
-        "a73a8fa9322eb05832a2b069b2afc3a610e63c17"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Preserve correlated urgent native replies"
-      }
     },
     {
       "id": "mesh-groups-v1",
