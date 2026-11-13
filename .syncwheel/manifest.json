@@ -29,7 +29,6 @@
       "controller-activity-safety",
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
-      "partial-ledger-view",
       "controller-activity-safety-refresh"
     ],
     "strategy": "cherry-pick"
@@ -217,24 +216,6 @@
         "enabled": true
       },
       "meta": {}
-    },
-    {
-      "id": "partial-ledger-view",
-      "branch": "fix/partial-ledger-view",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "1dc166499d2cbd53647370f0c8b71d92f0c92503"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Preserve valid ledger rows and report per-item errors"
-      }
     },
     {
       "id": "controller-activity-safety-refresh",
