@@ -57,8 +57,7 @@
       "target_branch": "main",
       "target_remote": "origin",
       "integration_commits": [
-        "fe221455d13cd4dd9d0b5a3ade659987bf4cae00",
-        "c38b448ef43f24d0a0a0db90dfc4434edc5736f2",
+        "15ffb86bd6dfe80a68bce0a5d655b89ab4bf9890",
         "2e825a64e494a342a575268be1f90769fed2247a",
         "ad369ff513ce4d76bedf468b64e82016ff65073e",
         "382d7ba1999e1e36a8332666066c675bce6e2a89",
