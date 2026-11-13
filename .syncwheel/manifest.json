@@ -27,7 +27,6 @@
       "group-ref-contract",
       "group-ref-public",
       "controller-activity-safety",
-      "plexus-ledger-view-v1",
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
       "partial-ledger-view",
@@ -181,28 +180,6 @@
       },
       "meta": {
         "purpose": "Complete scoped controller readiness: replace per-Director recap wakeups with activity-based safety; existing sender retains global recap"
-      }
-    },
-    {
-      "id": "plexus-ledger-view-v1",
-      "branch": "feat/plexus-ledger-view-v1",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "a4f4b1ed63222fc7daccfac481d32462344e6266",
-        "8021218ce4154b14b49a24b451a4349937ba284f",
-        "d10a0292e939ee0755a347b09e07833e818a6b4b",
-        "af0551936ad49baa24ead5a21f76834bb9e68c5c",
-        "6738a53f4a5666578a64161b1fb6c3b72117d281"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Deterministic versioned ledger views for CLI and MCP"
       }
     },
     {
