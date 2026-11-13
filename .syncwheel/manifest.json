@@ -21,7 +21,6 @@
     "branch": "main-integration",
     "stacks": [
       "terminal-return-v1",
-      "mesh-groups-v1",
       "cloud-group-sessions",
       "group-message-route",
       "groups-scoped-import",
@@ -66,35 +65,6 @@
       "state": "published",
       "target_branch": "main",
       "target_remote": "origin"
-    },
-    {
-      "id": "mesh-groups-v1",
-      "branch": "pr/mesh-groups-v1",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "7dbb518fbe63fe60b75717d37d20b1f324cb0464",
-        "1ab474707058c016364a7c503f0bbc749a4f1cfe",
-        "f058d58b2ff31cb21252cffb3c2e3dea22f54c84",
-        "473f21ef9bc128d36b2fb8fbca613f931984f54a",
-        "e60f2dcbd7ca4d9ecd61b12ea3946ff2dda6a834"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Add durable Mesh groups and shared conversation history"
-      },
-      "integration_commits": [
-        "0a6894d68d459f3cb74f28196790928ad0dd2c5f",
-        "692cfb5c6c18aeff712220efbf8f9e1932155a63",
-        "6e519c0ac82fcd109cc067a4a086633fe2115655",
-        "f5011e0c81f94e40d9f93b38aa25a535cd6f308f",
-        "c73c33b7755f0c6687bd6416505cfd14b6c6c3cf"
-      ]
     },
     {
       "id": "cloud-group-sessions",
