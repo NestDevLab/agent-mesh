@@ -27,7 +27,6 @@
       "group-ref-contract",
       "group-ref-public",
       "controller-activity-safety",
-      "plexus-service-delegate",
       "plexus-ledger-view-v1",
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
@@ -182,28 +181,6 @@
       },
       "meta": {
         "purpose": "Complete scoped controller readiness: replace per-Director recap wakeups with activity-based safety; existing sender retains global recap"
-      }
-    },
-    {
-      "id": "plexus-service-delegate",
-      "branch": "codex/plexus-service-delegate",
-      "base": "031bd7d6c1c6519cc94510652301c40b6756f434",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "7cbc3dc4ff6ca6b0c86b71ffb0dcaef5c507b724",
-        "ee6e373e4941a3457c4665b1c9699af0320d5d18",
-        "e4732cde25d73cd546ced9f6aee38aa9631005af",
-        "4fe617215f2caa9eba7e21e11652d24b879500a7",
-        "9c6478b151a9dfdadee20ae9e5f8d127bcc78d49"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Explicit scoped read-only service delegation"
       }
     },
     {
