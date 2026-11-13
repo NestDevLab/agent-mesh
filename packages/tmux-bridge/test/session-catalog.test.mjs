@@ -242,12 +242,50 @@ test('cloud catalog labels are metadata-only, listed by role/project and replaya
  const after=await ok(state,'show');const updated=after.nodes.find(n=>n.id===initial.id);
  for (const key of ['cloudIdentity','origin','agent','runtimeUuid','status','tmuxTarget','cwd','resumable']) assert.deepEqual(updated[key],initial[key],key);
  assert.deepEqual(after.roleClaims,before.roleClaims);
- assert.notEqual((await run(state,'role','claim','--session',cloud,'--role','director','--project','example')).code,0);
  assert.notEqual((await run(state,'catalog','update','--session',cloud,'--summary','Unsupported')).code,0);
  assert.notEqual((await run(state,'catalog','update','--session',cloud,'--cwd','/work/fixture')).code,0);
  assert.notEqual((await run(state,'catalog','register','--session','claude-cloud:fixture:session_AbsentFixture','--role','director','--project','example')).code,0);
  await rm(join(state,'checkpoint.json'));
  assert.deepEqual((await ok(state,'catalog','list','--role','director')).sessions,rows);
+}));
+
+test('registered cloud sessions claim, heartbeat and release director roles with the exact catalog identity', () => fixture(async state => {
+ const cloud='claude-cloud:fixture:session_ClaimFixture';
+ await ok(state,'cloud','register','--session',cloud,'--evidence','fixture:cloud');
+ const held=(await ok(state,...claim(cloud))).claim;
+ assert.equal(held.session,cloud);assert.equal(held.key,'director:example');
+ assert.equal((await ok(state,...action('heartbeat',cloud,held.id))).claim.id,held.id);
+ assert.equal((await ok(state,...action('check',cloud,held.id))).valid,true);
+ assert.notEqual((await run(state,...claim(a))).code,0);
+ const row=(await ok(state,'catalog','list','--role','director','--project','example')).sessions.find(r=>r.sessionId===cloud);
+ assert.ok(row);
+ await ok(state,...action('release',cloud,held.id));
+ assert.equal((await ok(state,...claim(a))).claim.session,a);
+}));
+
+test('cloud and native sessions take over a director role from each other only by naming the claim', () => fixture(async state => {
+ const cloud='claude-cloud:fixture:session_TakeoverFixture';
+ await ok(state,'cloud','register','--session',cloud,'--evidence','fixture:cloud');
+ const first=(await ok(state,...claim(a))).claim;
+ assert.notEqual((await run(state,...claim(cloud))).code,0);
+ const next=(await ok(state,...claim(cloud,'--take-over',first.id,'--reason','Cloud successor'))).claim;
+ assert.equal(next.session,cloud);assert.equal(next.predecessor,first.id);
+ assert.notEqual((await run(state,...action('heartbeat',a,first.id))).code,0);
+ const last=(await ok(state,...claim(b,'--take-over',next.id,'--reason','Native successor'))).claim;
+ assert.equal(last.predecessor,next.id);
+ assert.notEqual((await run(state,...action('check',cloud,next.id))).code,0);
+ assert.notEqual((await run(state,...claim(cloud))).code,0);
+}));
+
+test('role claims reject malformed, unregistered and non-catalog cloud identities', () => fixture(async state => {
+ await ok(state,'cloud','register','--session','claude-cloud:fixture:session_Registered','--evidence','fixture:cloud');
+ for (const session of ['claude-cloud:fixture:session_Absent','claude-cloud:Fixture:session_Registered','claude-cloud:fixture:session_Bad-Id',
+   'claude-cloud:fixture:other_Registered','codex-cloud:fixture:session_Registered','claude-cloud:fixture:session_Registered:extra','claude-cloud::session_Registered']) {
+  const r=await run(state,...claim(session));
+  assert.notEqual(r.code,0,session);
+  assert.match(r.error,session.endsWith('_Absent')?/session not registered/:/session must be/,session);
+ }
+ assert.deepEqual((await ok(state,'role','list')).claims,[]);
 }));
 
 test('catalog exposes stored link fields for native and cloud identities without fabricating them', () => {
