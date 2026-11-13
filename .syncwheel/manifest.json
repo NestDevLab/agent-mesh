@@ -27,7 +27,6 @@
       "group-ref-contract",
       "group-ref-public",
       "ledger-read-query",
-      "plexus-work-items",
       "codex-blank-session",
       "controller-activity-safety",
       "plexus-service-delegate",
@@ -186,24 +185,6 @@
       },
       "meta": {
         "purpose": "Authorized request-time ledger and Plexus reads"
-      }
-    },
-    {
-      "id": "plexus-work-items",
-      "branch": "pr/plexus-work-items",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "5c6426cd6ba7a286701646f1639f1215e14bfbcd"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Read open work items with sessions, sort and filter on live ledger fields"
       }
     },
     {
