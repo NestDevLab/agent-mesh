@@ -43,6 +43,7 @@ import {
 } from "./mesh-mcp.js";
 import { MeshTaskCoordinator } from "./mesh-task-coordinator.js";
 import { MeshTaskStore } from "./mesh-task-store.js";
+import { UnixGroupGateway, validGroupGrants } from "./mesh-groups.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8790;
@@ -69,6 +70,7 @@ interface RuntimeConfig {
   tmuxIngress?: TmuxIngressConfig;
   agentSessions?: AgentSessionsConfig;
   workspaceWorkers?: WorkspaceWorkerRoute[];
+  groups?: { socketPath: string };
 }
 
 interface TmuxIngressConfig {
@@ -152,6 +154,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
   };
   const plexusLedgerReader = config.plexusLedger === undefined ? undefined : new ShellPlexusLedgerReader(config.plexusLedger);
   const workspaceWorkers = config.workspaceWorkers === undefined ? undefined : new WorkspaceWorkerRouter(config.workspaceWorkers);
+  const groupGateway = config.groups === undefined ? undefined : new UnixGroupGateway(config.groups.socketPath);
   const taskCoordinator = new MeshTaskCoordinator({
     store: new MeshTaskStore({ stateDir }),
     execute: (task, hooks) => task.worker_id === undefined
@@ -175,6 +178,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
+      ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       resolvePrincipal
     }),
@@ -201,6 +205,7 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
       ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
       ...(workspaceWorkers === undefined ? {} : { workspaceWorkers }),
       ...(sessionRegistry === undefined ? {} : { sessionRegistry }),
+      ...(groupGateway === undefined ? {} : { groupGateway }),
       rateLimiter: new FixedWindowMeshMcpRateLimiter(),
       googleRunner: googleRunner ?? unavailableGoogleRunner,
       memoryState: parseMemoryState(env.AGENT_MESH_MCP_MEMORY_STATE),
@@ -380,10 +385,15 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
   });
   if (parsed.plexusLedger !== undefined) new ShellPlexusLedgerReader(parsed.plexusLedger);
   for (const [index, binding] of parsed.bindings.entries()) validateBinding(binding, index, agents);
+  validateHumanGroupActors(parsed.bindings);
   validateGoogleWorkspace(parsed.googleWorkspace);
   validateMemoryRecall(parsed.memoryRecall);
   validateTmuxIngress(parsed.tmuxIngress, agents);
   validateAgentSessions(parsed.agentSessions, agents, contexts);
+  if (parsed.groups !== undefined && (typeof parsed.groups !== "object" || parsed.groups === null || Array.isArray(parsed.groups) ||
+      typeof parsed.groups.socketPath !== "string" || !isAbsolute(parsed.groups.socketPath))) {
+    throw new Error("Invalid group broker socket configuration.");
+  }
   if (parsed.workspaceWorkers !== undefined) {
     new WorkspaceWorkerRouter(parsed.workspaceWorkers);
     for (const route of parsed.workspaceWorkers) {
@@ -400,8 +410,9 @@ export async function readRuntimeConfig(filePath: string): Promise<RuntimeConfig
     ...(parsed.memoryRecall === undefined ? {} : { memoryRecall: parsed.memoryRecall }),
     ...(parsed.tmuxIngress === undefined ? {} : { tmuxIngress: parsed.tmuxIngress }),
     ...(parsed.agentSessions === undefined ? {} : { agentSessions: parsed.agentSessions }),
-    ...(parsed.plexusLedger === undefined ? {} : { plexusLedger: parsed.plexusLedger }),
-    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers })
+    ...(parsed.workspaceWorkers === undefined ? {} : { workspaceWorkers: parsed.workspaceWorkers }),
+    ...(parsed.groups === undefined ? {} : { groups: parsed.groups }),
+    ...(parsed.plexusLedger === undefined ? {} : { plexusLedger: parsed.plexusLedger })
   };
 }
 
@@ -651,6 +662,8 @@ export function validateBinding(
     !Array.isArray(binding.allowedAgentIds) ||
     !Array.isArray(binding.allowedWorkspaceIds) ||
     !Array.isArray(binding.allowedDomainIds) ||
+    (binding.groupGrants !== undefined && !validGroupGrants(binding.groupGrants, binding.allowedWorkspaceIds, binding.kind)) ||
+    (binding.manageAllGroups !== undefined && typeof binding.manageAllGroups !== "boolean") ||
     (binding.ledgerReadGrants !== undefined && !validLedgerReadGrants(binding.ledgerReadGrants, binding.allowedWorkspaceIds)) ||
     (binding.plexusLedgerReadDelegate !== undefined && (binding.plexusLedgerReadDelegate !== true ||
       binding.kind !== "service" || !binding.ledgerReadGrants?.length || !binding.allowedTools.length)) ||
@@ -666,6 +679,21 @@ export function validateBinding(
   const exposed = new Set(agents.map((agent) => agent.id));
   if (binding.allowedAgentIds.some((agentId) => !exposed.has(agentId))) {
     throw new Error(`MCP runtime binding ${index} refers to an unknown agent.`);
+  }
+}
+
+/** A human actor must resolve to one signed user identity across all bindings. */
+export function validateHumanGroupActors(bindings: readonly CloudflareAccessBinding[]): void {
+  const owners = new Map<string, string>();
+  for (const binding of bindings) {
+    for (const grant of binding.groupGrants ?? []) {
+      if (!grant.session_id.startsWith("human:")) continue;
+      if (binding.kind !== "user") throw new Error("Human group actors require a user principal.");
+      const owner = cloudflarePrincipalId(binding.kind, binding.selector);
+      const previous = owners.get(grant.session_id);
+      if (previous !== undefined && previous !== owner) throw new Error("Human group actor has conflicting user bindings.");
+      owners.set(grant.session_id, owner);
+    }
   }
 }
 

@@ -16,7 +16,8 @@ for (const profile of ["workspace", "google-workspace", "memory"]) {
     const effects = {google:0,memory:0,status:0,plexus:0};
     // Deliberately inject broader accounts/tools to test the hub independently
     // of runtime-config validation. All profiles receive the same identity.
-    const principal = {...binding(),id:"service",requesterId:"agent.service",allowedTools:[...reads,"mesh_send"]};
+    const principal = {...binding(),id:"service",requesterId:"agent.service",manageAllGroups:true,
+      allowedTools:[...reads,"mesh_send","mesh_group_list","mesh_group_create","mesh_group_lock_acquire"]};
     const handler = createMcpHubHandler({profile,agents:[],gateway:{},rateLimiter:{consume:()=>true},
       googleRunner:{async run(){effects.google++;return {};},async readFile(){effects.google++;return {};}},
       memoryState:"ready",memoryRunner:{operatorComplete:true,async status(){effects.status++;return "ready";},
@@ -39,7 +40,8 @@ for (const profile of ["workspace", "google-workspace", "memory"]) {
     assert.deepEqual((listed.result?.tools??[]).map(t=>t.name).sort(),profile==="workspace"?[...reads].sort():[]);
     for (const name of ["google_drive_search","google_gmail_search","memory_search","memory_read",
       "memory_backend_status","memory_propose","memory_proposal_status","documents_search","document_read",
-      "document_upsert","document_delete","memory_status","mesh_send"]) {
+      "document_upsert","document_delete","memory_status","mesh_send",
+      "mesh_group_list","mesh_group_create","mesh_group_lock_acquire"]) {
       const denied=await request("tools/call",name,{query:"example",account:"work",id:"example"});
       assert.ok(denied.error || denied.result?.isError,`${profile}: ${name} must not succeed`);
     }

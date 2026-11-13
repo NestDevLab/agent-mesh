@@ -17,7 +17,7 @@ MAX_FENCE = (1 << 53) - 1  # JSON clients must be able to round-trip it exactly.
 DEFAULT_TTL = 300
 MAX_TTL = 3600
 BOOTSTRAP_WAIT = 2.0
-OWNER = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}')
+OWNER = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:@/-]{0,319}')
 SCHEME = re.compile(r'[a-z][a-z0-9+.-]{0,63}')
 LEASE_ID = re.compile(r'[0-9a-f]{32}')
 

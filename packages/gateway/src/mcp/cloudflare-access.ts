@@ -4,6 +4,7 @@ import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 import type { AuthInfo, McpHttpHandler } from "@modelcontextprotocol/server";
 import type { MeshMcpPrincipal, MeshMcpTool } from "./mesh-mcp.js";
+import type { GroupGrant } from "./mesh-groups.js";
 import type { GoogleWorkspaceAccountAlias } from "./google-workspace.js";
 
 // jose uses the Web Crypto global. Some non-interactive Node service launches
@@ -28,6 +29,8 @@ export interface CloudflareAccessBinding {
   allowedAgentIds: readonly string[];
   allowedWorkspaceIds: readonly string[];
   allowedDomainIds: readonly string[];
+  groupGrants?: readonly GroupGrant[];
+  manageAllGroups?: boolean;
   ledgerReadGrants?: readonly LedgerReadGrant[];
   /** Explicit service-only, read-only Plexus delegation; never inferred from a grant. */
   plexusLedgerReadDelegate?: true;
@@ -179,6 +182,11 @@ export function resolveCloudflareAccessPrincipal(
     allowedAgentIds: [...binding.allowedAgentIds],
     allowedWorkspaceIds: [...binding.allowedWorkspaceIds],
     allowedDomainIds: [...binding.allowedDomainIds],
+    ...(binding.groupGrants === undefined ? {} : { groupGrants: binding.groupGrants.map((grant) => ({
+      ...grant, group_ids: [...grant.group_ids],
+      ...(grant.ledger_refs === undefined ? {} : { ledger_refs: [...grant.ledger_refs] })
+    })) }),
+    ...(binding.manageAllGroups === undefined ? {} : { manageAllGroups: binding.manageAllGroups }),
     ...(ownerPrincipalId === undefined ? {} : { plexusLedgerOwner: identity.kind === "user" && principalId === ownerPrincipalId }),
     ...(identity.kind === "service" && binding.plexusLedgerReadDelegate === true ? { plexusLedgerReadDelegate: true as const } : {}),
     ...(binding.ledgerReadGrants === undefined ? {} : { ledgerReadGrants: binding.ledgerReadGrants.map(g => ({ ...g, ledger_refs: [...g.ledger_refs], session_ids: [...g.session_ids], ...(g.group_refs === undefined ? {} : { group_refs: [...g.group_refs] }) })) })
