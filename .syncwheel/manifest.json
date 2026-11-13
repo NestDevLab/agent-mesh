@@ -22,7 +22,6 @@
     "stacks": [
       "terminal-return-v1",
       "mesh-groups-v1",
-      "ledger-item-lock",
       "cloud-group-sessions",
       "group-message-route",
       "groups-scoped-import",
@@ -95,31 +94,6 @@
         "6e519c0ac82fcd109cc067a4a086633fe2115655",
         "f5011e0c81f94e40d9f93b38aa25a535cd6f308f",
         "c73c33b7755f0c6687bd6416505cfd14b6c6c3cf"
-      ]
-    },
-    {
-      "id": "ledger-item-lock",
-      "branch": "feat/ledger-item-lock",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "6288a817c1565078e7aab35fdc24756bd7e85779",
-        "31f5d52da0fc8b311b4601da80eb786b30787377",
-        "083cd3febd3edb1a1f37306faf00e57b9fddcd15"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {
-        "purpose": "Provide per-item work ledger leases with fencing"
-      },
-      "integration_commits": [
-        "218be32ef2e6007e32fcadd63152673afedddb85",
-        "d4b87d4cf51d4f47c1eec0b678778e459ed18e9e",
-        "985e17fccfb3df7d823e7c9cc1123401c369f19c"
       ]
     },
     {
