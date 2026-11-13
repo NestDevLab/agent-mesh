@@ -41,7 +41,8 @@
       "grant-authority",
       "partial-ledger-view",
       "ledger-thread-profile",
-      "cloud-role-claim"
+      "cloud-role-claim",
+      "controller-activity-safety-refresh"
     ],
     "strategy": "cherry-pick"
   },
@@ -516,6 +517,24 @@
       },
       "meta": {
         "purpose": "Let registered cloud sessions hold role claims"
+      }
+    },
+    {
+      "id": "controller-activity-safety-refresh",
+      "branch": "pr/controller-activity-safety-refresh",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "4ec7f7d06459086c787c41ed00c0253b6a3f3953"
+      ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Publish the authorized activity-based controller correction on a fresh PR branch while integration validation is deferred"
       }
     }
   ],
