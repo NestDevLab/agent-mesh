@@ -154,7 +154,8 @@ def observe(project, state, now, catalog=None, snapshots=None):
     # timestamps. Unknown activity starts a six-hour observation window.
     activity = []
     for row in (catalog or {}).get('sessions', []):
-        if row.get('project') == project['id'] and row.get('role') != 'global-controller':
+        if (row.get('project') == project['id'] and row.get('role') != 'global-controller' and
+                row.get('sessionId') not in project.get('exclude_sessions', [])):
             activity.append(row.get('last_activity_at'))
     for identity, thread in director.get('threads', {}).items():
         if (identity not in project.get('exclude_sessions', []) and

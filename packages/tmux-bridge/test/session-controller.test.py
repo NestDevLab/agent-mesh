@@ -215,6 +215,17 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual([x['kind'] for x in state['pending'].values()], ['ledger'])
         self.assertTrue(state['retired_pending'])
 
+    def test_excluded_catalog_sessions_do_not_postpone_safety(self):
+        self.project['exclude_sessions'] = ['codex:excluded']
+        for session, expect_safety in [('codex:excluded', True), ('codex:active', False)]:
+            with self.subTest(session=session):
+                state = {}
+                c.observe(self.project, state, self.now)
+                catalog = {'sessions': [{'project': 'example', 'sessionId': session,
+                           'last_activity_at': self.now + 21600}]}
+                c.observe(self.project, state, self.now + 21600, catalog)
+                self.assertEqual(bool(state.get('pending')), expect_safety)
+
     def test_safety_pending_and_acknowledged_requests_remain_bounded(self):
         state = {}
         catalog = {'sessions': [{'project': 'example', 'last_activity_at': self.now - 21601}]}
