@@ -151,14 +151,7 @@
         "purpose": "Add authenticated group conversation gateway tools"
       },
       "integration_commits": [
-        "97a60c2319037334c9308dedc03d98d01052f73b",
-        "6d8b1e6c6106ff26d119718da21df41b3e211e34",
-        "c867a2b4653dc5838c7e5bd9647eea35bb5b58b1",
-        "1b6e1c5ca2e6a3997b5dfa8a239c52e64e2b12b1",
-        "cb01388a49c9a8b196bfd234db6489879148017a",
-        "4442657e14c0801c9c2348b94b9e7cec4bfa7c5a",
-        "996c20885e3ead966ee020e1421c1190bfe7c1a9",
-        "44c8029f7d2cf07fc3c401c3e8184c18630b0aa0"
+        "a3bb1e760ed0c3464120dac0872ff30c0f68d115"
       ]
     },
     {
