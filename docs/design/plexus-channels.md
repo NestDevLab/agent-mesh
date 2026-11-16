@@ -109,6 +109,14 @@ control and an authenticated source.
 check bound to session, request nonce, exact notice and completed turn. It
 rejects later user turns and tool calls. Both observers return evidence only;
 neither sends a message, proves remote cloud delivery, or enables a cutover.
+
+`handover-notice-transport.mjs` can enqueue a correlated final-notice request
+through the existing local native transport and independently inspect the
+resulting local transcript. Queue acceptance is not publication proof. The
+caller must first durably reserve the request, verify the successor, and hold
+exclusive lifecycle control; a failed or held enqueue must not be retried
+blindly. These prerequisites are not yet connected, and this adapter is not
+wired to cutover or cloud delivery.
 # Role-scoped restart preparation
 
 The `agent-mesh.restart.v1` YAML handover block requires `role_profile` when
