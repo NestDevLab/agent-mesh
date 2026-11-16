@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, access, rm } from 'node:fs/promises';
+import { mkdtemp, access, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { probeStdioMcp, roleProbeFromAllowlist } from '../bin/role-mcp-probe.mjs';
@@ -28,7 +28,7 @@ test('a cancelled probe terminates its temporary MCP process', async t => {
   const root = await mkdtemp(join(tmpdir(), 'mcp-cancel-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const started = join(root, 'started'), late = join(root, 'late');
-  const code = "import {writeFileSync} from 'node:fs'; writeFileSync(process.argv[1], 'ok'); setTimeout(() => writeFileSync(process.argv[2], 'late'), 500); setInterval(() => {}, 1000);";
+  const code = "import {writeFileSync} from 'node:fs'; writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => writeFileSync(process.argv[2], 'late'), 500); setInterval(() => {}, 1000);";
   const controller = new AbortController();
   const probe = probeStdioMcp({ command: [process.execPath, '--input-type=module', '-e', code, started, late], timeoutMs: 2000, signal: controller.signal });
   let seen = false;
@@ -36,8 +36,10 @@ test('a cancelled probe terminates its temporary MCP process', async t => {
     try { await access(started); seen = true; } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
   }
   assert.equal(seen, true, 'fixture process started');
+  const pid = Number(await readFile(started, 'utf8'));
   controller.abort();
   assert.equal(await probe, false);
+  assert.throws(() => process.kill(pid, 0), error => error.code === 'ESRCH');
   await new Promise(resolve => setTimeout(resolve, 600));
   await assert.rejects(access(late));
 });
@@ -49,4 +51,10 @@ test('planner aborts its trusted probe when its deadline expires', async () => {
   const plan = await planRoleLaunch({ profile, authority, timeoutMs: 20, probe: (_name, { signal }) => new Promise(resolve => signal.addEventListener('abort', () => { aborted = true; resolve(false); }, { once: true })) });
   assert.equal(aborted, true);
   assert.deepEqual(plan.mcpUnavailable, ['slow']);
+});
+
+test('planner refuses to continue if cancellation is not acknowledged', async () => {
+  const profile = { schema: 'agent-mesh.role-profile.v1', role: 'fixture', permissions: [], mcp: ['slow'], plugins: [] };
+  const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['slow'], plugins: [] };
+  await assert.rejects(planRoleLaunch({ profile, authority, timeoutMs: 5, probe: () => new Promise(() => {}) }), /cancellation unconfirmed/);
 });

@@ -11,12 +11,18 @@ export async function planRoleLaunch({ profile, authority, probe, timeoutMs = 30
   if (profile.permissions.some(value => authority.humanGatedPermissions.includes(value))) throw new Error('human-gated permission cannot be pregranted');
   const available = [], unavailable = [];
   for (const name of profile.mcp) {
-    let timer; const controller = new AbortController();
+    let timer, cleanupTimer; const controller = new AbortController(), timedOut = Symbol('timeout'), cleanupTimedOut = Symbol('cleanup-timeout');
+    const pending = Promise.resolve().then(() => probe(name, { signal: controller.signal }));
     try {
-      const result = await Promise.race([Promise.resolve().then(() => probe(name, { signal: controller.signal })), new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('unreachable')); }, timeoutMs); })]);
+      const result = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(() => { controller.abort(); resolve(timedOut); }, timeoutMs); })]);
+      if (result === timedOut) {
+        const cleanup = await Promise.race([pending.then(() => true, () => true), new Promise(resolve => { cleanupTimer = setTimeout(() => resolve(cleanupTimedOut), 1500); })]);
+        if (cleanup === cleanupTimedOut) throw new Error('probe cancellation unconfirmed');
+        unavailable.push(name); continue;
+      }
       (result === true ? available : unavailable).push(name);
-    } catch { unavailable.push(name); }
-    finally { clearTimeout(timer); controller.abort(); }
+    } catch (error) { if (error?.message === 'probe cancellation unconfirmed') throw error; unavailable.push(name); }
+    finally { clearTimeout(timer); clearTimeout(cleanupTimer); controller.abort(); }
   }
   return { schema: 'agent-mesh.role-launch-plan.v1', role: profile.role, permissions: [...profile.permissions], plugins: [...profile.plugins], mcpToStart: available, mcpUnavailable: unavailable };
 }

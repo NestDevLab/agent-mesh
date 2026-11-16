@@ -17,14 +17,16 @@ export function roleProbeFromAllowlist(allowlist, timeoutMs = 3000) {
 export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signal }) {
   if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command.every(value => typeof value === 'string' && value.length > 0 && value.length < 8192 && !value.includes('\0')) || !isAbsolute(command[0]) || !env || typeof env !== 'object' || Array.isArray(env) || !Object.entries(env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && !value.includes('\0')) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 || (signal !== undefined && !(signal instanceof AbortSignal))) throw new Error('invalid MCP probe configuration');
   return new Promise(resolve => {
-    let child, timer, buffer = '', phase = 'initialize', finished = false;
+    let child, timer, reapTimer, buffer = '', phase = 'initialize', finished = false, closed = false, desired = false, resolved = false;
     let onAbort;
+    const done = result => { if (!resolved) { resolved = true; clearTimeout(reapTimer); resolve(result); } };
     const finish = result => {
       if (finished) return;
-      finished = true; clearTimeout(timer);
+      finished = true; desired = result; clearTimeout(timer);
       if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       if (child?.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
-      resolve(result);
+      if (!child || closed) done(child ? desired : false);
+      else reapTimer = setTimeout(() => done(false), 1000);
     };
     if (signal?.aborted) { finish(false); return; }
     try { child = spawn(command[0], command.slice(1), { detached: true, shell: false, stdio: ['pipe', 'pipe', 'ignore'], env }); }
@@ -34,7 +36,7 @@ export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signa
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) { finish(false); return; }
     child.once('error', () => finish(false));
-    child.once('close', () => finish(false));
+    child.once('close', () => { closed = true; if (!finished) finish(false); else done(desired); });
     child.stdin.on('error', () => finish(false));
     child.stdout.setEncoding('utf8');
     const write = message => child.stdin.write(`${JSON.stringify(message)}\n`);

@@ -123,5 +123,6 @@ and time, and terminates its process group. It currently supports protocol
 `2024-11-05` only and has been tested with synthetic processes; successful
 probing does not prove that an MCP started in the successor session. It is not
 scheduled or wired to the live handover. Planner deadlines signal cancellation;
-the supplied stdio probe terminates its process group on that signal. Other
-probe implementations must honor cancellation themselves.
+the supplied stdio probe terminates its process group on that signal and waits
+for the child close before reporting success. Other probe implementations must
+honor cancellation themselves; an unconfirmed cancellation stops the plan.
