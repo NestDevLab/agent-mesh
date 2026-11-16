@@ -129,3 +129,50 @@ test('preflight read failure is durably not-applied and releases the reservation
   assert.equal(stored.receipt.reason, 'trigger source or version not verified');
   await triggerJournal(root).begin({ id: 'second', triggers, dryRun: true });
 });
+
+test('lost forward readback is durable and can recover the proven move', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-readback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let state = { target: 'codex:old', version: 'v1' }, reads = 0, moves = 0;
+  const adapter = {
+    read: async () => { if (++reads === 2) throw new Error('read unavailable'); return structuredClone(state); },
+    move: async args => {
+      moves++;
+      assert.equal(state.target, args.expectedTarget); assert.equal(state.version, args.expectedVersion);
+      state = { target: args.target, version: `v${moves + 1}`, lastOperationId: args.operationId };
+      return { status: 'applied', version: state.version };
+    }
+  };
+  const journal = triggerJournal(root), triggers = [{ kind: 'timer', id: 'one' }];
+  const result = await reconcileTriggers({ triggers, from: 'codex:old', to: 'codex:new', transactionId: 'tx', adapter, journal, dryRun: false });
+  assert.equal(result.status, 'uncertain'); assert.equal((await triggerJournal(root).get('tx')).status, 'uncertain');
+  await assert.rejects(triggerJournal(root).begin({ id: 'other', triggers, dryRun: false }), /overlapping/);
+  const recovered = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal: triggerJournal(root) });
+  assert.equal(recovered.status, 'rolled-back'); assert.equal(state.target, 'codex:old'); assert.equal(moves, 2);
+});
+
+test('lost rollback readback stays uncertain until the rollback is observed', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-readback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const state = new Map(['one', 'two'].map(id => [id, { target: 'codex:old', version: 'v1' }]));
+  let failRead = false, moves = 0;
+  const adapter = {
+    read: async ({ id }) => { if (failRead) { failRead = false; throw new Error('read unavailable'); } return structuredClone(state.get(id)); },
+    move: async args => {
+      moves++;
+      if (args.id === 'two') return { status: 'not-applied' };
+      const current = state.get(args.id);
+      assert.equal(current.target, args.expectedTarget); assert.equal(current.version, args.expectedVersion);
+      const next = { target: args.target, version: `v${moves + 1}`, lastOperationId: args.operationId };
+      state.set(args.id, next);
+      if (args.operationId.includes(':rollback:')) failRead = true;
+      return { status: 'applied', version: next.version };
+    }
+  };
+  const journal = triggerJournal(root), triggers = ['one', 'two'].map(id => ({ kind: 'timer', id }));
+  const result = await reconcileTriggers({ triggers, from: 'codex:old', to: 'codex:new', transactionId: 'tx', adapter, journal, dryRun: false });
+  assert.equal(result.status, 'uncertain'); assert.equal(state.get('one').target, 'codex:old');
+  assert.equal((await triggerJournal(root).get('tx')).status, 'uncertain');
+  const recovered = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal: triggerJournal(root) });
+  assert.equal(recovered.status, 'rolled-back'); assert.equal(moves, 3);
+});

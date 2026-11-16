@@ -47,13 +47,15 @@ export async function reconcileTriggers({ triggers, from, to, transactionId, ada
         try { rollback = await adapter.move({ kind: prior.kind, id: prior.id, expectedTarget: to, expectedVersion: prior.after, target: from, operationId: rollbackId }); }
         catch { prior.status = 'uncertain'; receipt.status = 'uncertain'; await save(); return receipt; }
         if (rollback?.status !== 'applied' || !token(rollback.version)) { prior.status = 'uncertain'; receipt.status = 'uncertain'; await save(); return receipt; }
-        const observed = await adapter.read(prior);
+        let observed;
+        try { observed = await adapter.read(prior); } catch { /* The rollback may have applied. */ }
         if (observed?.target !== from || observed.version !== rollback.version || observed.lastOperationId !== rollbackId) { prior.status = 'uncertain'; receipt.status = 'uncertain'; await save(); return receipt; }
         prior.status = 'rolled-back'; prior.rollbackVersion = rollback.version; await save();
       }
       receipt.status = 'rolled-back'; await save(); return receipt;
     }
-    const observed = await adapter.read(row);
+    let observed;
+    try { observed = await adapter.read(row); } catch { /* The move may have applied. */ }
     if (observed?.target !== to || observed.version !== response.version || observed.lastOperationId !== operationId) { row.status = 'uncertain'; receipt.status = 'uncertain'; await save(); return receipt; }
     row.after = response.version; row.status = 'verified'; await save();
   }
