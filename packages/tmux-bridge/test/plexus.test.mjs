@@ -47,6 +47,20 @@ const scopeA = {
   handleKey: "space-a-handle-key-0123456789",
 };
 
+test("lifecycle feed exposes evidence locally but not to scoped consumers", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-life-scope-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const start = (await query(state, "changes", { initial: "head" })).cursor;
+  await ok(state, ["lifecycle", "record", "--session", `codex:${CODEX}`, "--type", "session.idle", "--id", "scope-example", "--evidence", "private:example"]);
+  const local = await query(state, "changes", { sinceCursor: start });
+  const scoped = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+  assert.equal(local.events[0].evidence, "private:example");
+  assert.equal(scoped.events[0].type, "session.idle");
+  assert.ok(!("evidence" in scoped.events[0]));
+});
+
 test("cloud registration has exact account-qualified identity and survives graph replay", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "plexus-cloud-"));
   t.after(() => rm(state, { recursive: true, force: true }));

@@ -22,6 +22,10 @@ detect the retention watermark and report an expired cursor rather than silently
 skip events. Graph projection, checkpoints, snapshots and compaction must remain
 replayable with these events; deployments must account for older readers that
 reject unknown event types before any producer is enabled.
+The local unscoped change feed includes the opaque evidence reference so a
+trusted registered module can inspect it. Scoped feeds omit that reference;
+visibility of a session does not grant access to its evidence source. A
+reference is not itself proof that its target has been verified.
 
 ## Isolation requirements
 

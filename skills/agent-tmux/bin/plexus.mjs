@@ -97,7 +97,7 @@ export function applyPlexusEvent(state, item) {
         parseGraphSessionId(item.to);
         if (item.to === item.session) throw new Error("handover target must differ");
       } else if (item.to !== undefined) throw new Error("unexpected lifecycle target");
-      effects.push({ kind: item.type, session: item.session, ...(item.to ? { to: item.to } : {}) });
+      effects.push({ kind: item.type, session: item.session, evidence: item.evidence, ...(item.to ? { to: item.to } : {}) });
       break;
     case "role.changed":
       if (!state.roleClaims) state.roleClaims = new Map();
@@ -806,7 +806,7 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
       continue;
     }
     if (output.length >= limit) break;
-    const emitted = feedFor(state, seen, item);
+    const emitted = feedFor(state, seen, item, scope);
     applyReplay(state, item, emitted);
     scanned = item.seq;
     if (!emitted.length) continue;
@@ -844,7 +844,7 @@ function applyReplay(state, item, emitted) {
   if (PLEXUS_EVENTS.has(item.type) && !emitted) applyPlexusEvent(state, item);
 }
 
-function feedFor(state, seen, item) {
+function feedFor(state, seen, item, scope) {
   const out = [];
   if (item.type === "module.batch") {
     applyModuleBatch(state, item, sessionIdOf);
@@ -911,7 +911,7 @@ function feedFor(state, seen, item) {
     } else if (effect.kind === "session.renewed") {
       out.push({ type: "session.renewed", from: effect.from, to: effect.to, subject: effect.to });
     } else if (LIFECYCLE_EVENTS.has(effect.kind)) {
-      out.push({ type: effect.kind, session: effect.session, ...(effect.to ? { to: effect.to } : {}), subject: effect.session });
+      out.push({ type: effect.kind, session: effect.session, ...(scope === null ? { evidence: effect.evidence } : {}), ...(effect.to ? { to: effect.to } : {}), subject: effect.session });
     }
   }
   return out;

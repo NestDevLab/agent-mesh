@@ -10,7 +10,7 @@ test("lifecycle evidence is replayable without mutating session ownership", () =
     const graph = state();
     assert.ok(PLEXUS_EVENTS.has(type));
     const extra = type === "session.handover" ? { to: "claude:33333333-3333-4333-8333-333333333333" } : {};
-    assert.deepEqual(applyPlexusEvent(graph, { type, session, evidence: "source:example", ...extra }), [{ kind: type, session, ...extra }]);
+    assert.deepEqual(applyPlexusEvent(graph, { type, session, evidence: "source:example", ...extra }), [{ kind: type, session, evidence: "source:example", ...extra }]);
     assert.equal(graph.nodes.size, 0);
     assert.equal(graph.links.size, 0);
   }
