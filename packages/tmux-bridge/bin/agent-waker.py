@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 from pathlib import Path
 import subprocess
 import sys
@@ -117,10 +118,14 @@ def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False, message_stdin: bool = False, receipt_out: dict | None = None) -> int:
+def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False, message_stdin: bool = False, receipt_out: dict | None = None, cloud_profile: str | None = None, cloud_scope: str | None = None) -> int:
     command = ["node", str(BIN / "agent-native-call.mjs"), "--agent", agent, "--session", session,
                "--correlation-id", correlation, "--timeout", "5"]
     command += ["--message-stdin"] if message_stdin else ["--message", message]
+    if cloud_profile or cloud_scope:
+        if not (cloud_profile and cloud_scope and agent == "claude" and delivery_only and message_stdin and not resume and not inbox_root):
+            raise ValueError("invalid cloud delivery options")
+        command += ["--cloud", "--cloud-profile", cloud_profile, "--cloud-scope", cloud_scope]
     if resume:
         if agent != "codex":
             raise ValueError("waker resume is supported only for Codex")
@@ -138,6 +143,8 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
         receipt = None
     bound = (isinstance(receipt, dict) and receipt.get("agent") == agent and
              receipt.get("sessionId") == session and receipt.get("correlationId") == correlation)
+    if cloud_profile and isinstance(receipt, dict) and receipt.get("status") == "queued" and (receipt.get("transport") != "claude-cloud" or receipt.get("readBack") is not False):
+        return 78
     if delivery_only and isinstance(receipt, dict) and receipt.get("status") == "queued" and not bound:
         return 78
     # A comms hold can exit zero: process success is not native queue acceptance.
@@ -184,6 +191,24 @@ def channel_call(args: argparse.Namespace, operation: str, *options: str) -> dic
     if not isinstance(value, dict) or not isinstance(value.get('channel'), dict):
         raise ValueError('invalid channel response')
     return value['channel']
+
+
+def cloud_target(target: str, root: str | None) -> tuple[str, str, str]:
+    match = re.fullmatch(r'claude-cloud:([a-z][a-z0-9-]{0,63}):((?:session|cse)_[A-Za-z0-9]{1,128})', target)
+    if not match or not root:
+        raise ValueError('unsupported cloud recipient')
+    directory = Path(root)
+    if not directory.is_absolute() or directory.resolve() != directory:
+        raise ValueError('invalid cloud profile root')
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('insecure cloud profile root')
+    scope, session = match.groups()
+    profile = directory / f'{scope}.json'
+    info = profile.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('insecure cloud profile')
+    return session, str(profile), scope
 
 
 def run_channel(args: argparse.Namespace) -> int:
@@ -245,19 +270,27 @@ def run_channel(args: argparse.Namespace) -> int:
             generation = channel['generation']
             if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
                 raise ValueError('invalid channel generation')
-            agent, sep, session = target.partition(':')
-            if not sep or agent not in ('codex', 'claude'):
-                raise ValueError('unsupported channel recipient')
+            cloud_profile = cloud_scope = None
+            if target.startswith('claude-cloud:'):
+                session, cloud_profile, cloud_scope = cloud_target(target, getattr(args, 'cloud_profile_root', None))
+                agent = 'claude'
+            else:
+                agent, sep, session = target.partition(':')
+                if not sep or agent not in ('codex', 'claude'):
+                    raise ValueError('unsupported channel recipient')
             channel = channel_call(args, 'begin-delivery', '--id', pending['id'], '--session', target, '--generation', str(generation))
             item = next(item for item in channel['queue'] if item['id'] == pending['id'])
-            agent, sep, session = item['session'].partition(':')
-            if not sep or agent not in ('codex', 'claude') or item['session'] != target or item['generation'] != generation:
+            if item['session'] != target or item['generation'] != generation:
                 raise ValueError('unsupported channel recipient')
             transport_receipt = {}
-            code = deliver(agent, session, item['id'], item['payload'], args.managed_inbox_root,
-                           True, resume=args.resume and agent == 'codex', message_stdin=True, receipt_out=transport_receipt)
+            options = {'cloud_profile': cloud_profile, 'cloud_scope': cloud_scope} if cloud_profile else {}
+            code = deliver(agent, session, item['id'], item['payload'], None if cloud_profile else args.managed_inbox_root,
+                           True, resume=args.resume and agent == 'codex', message_stdin=True, receipt_out=transport_receipt, **options)
             if code != 0:
                 print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'delivery unconfirmed'}))
+                return 3
+            if cloud_profile:
+                print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'cloud queued; receipt unverified'}))
                 return 3
             receipt = {'status': 'accepted', 'messageId': item['id'], 'session': item['session'], 'generation': item['generation']}
             receipt.update(transport_receipt)
@@ -342,6 +375,7 @@ def main(argv: list[str] | None = None) -> int:
     recipient.add_argument("--session", help="owning session UUID")
     recipient.add_argument("--channel", help="stable channel identifier")
     runner.add_argument("--graph-state", help="override graph state for isolated tests")
+    runner.add_argument("--cloud-profile-root", help="private directory for scoped cloud account profiles")
     runner.add_argument("--managed-inbox-root", help="required for Claude sessions")
     runner.add_argument("--delivery-only", action="store_true", help="acknowledge the native queue, without waiting for a result")
     runner.add_argument("--resume", action="store_true", help="opt in to native Codex resume when idle")

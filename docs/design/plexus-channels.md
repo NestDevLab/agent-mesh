@@ -71,13 +71,16 @@ The native cloud transport can opt into this binding with an explicitly scoped,
 private `agent-mesh.cloud-account.v1` profile. The queued comms replay binds the
 profile digest and scope, refusing a changed profile. Its provider acknowledgement
 still proves queue acceptance only; it does not prove that the recipient read it.
-The channel waker is not yet connected to this scoped transport. Account checks
+The channel waker can opt in with a private profile directory; it routes a scoped
+cloud session once and keeps the message in flight until independently verified.
+There is no cloud readback reconciliation yet, so this route is not operational
+for handover and deliberately blocks subsequent delivery. Account checks
 cannot exclude a non-cooperating concurrent switch that is changed and restored
 between the checks; the profile and account directory require operator control.
 Profile configuration and digests are private. This check relies on a trusted
 CLI and configuration directory, does not prevent a concurrent credential
-switch, and is not provider readback or proof of delivery. It is not connected
-to channel routing or enabled by default.
+switch, and is not provider readback or proof of delivery. The route is disabled
+by default.
 
 This is not yet a complete handover workflow: it does not write state for the
 old session, publish or verify the old session's final notice, archive anything,

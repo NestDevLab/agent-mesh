@@ -64,6 +64,44 @@ class ChannelWakerTest(unittest.TestCase):
         self.assertIn('--no-resume', run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs['input'], 'private fixture')
 
+    def test_cloud_queue_stays_inflight_and_is_not_resent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rootdir = Path(directory)
+            profiles = rootdir / 'profiles'
+            profiles.mkdir(mode=0o700)
+            profile = profiles / 'fixture.json'
+            profile.write_text('{}')
+            profile.chmod(0o600)
+            state = rootdir / 'graph'
+            def call(*args):
+                result = subprocess.run(['node', str(root / 'bin' / 'mesh-graph.mjs'), '--state', str(state), *args], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+            target = 'claude-cloud:fixture:session_Test'
+            call('cloud', 'register', '--session', target, '--evidence', 'test:fixture')
+            call('migrate', '--apply', '--json')
+            call('channel', 'create', '--name', 'example', '--session', target)
+            args = SimpleNamespace(state=str(rootdir / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False, cloud_profile_root=str(profiles))
+            with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'deliver', return_value=0) as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                self.assertEqual(waker.run(args), 3)
+                self.assertEqual(deliver.call_count, 1)
+                self.assertEqual(deliver.call_args.kwargs['cloud_scope'], 'fixture')
+                self.assertEqual(deliver.call_args.kwargs['cloud_profile'], str(profile))
+            item = call('channel', 'get', '--name', 'example')['channel']['queue'][0]
+            self.assertEqual(item['state'], 'inflight')
+
+    def test_cloud_adapter_requires_bound_queue_receipt(self):
+        from unittest.mock import Mock
+        receipt = {'status': 'queued', 'agent': 'claude', 'sessionId': 'session_Test', 'correlationId': 'message-1', 'transport': 'claude-cloud', 'readBack': False}
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(receipt))) as run:
+            self.assertEqual(waker.deliver('claude', 'session_Test', 'message-1', 'fixture', None, True, message_stdin=True, cloud_profile='/fixture/profile.json', cloud_scope='fixture'), 0)
+        self.assertIn('--cloud', run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs['input'], 'fixture')
+        receipt['readBack'] = True
+        with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(receipt))):
+            self.assertEqual(waker.deliver('claude', 'session_Test', 'message-1', 'fixture', None, True, message_stdin=True, cloud_profile='/fixture/profile.json', cloud_scope='fixture'), 78)
+
     def test_lost_reservation_response_does_not_send_or_retry(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'graph'
