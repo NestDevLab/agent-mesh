@@ -122,9 +122,11 @@ class ChannelWakerTest(unittest.TestCase):
             call('migrate', '--apply', '--json')
             call('channel', 'create', '--name', 'example', '--session', f'codex:{uuid}')
             args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
-            with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'deliver', return_value=0) as deliver, contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'channel_call', wraps=waker.channel_call) as channel_call, patch.object(waker, 'deliver', return_value=0) as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 0)
                 self.assertEqual(deliver.call_args.args[0:2], ('codex', uuid))
+                reservation = next(call.args for call in channel_call.call_args_list if call.args[1] == 'begin-delivery')
+                self.assertEqual(reservation[-2:], ('--generation', '1'))
             self.assertEqual(call('channel', 'get', '--name', 'example')['channel']['queue'][0]['state'], 'accepted')
             with patch.object(waker, 'run_producer', return_value=([{'event': 'two'}], [])), patch.object(waker, 'deliver', return_value=78) as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 3)

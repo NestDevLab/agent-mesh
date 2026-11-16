@@ -235,13 +235,16 @@ def run_channel(args: argparse.Namespace) -> int:
                 print(json.dumps({'job': args.job, 'outcome': 'noop'}))
                 return 0
             target = channel['session']
+            generation = channel['generation']
+            if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+                raise ValueError('invalid channel generation')
             agent, sep, session = target.partition(':')
             if not sep or agent not in ('codex', 'claude'):
                 raise ValueError('unsupported channel recipient')
-            channel = channel_call(args, 'begin-delivery', '--id', pending['id'], '--session', target)
+            channel = channel_call(args, 'begin-delivery', '--id', pending['id'], '--session', target, '--generation', str(generation))
             item = next(item for item in channel['queue'] if item['id'] == pending['id'])
             agent, sep, session = item['session'].partition(':')
-            if not sep or agent not in ('codex', 'claude') or item['session'] != target:
+            if not sep or agent not in ('codex', 'claude') or item['session'] != target or item['generation'] != generation:
                 raise ValueError('unsupported channel recipient')
             code = deliver(agent, session, item['id'], item['payload'], args.managed_inbox_root,
                            True, resume=args.resume and agent == 'codex', message_stdin=True)

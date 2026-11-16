@@ -65,6 +65,7 @@ const { values, positionals } = parseArgs({
   options: {
     state: { type: "string" },
     session: { type: "string" },
+    generation: { type: "string" },
     project: { type: "string" },
     archive: { type: "string" },
     ttl: { type: "string" },
@@ -159,7 +160,10 @@ try {
         } else {
           if (!current) throw new Error("unknown channel");
           if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), channelInput);
-          else if (subcommand === "begin-delivery") next = beginDelivery(current, requiredSingleLine(values.id, "--id"), values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"));
+          else if (subcommand === "begin-delivery") {
+            if (values.generation !== undefined && !/^[1-9][0-9]*$/.test(values.generation)) throw new Error("invalid channel generation");
+            next = beginDelivery(current, requiredSingleLine(values.id, "--id"), values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"), values.generation === undefined ? undefined : Number(values.generation));
+          }
           else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "finish-handover") {
