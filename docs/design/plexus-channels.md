@@ -238,6 +238,8 @@ This is not a cloud or Claude delivery adapter; native cutover remains disabled.
 For a draining local Claude channel, `observe-claude-delivery` checks one
 managed inbox record in a stable local user transcript snapshot, binding its
 correlation, payload, session and generation before marking the backlog item
-observed. An enqueue-only record is insufficient. This source does not prove
+observed. It requires a unique matching native enqueue preceding the user
+record; an enqueue-only record is insufficient. Native inbox user records can
+carry the `isMeta` flag and remain eligible when this correlation is proven. This source does not prove
 execution, attention, finality or cloud delivery; its real transport transcript
 shape still requires isolated qualification. Operational cutover remains disabled.

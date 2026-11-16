@@ -28,25 +28,28 @@ export async function observeClaudeDelivery({ root, session, generation, message
   let text;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new Error('invalid transcript encoding'); }
   if (!text.endsWith('\n')) throw new Error('partial transcript record');
-  let found = 0;
+  let found = 0, queued = 0, queuedLine = null;
   for (const line of text.split('\n')) {
     if (!line) continue;
     let record; try { record = JSON.parse(line); } catch { throw new Error('invalid transcript record'); }
     if (!record || typeof record !== 'object' || Array.isArray(record)) throw new Error('invalid transcript record');
-    if (record.type !== 'user' || record.isSidechain || record.isMeta) continue;
-    if (record.sessionId !== session.slice(7)) throw new Error('transcript session mismatch');
-    const content = record.message?.content;
+    const isQueue = record.type === 'queue-operation' && record.operation === 'enqueue';
+    const isUser = record.type === 'user' && !record.isSidechain && record.message?.role === 'user';
+    if (!isQueue && !isUser) continue;
+    const content = isQueue ? record.content : record.message?.content;
     const parts = typeof content === 'string' ? [content] : Array.isArray(content) ? content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text) : [];
     for (const part of parts) for (const entry of part.split('\n')) {
       if (!entry.startsWith('AGENT_MESH_INBOX ')) continue;
       let inbox; try { inbox = JSON.parse(entry.slice('AGENT_MESH_INBOX '.length)); } catch { throw new Error('invalid inbox record'); }
       if (inbox?.deliveryId === messageId || inbox?.meshId === messageId) {
+        if (record.sessionId !== session.slice(7)) throw new Error('transcript session mismatch');
         if (inbox.schema !== 'agent-mesh.monitor-inbox.v1' || inbox.deliveryId !== messageId || inbox.meshId !== messageId || inbox.prompt !== payload) throw new Error('inbox correlation mismatch');
-        found++;
+        if (isQueue) { queued++; queuedLine = entry; }
+        else { if (queued !== 1 || queuedLine !== entry) throw new Error('matching prior enqueue unavailable'); found++; }
       }
     }
   }
-  if (found !== 1) throw new Error('delivery not uniquely observed');
+  if (queued !== 1 || found !== 1) throw new Error('delivery not uniquely observed');
   const payloadSha256 = hash(payload), transcriptSha256 = hash(bytes);
   const evidence = `claude-transcript:${hash(JSON.stringify([session, generation, messageId, payloadSha256, transcriptSha256]))}`;
   return { schema: 'agent-mesh.delivery-observation.v1', session, generation, messageId, payloadSha256, transcriptSha256, evidence };

@@ -193,9 +193,9 @@ test('local Claude delivery is observed only from a matching user transcript and
   await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-draining', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
   const inbox = { schema: 'agent-mesh.monitor-inbox.v1', deliveryId: 'one', meshId: 'one', prompt: 'fixture' };
   const text = `AGENT_MESH_INBOX ${JSON.stringify(inbox)}`, path = join(project, `${newId}.jsonl`);
-  await writeFile(path, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: text }) + '\n', { mode: 0o600 });
+  await writeFile(path, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', sessionId: newId, content: text }) + '\n', { mode: 0o600 });
   await assert.rejects(call('channel', 'observe-claude-delivery', '--name', 'example', '--id', 'one'), /not uniquely observed/);
-  await appendFile(path, JSON.stringify({ type: 'user', sessionId: newId, message: { content: text } }) + '\n');
+  await appendFile(path, JSON.stringify({ type: 'user', isMeta: true, sessionId: newId, message: { role: 'user', content: text } }) + '\n');
   const result = await call('channel', 'observe-claude-delivery', '--name', 'example', '--id', 'one');
   assert.equal(result.status, 'observed'); assert.match(result.evidence, /^claude-transcript:[a-f0-9]{64}$/);
   await rm(join(state, 'checkpoint.json'), { force: true });
