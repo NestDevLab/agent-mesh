@@ -20,7 +20,7 @@ export const ROLE_WEIGHTS = { owns: 1, "works-on": 1, coordinates: 0.8, reviews:
 export const HALF_LIFE_DAYS = 7;
 export const TOUCH_COALESCE_MS = 10 * 60 * 1000;
 export const LIFECYCLE_EVENTS = new Set(["session.started", "session.idle", "session.compacted", "session.stopped", "session.handover"]);
-export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated", ...LIFECYCLE_EVENTS]);
+export const PLEXUS_EVENTS = new Set(["channel.updated", "role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated", ...LIFECYCLE_EVENTS]);
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -86,6 +86,11 @@ export function applyPlexusEvent(state, item) {
   const effects = [];
   const openLinks = () => [...state.links.values()].filter((link) => link.until === null);
   switch (item.type) {
+    case "channel.updated":
+      if (!item.channel || item.channel.schema !== "agent-mesh.channel.v1" || typeof item.channel.id !== "string" || !Array.isArray(item.channel.queue)) throw new Error("invalid channel event");
+      if (!state.channels) state.channels = new Map();
+      state.channels.set(item.channel.id, item.channel);
+      break;
     case "session.started":
     case "session.idle":
     case "session.compacted":

@@ -36,6 +36,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
+import { createChannel, enqueue, beginHandover } from "./channel-state.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -122,7 +123,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -134,6 +135,35 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "channel": {
+      const name = requiredSingleLine(values.name, "--name");
+      if (subcommand === "get") {
+        const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
+        if (!channel) throw new Error("unknown channel");
+        printResult({ channel }, { json: true });
+        break;
+      }
+      const result = mutate(stateDir, graph => {
+        if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
+        const current = (graph.channels || []).find((item) => item.id === name);
+        let next;
+        if (subcommand === "create") {
+          if (current) throw new Error("channel already exists");
+          const session = requiredSingleLine(values.session, "--session");
+          if (graph.nodes.filter(node => plexus.sessionIdOf(node) === session).length !== 1) throw new Error("unknown or ambiguous session");
+          next = createChannel(name, session);
+        } else {
+          if (!current) throw new Error("unknown channel");
+          if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), values.input);
+          else if (subcommand === "begin-handover") next = beginHandover(current);
+          else throw new Error("unknown channel operation");
+        }
+        if (current && JSON.stringify(current) === JSON.stringify(next)) return { graph, result: { channel: next, duplicate: true } };
+        return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
+      });
+      printResult(result, { json: true });
+      break;
+    }
     case "lifecycle": {
       if (subcommand !== "record") throw new Error("unknown lifecycle operation");
       if (!plexus.LIFECYCLE_EVENTS.has(values.type)) throw new Error("invalid lifecycle type");
@@ -1201,7 +1231,7 @@ function readCheckpoint(statePath) {
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
       // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
-      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Array.isArray(checkpoint.graph.moduleStates) || !Array.isArray(checkpoint.graph.lifecycleReceipts) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
+      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Array.isArray(checkpoint.graph.moduleStates) || !Array.isArray(checkpoint.graph.lifecycleReceipts) || !Array.isArray(checkpoint.graph.channels) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1290,7 +1320,7 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
-  const state = { nodes, moduleStates: new Map((base?.moduleStates || []).map(item => [item.name, item])), lifecycleReceipts: new Map((base?.lifecycleReceipts || []).map(item => [item.id, item])), roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const state = { nodes, channels: new Map((base?.channels || []).map(item => [item.id, item])), moduleStates: new Map((base?.moduleStates || []).map(item => [item.name, item])), lifecycleReceipts: new Map((base?.lifecycleReceipts || []).map(item => [item.id, item])), roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
   let unnumbered = base?.unnumbered === true;
@@ -1337,6 +1367,7 @@ function deriveGraph(events, base = null) {
     nodes: state.migrated ? plexus.projectNodeRefs(sortedNodes, links) : sortedNodes,
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
     links,
+    channels: [...state.channels.values()],
     renewals: state.renewals,
     moduleStates: [...state.moduleStates.values()],
     lifecycleReceipts: [...state.lifecycleReceipts.values()],
