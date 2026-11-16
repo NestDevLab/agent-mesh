@@ -198,3 +198,12 @@ plugin isolation, MCP event coverage and startup token evidence are unknown.
 The Codex CLI 0.169.0 generated schema says its `disabledPluginIds` response
 field does not yet filter plugin capabilities; it must not be treated as proof
 that excluded plugins are inactive. No live launch uses this assessment.
+
+`namespace-exec-gate.py` is a coordination gate for a future dedicated
+launcher: it executes only after an explicit `GO` record on an owner-private
+FIFO and fails closed on EOF, a different record or an unsafe FIFO. It does not
+authenticate a same-user writer, establish process ownership, or implement
+rollback. Isolated tests covered coordinator exit and a child that changes
+process group inside a PID namespace; production launcher ownership, pidfd
+recovery, runtime compatibility and remote effects remain unverified. The gate
+is not connected to live handover.
