@@ -14,6 +14,9 @@ test('only interpreter bytecode in cache directories is excluded from text scann
 });
 
 test('Plexus public mechanism paths and private references are classified', () => {
+  assert.equal(isPlexusMechanismFile('packages/tmux-bridge/bin/codex-compaction-evidence.mjs'), true);
+  assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/codex-compaction-evidence.test.mjs'), true);
+  assert.equal(isPlexusMechanismFile('skills/agent-tmux/bin/codex-compaction-evidence.mjs'), true);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/bin/restart-state.mjs'), true);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/restart-state.test.mjs'), true);
   assert.equal(isPlexusMechanismFile('skills/agent-tmux/bin/restart-state.mjs'), true);

@@ -25,6 +25,24 @@ the feed by `eventId`. A missing wake event is not evidence of zero wakes;
 consumers must establish source and time-window coverage separately. This
 contract does not itself install or enable a wake-event producer.
 
+For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
+an on-demand read of the configured local app server. It requires the exact
+thread, turn and `contextCompaction` item, a full turn view and a recorded item
+completion timestamp. It writes a private, content-addressed evidence record
+before idempotently recording `session.compacted` in an explicitly selected
+graph; the command never defaults to the live graph. A local
+consumer can resolve it with `--verify <reference> --session <session>
+--evidence-root <directory>`, which checks the private file, digest and session.
+This relies on an operator-controlled root and local app-server socket; the
+record is not a cryptographic attestation against an untrusted local writer.
+The feed's `at`
+is the recording time; the evidence's `completedAtMs` is the native item time.
+An absent item, partial view, unavailable timestamp, failed read or graph error
+is unknown, never zero. This tool does not discover items, establish complete
+history coverage, observe Claude, schedule collection or authenticate an
+untrusted local socket. The operator must protect the socket and evidence root.
+Older graph readers must understand the new lifecycle event before use.
+
 Events use the graph's existing ordered, append-only store. Their consumers must
 detect the retention watermark and report an expired cursor rather than silently
 skip events. Graph projection, checkpoints, snapshots and compaction must remain

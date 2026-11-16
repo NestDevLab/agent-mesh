@@ -6,6 +6,7 @@ export const plexusDiagram = `flowchart LR
   Queue --> Journal["Graph event journal"]
   Session --> Journal
   Wake["Wake observation"] -. "planned producer" .-> Journal
+  Compaction["Codex compaction evidence"] --> Journal
   Module["Registered module"] --> Contract["Versioned JSON contract"]
   Contract --> Journal
   Queue -- "bound receipt" --> Session
