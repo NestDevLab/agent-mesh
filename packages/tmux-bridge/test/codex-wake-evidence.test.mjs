@@ -31,7 +31,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
     requests.push(request);
     if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: 'queued-1', clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture' }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
-    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: thread, turns: [{ id: turn, startedAt: 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: correlation, content: [{ type: 'text', text: 'fixture' }] }] }] } } });
+    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture' }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
   });
   await new Promise(resolve => server.listen(socket, resolve));
@@ -72,6 +72,15 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   assert.deepEqual((await readdir(partialRoot)).map(name => name.split('-')[0]), ['intent']);
   const partialFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 1);
+  for (const mismatch of ['wrong-thread', 'wrong-turn', 'wrong-time', 'wrong-client', 'wrong-input']) {
+    const mismatchRoot = join(root, mismatch); await mkdir(mismatchRoot, { mode: 0o700 });
+    const mismatchArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--evidence-root', mismatchRoot, '--graph-state', state];
+    mode = mismatch;
+    await assert.rejects(exec(process.execPath, [bin, '--apply', ...mismatchArgs], { env }));
+    assert.deepEqual((await readdir(mismatchRoot)).map(name => name.split('-')[0]), ['intent']);
+  }
+  const mismatchFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
+  assert.equal(mismatchFeed.events.filter(e => e.type === 'session.woken').length, 1);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);
