@@ -56,22 +56,24 @@ export function beginHandover(state) {
 }
 
 // A reservation is durable and has no expiry: a crashed native call is unknown.
-export function reserveWake(state, id, session, generation, nativeQueueId) {
-  if (!['active', 'draining'].includes(state.phase) || state.wakeReservation || state.session !== session || state.generation !== generation || !Number.isSafeInteger(generation) || generation < 1 || !identifier(nativeQueueId)) throw new Error('wake reservation unavailable');
+export function reserveWake(state, id, session, generation, nativeQueueId, mode = 'start') {
+  if (!['start', 'auto-readback'].includes(mode) || !['active', 'draining'].includes(state.phase) || state.wakeReservation || state.session !== session || state.generation !== generation || !Number.isSafeInteger(generation) || generation < 1 || !identifier(nativeQueueId)) throw new Error('wake reservation unavailable');
   const matches = state.queue.filter(item => item.id === id && item.state === 'accepted' && !item.wakeEvidence && item.session === session && item.generation === generation && item.nativeQueueId === nativeQueueId);
   if (matches.length !== 1 || !session.startsWith('codex:')) throw new Error('wake identity unavailable');
   const next = copy(state);
-  next.wakeReservation = { id, session, generation, nativeQueueId };
+  next.wakeReservation = { id, session, generation, nativeQueueId, mode };
   return next;
 }
 
 export function settleWake(state, proof) {
   const reservation = state.wakeReservation;
-  if (!reservation || !['active', 'draining'].includes(state.phase) || state.session !== reservation.session || state.generation !== reservation.generation || !proof || proof.session !== reservation.session || proof.correlation !== reservation.id || proof.queueId !== reservation.nativeQueueId || !/^codex-wake:[a-f0-9]{64}$/.test(proof.evidence || '')) throw new Error('wake proof does not match reservation');
+  if (!reservation || (proof?.source === 'codex-app-server.auto-start-bound-readback' ? reservation.mode !== 'auto-readback' : reservation.mode === 'auto-readback') || !['active', 'draining'].includes(state.phase) || state.session !== reservation.session || state.generation !== reservation.generation || !proof || proof.session !== reservation.session || proof.correlation !== reservation.id || proof.queueId !== reservation.nativeQueueId || !/^codex-wake:[a-f0-9]{64}$/.test(proof.evidence || '')) throw new Error('wake proof does not match reservation');
   const next = copy(state), item = next.queue.find(row => row.id === reservation.id && row.session === reservation.session && row.generation === reservation.generation && row.nativeQueueId === reservation.nativeQueueId && row.state === 'accepted' && !row.wakeEvidence);
   if (!item) throw new Error('wake item unavailable');
   item.wakeEvidence = proof.evidence;
-  if (state.phase === 'draining' && state.handover?.backlog.includes(item.id) && proof.schema === 'agent-mesh.codex-wake-evidence.v4' && ['codex-app-server.queue-start-bound-readback', 'codex-app-server.correlated-recovery-bound'].includes(proof.source) && proof.channel === state.id && proof.generation === item.generation && proof.payloadSha256 === createHash('sha256').update(item.payload).digest('hex')) {
+  const boundWake = proof.schema === 'agent-mesh.codex-wake-evidence.v4' && ['codex-app-server.queue-start-bound-readback', 'codex-app-server.correlated-recovery-bound'].includes(proof.source);
+  const autoWake = proof.schema === 'agent-mesh.codex-wake-evidence.v5' && proof.source === 'codex-app-server.auto-start-bound-readback' && proof.dispatchReservedAtMs === item.dispatchReservedAtMs;
+  if (state.phase === 'draining' && state.handover?.backlog.includes(item.id) && (boundWake || autoWake) && proof.channel === state.id && proof.generation === item.generation && proof.payloadSha256 === createHash('sha256').update(item.payload).digest('hex')) {
     item.state = 'observed'; item.observation = proof.evidence;
   }
   delete next.wakeReservation;

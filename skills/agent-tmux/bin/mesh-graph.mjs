@@ -263,7 +263,9 @@ try {
           if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), channelInput);
           else if (subcommand === "begin-delivery") {
             if (values.generation !== undefined && !/^[1-9][0-9]*$/.test(values.generation)) throw new Error("invalid channel generation");
-            next = beginDelivery(current, requiredSingleLine(values.id, "--id"), values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"), values.generation === undefined ? undefined : Number(values.generation));
+            const messageId = requiredSingleLine(values.id, "--id");
+            next = beginDelivery(current, messageId, values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"), values.generation === undefined ? undefined : Number(values.generation));
+            next.queue.find(item => item.id === messageId).dispatchReservedAtMs = Date.now();
           }
           else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
           else if (subcommand === "reserve-wake") {
@@ -272,7 +274,7 @@ try {
             const sourceId = `codex-wake-${createHash("sha256").update(JSON.stringify([session, queueId])).digest("hex")}`;
             const receiptId = createHash("sha256").update(sourceId).digest("hex");
             if ((graph.lifecycleReceipts || []).some(item => item.id === receiptId) || (graph.channels || []).some(item => item.id !== name && item.wakeReservation?.session === session && item.wakeReservation?.nativeQueueId === queueId)) throw new Error("wake identity already reserved or recorded");
-            next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId);
+            next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId, values.source === undefined ? 'start' : requiredSingleLine(values.source, '--source'));
           }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "reserve-notice") {

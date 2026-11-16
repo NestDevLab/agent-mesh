@@ -259,6 +259,10 @@ A network-isolated experiment with Codex CLI 0.169.0 and a temporary home
 observed a queued submission leave the queue and a turn start before an
 explicit queue/start call. Without model connectivity, the full turn readback
 did not expose a correlated user item in the observation window. The existing
-producer refuses an empty queue and does not retry the start; it cannot yet
-prove this automatic-start path or count it as zero. An authenticated, uniquely
-correlated observation path is still required.
+explicit-start producer refuses an empty queue and does not retry the start.
+An explicit `--observe-auto` path reserves a distinct observation mode and
+uses native full-turn readback to bind the queued client ID and exact payload.
+It requires the turn start timestamp to be strictly later than the durable
+dispatch reservation. Since native turn time has one-second precision, many
+valid same-second starts remain unknown; they must never be counted as zero.
+No waker invokes this path automatically and its live behavior is not qualified.

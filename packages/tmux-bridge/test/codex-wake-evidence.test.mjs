@@ -33,13 +33,13 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   }
   await prepareChannel('success');
   const cursor = (await call('query', 'changes', '--input', JSON.stringify({ initial: 'head' }))).cursor;
-  const requests = []; let mode = 'success', nativeId = 'queued-1';
+  const requests = []; let mode = 'success', nativeId = 'queued-1', autoReservedMs = 0;
   const server = createAppServer((request, peer) => {
     if (!request.id) return;
     requests.push(request);
     if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: mode === 'auto-drained' ? [] : [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: mode === 'wrong-queue-payload' ? 'different' : 'fixture', text_elements: [] }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
-    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
+    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : mode === 'auto-same-second' ? Math.floor(autoReservedMs / 1000) : nativeId === 'queued-auto-proof' && mode !== 'auto-old-turn' ? Math.floor(Date.now() / 1000) : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', startedAtMs: nativeId === 'queued-auto-proof' ? Date.now() : 123456789001, clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
   });
   await new Promise(resolve => server.listen(socket, resolve));
@@ -151,6 +151,25 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const drained = (await call('channel', 'get', '--name', 'drain')).channel;
   assert.equal(drained.queue[0].state, 'observed'); assert.equal(drained.wakeReservation, undefined);
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, callsBeforeRecovery);
+  // An auto-consumed queue item is reconciled by readback only, never started.
+  const autoRoot = join(root, 'auto-proof'); await mkdir(autoRoot, { mode: 0o700 });
+  nativeId = 'queued-auto-proof'; await prepareChannel('auto-proof', nativeId);
+  autoReservedMs = (await call('channel', 'get', '--name', 'auto-proof')).channel.queue[0].dispatchReservedAtMs;
+  await new Promise(resolve => setTimeout(resolve, 1100)); // native turn timestamps have one-second precision
+  const autoArgs = ['--observe-auto', '--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'auto-proof', '--generation', '1', '--evidence-root', autoRoot, '--graph-state', state];
+  mode = 'wrong-client'; const autoStarts = requests.filter(r => r.method === 'thread/queue/start').length;
+  await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
+  assert.equal((await call('channel', 'get', '--name', 'auto-proof')).channel.wakeReservation.mode, 'auto-readback');
+  await assert.rejects(exec(process.execPath, [bin, '--apply', '--reconcile', '--channel', 'auto-proof', '--evidence-root', autoRoot, '--graph-state', state], { env }));
+  mode = 'wrong-input'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
+  mode = 'auto-old-turn'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
+  mode = 'auto-same-second'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
+  mode = 'success';
+  const autoResult = JSON.parse((await exec(process.execPath, [bin, '--apply', ...autoArgs], { env })).stdout);
+  const autoProof = await verifyCodexWakeEvidence({ evidenceRoot: autoRoot, reference: autoResult.evidence, session });
+  assert.equal(autoProof.source, 'codex-app-server.auto-start-bound-readback');
+  assert.equal(autoProof.channel, 'auto-proof'); assert.equal(autoResult.settled, true);
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, autoStarts);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);

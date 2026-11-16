@@ -45,7 +45,7 @@ export async function reconcileCodexWake({ channel, graphState, evidenceRoot, ap
   const result = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'get', '--name', channel], { encoding: 'utf8', timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
   let state; try { state = JSON.parse(result.stdout)?.channel; } catch { throw new Error('channel unavailable'); }
   const reservation = state?.wakeReservation;
-  if (result.error || result.status !== 0 || !['active', 'draining'].includes(state?.phase) || !reservation || state.session !== reservation.session || state.generation !== reservation.generation || typeof reservation.session !== 'string' || !reservation.session.startsWith('codex:') || !UUID.test(reservation.session.slice(6)) || typeof reservation.id !== 'string' || !reservation.id.startsWith('waker-') || !UUID.test(reservation.id.slice(6)) || typeof reservation.nativeQueueId !== 'string' || !TOKEN.test(reservation.nativeQueueId)) throw new Error('wake reservation unavailable');
+  if (result.error || result.status !== 0 || !['active', 'draining'].includes(state?.phase) || !reservation || reservation.mode === 'auto-readback' || state.session !== reservation.session || state.generation !== reservation.generation || typeof reservation.session !== 'string' || !reservation.session.startsWith('codex:') || !UUID.test(reservation.session.slice(6)) || typeof reservation.id !== 'string' || !reservation.id.startsWith('waker-') || !UUID.test(reservation.id.slice(6)) || typeof reservation.nativeQueueId !== 'string' || !TOKEN.test(reservation.nativeQueueId)) throw new Error('wake reservation unavailable');
   const { session, id: correlation, nativeQueueId: queueId, generation } = reservation;
   const items = state.queue.filter(item => item.id === correlation && item.session === session && item.generation === generation && item.nativeQueueId === queueId && item.state === 'accepted' && typeof item.payload === 'string');
   if (items.length !== 1) throw new Error('wake item unavailable');
@@ -69,6 +69,44 @@ export async function reconcileCodexWake({ channel, graphState, evidenceRoot, ap
   return publishCodexWake({ evidenceRoot, reference, session, graphState, channel });
 }
 
+// Read-only reconciliation of a submission consumed automatically by the native
+// queue. A distinct reservation mode prevents racing an explicit queue/start.
+export async function observeAutoCodexWake({ channel, thread, queueId, correlation, generation, graphState, evidenceRoot, apply }) {
+  if (apply !== true || typeof thread !== 'string' || !UUID.test(thread) || typeof queueId !== 'string' || !TOKEN.test(queueId) || typeof correlation !== 'string' || !correlation.startsWith('waker-') || !UUID.test(correlation.slice(6)) || typeof channel !== 'string' || !/^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(channel) || !Number.isSafeInteger(generation) || generation < 1 || typeof graphState !== 'string' || !isAbsolute(graphState)) throw new Error('explicit auto wake identity required');
+  await privateRoot(graphState); await privateRoot(evidenceRoot);
+  const session = `codex:${thread.toLowerCase()}`;
+  const getChannel = () => {
+    const result = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'get', '--name', channel], { encoding: 'utf8', timeout: 30000, maxBuffer: 32 * 1024 * 1024 });
+    if (result.error || result.status !== 0) throw new Error('channel unavailable');
+    let value; try { value = JSON.parse(result.stdout)?.channel; } catch { throw new Error('channel unavailable'); }
+    return value;
+  };
+  let state = getChannel();
+  if (!state?.wakeReservation) {
+    const reserved = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'reserve-wake', '--name', channel, '--id', correlation, '--session', session, '--generation', String(generation), '--input', queueId, '--source', 'auto-readback'], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 });
+    if (reserved.error || reserved.status !== 0) throw new Error('auto wake reservation unavailable or uncertain');
+    state = getChannel();
+  }
+  const reservation = state?.wakeReservation;
+  if (!['active', 'draining'].includes(state?.phase) || state.id !== channel || state.session !== session || state.generation !== generation || !reservation || reservation.mode !== 'auto-readback' || reservation.id !== correlation || reservation.session !== session || reservation.generation !== generation || reservation.nativeQueueId !== queueId) throw new Error('auto wake reservation mismatch');
+  const items = state.queue.filter(item => item.id === correlation && item.session === session && item.generation === generation && item.nativeQueueId === queueId && item.state === 'accepted' && typeof item.payload === 'string' && Number.isSafeInteger(item.dispatchReservedAtMs) && item.dispatchReservedAtMs > 0);
+  if (items.length !== 1) throw new Error('auto wake item unavailable');
+  const observed = await withCodexAppServer({ clientName: 'agent-mesh-auto-wake-readback', timeout: 30000, timeoutMessage: 'native read unavailable' }, request => request('thread/read', { threadId: thread.toLowerCase(), includeTurns: true }));
+  if (observed?.thread?.id !== thread.toLowerCase() || !Array.isArray(observed.thread.turns)) throw new Error('native read unavailable');
+  const matching = [];
+  for (const turn of observed.thread.turns) {
+    if (!Array.isArray(turn.items) || (turn.itemsView !== undefined && turn.itemsView !== 'full')) throw new Error('incomplete native read');
+    for (const item of turn.items) if (item?.type === 'userMessage' && item.clientId === correlation) matching.push({ turn, item });
+  }
+  const candidate = matching[0];
+  if (matching.length !== 1 || typeof candidate.turn.id !== 'string' || !UUID.test(candidate.turn.id) || !Number.isSafeInteger(candidate.turn.startedAt) || candidate.turn.startedAt <= 0 || !['inProgress', 'completed', 'failed', 'interrupted'].includes(candidate.turn.status) || !Number.isSafeInteger(candidate.item.startedAtMs) || candidate.item.startedAtMs < items[0].dispatchReservedAtMs || candidate.turn.startedAt * 1000 <= items[0].dispatchReservedAtMs || JSON.stringify(candidate.item.content) !== JSON.stringify([{ type: 'text', text: items[0].payload, text_elements: [] }])) throw new Error('auto wake readback not uniquely verified');
+  const evidence = { schema: 'agent-mesh.codex-wake-evidence.v5', source: 'codex-app-server.auto-start-bound-readback', session, queueId, correlation, turn: candidate.turn.id, startedAt: candidate.turn.startedAt, channel, generation, payloadSha256: hash(items[0].payload), dispatchReservedAtMs: items[0].dispatchReservedAtMs, itemStartedAtMs: candidate.item.startedAtMs };
+  const body = `${JSON.stringify(evidence)}\n`, reference = `codex-wake:${hash(body)}`;
+  try { await createDurable(evidenceRoot, `wake-${hash(body)}.json`, body); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; await verifyCodexWakeEvidence({ evidenceRoot, reference, session }); }
+  return publishCodexWake({ evidenceRoot, reference, session, graphState, channel });
+}
+
 export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session }) {
   if (typeof reference !== 'string' || !/^codex-wake:[a-f0-9]{64}$/.test(reference) || typeof session !== 'string' || !session.startsWith('codex:') || !UUID.test(session.slice(6))) throw new Error('invalid wake verification request');
   await privateRoot(evidenceRoot);
@@ -86,7 +124,8 @@ export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session
   try { value = JSON.parse(body); } catch { throw new Error('invalid wake evidence'); }
   const legacy = value && Object.keys(value).sort().join(',') === 'correlation,queueId,schema,session,source,startedAt,turn' && ((value.schema === 'agent-mesh.codex-wake-evidence.v2' && value.source === 'codex-app-server.queue-start-readback') || (value.schema === 'agent-mesh.codex-wake-evidence.v3' && value.source === 'codex-app-server.correlated-recovery'));
   const bound = value && Object.keys(value).sort().join(',') === 'channel,correlation,generation,payloadSha256,queueId,schema,session,source,startedAt,turn' && value.schema === 'agent-mesh.codex-wake-evidence.v4' && ['codex-app-server.queue-start-bound-readback', 'codex-app-server.correlated-recovery-bound'].includes(value.source) && typeof value.channel === 'string' && /^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.channel) && Number.isSafeInteger(value.generation) && value.generation > 0 && /^[a-f0-9]{64}$/.test(value.payloadSha256);
-  if (!value || `${JSON.stringify(value)}\n` !== body || !(legacy || bound) || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
+  const auto = value && Object.keys(value).sort().join(',') === 'channel,correlation,dispatchReservedAtMs,generation,itemStartedAtMs,payloadSha256,queueId,schema,session,source,startedAt,turn' && value.schema === 'agent-mesh.codex-wake-evidence.v5' && value.source === 'codex-app-server.auto-start-bound-readback' && typeof value.channel === 'string' && /^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.channel) && Number.isSafeInteger(value.generation) && value.generation > 0 && /^[a-f0-9]{64}$/.test(value.payloadSha256) && Number.isSafeInteger(value.dispatchReservedAtMs) && value.dispatchReservedAtMs > 0 && Number.isSafeInteger(value.itemStartedAtMs) && value.itemStartedAtMs >= value.dispatchReservedAtMs && Number.isSafeInteger(value.startedAt) && value.startedAt * 1000 > value.dispatchReservedAtMs;
+  if (!value || `${JSON.stringify(value)}\n` !== body || !(legacy || bound || auto) || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
   return { ...value, evidence: reference };
 }
 
@@ -149,9 +188,11 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
-    const { values } = parseArgs({ options: { apply: { type: 'boolean' }, reconcile: { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, channel: { type: 'string' }, generation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
+    const { values } = parseArgs({ options: { apply: { type: 'boolean' }, reconcile: { type: 'boolean' }, 'observe-auto': { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, channel: { type: 'string' }, generation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
+    if (values['observe-auto'] && (values.reconcile || values.verify || values.publish)) throw new Error('conflicting wake operations');
     let result;
-    if (values.reconcile) result = await reconcileCodexWake({ channel: values.channel, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
+    if (values['observe-auto']) result = await observeAutoCodexWake({ channel: values.channel, thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, generation: /^[1-9][0-9]*$/.test(values.generation || '') ? Number(values.generation) : NaN, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
+    else if (values.reconcile) result = await reconcileCodexWake({ channel: values.channel, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
     else if (values.verify) result = await verifyCodexWakeEvidence({ evidenceRoot: values['evidence-root'], reference: values.verify, session: values.session });
     else if (values.publish) result = await publishCodexWake({ evidenceRoot: values['evidence-root'], reference: values.publish, session: values.session, graphState: values['graph-state'], channel: values.channel });
     else result = await startCodexWake({ thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, channel: values.channel, generation: /^[1-9][0-9]*$/.test(values.generation || '') ? Number(values.generation) : NaN, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
