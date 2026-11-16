@@ -121,7 +121,7 @@ test('delivery reservation and matching receipt survive graph replay', async (t)
   assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'accepted');
 });
 
-test('final notice reservation persists and refuses a duplicate before any send', async t => {
+test('predecessor notice after a synthetic draining transition persists across replay', async t => {
   const state = await mkdtemp(join(tmpdir(), 'notice-reserve-'));
   t.after(() => rm(state, { recursive: true, force: true }));
   const writer = join(state, 'writer.mjs'), sessions = join(state, 'sessions'), oldId = '22222222-2222-4222-8222-222222222222', nextId = '33333333-3333-4333-8333-333333333333';
@@ -143,6 +143,14 @@ test('final notice reservation persists and refuses a duplicate before any send'
   const channel = graph.channels.find(row => row.id === 'example');
   channel.statePreparation = { status: 'verified', session: `codex:${oldId}`, generation: channel.generation, id: 'state-1', filename: 'state.yaml', sha256: 'b'.repeat(64), bytes: 2 };
   await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-state', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  // The operational cutover is disabled. Inject only a synthetic graph event to
+  // exercise the following durable state; this is not a native cutover proof.
+  await assert.rejects(call(...args), /reservation unavailable/);
+  graph = await call('show', '--json');
+  const draining = graph.channels.find(row => row.id === 'example');
+  draining.handover = { predecessor: `codex:${oldId}`, previousGeneration: 1, successor: `codex:${nextId}`, backlog: [] };
+  draining.session = `codex:${nextId}`; draining.generation = 2; draining.phase = 'draining';
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-draining', type: 'channel.updated', at: new Date().toISOString(), channel: draining, seq: graph.lastSeq + 1, host: 'local' })}\n`);
   const first = (await call(...args)).channel.finalNotice;
   assert.equal(first.status, 'requested');
   assert.equal(first.successor, `codex:${nextId}`);
