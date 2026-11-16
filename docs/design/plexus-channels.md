@@ -1,5 +1,9 @@
 # Channel transition prototype
 
+The public [architecture diagram](plexus-architecture.mmd) distinguishes
+implemented components from planned links. Keep its source in
+`scripts/plexus-diagram.mjs` synchronized; the readiness check compares them.
+
 `channel-state.mjs` defines pure JSON transitions for a stable channel, its
 current session and a queue. An in-flight message is bound to a session and
 generation. A handover stops new dispatch and cannot finish while a delivery is

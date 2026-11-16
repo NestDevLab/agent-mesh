@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseMeshV1Envelope, planMeshV1Dispatch } from "../packages/core/src/policy.js";
 import { containsPrivatePlexusPolicy, isPlexusMechanismFile } from "./plexus-privacy.mjs";
+import { plexusDiagram } from "./plexus-diagram.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const checks = [];
@@ -63,6 +64,7 @@ const agentTmuxBundleFiles = [
 const snowflakeIdPattern = /\b(?!([0-9])\1{16,19}\b)\d{17,20}\b/;
 function check(name, fn) { try { fn(); checks.push({ name, ok: true }); } catch (error) { checks.push({ name, ok: false, error: error.message }); } }
 function assert(condition, message) { if (!condition) throw new Error(message); }
+check("Plexus architecture diagram sync", () => { assert(readFileSync(path.join(root, "docs/design/plexus-architecture.mmd"), "utf8") === plexusDiagram, "Plexus architecture diagram differs from its source"); });
 check("parse Mesh v1 headers", () => { const envelope = parseMeshV1Envelope("cc-mesh: alpha\ncc-mesh-from: beta\ncc-mesh-id: ready-1\ncc-mesh-turn: alpha\ncc-mesh-final: false\nhop-limit: 2\n\nhello"); assert(envelope.valid, `expected valid envelope: ${envelope.errors.join(",")}`); assert(envelope.final === false, "expected partial final flag"); assert(envelope.hopLimit === 2, "expected hop limit parse"); });
 check("parse compact ccm:v1 headers", () => { const envelope = parseMeshV1Envelope("<@123>\nccm:v1 id=ready-compact from=beta turn=alpha final=1 seen=beta hop=2\n\nhello"); assert(envelope.valid, `expected valid compact envelope: ${envelope.errors.join(",")}`); assert(envelope.format === "ccm:v1", "expected compact format marker"); assert(envelope.final === true, "expected compact final flag"); assert(envelope.to[0] === "alpha", "expected compact turn to become recipient"); assert(envelope.body === "hello", "expected compact body parse"); });
 check("partial buffers only", () => { const plan = planMeshV1Dispatch({ localParticipant: "alpha" }, { messageId: "ready-m1", text: "cc-mesh: alpha\ncc-mesh-from: beta\ncc-mesh-id: ready-2\ncc-mesh-turn: alpha\ncc-mesh-final: false\n\npart" }); assert(plan.nextAction === "buffer_only", `expected buffer_only got ${plan.nextAction}`); assert(!plan.dispatchText, "partial must not dispatch text"); });

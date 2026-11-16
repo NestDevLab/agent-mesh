@@ -1,0 +1,12 @@
+// Update this diagram together with the public architecture when it changes.
+export const plexusDiagram = `flowchart LR
+  Client["Client or waker"] -. "planned routing" .-> Channel["Stable channel"]
+  Channel --> Queue["Channel queue"]
+  Channel --> Session["Current session"]
+  Queue --> Journal["Graph event journal"]
+  Session --> Journal
+  Module["Registered module"] --> Contract["Versioned JSON contract"]
+  Contract --> Journal
+  Queue -. "planned delivery" .-> Session
+  Handover["Handover"] -. "planned verified cutover" .-> Channel
+`;
