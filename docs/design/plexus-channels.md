@@ -45,8 +45,16 @@ compare the original target and version atomically and expose the operation ID
 on readback. Definite refusal rolls back earlier verified moves using the same
 compare-and-set contract; an ambiguous result stays unresolved and is not
 retried. Dry-run reads and journals a plan without moving triggers. Concrete
-timer and cloud adapters, durable journal implementation and recovery are not
-yet provided; this engine is not authorization to change live triggers.
+timer and cloud adapters and automatic recovery are not yet provided; this
+engine is not authorization to change live triggers.
+
+`trigger-journal.mjs` implements the local journal in an explicitly selected,
+private canonical directory. It reserves overlapping trigger sets atomically,
+persists snapshots using fsync and atomic replacement, and rejects reused
+transaction IDs. Uncertain transactions keep their reservation after restart.
+A leftover lock requires operator reconciliation; it is never removed as stale
+automatically. The journal is a trusted local operator component and does not
+itself prove a scheduler change or provide recovery of an uncertain move.
 The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.

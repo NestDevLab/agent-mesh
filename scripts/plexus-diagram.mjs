@@ -14,7 +14,8 @@ export const plexusDiagram = `flowchart LR
   Restart["Restart state contract"] --> StatePrep["Reserved state preparation"]
   StatePrep --> Journal
   StatePrep -. "planned proof revalidation" .-> Handover
-  TriggerTxn["Trigger transaction engine"] -. "planned adapters and journal" .-> Handover
+  TriggerTxn["Trigger transaction engine"] --> TriggerJournal["Private trigger journal"]
+  TriggerTxn -. "planned scheduler adapters" .-> Handover
   Notice["Successor notice formatter"] -. "planned publication" .-> Handover
   Observation["Codex notice snapshot"] -. "planned finality check" .-> Handover
   Handover["Handover"] -. "planned verified cutover" .-> Channel
