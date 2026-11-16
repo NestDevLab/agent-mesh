@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { appendFile, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,32 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/mesh-graph.mjs', import.meta.url));
+
+test('failed native state request stays reserved across replay and is never resent', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'channel-prepare-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const state = join(root, 'graph'), files = join(root, 'files'), sessions = join(root, 'sessions');
+  await mkdir(files, { mode: 0o700 }); await mkdir(sessions, { mode: 0o700 });
+  const env = { ...process.env, XDG_STATE_HOME: join(root, 'xdg'), XDG_CONFIG_HOME: join(root, 'config'), CODEX_SESSION_ROOT: sessions, MESH_COMMS_STATE: join(root, 'comms'), MESH_GRAPH_STATE: state, AGENT_FALLBACK_STATE: join(root, 'fallback') };
+  delete env.MESH_COMMS_REPLAY_FD;
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args], { env, timeout: 30000 })).stdout);
+  const uuid = '22222222-2222-4222-8222-222222222222';
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', `codex:${uuid}`);
+  await call('channel', 'begin-handover', '--name', 'example');
+  await call('channel', 'enqueue', '--name', 'example', '--id', 'one', '--input', 'fixture');
+  const args = ['channel', 'prepare-state', '--name', 'example', '--state-root', files, '--filename', 'state.yaml'];
+  await assert.rejects(call(...args));
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  const first = (await call('channel', 'get', '--name', 'example')).channel;
+  assert.equal(first.statePreparation.status, 'requested');
+  assert.equal(first.queue[0].state, 'pending');
+  await assert.rejects(call(...args), /unresolved/);
+  const second = (await call('channel', 'get', '--name', 'example')).channel;
+  assert.deepEqual(second.statePreparation, first.statePreparation);
+  assert.equal(second.queue[0].state, 'pending');
+});
 
 test('channel operations reject a graph with non-private persisted files', async (t) => {
   const state = await mkdtemp(join(tmpdir(), 'channel-permissions-'));
