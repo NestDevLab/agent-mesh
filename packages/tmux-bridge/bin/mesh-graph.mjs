@@ -37,10 +37,11 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
 import { formatFinalNotice } from "./handover-notice.mjs";
+import { observeLocalFinalNotice } from "./handover-notice-transport.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -131,7 +132,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "reserve-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -151,6 +152,26 @@ try {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
         printResult({ channel }, { json: true });
+        break;
+      }
+      if (subcommand === "observe-notice") {
+        const content = JSON.parse(requiredSingleLine(channelInput, "--input"));
+        if (!content || typeof content !== "object" || Array.isArray(content) || Object.keys(content).sort().join(",") !== "label,prefix") throw new Error("invalid notice content");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name), pending = channel?.finalNotice;
+        const target = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(pending?.successor || "");
+        const agent = pending?.session?.split(":")[0];
+        if (!pending || !["requested", "queued-unverified"].includes(pending.status) || !target || !["codex", "claude"].includes(agent)) throw new Error("local notice reservation unavailable");
+        const root = agent === "codex" ? process.env.CODEX_SESSION_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions") : process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+        if (!isAbsolute(root)) throw new Error("invalid configured transcript root");
+        const proof = await observeLocalFinalNotice({ session: pending.session, nonce: pending.id, target: { kind: "codex", id: target[1] }, label: content.label, prefix: content.prefix, transcriptRoot: root });
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current) throw new Error("unknown channel");
+          const next = recordNoticeObservation(current, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: next } };
+        });
+        printResult(result, { json: true });
         break;
       }
       if (subcommand === "settle-wake") {

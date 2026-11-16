@@ -119,8 +119,10 @@ blindly. These prerequisites are not yet connected, and this adapter is not
 wired to cutover or cloud delivery. A graph `channel reserve-notice` transition
 requires verified state and a freshly verified Codex successor, binds the
 notice digest and nonce, and survives replay. The adapter can bind an enqueue
-to that reservation, but does not acquire lifecycle exclusion or settle the
-receipt in the graph. The actual cutover remains disabled.
+to that reservation. `channel observe-notice` records a matching local
+transcript snapshot against the reservation, but does not acquire lifecycle
+exclusion or establish that a later turn cannot occur. The actual cutover
+remains disabled.
 # Role-scoped restart preparation
 
 The `agent-mesh.restart.v1` YAML handover block requires `role_profile` when

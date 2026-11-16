@@ -108,6 +108,16 @@ export function recordNoticeQueued(state, receipt) {
   return next;
 }
 
+// A transcript snapshot is evidence of a completed message at read time,
+// not exclusive finality and not authorization to finish a handover.
+export function recordNoticeObservation(state, proof) {
+  const pending = state.finalNotice;
+  if (state.phase !== 'handover' || !pending || !['requested', 'queued-unverified'].includes(pending.status) || pending.session !== state.session || pending.generation !== state.generation || !proof || proof.schema !== 'agent-mesh.final-notice-observation.v1' || proof.session !== pending.session || proof.nonce !== pending.id || proof.messageSha256 !== pending.noticeSha256 || !/^[a-f0-9]{64}$/.test(proof.transcriptSha256 || '') || !Number.isSafeInteger(proof.bytes) || proof.bytes < 1) throw new Error('notice observation does not match reservation');
+  const next = copy(state);
+  next.finalNotice = { ...pending, status: 'observed-snapshot', transcriptSha256: proof.transcriptSha256, transcriptBytes: proof.bytes };
+  return next;
+}
+
 export function finishHandover(state, session, verified) {
   if (state.phase !== 'handover' || !identifier(session) || session === state.session || verified !== true) throw new Error('unverified successor');
   if (state.finalNotice && state.finalNotice.status !== 'verified') throw new Error('final notice unresolved');

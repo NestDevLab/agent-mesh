@@ -124,9 +124,10 @@ test('delivery reservation and matching receipt survive graph replay', async (t)
 test('final notice reservation persists and refuses a duplicate before any send', async t => {
   const state = await mkdtemp(join(tmpdir(), 'notice-reserve-'));
   t.after(() => rm(state, { recursive: true, force: true }));
-  const writer = join(state, 'writer.mjs'), oldId = '22222222-2222-4222-8222-222222222222', nextId = '33333333-3333-4333-8333-333333333333';
+  const writer = join(state, 'writer.mjs'), sessions = join(state, 'sessions'), oldId = '22222222-2222-4222-8222-222222222222', nextId = '33333333-3333-4333-8333-333333333333';
+  await mkdir(sessions, { mode: 0o700 });
   await writeFile(writer, `console.log(JSON.stringify({agent:'codex',sessionId:'${nextId}',writers:[{pid:123,kind:'codex'}]}))`);
-  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args], { env: { ...process.env, MESH_PLEXUS_WRITER_STATUS: writer } })).stdout);
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args], { env: { ...process.env, MESH_PLEXUS_WRITER_STATUS: writer, CODEX_SESSION_ROOT: sessions } })).stdout);
   for (const id of [oldId, nextId]) await call('add', '--agent', 'codex', '--tmux-target', `test-${id}`, '--cwd', '/synthetic', '--runtime-uuid', id, '--json');
   await call('migrate', '--apply', '--json');
   await call('channel', 'create', '--name', 'example', '--session', `codex:${oldId}`);
@@ -148,4 +149,20 @@ test('final notice reservation persists and refuses a duplicate before any send'
   await rm(join(state, 'checkpoint.json'), { force: true });
   assert.deepEqual((await call('channel', 'get', '--name', 'example')).channel.finalNotice, first);
   await assert.rejects(call(...args), /reservation unavailable/);
+  const notice = `Sleeping. [Continue](codex://threads/${nextId})`;
+  const records = [
+    { type: 'session_meta', payload: { id: oldId } },
+    { type: 'event_msg', payload: { type: 'user_message', message: `[HANDOVER:${first.id}] synthetic request` } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', phase: 'final_answer', content: [{ type: 'output_text', text: notice }] } },
+    { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: notice } }
+  ];
+  await writeFile(join(sessions, `rollout-${oldId}.jsonl`), records.map(row => JSON.stringify(row)).join('\n') + '\n', { mode: 0o600 });
+  const observe = ['channel', 'observe-notice', '--name', 'example', '--input', JSON.stringify({ prefix: 'Sleeping.', label: 'Continue' })];
+  await assert.rejects(call('channel', 'observe-notice', '--name', 'example', '--input', JSON.stringify({ prefix: 'wrong', label: 'Continue' })), /not proven/);
+  const observed = (await call(...observe)).channel.finalNotice;
+  assert.equal(observed.status, 'observed-snapshot');
+  assert.match(observed.transcriptSha256, /^[a-f0-9]{64}$/);
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.finalNotice.status, 'observed-snapshot');
+  await assert.rejects(call('channel', 'finish-handover', '--name', 'example', '--to', `codex:${nextId}`), /old-session state verification unavailable/);
 });
