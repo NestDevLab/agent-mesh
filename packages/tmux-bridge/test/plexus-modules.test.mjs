@@ -6,7 +6,7 @@ import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { readModuleRegistry, describeModule } from "../bin/plexus-modules.mjs";
+import { readModuleRegistry, describeModule, invokeModule } from "../bin/plexus-modules.mjs";
 
 test("registry is private configuration and duplicate names fail closed", async () => {
   const dir = await mkdtemp(join(tmpdir(), "plexus-modules-"));
@@ -45,4 +45,12 @@ test("describe verifies identity and enforces timeouts", async () => {
   assert.deepEqual((await describeModule(entry)).namespaces, ["example"]);
   await assert.rejects(describeModule({ ...entry, name: "other" }), /invalid module response/);
   await assert.rejects(describeModule({ ...entry, command: [process.execPath, "-e", "setTimeout(()=>{}, 10000)"], timeoutMs: 20 }), /timed out/);
+});
+
+test("large graph requests are bounded independently from module responses", async () => {
+  const fixture = fileURLToPath(new URL("../examples/plexus-example-module.mjs", import.meta.url));
+  const entry = { name: "example", command: [process.execPath, fixture], timeoutMs: 5000 };
+  const response = await invokeModule(entry, "process", { cursor: null, graph: { synthetic: "x".repeat(2 * 1024 * 1024) } });
+  assert.deepEqual(response.attributes, []);
+  await assert.rejects(invokeModule(entry, "process", { graph: "x".repeat(33 * 1024 * 1024) }), /too large/);
 });

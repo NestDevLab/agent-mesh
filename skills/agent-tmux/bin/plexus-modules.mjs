@@ -4,6 +4,9 @@ import { spawn } from "node:child_process";
 export const MODULE_PROTOCOL = "agent-mesh.plexus-module.v1";
 const NAME = /^[a-z][a-z0-9-]{0,63}$/;
 const MAX_BYTES = 1024 * 1024;
+// Graph snapshots can be substantially larger than module responses. This is a
+// hard bound, not permission to truncate a graph silently.
+const MAX_REQUEST_BYTES = 32 * 1024 * 1024;
 
 // This is an operator allowlist, not a sandbox for untrusted programs.
 export async function readModuleRegistry(path) {
@@ -30,7 +33,7 @@ export async function readModuleRegistry(path) {
 export async function invokeModule(entry, operation, request) {
   if (!["describe", "process"].includes(operation)) throw new Error("invalid module operation");
   const input = JSON.stringify(request);
-  if (Buffer.byteLength(input) > MAX_BYTES) throw new Error("module request too large");
+  if (Buffer.byteLength(input) > MAX_REQUEST_BYTES) throw new Error("module request too large");
   const result = await new Promise((resolve, reject) => {
     const child = spawn(entry.command[0], [...entry.command.slice(1), operation], { stdio: ["pipe", "pipe", "ignore"], shell: false });
     let output = [], bytes = 0, finished = false;

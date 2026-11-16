@@ -54,6 +54,9 @@ argument array, optional `namespaces` (default: the module name), and optional
 `timeoutMs`. One command may own several namespaces. A missing file
 registers no modules; malformed files and duplicate names fail closed. Describe
 does not update a cursor or write graph state. stderr is not returned to callers.
+Process requests are capped at 32 MiB; responses and configuration at 1 MiB.
+Oversized requests fail without advancing the cursor rather than silently
+truncating the graph. These limits are not a substitute for future pagination.
 
 `module run --name <name>` captures the graph and a page from the module's
 cursor under the graph lock, then invokes `process` outside the lock. The host
