@@ -54,9 +54,23 @@ argument array, and optional `timeoutMs`. Namespace equals name. A missing file
 registers no modules; malformed files and duplicate names fail closed. Describe
 does not update a cursor or write graph state. stderr is not returned to callers.
 
-Before a module can make graph changes, the writer must accept a bounded batch
-under the graph lock, verify its namespace and cursor precondition, and record
-the batch and its next cursor atomically. Retrying an identical batch must return
-its original receipt; reusing an id for different contents must fail. Module
-events and attributes must survive graph replay, checkpointing and compaction.
-These writer and transaction semantics are required work, not yet implemented.
+`module run --name <name>` captures the graph and a page from the module's
+cursor under the graph lock, then invokes `process` outside the lock. The host
+validates its response and commits the bounded batch and cursor as one graph
+event under the lock. An intervening run for the same module causes a cursor
+conflict. The request contains `schema`, `graph`, `cursor`, and `events`; the
+response contains `schema`, `name`, `batchId`, `attributes`, and `events`.
+Attributes identify a session and a key; they are projected under that module's
+name on its node. Events identify a session, a namespaced type, and JSON data.
+The cursor is host-owned, not selected by a module. An initial run starts at the
+current head; an expired cursor fails closed and requires reconciliation. A
+no-change run does not append a new batch solely to observe its own events.
+
+`module apply` is an operator-level interface for an already computed batch;
+the configured name determines its namespace. Both paths check the cursor and
+the last batch id while holding the graph lock. An identical retry of the last
+batch returns a duplicate receipt, while a reused id with different content or
+an older cursor fails. No exactly-once guarantee is claimed for arbitrary
+external effects made by an executable. `module conformance` checks a synthetic
+description and process response; it is not a sandbox or a proof of side-effect
+isolation. Configuration and OS access remain under the operator's control.

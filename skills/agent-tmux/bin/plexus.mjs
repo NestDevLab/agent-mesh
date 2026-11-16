@@ -7,6 +7,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { createHash } from "node:crypto";
+import { applyModuleBatch } from "./module-batches.mjs";
 import {
   LEDGER_VIEW_SCHEMA, LEDGER_VIEW_SORT, buildLedgerViewRows,
   ledgerViewProfileRevision, ledgerViewValue, validateLedgerViewProfile
@@ -92,7 +93,11 @@ export function applyPlexusEvent(state, item) {
     case "session.handover":
       parseGraphSessionId(item.session);
       if (typeof item.evidence !== "string" || !item.evidence || item.evidence.length > 512 || /[\r\n\x00]/.test(item.evidence)) throw new Error("lifecycle event requires an evidence reference");
-      effects.push({ kind: item.type, session: item.session });
+      if (item.type === "session.handover") {
+        parseGraphSessionId(item.to);
+        if (item.to === item.session) throw new Error("handover target must differ");
+      } else if (item.to !== undefined) throw new Error("unexpected lifecycle target");
+      effects.push({ kind: item.type, session: item.session, ...(item.to ? { to: item.to } : {}) });
       break;
     case "role.changed":
       if (!state.roleClaims) state.roleClaims = new Map();
@@ -787,6 +792,7 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
     nodes: new Map((snapshotGraph?.nodes || []).map((node) => [node.id, node])),
     links: new Map((snapshotGraph?.links || []).map((link) => [link.id, link])),
     edges: new Map((snapshotGraph?.edges || []).map((edge) => [edge.id, edge])),
+    moduleStates: new Map((snapshotGraph?.moduleStates || []).map(item => [item.name, item])),
     renewals: [...(snapshotGraph?.renewals || [])], migrated: snapshotGraph?.migrated === true,
   };
   const seen = new Set([...state.nodes.values()].map(sessionIdOf).filter(Boolean));
@@ -818,6 +824,10 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
 }
 
 function applyReplay(state, item, emitted) {
+  if (item.type === "module.batch") {
+    if (!emitted) applyModuleBatch(state, item, sessionIdOf);
+    return;
+  }
   if (item.type === "node.upserted") {
     state.nodes.set(item.node.id, item.node);
     return;
@@ -836,6 +846,10 @@ function applyReplay(state, item, emitted) {
 
 function feedFor(state, seen, item) {
   const out = [];
+  if (item.type === "module.batch") {
+    applyModuleBatch(state, item, sessionIdOf);
+    return item.batch.events.map((entry, index) => ({ type: entry.type, session: entry.session, data: entry.data, subject: `${item.id}:${index}` }));
+  }
   if (item.type === "node.upserted") {
     const id = sessionIdOf(item.node);
     const previous = state.nodes.get(item.node.id);
@@ -897,7 +911,7 @@ function feedFor(state, seen, item) {
     } else if (effect.kind === "session.renewed") {
       out.push({ type: "session.renewed", from: effect.from, to: effect.to, subject: effect.to });
     } else if (LIFECYCLE_EVENTS.has(effect.kind)) {
-      out.push({ type: effect.kind, session: effect.session, subject: effect.session });
+      out.push({ type: effect.kind, session: effect.session, ...(effect.to ? { to: effect.to } : {}), subject: effect.session });
     }
   }
   return out;

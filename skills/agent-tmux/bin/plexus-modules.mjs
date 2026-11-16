@@ -24,9 +24,12 @@ export async function readModuleRegistry(path) {
   });
 }
 
-export async function describeModule(entry) {
+export async function invokeModule(entry, operation, request) {
+  if (!["describe", "process"].includes(operation)) throw new Error("invalid module operation");
+  const input = JSON.stringify(request);
+  if (Buffer.byteLength(input) > MAX_BYTES) throw new Error("module request too large");
   const result = await new Promise((resolve, reject) => {
-    const child = spawn(entry.command[0], [...entry.command.slice(1), "describe"], { stdio: ["pipe", "pipe", "ignore"], shell: false });
+    const child = spawn(entry.command[0], [...entry.command.slice(1), operation], { stdio: ["pipe", "pipe", "ignore"], shell: false });
     let output = [], bytes = 0, finished = false;
     const finish = (error, value) => { if (finished) return; finished = true; clearTimeout(timer); error ? reject(error) : resolve(value); };
     const timer = setTimeout(() => { child.kill("SIGKILL"); finish(new Error("module timed out")); }, entry.timeoutMs);
@@ -42,8 +45,14 @@ export async function describeModule(entry) {
       try { finish(null, JSON.parse(Buffer.concat(output).toString("utf8"))); }
       catch { finish(new Error("invalid module response")); }
     });
-    child.stdin.end("{}\n");
+    child.stdin.end(`${input}\n`);
   });
+  if (!result || result.schema !== MODULE_PROTOCOL || result.name !== entry.name) throw new Error("invalid module response");
+  return result;
+}
+
+export async function describeModule(entry) {
+  const result = await invokeModule(entry, "describe", {});
   if (!result || result.schema !== MODULE_PROTOCOL || result.name !== entry.name || result.namespace !== entry.name || !Array.isArray(result.operations) || !result.operations.includes("describe") || result.operations.some(op => typeof op !== "string")) throw new Error("invalid module description");
   return result;
 }

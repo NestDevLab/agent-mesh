@@ -34,7 +34,8 @@ import * as plexus from "./plexus.mjs";
 import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from "./session-catalog.mjs";
 
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
-import { readModuleRegistry, describeModule } from "./plexus-modules.mjs";
+import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
+import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -121,7 +122,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { module: ["list", "describe"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -133,6 +134,31 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "lifecycle": {
+      if (subcommand !== "record") throw new Error("unknown lifecycle operation");
+      if (!plexus.LIFECYCLE_EVENTS.has(values.type)) throw new Error("invalid lifecycle type");
+      const session = requiredSingleLine(values.session, "--session");
+      const evidence = requiredSingleLine(values.evidence, "--evidence");
+      if (!OPAQUE_REF.test(evidence)) throw new Error("--evidence must be an opaque evidence reference");
+      const sourceId = requiredSingleLine(values.id, "--id");
+      if (!/^[A-Za-z0-9._:-]{1,128}$/.test(sourceId)) throw new Error("invalid lifecycle observation id");
+      const to = values.to;
+      if (values.type === "session.handover" ? typeof to !== "string" || to === session : to !== undefined) throw new Error("handover alone requires a distinct --to session");
+      const digest = createHash("sha256").update(JSON.stringify({ type: values.type, session, evidence, to: to ?? null })).digest("hex");
+      const receiptId = createHash("sha256").update(sourceId).digest("hex");
+      const result = mutate(stateDir, graph => {
+        if (!graph.migrated || graph.unnumbered) throw new Error("lifecycle events require a migrated graph");
+        if (graph.nodes.filter(node => plexus.sessionIdOf(node) === session).length !== 1 || (to && graph.nodes.filter(node => plexus.sessionIdOf(node) === to).length !== 1)) throw new Error("unknown or ambiguous session");
+        const prior = (graph.lifecycleReceipts || []).find(item => item.id === receiptId);
+        if (prior) {
+          if (prior.digest !== digest) throw new Error("observation id reused with different contents");
+          return { graph, result: { observation: sourceId, duplicate: true } };
+        }
+        return { graph, event: event(values.type, { session, evidence, ...(to ? { to } : {}), receiptId, digest }), result: { observation: sourceId, duplicate: false } };
+      });
+      printResult(result, { json: true });
+      break;
+    }
     case "module": {
       const configPath = values.config || join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-mesh", "modules.json");
       const entries = await readModuleRegistry(configPath);
@@ -141,6 +167,57 @@ try {
         const entry = entries.find(item => item.name === values.name);
         if (!entry) throw new Error("module is not registered");
         printResult(await describeModule(entry), { json: true });
+      } else if (subcommand === "conformance") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        const desc = await describeModule(entry);
+        if (!desc.operations.includes("process")) throw new Error("module does not support process");
+        const graph = { nodes: [{ id: "synthetic-node", agent: "codex", runtimeUuid: "22222222-2222-4222-8222-222222222222" }], moduleStates: [] };
+        const result = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph, cursor: null, events: [] });
+        if (Object.keys(result).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
+        validateModuleBatch(entry.name, { id: result.batchId, cursor: null, nextCursor: "synthetic-cursor", attributes: result.attributes, events: result.events }, graph, plexus.sessionIdOf);
+        printResult({ module: entry.name, conformance: "pass", scope: "synthetic protocol response only" }, { json: true });
+      } else if (subcommand === "run") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        const description = await describeModule(entry);
+        if (!description.operations.includes("process")) throw new Error("module does not support process");
+        ensureStateDir(stateDir);
+        const snapshot = withLock(stateDir, () => {
+          const graph = loadGraph(stateDir);
+          if (!graph.migrated || graph.unnumbered) throw new Error("module runs require a migrated graph");
+          const cursor = graph.moduleStates?.find(item => item.name === entry.name)?.cursor ?? null;
+          const query = cursor === null ? { initial: "head" } : { sinceCursor: cursor };
+          const feed = runQuery(stateDir, "changes", { input: JSON.stringify(query) });
+          if (feed.reset) throw new Error("module cursor expired; reconciliation required");
+          return { graph, cursor, feed };
+        });
+        const events = snapshot.feed.events.filter(item => !item.type.startsWith(`${entry.name}.`));
+        const output = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph: snapshot.graph, cursor: snapshot.cursor, events });
+        if (Object.keys(output).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
+        if (snapshot.cursor !== null && events.length === 0 && Array.isArray(output.attributes) && output.attributes.length === 0 && Array.isArray(output.events) && output.events.length === 0) {
+          printResult({ module: entry.name, unchanged: true }, { json: true });
+          break;
+        }
+        const batch = { id: output.batchId, cursor: snapshot.cursor, nextCursor: snapshot.feed.cursor, attributes: output.attributes, events: output.events };
+        const result = mutate(stateDir, graph => {
+          const checked = validateModuleBatch(entry.name, batch, graph, plexus.sessionIdOf);
+          if (checked.duplicate) return { graph, result: { module: entry.name, batchId: batch.id, duplicate: true } };
+          return { graph, event: event("module.batch", { module: entry.name, batch, digest: checked.digest }), result: { module: entry.name, batchId: batch.id, duplicate: false } };
+        });
+        printResult(result, { json: true });
+      } else if (subcommand === "apply") {
+        if (!entries.some(item => item.name === values.name)) throw new Error("module is not registered");
+        const raw = values.input === "-" ? readFileSync(0, "utf8") : values.input;
+        if (typeof raw !== "string" || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("invalid module input");
+        const batch = JSON.parse(raw);
+        const result = mutate(stateDir, graph => {
+          if (!graph.migrated || graph.unnumbered) throw new Error("module batches require a migrated graph");
+          const checked = validateModuleBatch(values.name, batch, graph, plexus.sessionIdOf);
+          if (checked.duplicate) return { graph, result: { module: values.name, batchId: batch.id, duplicate: true } };
+          return { graph, event: event("module.batch", { module: values.name, batch, digest: checked.digest }), result: { module: values.name, batchId: batch.id, duplicate: false } };
+        });
+        printResult(result, { json: true });
       } else throw new Error("unknown module operation");
       break;
     }
@@ -1121,7 +1198,7 @@ function readCheckpoint(statePath) {
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
       // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
-      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
+      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Array.isArray(checkpoint.graph.moduleStates) || !Array.isArray(checkpoint.graph.lifecycleReceipts) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1210,7 +1287,7 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
-  const state = { nodes, roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const state = { nodes, moduleStates: new Map((base?.moduleStates || []).map(item => [item.name, item])), lifecycleReceipts: new Map((base?.lifecycleReceipts || []).map(item => [item.id, item])), roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
   let unnumbered = base?.unnumbered === true;
@@ -1222,8 +1299,13 @@ function deriveGraph(events, base = null) {
       lastSeq = Math.max(lastSeq, item.seq);
     } else if (state.migrated) unnumbered = true;
     generatedAt = item.at || generatedAt;
+    if (item.type === "module.batch") {
+      applyModuleBatch(state, item, plexus.sessionIdOf);
+      continue;
+    }
     if (plexus.PLEXUS_EVENTS.has(item.type)) {
       plexus.applyPlexusEvent(state, item);
+      if (plexus.LIFECYCLE_EVENTS.has(item.type) && item.receiptId) state.lifecycleReceipts.set(item.receiptId, { id: item.receiptId, digest: item.digest });
       continue;
     }
     if (item.type === "node.upserted") {
@@ -1253,6 +1335,8 @@ function deriveGraph(events, base = null) {
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
     links,
     renewals: state.renewals,
+    moduleStates: [...state.moduleStates.values()],
+    lifecycleReceipts: [...state.lifecycleReceipts.values()],
     roleClaims: [...state.roleClaims.values()],
     migrated: state.migrated,
     lastSeq,
