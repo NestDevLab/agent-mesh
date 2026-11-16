@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,36 @@ test('channel and queued messages survive concurrent writers, replay and compact
   await rm(join(state, 'checkpoint.json'), { force: true });
   channel = (await call('channel', 'get', '--name', 'example')).channel;
   assert.deepEqual(channel.queue.map(row => row.id).sort(), ['one', 'two']);
+});
+
+test('cutover requires fresh successor verification and is replayed with its lifecycle event', async (t) => {
+  const state = await mkdtemp(join(tmpdir(), 'channel-cutover-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const writer = join(state, 'writer-fixture.mjs');
+  await writeFile(writer, `console.log(JSON.stringify({agent:'codex',sessionId:'33333333-3333-4333-8333-333333333333',writers:[]}))`);
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args], {env: {...process.env, MESH_PLEXUS_WRITER_STATUS: writer}})).stdout);
+  const one = '22222222-2222-4222-8222-222222222222', two = '33333333-3333-4333-8333-333333333333';
+  for (const uuid of [one, two]) await call('add', '--agent', 'codex', '--tmux-target', `test-${uuid}`, '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', `codex:${one}`);
+  await call('channel', 'begin-handover', '--name', 'example');
+  const target = `codex:${two}`;
+  await assert.rejects(call('channel', 'finish-handover', '--name', 'example', '--to', target), /fresh verified link/);
+  const graph = await call('show', '--json');
+  const node = graph.nodes.find(row => row.runtimeUuid === two);
+  const checkedAt = new Date().toISOString();
+  node.sessionLink = { status: 'ok', resolvedSession: target, link: target, source: 'codex-threads', checkedAt, lastKnown: false };
+  const fixture = { schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-proof', type: 'node.upserted', at: checkedAt, node, seq: graph.lastSeq + 1, host: 'local' };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify(fixture)}\n`);
+  await assert.rejects(call('channel', 'finish-handover', '--name', 'example', '--to', target), /one verified writer/);
+  await writeFile(writer, `console.log(JSON.stringify({agent:'codex',sessionId:'33333333-3333-4333-8333-333333333333',writers:[{pid:123,kind:'codex'}]}))`);
+  const result = await call('channel', 'finish-handover', '--name', 'example', '--to', target);
+  assert.equal(result.channel.session, target);
+  assert.equal(result.channel.handoverReceipt.link, `codex://threads/${two}`);
+  assert.equal((await call('channel', 'finish-handover', '--name', 'example', '--to', target)).duplicate, true);
+  await rm(join(state, 'checkpoint.json'));
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.session, target);
+  assert.ok((await call('query', 'changes', '--input', '{}')).events.some(item => item.type === 'session.handover' && item.to === target));
 });
 
 test('delivery reservation and matching receipt survive graph replay', async (t) => {

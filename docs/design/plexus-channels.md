@@ -19,8 +19,14 @@ acceptance receipt. Reservation is durable before transport; a crash or
 uncertain outcome leaves the item in flight and blocks handover. A local
 caller is responsible for verifying transport receipts before recording them.
 
-This is not yet a complete channel service: handover completion is not exposed
-by the graph command. It has no transport, authorization,
-waker integration, recovery procedure or session verification. The caller must not treat the
-`verified` argument as evidence by itself. It must establish all of these
-properties before connecting the transitions to live sessions.
+Handover completion currently supports only a Codex successor with a fresh
+unarchived native-thread observation and exactly one detected writer. It
+atomically changes the channel and emits `session.handover`, with a native
+thread link in the channel receipt. Missing or ambiguous evidence fails closed;
+Claude and cloud successors are not yet supported by this operation.
+
+This is not yet a complete handover workflow: it does not write state for the
+old session, publish or verify the old session's final notice, archive anything,
+or reconcile uncertain transport outcomes. It must not be used for a live
+handover until those steps and their failure recovery are implemented and
+verified. The local graph is a trusted operator interface, not a remote API.

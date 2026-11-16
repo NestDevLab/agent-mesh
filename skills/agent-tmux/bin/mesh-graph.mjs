@@ -36,7 +36,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, finishHandover } from "./channel-state.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -123,7 +123,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "begin-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "begin-handover", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -157,7 +157,25 @@ try {
           if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), values.input);
           else if (subcommand === "begin-delivery") next = beginDelivery(current, requiredSingleLine(values.id, "--id"));
           else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(values.input, "--input")));
-          else if (subcommand === "begin-handover") next = beginHandover(current);
+          else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
+          else if (subcommand === "finish-handover") {
+            const target = requiredSingleLine(values.to, "--to");
+            if (current.phase === "active" && current.session === target && current.handoverReceipt?.successor === target) return { graph, result: { channel: current, duplicate: true } };
+            const matches = graph.nodes.filter(node => plexus.sessionIdOf(node) === target);
+            const node = matches[0], proof = node?.sessionLink;
+            const started = Date.parse(current.handoverStartedAt), checked = Date.parse(proof?.checkedAt);
+            if (matches.length !== 1 || node.status === "closed" || node.surface?.archived === true || proof?.status !== "ok" || proof.resolvedSession !== target || proof.lastKnown === true || !Number.isFinite(started) || !Number.isFinite(checked) || checked < started || checked > Date.now()) throw new Error("successor requires fresh verified link");
+            // Current native link discovery can prove an unarchived Codex thread.
+            // Claude link observations explicitly leave remote reachability unverified.
+            if (!/^codex:[0-9a-f-]{36}$/.test(target) || proof.source !== "codex-threads" || proof.link !== target) throw new Error("successor native verification unavailable");
+            const writer = probeWriter({ harness: "codex", nativeId: target.slice(6) });
+            if (writer?.agent !== "codex" || writer.sessionId !== target.slice(6) || !Array.isArray(writer.writers) || writer.writers.length !== 1 || !Number.isSafeInteger(writer.writers[0]?.pid) || writer.writers[0].pid <= 0 || writer.writers[0].kind !== "codex") throw new Error("successor requires one verified writer");
+            const link = `codex://threads/${target.slice(6)}`;
+            next = finishHandover(current, target, true);
+            next.handoverReceipt = { previous: current.session, successor: target, link, checkedAt: proof.checkedAt, writer: writer.writers[0] };
+            delete next.handoverStartedAt;
+            return { graph, event: event("session.handover", { session: current.session, to: target, evidence: `channel:${name}`, channel: next }), result: { channel: next, duplicate: false } };
+          }
           else throw new Error("unknown channel operation");
         }
         if (current && JSON.stringify(current) === JSON.stringify(next)) return { graph, result: { channel: next, duplicate: true } };

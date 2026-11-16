@@ -101,6 +101,11 @@ export function applyPlexusEvent(state, item) {
       if (item.type === "session.handover") {
         parseGraphSessionId(item.to);
         if (item.to === item.session) throw new Error("handover target must differ");
+        if (item.channel !== undefined) {
+          if (!item.channel || item.channel.schema !== "agent-mesh.channel.v1" || item.channel.session !== item.to) throw new Error("invalid handover channel");
+          if (!state.channels) state.channels = new Map();
+          state.channels.set(item.channel.id, item.channel);
+        }
       } else if (item.to !== undefined) throw new Error("unexpected lifecycle target");
       effects.push({ kind: item.type, session: item.session, evidence: item.evidence, ...(item.to ? { to: item.to } : {}) });
       break;
