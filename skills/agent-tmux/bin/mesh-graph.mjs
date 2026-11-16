@@ -37,7 +37,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveStatePreparation, completeStatePreparation } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, reserveStatePreparation, completeStatePreparation } from "./channel-state.mjs";
 import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
@@ -129,7 +129,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "begin-handover", "prepare-state", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "begin-handover", "prepare-state", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -193,6 +193,10 @@ try {
             next = beginDelivery(current, requiredSingleLine(values.id, "--id"), values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"), values.generation === undefined ? undefined : Number(values.generation));
           }
           else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
+          else if (subcommand === "reserve-wake") {
+            if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
+            next = reserveWake(current, requiredSingleLine(values.id, "--id"), requiredSingleLine(values.session, "--session"), Number(values.generation), requiredSingleLine(channelInput, "--input"));
+          }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "finish-handover") {
             const target = requiredSingleLine(values.to, "--to");

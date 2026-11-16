@@ -17,6 +17,29 @@ uuid = '22222222-2222-4222-8222-222222222222'
 
 
 class ChannelWakerTest(unittest.TestCase):
+    def test_wake_reservation_survives_reload_and_blocks_handover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'graph'
+            def call(*args):
+                return subprocess.run(['node', str(root / 'bin' / 'mesh-graph.mjs'), '--state', str(state), *args], capture_output=True, text=True)
+            def ok(*args):
+                result = call(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                return json.loads(result.stdout)
+            session = f'codex:{uuid}'
+            ok('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json')
+            ok('migrate', '--apply', '--json')
+            ok('channel', 'create', '--name', 'example', '--session', session)
+            ok('channel', 'enqueue', '--name', 'example', '--id', 'message-1', '--input', 'fixture')
+            ok('channel', 'begin-delivery', '--name', 'example', '--id', 'message-1', '--session', session, '--generation', '1')
+            receipt = {'status': 'accepted', 'messageId': 'message-1', 'session': session, 'generation': 1, 'nativeQueueId': 'queue-1'}
+            ok('channel', 'acknowledge', '--name', 'example', '--id', 'message-1', '--input', json.dumps(receipt))
+            ok('channel', 'reserve-wake', '--name', 'example', '--id', 'message-1', '--session', session, '--generation', '1', '--input', 'queue-1')
+            observed = ok('channel', 'get', '--name', 'example')['channel']
+            self.assertEqual(observed['wakeReservation']['nativeQueueId'], 'queue-1')
+            self.assertNotEqual(call('channel', 'begin-handover', '--name', 'example').returncode, 0)
+            self.assertEqual(ok('channel', 'get', '--name', 'example')['channel']['phase'], 'active')
+
     def test_unsupported_recipient_does_not_reserve_delivery(self):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state='fixture', channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)

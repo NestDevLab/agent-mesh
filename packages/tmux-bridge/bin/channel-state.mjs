@@ -47,9 +47,20 @@ export function acknowledge(state, id, receipt) {
 
 export function beginHandover(state) {
   if (state.phase !== 'active') throw new Error('handover already in progress');
+  if (state.wakeReservation) throw new Error('wake reservation unresolved');
   const next = copy(state);
   next.phase = 'handover';
   delete next.statePreparation;
+  return next;
+}
+
+// A reservation is durable and has no expiry: a crashed native call is unknown.
+export function reserveWake(state, id, session, generation, nativeQueueId) {
+  if (state.phase !== 'active' || state.wakeReservation || state.session !== session || state.generation !== generation || !Number.isSafeInteger(generation) || generation < 1 || !identifier(nativeQueueId)) throw new Error('wake reservation unavailable');
+  const matches = state.queue.filter(item => item.id === id && item.state === 'accepted' && item.session === session && item.generation === generation && item.nativeQueueId === nativeQueueId);
+  if (matches.length !== 1 || !session.startsWith('codex:')) throw new Error('wake identity unavailable');
+  const next = copy(state);
+  next.wakeReservation = { id, session, generation, nativeQueueId };
   return next;
 }
 

@@ -1,6 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveStatePreparation, completeStatePreparation } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveWake, reserveStatePreparation, completeStatePreparation } from '../bin/channel-state.mjs';
+
+test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
+  const session = 'codex:22222222-2222-4222-8222-222222222222';
+  let channel = createChannel('example', session);
+  channel = beginDelivery(enqueue(channel, 'message-1', 'fixture'), 'message-1', session, 1);
+  channel = acknowledge(channel, 'message-1', { status: 'accepted', messageId: 'message-1', session, generation: 1, nativeQueueId: 'queue-1' });
+  assert.throws(() => reserveWake(channel, 'message-1', session, 2, 'queue-1'), /reservation/);
+  assert.throws(() => reserveWake(channel, 'message-1', session, 1, 'queue-2'), /identity/);
+  const reserved = reserveWake(channel, 'message-1', session, 1, 'queue-1');
+  assert.throws(() => beginHandover(reserved), /wake reservation/);
+  assert.throws(() => reserveWake(reserved, 'message-1', session, 1, 'queue-1'), /reservation/);
+  assert.throws(() => reserveWake(beginHandover(channel), 'message-1', session, 1, 'queue-1'), /reservation/);
+});
 
 test('native queue identity is scoped to its accepted Codex delivery', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';

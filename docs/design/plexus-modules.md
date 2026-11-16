@@ -45,6 +45,11 @@ queue id alongside its session and correlation. The channel waker persists this
 id in the same accepted queue item and generation when supplied. This proves
 queue acceptance only; the waker does not yet invoke the wake-evidence adapter.
 An ambiguous send remains inflight and cannot be automatically retried.
+The channel journal can reserve an accepted wake by exact session, generation,
+correlation and native queue id. An outstanding reservation blocks handover
+and survives replay; it has no expiry. The experimental wake adapter does not
+yet acquire or settle this reservation, and no recovery operation exists, so
+the reservation interface is not ready for operational use.
 
 For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
 an on-demand read of the configured local app server. It requires the exact
