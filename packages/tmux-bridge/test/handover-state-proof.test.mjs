@@ -28,9 +28,12 @@ test('native request binds response to its own correlation without resuming', as
   const root = await mkdtemp(join(tmpdir(), 'state-native-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const session = 'codex:22222222-2222-4222-8222-222222222222', filename = 'state.yaml';
-  const fake = async (binary, argv) => {
+  const fake = async (binary, argv, options) => {
     assert.equal(binary, process.execPath);
     assert.ok(argv.includes('--no-resume'));
+    assert.ok(argv.includes('--message-stdin'));
+    assert.ok(!argv.some(value => value.includes(root)));
+    assert.ok(options.input.includes(join(root, filename)));
     const nonce = argv[argv.indexOf('--correlation-id') + 1];
     const content = 'version: 1\n';
     await writeFile(join(root, filename), content, { mode: 0o600 });

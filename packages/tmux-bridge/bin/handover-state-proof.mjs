@@ -4,12 +4,18 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const nativeBin = join(dirname(fileURLToPath(import.meta.url)), 'agent-native-call.mjs');
-const exec = promisify(execFile);
+const exec = (command, args, { input, ...options }) => new Promise((resolve, reject) => {
+  const child = execFile(command, args, options, (error, stdout) => {
+    if (error) reject(new Error('native state request failed'));
+    else resolve({ stdout });
+  });
+  child.stdin.on('error', () => {});
+  child.stdin.end(input);
+});
 
 /** Obtain a correlated native-session result, then bind it to file bytes. */
 export async function requestStateProof({ session, root, filename, managedInboxRoot }, runNative = exec) {
@@ -20,10 +26,10 @@ export async function requestStateProof({ session, root, filename, managedInboxR
   if (agent === 'claude' && (typeof managedInboxRoot !== 'string' || !isAbsolute(managedInboxRoot))) throw new Error('managed inbox required');
   const nonce = `handover-${randomUUID()}`;
   const message = `Write your handover state in the configured format to ${join(root, filename)} with private permissions. Return only JSON with schema agent-mesh.handover-state.v1, session ${session}, nonce ${nonce}, filename ${filename}, and sha256 containing the lowercase SHA-256 of the completed file.`;
-  const argv = [nativeBin, '--agent', agent, '--session', nativeId, '--correlation-id', nonce, '--timeout', '120', '--message', message];
+  const argv = [nativeBin, '--agent', agent, '--session', nativeId, '--correlation-id', nonce, '--timeout', '120', '--message-stdin'];
   if (agent === 'codex') argv.push('--no-resume');
   if (agent === 'claude') argv.push('--managed-inbox-root', managedInboxRoot);
-  const result = await runNative(process.execPath, argv, { timeout: 125000, maxBuffer: 8192 });
+  const result = await runNative(process.execPath, argv, { input: message, timeout: 125000, maxBuffer: 8192 });
   if (!result || typeof result.stdout !== 'string') throw new Error('native result unavailable');
   return verifyStateResponse({ session, nonce, response: result.stdout, root, filename });
 }
