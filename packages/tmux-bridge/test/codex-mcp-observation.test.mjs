@@ -39,3 +39,7 @@ test('an empty response does not claim a zero startup count', async () => {
   assert.equal(result.mcpStarted, null);
   assert.equal(result.completeness, 'unverified-non-atomic');
 });
+
+test('there is no default live app-server connection', async () => {
+  await assert.rejects(sampleCodexMcpConnections(input), /invalid MCP sample request/);
+});

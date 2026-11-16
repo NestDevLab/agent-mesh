@@ -163,7 +163,9 @@ sample for a requested thread. It discards server names and endpoint data, fails
 on ambiguous pagination, and reports an observed connection count separately
 from the unknown number of processes started and unknown startup tokens. Its
 profile and generation bindings are caller claims, the server does not echo the
-thread identifier in each page, and pagination is not atomic. Provider behavior,
-including whether listing triggers discovery, is not qualified; do not call it
-on a live thread or treat it as launch evidence until those conditions are
-verified. Tests use only a synthetic app-server callback.
+thread identifier in each page, and pagination is not atomic. An isolated Codex CLI 0.169.0 experiment showed that listing after the
+fixture MCP process was stopped restarted it; a control without listing did
+not restart it during the observation window. This is an active discovery
+operation, not a read-only health check. There is no default live connector; do
+not call it on a live thread or treat it as launch evidence. Unit tests use
+only a synthetic app-server callback.

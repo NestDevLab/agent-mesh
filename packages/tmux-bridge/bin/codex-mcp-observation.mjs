@@ -1,5 +1,4 @@
 /** Bounded, opt-in app-server sample. It does not start or resume a thread. */
-import { withCodexAppServer } from './codex-app-server.mjs';
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const statuses = new Set(['notStarted', 'starting', 'connected', 'authenticationRequired', 'failed', 'cancelled', 'disabled']);
@@ -8,9 +7,9 @@ const validName = name => typeof name === 'string' && name.length > 0 && name.le
 /**
  * Do not treat this as launch or process evidence. Pagination is not an atomic
  * snapshot, and the provider does not echo the requested thread in a response.
- * Calling the provider may initiate discovery; qualify it before live use.
+ * A real provider call can restart an MCP; connect only to an isolated fixture.
  */
-export async function sampleCodexMcpConnections({ threadId, generation, profileSha256 }, connect = withCodexAppServer) {
+export async function sampleCodexMcpConnections({ threadId, generation, profileSha256 }, connect) {
   if (typeof threadId !== 'string' || !uuid.test(threadId) || !Number.isSafeInteger(generation) || generation < 1 || typeof profileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(profileSha256) || typeof connect !== 'function') throw new Error('invalid MCP sample request');
   return connect({ clientName: 'agent-mesh-mcp-sample', timeout: 30000, timeoutMessage: 'MCP sample timed out' }, async request => {
     const startedAt = new Date().toISOString(), cursors = new Set(), names = new Set();
