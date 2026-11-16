@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -151,25 +152,22 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const drained = (await call('channel', 'get', '--name', 'drain')).channel;
   assert.equal(drained.queue[0].state, 'observed'); assert.equal(drained.wakeReservation, undefined);
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, callsBeforeRecovery);
-  // An auto-consumed queue item is reconciled by readback only, never started.
+  // Readback alone cannot distinguish a queued item from a steered message.
   const autoRoot = join(root, 'auto-proof'); await mkdir(autoRoot, { mode: 0o700 });
   nativeId = 'queued-auto-proof'; await prepareChannel('auto-proof', nativeId);
-  autoReservedMs = (await call('channel', 'get', '--name', 'auto-proof')).channel.queue[0].dispatchReservedAtMs;
-  await new Promise(resolve => setTimeout(resolve, 1100)); // native turn timestamps have one-second precision
   const autoArgs = ['--observe-auto', '--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'auto-proof', '--generation', '1', '--evidence-root', autoRoot, '--graph-state', state];
-  mode = 'wrong-client'; const autoStarts = requests.filter(r => r.method === 'thread/queue/start').length;
+  const callsBeforeAuto = requests.length;
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
-  assert.equal((await call('channel', 'get', '--name', 'auto-proof')).channel.wakeReservation.mode, 'auto-readback');
-  await assert.rejects(exec(process.execPath, [bin, '--apply', '--reconcile', '--channel', 'auto-proof', '--evidence-root', autoRoot, '--graph-state', state], { env }));
-  mode = 'wrong-input'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
-  mode = 'auto-old-turn'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
-  mode = 'auto-same-second'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...autoArgs], { env }));
-  mode = 'success';
-  const autoResult = JSON.parse((await exec(process.execPath, [bin, '--apply', ...autoArgs], { env })).stdout);
-  const autoProof = await verifyCodexWakeEvidence({ evidenceRoot: autoRoot, reference: autoResult.evidence, session });
-  assert.equal(autoProof.source, 'codex-app-server.auto-start-bound-readback');
-  assert.equal(autoProof.channel, 'auto-proof'); assert.equal(autoResult.settled, true);
-  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, autoStarts);
+  assert.equal(requests.length, callsBeforeAuto);
+  const autoState = (await call('channel', 'get', '--name', 'auto-proof')).channel;
+  assert.equal(autoState.queue[0].state, 'accepted');
+  assert.equal(autoState.wakeReservation, undefined);
+  assert.deepEqual(await readdir(autoRoot), []);
+  await assert.rejects(call('channel', 'reserve-wake', '--name', 'auto-proof', '--id', correlation, '--session', session, '--generation', '1', '--input', nativeId, '--source', 'auto-readback'));
+  const oldProof = { schema: 'agent-mesh.codex-wake-evidence.v5', source: 'codex-app-server.auto-start-bound-readback', session, queueId: nativeId, correlation, turn, startedAt: 123456789, channel: 'auto-proof', generation: 1, payloadSha256: createHash('sha256').update('fixture').digest('hex') };
+  const oldBody = `${JSON.stringify(oldProof)}\n`, oldDigest = createHash('sha256').update(oldBody).digest('hex');
+  await writeFile(join(autoRoot, `wake-${oldDigest}.json`), oldBody, { mode: 0o600 });
+  await assert.rejects(verifyCodexWakeEvidence({ evidenceRoot: autoRoot, reference: `codex-wake:${oldDigest}`, session }), /identity mismatch/);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);

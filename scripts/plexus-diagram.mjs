@@ -28,7 +28,7 @@ export const plexusDiagram = `flowchart LR
   Handover["Handover"] -. "planned verified cutover" .-> Channel
   Channel -. "pure switch model" .-> Drain["Observe queued deliveries"]
   Drain -. "then reserve" .-> Notice
-  AutoWake["Explicit auto-wake readback"] --> Wake
+  AutoWake["Auto-wake observation disabled"] -. "consumption unproven" .-> Wake
   Wake -. "bound native proof" .-> Drain
   ClaudeReadback["Local Claude transcript observer"] -. "observed inbox record" .-> Drain
 `;
