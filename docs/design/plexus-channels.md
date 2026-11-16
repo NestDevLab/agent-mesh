@@ -157,3 +157,13 @@ for the child close before reporting any result; failure to observe closure stop
 the plan. Missing or invalid private probe configuration stops planning rather than
 being classified as an unreachable MCP. Other probe implementations must
 honor cancellation themselves; an unconfirmed cancellation stops the plan.
+
+`codex-mcp-observation.mjs` prepares an opt-in, bounded app-server connection
+sample for a requested thread. It discards server names and endpoint data, fails
+on ambiguous pagination, and reports an observed connection count separately
+from the unknown number of processes started and unknown startup tokens. Its
+profile and generation bindings are caller claims, the server does not echo the
+thread identifier in each page, and pagination is not atomic. Provider behavior,
+including whether listing triggers discovery, is not qualified; do not call it
+on a live thread or treat it as launch evidence until those conditions are
+verified. Tests use only a synthetic app-server callback.
