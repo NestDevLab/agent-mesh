@@ -316,7 +316,9 @@ test("agent-spawn uses a routed native rendering and closes its lease after the 
     const opened = JSON.parse(await readFile(state, "utf8"));
     assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "governed-model", effort: "high", capacityCostBase: null });
     await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"));
-    await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 3_000);
+    // The fixture sleeps for two seconds; allow the observer to be scheduled
+    // on a loaded runner while still requiring the lease to complete.
+    await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 15_000);
     assert.equal((await runCommand("tmux", ["-L", socket, "has-session", "-t", target], env)).code, 0, "the tmux shell remains after the agent process exits");
     const events = await readFile(`${state}.events.ndjson`, "utf8");
     assert.match(events, /session_active/);
