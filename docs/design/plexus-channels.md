@@ -37,6 +37,16 @@ the same handover, session and generation remain current. Messages may still be
 queued while the request runs. A failure or lost response leaves the request
 unresolved and prevents an automatic resend; recovery is not yet implemented.
 The proof does not authorize cutover, archive, or final-message publication.
+
+`trigger-transaction.mjs` supplies a generic transaction engine, not a live
+scheduler adapter. Its injected journal must atomically reserve overlapping
+trigger sets and durably record intent before each move. Its adapter must
+compare the original target and version atomically and expose the operation ID
+on readback. Definite refusal rolls back earlier verified moves using the same
+compare-and-set contract; an ambiguous result stays unresolved and is not
+retried. Dry-run reads and journals a plan without moving triggers. Concrete
+timer and cloud adapters, durable journal implementation and recovery are not
+yet provided; this engine is not authorization to change live triggers.
 The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.
