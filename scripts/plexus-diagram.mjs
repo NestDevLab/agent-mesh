@@ -8,5 +8,6 @@ export const plexusDiagram = `flowchart LR
   Module["Registered module"] --> Contract["Versioned JSON contract"]
   Contract --> Journal
   Queue -- "bound receipt" --> Session
+  Restart["Restart state contract"] -. "planned validation" .-> Handover
   Handover["Handover"] -. "planned verified cutover" .-> Channel
 `;
