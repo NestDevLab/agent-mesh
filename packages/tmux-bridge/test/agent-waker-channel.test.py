@@ -80,13 +80,13 @@ class ChannelWakerTest(unittest.TestCase):
                 return json.loads(subprocess.run(['node', str(root / 'bin' / 'mesh-graph.mjs'), '--state', str(state), *args], check=True, capture_output=True, text=True).stdout)
             call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json')
             call('migrate', '--apply', '--json')
-            call('channel', 'create', '--name', 'example', '--session', f'codex:{uuid}')
-            call('channel', 'begin-handover', '--name', 'example')
-            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
+            call('channel', 'create', '--name', '#example', '--session', f'codex:{uuid}')
+            call('channel', 'begin-handover', '--name', '#example')
+            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(state), channel='#example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
             with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 0)
                 deliver.assert_not_called()
-            channel = call('channel', 'get', '--name', 'example')['channel']
+            channel = call('channel', 'get', '--name', '#example')['channel']
             self.assertEqual(channel['phase'], 'handover')
             self.assertEqual(channel['queue'][0]['state'], 'pending')
             self.assertEqual(json.loads(Path(args.state).read_text())['pending'], [])

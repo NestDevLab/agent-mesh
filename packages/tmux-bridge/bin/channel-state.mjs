@@ -1,9 +1,10 @@
 /** Pure channel transitions. A host must persist each transition atomically. */
 const identifier = (value) => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value);
+const channelIdentifier = (value) => typeof value === 'string' && /^#?[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value);
 const copy = (state) => structuredClone(state);
 
 export function createChannel(id, session) {
-  if (!identifier(id) || !identifier(session)) throw new Error('invalid channel or session');
+  if (!channelIdentifier(id) || !identifier(session)) throw new Error('invalid channel or session');
   return { schema: 'agent-mesh.channel.v1', id, session, generation: 1, phase: 'active', queue: [] };
 }
 

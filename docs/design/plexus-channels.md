@@ -8,6 +8,7 @@ implemented components from planned links. Keep its source in
 current session and a queue. An in-flight message is bound to a session and
 generation. A handover stops new dispatch and cannot finish while a delivery is
 unresolved. Only a matching acceptance receipt resolves an in-flight message.
+Channel identifiers may start with `#`; the prefix is part of the identifier.
 
 The graph command now persists channel creation, enqueue and handover start as
 events under the graph writer lock. Queued messages survive replay and

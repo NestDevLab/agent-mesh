@@ -31,18 +31,18 @@ test('channel and queued messages survive concurrent writers, replay and compact
   const uuid = '22222222-2222-4222-8222-222222222222';
   await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
   await call('migrate', '--apply', '--json');
-  await call('channel', 'create', '--name', 'example', '--session', `codex:${uuid}`);
-  await call('channel', 'begin-handover', '--name', 'example');
-  await Promise.all(['one', 'two'].map(id => call('channel', 'enqueue', '--name', 'example', '--id', id, '--input', id)));
-  assert.equal((await call('channel', 'enqueue', '--name', 'example', '--id', 'one', '--input', 'one')).duplicate, true);
-  await assert.rejects(call('channel', 'enqueue', '--name', 'example', '--id', 'one', '--input', 'changed'), /conflict/);
+  await call('channel', 'create', '--name', '#example', '--session', `codex:${uuid}`);
+  await call('channel', 'begin-handover', '--name', '#example');
+  await Promise.all(['one', 'two'].map(id => call('channel', 'enqueue', '--name', '#example', '--id', id, '--input', id)));
+  assert.equal((await call('channel', 'enqueue', '--name', '#example', '--id', 'one', '--input', 'one')).duplicate, true);
+  await assert.rejects(call('channel', 'enqueue', '--name', '#example', '--id', 'one', '--input', 'changed'), /conflict/);
   await rm(join(state, 'checkpoint.json'));
-  let channel = (await call('channel', 'get', '--name', 'example')).channel;
+  let channel = (await call('channel', 'get', '--name', '#example')).channel;
   assert.equal(channel.phase, 'handover');
   assert.deepEqual(channel.queue.map(row => row.id).sort(), ['one', 'two']);
   await call('compact', '--all-history', '--apply', '--json');
   await rm(join(state, 'checkpoint.json'), { force: true });
-  channel = (await call('channel', 'get', '--name', 'example')).channel;
+  channel = (await call('channel', 'get', '--name', '#example')).channel;
   assert.deepEqual(channel.queue.map(row => row.id).sort(), ['one', 'two']);
 });
 

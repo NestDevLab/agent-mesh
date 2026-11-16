@@ -3,6 +3,8 @@ import test from 'node:test';
 import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover } from '../bin/channel-state.mjs';
 
 test('handover queues work and never reroutes an uncertain delivery', () => {
+  assert.equal(createChannel('#example', 'session:one').id, '#example');
+  assert.throws(() => createChannel('#', 'session:one'), /invalid/);
   let channel = createChannel('example', 'session:one');
   channel = enqueue(channel, 'message-1', 'hello');
   channel = enqueue(channel, 'message-0', 'second');
