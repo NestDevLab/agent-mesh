@@ -207,3 +207,14 @@ rollback. Isolated tests covered coordinator exit and a child that changes
 process group inside a PID namespace; production launcher ownership, pidfd
 recovery, runtime compatibility and remote effects remain unverified. The gate
 is not connected to live handover.
+
+`isolated-pid-namespace.py` prepares a network-isolated experimental child
+behind that gate. It checks the namespace init's parent, owner, namespace ID
+and pidfd identity before opening the gate. Its stop operation targets only
+the pinned init and reports local init exit with descendant and remote effects
+still unverified. Preparation failure closes the gate without releasing it; if
+ownership or cleanup cannot be established it reports uncertainty. The lease
+must remain in the creating process and is not a persistent recovery mechanism,
+an authorization boundary or an integrated live session launcher. The sandbox
+uses a read-only host filesystem with a private writable workspace and is for
+isolated fixtures only.
