@@ -179,3 +179,13 @@ its completeness is unverified and it never claims a process-start or token
 count. Integration must attach before the authorized isolated startup, bind the
 actual thread response, and independently establish session, profile and event
 coverage before using the result as a receipt. It is not enabled for live use.
+
+`codex-role-mcp-overrides.mjs` prepares explicit disabled entries for servers
+outside a role launch plan from a supplied effective inventory, without copying
+server commands or enabling a previously disabled server. In isolated Codex CLI
+0.169.0 experiments, an empty `mcp_servers` override inherited both configured
+fixture servers, while an explicit disabled entry suppressed the excluded
+fixture. The generated override produced the same result in that fixture. This
+is not proof of complete isolation: the inventory may change or omit dynamic
+plugin servers, and permissions and plugins require independent enforcement.
+No live launch is wired to this planner.
