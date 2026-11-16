@@ -128,6 +128,7 @@ let resumeDiagnostic = false;
 let transportAccepted = false;
 let deliveryMethod;
 let steeredTurnId;
+let nativeQueueId;
 try {
 if (agent === "codex") {
   if (values["steer-or-queue"]) {
@@ -161,7 +162,8 @@ if (agent === "codex") {
           const input = [{ type: "text", text: protocolMessage, text_elements: [] }];
           const response = await request("thread/queue/add", { threadId: sessionId, clientUserMessageId: correlationId, input });
           const entry = response?.queuedSubmission;
-          if (typeof entry?.id !== "string" || !entry.id || entry.clientUserMessageId !== correlationId || JSON.stringify(entry.input) !== JSON.stringify(input)) throw new Error("queue receipt mismatch");
+          if (typeof entry?.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(entry.id) || entry.clientUserMessageId !== correlationId || JSON.stringify(entry.input) !== JSON.stringify(input)) throw new Error("queue receipt mismatch");
+          nativeQueueId = entry.id;
           if (resume) {
             try { await request("thread/resume", { threadId: sessionId }); }
             catch { resumeDiagnostic = true; }
@@ -207,6 +209,7 @@ const goal = goalOptions ? await applyGoal(agent, sessionId, goalOptions) : unde
 // Queue acknowledgement is transport proof, never proof that the turn ran.
 if (values["delivery-only"]) {
   console.log(JSON.stringify({ status: deliveryMethod === "steer" ? "steered" : "queued", agent, sessionId, correlationId,
+    ...(nativeQueueId ? { nativeQueueId } : {}),
     ...(values["steer-or-queue"] ? { deliveryMethod, ...(steeredTurnId ? { turnId: steeredTurnId } : {}) } : {}),
     ...(goal ? { goal } : {}),
     ...(resume && deliveryMethod === "queue" ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));

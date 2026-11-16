@@ -40,6 +40,9 @@ not an attestation against a local writer. `--apply` actually starts a queued
 turn. Nothing schedules or enables this adapter, and its native behavior has
 only been exercised with a synthetic server, not verified against a live runtime.
 It is not connected to the waker or Limen and does not prove historical coverage.
+For the native Codex stdin queue path, the transport receipt exposes the native
+queue id alongside its session and correlation. This is queue acceptance only;
+the waker does not yet persist the id or invoke the wake-evidence adapter.
 
 For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
 an on-demand read of the configured local app server. It requires the exact

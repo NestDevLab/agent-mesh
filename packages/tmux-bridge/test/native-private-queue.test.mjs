@@ -39,6 +39,14 @@ for (const badReceipt of [false, true]) {
     assert.equal(seen[0].params.clientUserMessageId, 'fixture-1');
     assert.ok(!stderr.includes('private fixture'));
     if (badReceipt) { assert.notEqual(code, 0); assert.match(stderr, /uncertain/); }
-    else { assert.equal(code, 0, stderr); assert.equal(JSON.parse(stdout).status, 'queued'); }
+    else {
+      assert.equal(code, 0, stderr);
+      const receipt = JSON.parse(stdout);
+      assert.equal(receipt.status, 'queued');
+      assert.equal(receipt.nativeQueueId, 'queue-1');
+      assert.equal(receipt.sessionId, session);
+      assert.equal(receipt.correlationId, 'fixture-1');
+      assert.ok(!stdout.includes('private fixture'));
+    }
   });
 }
