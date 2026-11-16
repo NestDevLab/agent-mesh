@@ -58,11 +58,12 @@ Process requests are capped at 32 MiB; responses and configuration at 1 MiB.
 Oversized requests fail without advancing the cursor rather than silently
 truncating the graph. These limits are not a substitute for future pagination.
 
-`module run --name <name>` captures the graph and a page from the module's
-cursor under the graph lock, then invokes `process` outside the lock. The host
-validates its response and commits the bounded batch and cursor as one graph
-event under the lock. An intervening run for the same module causes a cursor
-conflict. The request contains `schema`, `graph`, `cursor`, and `events`; the
+`module run --name <name>` observes the graph and a page from the module's
+cursor without holding the writer lock during feed replay. If the graph moves
+during observation or before commit, the run fails without advancing its cursor.
+The host invokes `process` outside the lock, validates its response and commits
+the bounded batch and cursor as one graph event under the lock. An intervening
+run for the same module causes a cursor conflict. The request contains `schema`, `graph`, `cursor`, and `events`; the
 response contains `schema`, `name`, `batchId`, `attributes`, and `events`.
 Attributes identify a session and a namespaced key; they are projected under
 that namespace on its node. Events identify a session, a namespaced type, and JSON data.

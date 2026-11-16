@@ -85,3 +85,21 @@ test("lifecycle observations are idempotent across replay and compaction", async
   await rm(join(state, "checkpoint.json"), { force: true });
   assert.equal((await call(...args)).duplicate, true);
 });
+
+test("a concurrent graph change rejects a stale module result without advancing its cursor", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "plexus-race-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const state = join(dir, "state"), config = join(dir, "modules.json"), fixture = join(dir, "fixture.mjs");
+  const script = `import { spawnSync } from 'node:child_process';
+if (process.argv[2] === 'describe') console.log(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',namespaces:['example'],operations:['describe','process']}));
+else { const p=spawnSync(process.execPath,[${JSON.stringify(graph)},'--state',${JSON.stringify(state)},'add','--agent','codex','--tmux-target','concurrent','--cwd','/synthetic','--runtime-uuid','33333333-3333-4333-8333-333333333333','--json']); if(p.status!==0) process.exit(1); console.log(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',batchId:'race',attributes:[],events:[]})); }`;
+  await writeFile(fixture, script);
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, modules: [{ name: "example", command: [process.execPath, fixture] }] }));
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [graph, "--state", state, ...args])).stdout);
+  await call("add", "--agent", "codex", "--tmux-target", "test", "--cwd", "/synthetic", "--runtime-uuid", uuid, "--json");
+  await call("migrate", "--apply", "--json");
+  await assert.rejects(call("module", "run", "--config", config, "--name", "example"), /graph changed during module processing/);
+  const after = await call("show", "--json");
+  assert.equal(after.nodes.length, 2);
+  assert.deepEqual(after.moduleStates, []);
+});

@@ -182,16 +182,17 @@ try {
         if (!entry) throw new Error("module is not registered");
         const description = await describeModule(entry);
         if (!description.operations.includes("process")) throw new Error("module does not support process");
-        ensureStateDir(stateDir);
-        const snapshot = withLock(stateDir, () => {
-          const graph = loadGraph(stateDir);
-          if (!graph.migrated || graph.unnumbered) throw new Error("module runs require a migrated graph");
-          const cursor = graph.moduleStates?.find(item => item.name === entry.name)?.cursor ?? null;
-          const query = cursor === null ? { initial: "head" } : { sinceCursor: cursor };
-          const feed = runQuery(stateDir, "changes", { input: JSON.stringify(query) });
-          if (feed.reset) throw new Error("module cursor expired; reconciliation required");
-          return { graph, cursor, feed };
-        });
+        // Feed replay can be large. Never hold the shared writer lock while
+        // scanning it; reject if the graph moved during observation instead.
+        const graph = loadGraph(stateDir);
+        if (!graph.migrated || graph.unnumbered) throw new Error("module runs require a migrated graph");
+        const cursor = graph.moduleStates?.find(item => item.name === entry.name)?.cursor ?? null;
+        const query = cursor === null ? { initial: "head" } : { sinceCursor: cursor };
+        const feed = runQuery(stateDir, "changes", { input: JSON.stringify(query) });
+        if (feed.reset) throw new Error("module cursor expired; reconciliation required");
+        const observed = loadGraph(stateDir);
+        if (observed.lastSeq !== graph.lastSeq || plexus.decodeCursor(feed.cursor, "changes").seq > graph.lastSeq) throw new Error("graph changed during module observation");
+        const snapshot = { graph, cursor, feed };
         const events = snapshot.feed.events.filter(item => !entry.namespaces.some(namespace => item.type.startsWith(`${namespace}.`)));
         const output = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph: snapshot.graph, cursor: snapshot.cursor, events });
         if (Object.keys(output).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
@@ -201,6 +202,7 @@ try {
         }
         const batch = { id: output.batchId, cursor: snapshot.cursor, nextCursor: snapshot.feed.cursor, attributes: output.attributes, events: output.events };
         const result = mutate(stateDir, graph => {
+          if (graph.lastSeq !== snapshot.graph.lastSeq) throw new Error("graph changed during module processing");
           const checked = validateModuleBatch(entry.name, entry.namespaces, batch, graph, plexus.sessionIdOf);
           if (checked.duplicate) return { graph, result: { module: entry.name, batchId: batch.id, duplicate: true } };
           return { graph, event: event("module.batch", { module: entry.name, batch, digest: checked.digest }), result: { module: entry.name, batchId: batch.id, duplicate: false } };
