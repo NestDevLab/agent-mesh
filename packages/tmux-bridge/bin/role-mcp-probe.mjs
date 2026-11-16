@@ -14,9 +14,9 @@ export function roleProbeFromAllowlist(allowlist, timeoutMs = 3000) {
 
 // The profile contains identifiers only. Callers must resolve them using a
 // trusted private allowlist; never construct this command from session text.
-export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signal }) {
+export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signal, spawnProcess = spawn }) {
   if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command.every(value => typeof value === 'string' && value.length > 0 && value.length < 8192 && !value.includes('\0')) || !isAbsolute(command[0]) || !env || typeof env !== 'object' || Array.isArray(env) || !Object.entries(env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && !value.includes('\0')) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 || (signal !== undefined && !(signal instanceof AbortSignal))) throw new Error('invalid MCP probe configuration');
-  return new Promise(resolve => {
+  return new Promise((resolve, reject) => {
     let child, timer, reapTimer, buffer = '', phase = 'initialize', finished = false, closed = false, desired = false, resolved = false;
     let onAbort;
     const done = result => { if (!resolved) { resolved = true; clearTimeout(reapTimer); resolve(result); } };
@@ -26,10 +26,10 @@ export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signa
       if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       if (child?.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
       if (!child || closed) done(child ? desired : false);
-      else reapTimer = setTimeout(() => done(false), 1000);
+      else reapTimer = setTimeout(() => { if (!resolved) { resolved = true; reject(new Error('probe cancellation unconfirmed')); } }, 1000);
     };
     if (signal?.aborted) { finish(false); return; }
-    try { child = spawn(command[0], command.slice(1), { detached: true, shell: false, stdio: ['pipe', 'pipe', 'ignore'], env }); }
+    try { child = spawnProcess(command[0], command.slice(1), { detached: true, shell: false, stdio: ['pipe', 'pipe', 'ignore'], env }); }
     catch { finish(false); return; }
     timer = setTimeout(() => finish(false), timeoutMs);
     onAbort = () => finish(false);

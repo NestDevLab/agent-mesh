@@ -117,8 +117,7 @@ unreachable MCP is omitted and listed in the receipt without blocking startup.
 The launch assessor reports the observed MCP count and startup tokens, or null
 when tokens are unavailable; an unexpected permission prompt or component
 requires rollback. These are preparation primitives only: no provider startup,
-permission enforcement, timeout cancellation, live rollback or token collector
-is connected yet. The approved handover remains disabled until native evidence
+permission enforcement, live rollback or token collector is connected yet. The approved handover remains disabled until native evidence
 and those adapters are present.
 
 `handover-dry-run.mjs` rehearses only in memory; it never contacts native
@@ -134,5 +133,6 @@ and time, and terminates its process group. It currently supports protocol
 probing does not prove that an MCP started in the successor session. It is not
 scheduled or wired to the live handover. Planner deadlines signal cancellation;
 the supplied stdio probe terminates its process group on that signal and waits
-for the child close before reporting success. Other probe implementations must
+for the child close before reporting any result; failure to observe closure stops
+the plan. Other probe implementations must
 honor cancellation themselves; an unconfirmed cancellation stops the plan.

@@ -58,3 +58,14 @@ test('planner refuses to continue if cancellation is not acknowledged', async ()
   const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['slow'], plugins: [] };
   await assert.rejects(planRoleLaunch({ profile, authority, timeoutMs: 5, probe: () => new Promise(() => {}) }), /cancellation unconfirmed/);
 });
+
+test('unobserved process closure fails planning instead of treating MCP as offline', async () => {
+  const { EventEmitter } = await import('node:events');
+  const child = new EventEmitter();
+  child.stdin = new EventEmitter(); child.stdin.write = () => true;
+  child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+  const profile = { schema: 'agent-mesh.role-profile.v1', role: 'fixture', permissions: [], mcp: ['stuck'], plugins: [] };
+  const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['stuck'], plugins: [] };
+  const probe = (_name, { signal }) => probeStdioMcp({ command: [process.execPath], timeoutMs: 5, signal, spawnProcess: () => child });
+  await assert.rejects(planRoleLaunch({ profile, authority, probe, timeoutMs: 1400 }), /probe cancellation unconfirmed/);
+});
