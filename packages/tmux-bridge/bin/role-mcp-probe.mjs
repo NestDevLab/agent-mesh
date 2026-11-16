@@ -2,7 +2,9 @@
 import { spawn } from 'node:child_process';
 import { readFileSync, statSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
+const gateProgram = fileURLToPath(new URL('./role-mcp-exec-gate.py', import.meta.url));
 const configurationError = message => Object.assign(new Error(message), { code: 'MCP_PROBE_CONFIGURATION' });
 
 // The launcher is not an authorization boundary: the command is still trusted
@@ -33,9 +35,9 @@ export function roleProbeFromAllowlist(allowlist, timeoutMs = 3000) {
 export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signal, spawnProcess = spawn }) {
   if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command.every(value => typeof value === 'string' && value.length > 0 && value.length < 8192 && !value.includes('\0')) || !isAbsolute(command[0]) || !env || typeof env !== 'object' || Array.isArray(env) || !Object.entries(env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && !value.includes('\0')) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 || (signal !== undefined && !(signal instanceof AbortSignal))) throw configurationError('invalid MCP probe configuration');
   return new Promise((resolve, reject) => {
-    let child, timer, reapTimer, buffer = '', info = '', phase = 'initialize', finished = false, closed = false, desired = false, resolved = false, namespaceVerified = false, protocolReady = false;
+    let child, timer, reapTimer, buffer = '', info = '', phase = 'gate', finished = false, closed = false, desired = false, resolved = false, namespaceVerified = false, gateAcknowledged = false, protocolReady = false;
     let onAbort;
-    const done = result => { if (!resolved) { resolved = true; clearTimeout(reapTimer); if (!namespaceVerified) reject(configurationError('MCP probe containment unverified')); else resolve(result); } };
+    const done = result => { if (!resolved) { resolved = true; clearTimeout(reapTimer); if (!namespaceVerified || !gateAcknowledged) reject(configurationError('MCP probe containment or gate unverified')); else resolve(result); } };
     const finish = result => {
       if (finished) return;
       finished = true; desired = result; clearTimeout(timer);
@@ -45,19 +47,18 @@ export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signa
       else reapTimer = setTimeout(() => { if (!resolved) { resolved = true; reject(new Error('probe cancellation unconfirmed')); } }, 1000);
     };
     if (signal?.aborted) { resolved = true; resolve(false); return; }
-    try { child = spawnProcess('/usr/bin/bwrap', ['--info-fd', '3', '--block-fd', '4', '--die-with-parent', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--unshare-pid', '--', ...command], { detached: true, shell: false, stdio: ['pipe', 'pipe', 'ignore', 'pipe', 'pipe'], env }); }
+    try { child = spawnProcess('/usr/bin/bwrap', ['--info-fd', '3', '--die-with-parent', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--unshare-pid', '--', '/usr/bin/python3', '-B', gateProgram, '--', ...command], { detached: true, shell: false, stdio: ['pipe', 'pipe', 'ignore', 'pipe'], env }); }
     catch { finish(false); return; }
     timer = setTimeout(() => finish(false), timeoutMs);
     onAbort = () => finish(false);
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) { finish(false); return; }
-    if (!child.stdio?.[3] || !child.stdio?.[4]) { finish(false); return; }
-    child.stdio[4].on('error', () => { if (!namespaceVerified) finish(false); });
+    if (!child.stdio?.[3]) { finish(false); return; }
     child.stdio[3].setEncoding('utf8');
     child.stdio[3].on('data', data => { info += data; if (Buffer.byteLength(info) > 8192) finish(false); });
     child.stdio[3].on('end', () => {
       if (finished) return;
-      try { verifyNamespace(info, child); namespaceVerified = true; child.stdio[4].end('GO'); if (protocolReady) finish(true); }
+      try { verifyNamespace(info, child); namespaceVerified = true; child.stdin.write('GO\n'); }
       catch { finish(false); }
     });
     child.once('error', () => finish(false));
@@ -73,6 +74,12 @@ export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signa
       while (!finished && (index = buffer.indexOf('\n')) >= 0) {
         const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
         let reply; try { reply = JSON.parse(line); } catch { return finish(false); }
+        if (phase === 'gate') {
+          if (!namespaceVerified || Object.keys(reply || {}).join(',') !== 'agentMeshMcpGate' || reply.agentMeshMcpGate !== 'released') return finish(false);
+          gateAcknowledged = true; phase = 'initialize';
+          write({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'role-profile-probe', version: '1' } } });
+          continue;
+        }
         if (reply?.jsonrpc !== '2.0') return finish(false);
         if (phase === 'initialize' && reply.id === 1) {
           if (reply.error || !reply.result || reply.result.protocolVersion !== '2024-11-05' || !reply.result.capabilities || typeof reply.result.capabilities !== 'object' || Array.isArray(reply.result.capabilities) || typeof reply.result.serverInfo?.name !== 'string' || !reply.result.serverInfo.name || typeof reply.result.serverInfo.version !== 'string' || !reply.result.serverInfo.version) return finish(false);
@@ -85,6 +92,5 @@ export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signa
         } else if (reply.id !== undefined) return finish(false);
       }
     });
-    write({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'role-profile-probe', version: '1' } } });
   });
 }

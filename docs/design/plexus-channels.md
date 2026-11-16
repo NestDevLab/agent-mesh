@@ -147,8 +147,10 @@ It does not verify native delivery, rollback or the real pilot.
 
 An optional stdio probe resolves MCP names exclusively through a trusted
 operator-supplied allowlist and launches without a shell. On Linux the probe
-uses bubblewrap with a separate PID namespace and a blocked gate; it checks the
-namespace init owner, parent and namespace identity before releasing the command.
+uses bubblewrap with a separate PID namespace and a strict stdin gate; it checks
+the namespace init owner, parent and namespace identity before releasing the
+command. The gate requires an explicit permit and rejects EOF or partial input;
+a missing gate acknowledgement is a containment error, not an offline result.
 It requires an MCP initialization response and ping, bounds output and time,
 then terminates the owned process group and waits for wrapper closure. Missing
 or unverified containment stops planning instead of classifying the MCP offline.

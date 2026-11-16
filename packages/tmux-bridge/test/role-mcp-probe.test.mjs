@@ -104,3 +104,34 @@ test('unavailable namespace containment stops planning before command release', 
   await assert.rejects(result, error => error.code === 'MCP_PROBE_CONFIGURATION');
   assert.equal(released, false);
 });
+
+test('the execution gate rejects EOF, partial and invalid permits', async t => {
+  const { spawn } = await import('node:child_process');
+  const { fileURLToPath } = await import('node:url');
+  const root = await mkdtemp(join(tmpdir(), 'mcp-gate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const gate = fileURLToPath(new URL('../bin/role-mcp-exec-gate.py', import.meta.url));
+  const execute = (input, marker) => new Promise((resolve, reject) => {
+    const child = spawn('/usr/bin/python3', ['-B', gate, '--', '/usr/bin/touch', marker], { stdio: ['pipe', 'pipe', 'ignore'] });
+    let output = ''; child.stdout.on('data', chunk => { output += chunk; });
+    child.on('error', reject); child.on('close', code => resolve({ code, output }));
+    child.stdin.end(input);
+  });
+  for (const input of ['', 'G', 'NO\n']) {
+    const marker = join(root, `no-${input.length}`);
+    const result = await execute(input, marker);
+    assert.equal(result.code, 125); assert.equal(result.output, '');
+    await assert.rejects(access(marker));
+  }
+  const marker = join(root, 'yes');
+  const result = await execute('GO\n', marker);
+  assert.equal(result.code, 0); assert.equal(result.output, '{"agentMeshMcpGate":"released"}\n');
+  await access(marker);
+});
+
+test('an already cancelled probe never starts a process', async () => {
+  const controller = new AbortController(); controller.abort();
+  let spawned = false;
+  const result = await probeStdioMcp({ command: [process.execPath], signal: controller.signal, spawnProcess: () => { spawned = true; } });
+  assert.equal(result, false); assert.equal(spawned, false);
+});
