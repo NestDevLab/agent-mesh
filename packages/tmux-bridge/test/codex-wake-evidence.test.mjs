@@ -104,17 +104,14 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, starts);
   const recoverArgs = ['--reconcile', '--channel', 'uncertain', '--evidence-root', uncertainRoot, '--graph-state', state];
   await assert.rejects(exec(process.execPath, [bin, ...recoverArgs], { env }));
-  mode = 'wrong-client';
-  await assert.rejects(exec(process.execPath, [bin, '--apply', ...recoverArgs], { env }));
-  assert.ok((await call('channel', 'get', '--name', 'uncertain')).channel.wakeReservation);
+  const callsBeforeReconcile = requests.length;
   mode = 'success';
-  const recovered = JSON.parse((await exec(process.execPath, [bin, '--apply', ...recoverArgs], { env })).stdout);
-  assert.equal(recovered.settled, true);
-  assert.equal((await verifyCodexWakeEvidence({ evidenceRoot: uncertainRoot, reference: recovered.evidence, session })).source, 'codex-app-server.correlated-recovery');
+  await assert.rejects(exec(process.execPath, [bin, '--apply', ...recoverArgs], { env }));
+  assert.equal(requests.length, callsBeforeReconcile);
+  assert.ok((await call('channel', 'get', '--name', 'uncertain')).channel.wakeReservation);
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, starts);
-  assert.equal((await call('channel', 'get', '--name', 'uncertain')).channel.wakeReservation, undefined);
   const uncertainFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
-  assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 2);
+  assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 1);
   const partialRoot = join(root, 'partial'); await mkdir(partialRoot, { mode: 0o700 });
   nativeId = 'queued-partial'; await prepareChannel('partial', nativeId);
   const partialArgs = ['--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'partial', '--generation', '1', '--evidence-root', partialRoot, '--graph-state', state];
@@ -122,7 +119,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...partialArgs], { env }));
   assert.deepEqual((await readdir(partialRoot)).map(name => name.split('-')[0]), ['intent']);
   const partialFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
-  assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 2);
+  assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 1);
   for (const mismatch of ['wrong-thread', 'wrong-turn', 'wrong-time', 'wrong-client', 'wrong-input']) {
     const mismatchRoot = join(root, mismatch); await mkdir(mismatchRoot, { mode: 0o700 });
     nativeId = `queued-${mismatch}`; await prepareChannel(mismatch, nativeId);
@@ -132,7 +129,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
     assert.deepEqual((await readdir(mismatchRoot)).map(name => name.split('-')[0]), ['intent']);
   }
   const mismatchFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
-  assert.equal(mismatchFeed.events.filter(e => e.type === 'session.woken').length, 2);
+  assert.equal(mismatchFeed.events.filter(e => e.type === 'session.woken').length, 1);
   // Simulate persisted draining state only; no operational cutover is enabled.
   const drainRoot = join(root, 'drain'); await mkdir(drainRoot, { mode: 0o700 });
   nativeId = 'queued-drain'; await prepareChannel('drain', nativeId);
@@ -144,14 +141,17 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   mode = 'uncertain'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...drainArgs], { env }));
   const callsBeforeRecovery = requests.filter(r => r.method === 'thread/queue/start').length;
   mode = 'success';
-  const drainResult = JSON.parse((await exec(process.execPath, [bin, '--apply', '--reconcile', '--channel', 'drain', '--evidence-root', drainRoot, '--graph-state', state], { env })).stdout);
-  const drainProof = await verifyCodexWakeEvidence({ evidenceRoot: drainRoot, reference: drainResult.evidence, session });
-  assert.equal(drainProof.schema, 'agent-mesh.codex-wake-evidence.v4');
-  assert.equal(drainProof.source, 'codex-app-server.correlated-recovery-bound');
-  assert.equal(drainProof.channel, 'drain'); assert.equal(drainProof.generation, 1);
+  await assert.rejects(exec(process.execPath, [bin, '--apply', '--reconcile', '--channel', 'drain', '--evidence-root', drainRoot, '--graph-state', state], { env }));
   const drained = (await call('channel', 'get', '--name', 'drain')).channel;
-  assert.equal(drained.queue[0].state, 'observed'); assert.equal(drained.wakeReservation, undefined);
+  assert.equal(drained.queue[0].state, 'accepted'); assert.ok(drained.wakeReservation);
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, callsBeforeRecovery);
+  // Both unbound v3 and bound v4 recovery receipts fail closed, even with a valid digest.
+  for (const bound of [false, true]) {
+    const old = { schema: `agent-mesh.codex-wake-evidence.v${bound ? 4 : 3}`, source: `codex-app-server.correlated-recovery${bound ? '-bound' : ''}`, session, queueId: nativeId, correlation, turn, startedAt: 123456789, ...(bound ? { channel: 'drain', generation: 1, payloadSha256: createHash('sha256').update('fixture').digest('hex') } : {}) };
+    const body = `${JSON.stringify(old)}\n`, digest = createHash('sha256').update(body).digest('hex');
+    await writeFile(join(drainRoot, `wake-${digest}.json`), body, { mode: 0o600 });
+    await assert.rejects(verifyCodexWakeEvidence({ evidenceRoot: drainRoot, reference: `codex-wake:${digest}`, session }), /identity mismatch/);
+  }
   // Readback alone cannot distinguish a queued item from a steered message.
   const autoRoot = join(root, 'auto-proof'); await mkdir(autoRoot, { mode: 0o700 });
   nativeId = 'queued-auto-proof'; await prepareChannel('auto-proof', nativeId);

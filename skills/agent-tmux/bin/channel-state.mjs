@@ -67,11 +67,11 @@ export function reserveWake(state, id, session, generation, nativeQueueId, mode 
 
 export function settleWake(state, proof) {
   const reservation = state.wakeReservation;
-  if (!reservation || (reservation.mode === 'auto-readback' || proof?.source === 'codex-app-server.auto-start-bound-readback') || !['active', 'draining'].includes(state.phase) || state.session !== reservation.session || state.generation !== reservation.generation || !proof || proof.session !== reservation.session || proof.correlation !== reservation.id || proof.queueId !== reservation.nativeQueueId || !/^codex-wake:[a-f0-9]{64}$/.test(proof.evidence || '')) throw new Error('wake proof does not match reservation');
+  if (!reservation || (reservation.mode === 'auto-readback' || ['codex-app-server.auto-start-bound-readback', 'codex-app-server.correlated-recovery', 'codex-app-server.correlated-recovery-bound'].includes(proof?.source)) || !['active', 'draining'].includes(state.phase) || state.session !== reservation.session || state.generation !== reservation.generation || !proof || proof.session !== reservation.session || proof.correlation !== reservation.id || proof.queueId !== reservation.nativeQueueId || !/^codex-wake:[a-f0-9]{64}$/.test(proof.evidence || '')) throw new Error('wake proof does not match reservation');
   const next = copy(state), item = next.queue.find(row => row.id === reservation.id && row.session === reservation.session && row.generation === reservation.generation && row.nativeQueueId === reservation.nativeQueueId && row.state === 'accepted' && !row.wakeEvidence);
   if (!item) throw new Error('wake item unavailable');
   item.wakeEvidence = proof.evidence;
-  const boundWake = proof.schema === 'agent-mesh.codex-wake-evidence.v4' && ['codex-app-server.queue-start-bound-readback', 'codex-app-server.correlated-recovery-bound'].includes(proof.source);
+  const boundWake = proof.schema === 'agent-mesh.codex-wake-evidence.v4' && proof.source === 'codex-app-server.queue-start-bound-readback';
   if (state.phase === 'draining' && state.handover?.backlog.includes(item.id) && boundWake && proof.channel === state.id && proof.generation === item.generation && proof.payloadSha256 === createHash('sha256').update(item.payload).digest('hex')) {
     item.state = 'observed'; item.observation = proof.evidence;
   }
