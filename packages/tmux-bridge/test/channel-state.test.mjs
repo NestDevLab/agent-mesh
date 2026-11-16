@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
 
 test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';
@@ -32,7 +32,7 @@ test('state preparation reserves once and binds proof to the channel generation'
   let channel = beginHandover(createChannel('example', 'codex:old'));
   channel = reserveStatePreparation(channel, 'handover-1');
   assert.throws(() => reserveStatePreparation(channel, 'handover-2'), /unresolved/);
-  assert.throws(() => finishHandover(channel, 'codex:new', true), /unresolved/);
+  assert.throws(() => switchHandover(channel, 'codex:new', true), /unresolved/);
   channel = enqueue(channel, 'queued', 'fixture');
   const proof = { schema: 'agent-mesh.handover-state.v1', session: 'codex:old', nonce: 'handover-1', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 42 };
   assert.throws(() => completeStatePreparation(channel, { ...proof, nonce: 'other' }), /invalid/);
@@ -56,11 +56,13 @@ test('handover queues work and never reroutes an uncertain delivery', () => {
   channel = beginHandover(channel);
   channel = enqueue(channel, 'message-2', 'queued');
   assert.throws(() => beginDelivery(channel, 'message-2'), /handover/);
-  assert.throws(() => finishHandover(channel, 'session:two', true), /inflight/);
+  assert.throws(() => switchHandover(channel, 'session:two', true), /inflight/);
   assert.throws(() => acknowledge(channel, 'message-1', { status: 'accepted', messageId: 'message-1', session: 'session:two', generation: 1 }), /receipt/);
   channel = acknowledge(channel, 'message-1', { status: 'accepted', messageId: 'message-1', session: 'session:one', generation: 1 });
-  assert.throws(() => finishHandover(channel, 'session:two', false), /successor/);
-  channel = finishHandover(channel, 'session:two', true);
+  assert.throws(() => switchHandover(channel, 'session:two', false), /successor/);
+  channel = reserveStatePreparation(channel, 'state-1');
+  channel = completeStatePreparation(channel, { schema: 'agent-mesh.handover-state.v1', session: 'session:one', nonce: 'state-1', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 1 });
+  channel = switchHandover(channel, 'session:two', true);
   channel = beginDelivery(channel, 'message-0');
   assert.equal(channel.queue[1].session, 'session:two');
   assert.equal(channel.queue[1].generation, 2);
@@ -68,16 +70,27 @@ test('handover queues work and never reroutes an uncertain delivery', () => {
   assert.throws(() => enqueue(channel, 'message-2', 'different'), /conflict/);
 });
 
-test('final notice reservation binds the queue receipt and blocks cutover', () => {
+test('switch drains observed backlog before reserving a predecessor notice', () => {
   let state = beginHandover(createChannel('example', 'codex:old'));
-  assert.throws(() => reserveFinalNotice(state, 'handover-1', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  state = enqueue(state, 'message-1', 'fixture');
+  assert.throws(() => switchHandover(state, 'codex:new', true), /state preparation/);
   state = reserveStatePreparation(state, 'state-1');
   state = completeStatePreparation(state, { schema: 'agent-mesh.handover-state.v1', session: 'codex:old', nonce: 'state-1', filename: 'state.yaml', sha256: 'b'.repeat(64), bytes: 2 });
+  state = switchHandover(state, 'codex:new', true);
+  assert.equal(state.phase, 'draining'); assert.equal(state.handover.predecessor, 'codex:old');
+  assert.throws(() => reserveFinalNotice(state, 'handover-1', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  state = beginDelivery(state, 'message-1');
+  state = acknowledge(state, 'message-1', { status: 'accepted', messageId: 'message-1', session: 'codex:new', generation: 2 });
+  assert.throws(() => reserveFinalNotice(state, 'handover-1', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  const proof = { schema: 'agent-mesh.delivery-observation.v1', messageId: 'message-1', session: 'codex:new', generation: 2, evidence: 'fixture-proof' };
+  assert.throws(() => observeDelivery(state, 'message-1', { ...proof, session: 'codex:old' }), /observation/);
+  state = observeDelivery(state, 'message-1', proof);
+  assert.throws(() => reserveFinalNotice(state, 'handover-1', 'codex:other', 'a'.repeat(64)), /unavailable/);
   state = reserveFinalNotice(state, 'handover-1', 'codex:new', 'a'.repeat(64));
-  assert.throws(() => reserveFinalNotice(state, 'handover-2', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  assert.equal(state.finalNotice.session, 'codex:old'); assert.equal(state.finalNotice.generation, 1);
   const receipt = { schema: 'agent-mesh.notice-queue.v1', status: 'queued-unverified', session: 'codex:old', nonce: 'handover-1', noticeSha256: 'a'.repeat(64) };
   assert.throws(() => recordNoticeQueued(state, { ...receipt, nonce: 'other' }), /reservation/);
   state = recordNoticeQueued(state, receipt);
   assert.equal(state.finalNotice.status, 'queued-unverified');
-  assert.throws(() => finishHandover(state, 'codex:new', true), /final notice unresolved/);
+  assert.equal(state.phase, 'draining');
 });

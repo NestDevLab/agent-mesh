@@ -21,7 +21,7 @@ export function enqueue(state, id, payload) {
 }
 
 export function beginDelivery(state, id, expectedSession, expectedGeneration) {
-  if (state.phase !== 'active') throw new Error('handover in progress');
+  if (!['active', 'draining'].includes(state.phase)) throw new Error('handover in progress');
   if (expectedSession !== undefined && state.session !== expectedSession) throw new Error('channel recipient changed');
   if (expectedGeneration !== undefined && (!Number.isSafeInteger(expectedGeneration) || expectedGeneration < 1 || state.generation !== expectedGeneration)) throw new Error('channel generation changed');
   if (state.queue.some((item) => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
@@ -94,15 +94,16 @@ export function completeStatePreparation(state, proof) {
 // The durable reservation survives crashes; only authenticated evidence can
 // settle it. It does not itself verify the successor or send a notice.
 export function reserveFinalNotice(state, id, successor, noticeSha256) {
-  if (state.phase !== 'handover' || state.finalNotice || state.statePreparation?.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(id) || !identifier(successor) || successor === state.session || !/^[a-f0-9]{64}$/.test(noticeSha256 || '') || state.queue.some(item => item.state === 'inflight')) throw new Error('final notice reservation unavailable');
+  const handover = state.handover;
+  if (state.phase !== 'draining' || !handover || state.finalNotice || successor !== state.session || handover.successor !== successor || !identifier(id) || !/^[a-f0-9]{64}$/.test(noticeSha256 || '') || handover.backlog.some(id => !state.queue.some(item => item.id === id && item.state === 'observed' && item.session === successor && item.generation === state.generation))) throw new Error('final notice reservation unavailable');
   const next = copy(state);
-  next.finalNotice = { id, session: state.session, generation: state.generation, successor, noticeSha256, status: 'requested' };
+  next.finalNotice = { id, session: handover.predecessor, generation: handover.previousGeneration, successor, noticeSha256, status: 'requested' };
   return next;
 }
 
 export function recordNoticeQueued(state, receipt) {
   const pending = state.finalNotice;
-  if (state.phase !== 'handover' || !pending || pending.status !== 'requested' || pending.session !== state.session || pending.generation !== state.generation || !receipt || receipt.schema !== 'agent-mesh.notice-queue.v1' || receipt.status !== 'queued-unverified' || receipt.session !== pending.session || receipt.nonce !== pending.id || receipt.noticeSha256 !== pending.noticeSha256) throw new Error('notice queue receipt does not match reservation');
+  if (state.phase !== 'draining' || !pending || pending.status !== 'requested' || pending.session !== state.handover?.predecessor || pending.generation !== state.handover?.previousGeneration || !receipt || receipt.schema !== 'agent-mesh.notice-queue.v1' || receipt.status !== 'queued-unverified' || receipt.session !== pending.session || receipt.nonce !== pending.id || receipt.noticeSha256 !== pending.noticeSha256) throw new Error('notice queue receipt does not match reservation');
   const next = copy(state);
   next.finalNotice.status = 'queued-unverified';
   return next;
@@ -112,20 +113,31 @@ export function recordNoticeQueued(state, receipt) {
 // not exclusive finality and not authorization to finish a handover.
 export function recordNoticeObservation(state, proof) {
   const pending = state.finalNotice;
-  if (state.phase !== 'handover' || !pending || !['requested', 'queued-unverified'].includes(pending.status) || pending.session !== state.session || pending.generation !== state.generation || !proof || proof.schema !== 'agent-mesh.final-notice-observation.v1' || proof.session !== pending.session || proof.nonce !== pending.id || proof.messageSha256 !== pending.noticeSha256 || !/^[a-f0-9]{64}$/.test(proof.transcriptSha256 || '') || !Number.isSafeInteger(proof.bytes) || proof.bytes < 1) throw new Error('notice observation does not match reservation');
+  if (state.phase !== 'draining' || !pending || !['requested', 'queued-unverified'].includes(pending.status) || pending.session !== state.handover?.predecessor || pending.generation !== state.handover?.previousGeneration || !proof || proof.schema !== 'agent-mesh.final-notice-observation.v1' || proof.session !== pending.session || proof.nonce !== pending.id || proof.messageSha256 !== pending.noticeSha256 || !/^[a-f0-9]{64}$/.test(proof.transcriptSha256 || '') || !Number.isSafeInteger(proof.bytes) || proof.bytes < 1) throw new Error('notice observation does not match reservation');
   const next = copy(state);
   next.finalNotice = { ...pending, status: 'observed-snapshot', transcriptSha256: proof.transcriptSha256, transcriptBytes: proof.bytes };
   return next;
 }
 
-export function finishHandover(state, session, verified) {
+// These are pure transitions. The host must independently authenticate the successor
+// and delivery evidence before applying them; the operational cutover stays disabled.
+export function switchHandover(state, session, verified) {
   if (state.phase !== 'handover' || !identifier(session) || session === state.session || verified !== true) throw new Error('unverified successor');
-  if (state.finalNotice && state.finalNotice.status !== 'verified') throw new Error('final notice unresolved');
-  if (state.statePreparation && state.statePreparation.status !== 'verified') throw new Error('state preparation unresolved');
-  if (state.queue.some((item) => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
+  if (state.finalNotice || state.queue.some(item => item.state === 'inflight')) throw new Error('unresolved inflight delivery or notice');
+  if (state.statePreparation?.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation) throw new Error('state preparation unresolved');
   const next = copy(state);
+  next.handover = { predecessor: state.session, previousGeneration: state.generation, successor: session, backlog: state.queue.filter(item => item.state === 'pending').map(item => item.id) };
   next.session = session;
   next.generation += 1;
-  next.phase = 'active';
+  next.phase = 'draining';
+  return next;
+}
+
+// An accepted provider queue receipt is not proof of recipient observation.
+export function observeDelivery(state, id, proof) {
+  const item = state.queue.find(row => row.id === id);
+  if (state.phase !== 'draining' || !state.handover?.backlog.includes(id) || !item || item.state !== 'accepted' || item.session !== state.session || item.generation !== state.generation || !proof || proof.schema !== 'agent-mesh.delivery-observation.v1' || proof.messageId !== id || proof.session !== item.session || proof.generation !== item.generation || typeof proof.evidence !== 'string' || !identifier(proof.evidence)) throw new Error('delivery observation does not match backlog');
+  const next = copy(state), observed = next.queue.find(row => row.id === id);
+  observed.state = 'observed'; observed.observation = proof.evidence;
   return next;
 }

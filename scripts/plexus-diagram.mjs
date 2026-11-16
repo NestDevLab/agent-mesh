@@ -25,4 +25,6 @@ export const plexusDiagram = `flowchart LR
   Notice["Successor notice formatter"] -. "planned publication" .-> Handover
   Observation["Codex notice snapshot"] -. "planned finality check" .-> Handover
   Handover["Handover"] -. "planned verified cutover" .-> Channel
+  Channel -. "pure switch model" .-> Drain["Observe queued deliveries"]
+  Drain -. "then reserve" .-> Notice
 `;

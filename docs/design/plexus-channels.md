@@ -220,3 +220,10 @@ tests cover abrupt supervisor exit both before and after release, including a
 child that changes process group; neither case proves behavior for external
 services or other runtime configurations. The sandbox uses a read-only host
 filesystem with a private writable workspace and is for isolated fixtures only.
+
+The pure handover model separates switching to a successor from observing the
+messages queued before the switch, then reserving the final notice for the
+predecessor. Provider queue acceptance is not recipient observation. The
+observation argument is a host-supplied contract, not an authenticated adapter;
+no graph operation accepts it or enables live cutover. The rehearsal stops at
+the switched-and-awaiting-delivery phase and cannot prove notice finality.

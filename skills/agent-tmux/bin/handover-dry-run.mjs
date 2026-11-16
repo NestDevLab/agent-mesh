@@ -1,5 +1,5 @@
 /** In-memory rehearsal only. No native session, service, timer or graph is changed. */
-import { beginHandover, createChannel, enqueue, finishHandover } from './channel-state.mjs';
+import { beginHandover, createChannel, enqueue, switchHandover, reserveStatePreparation, completeStatePreparation } from './channel-state.mjs';
 import { planRoleLaunch, assessRoleLaunch } from './role-launch-profile.mjs';
 
 export async function rehearseHandover({ role, oldSession, newSession, profile, authority, offlineMcp = [], fault = 'none', messageDuringHandover = false }) {
@@ -13,6 +13,8 @@ export async function rehearseHandover({ role, oldSession, newSession, profile, 
     channel = { ...channel, phase: 'active' };
     return { schema: 'agent-mesh.handover-rehearsal.v1', simulated: true, outcome: 'rolled-back', reason: fault === 'none' ? launch.reason : fault, channel, launch };
   }
-  channel = finishHandover(channel, newSession, true);
-  return { schema: 'agent-mesh.handover-rehearsal.v1', simulated: true, outcome: 'switched', reason: null, channel, launch };
+  channel = reserveStatePreparation(channel, 'fixture-state');
+  channel = completeStatePreparation(channel, { schema: 'agent-mesh.handover-state.v1', session: oldSession, nonce: 'fixture-state', filename: 'fixture.yaml', sha256: 'a'.repeat(64), bytes: 1 });
+  channel = switchHandover(channel, newSession, true);
+  return { schema: 'agent-mesh.handover-rehearsal.v1', simulated: true, outcome: 'switched-awaiting-delivery', reason: null, channel, launch };
 }

@@ -256,7 +256,7 @@ def run_channel(args: argparse.Namespace) -> int:
                 state.pop('inFlight', None)
                 save_state(path, state)
             channel = channel_call(args, 'get')
-            if channel.get('phase') != 'active':
+            if channel.get('phase') not in ('active', 'draining'):
                 print(json.dumps({'job': args.job, 'outcome': 'queued', 'reason': 'handover'}))
                 return 0
             if any(item.get('state') == 'inflight' for item in channel['queue']):

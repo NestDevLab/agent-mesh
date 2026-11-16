@@ -9,7 +9,7 @@ test('two synthetic roles preserve messages and rollback on isolated faults', as
     const fixture = role(name);
     const offline = await rehearseHandover({ ...fixture, offlineMcp: ['optional'], messageDuringHandover: true });
     assert.equal(offline.simulated, true);
-    assert.equal(offline.outcome, 'switched');
+    assert.equal(offline.outcome, 'switched-awaiting-delivery');
     assert.equal(offline.channel.session, fixture.newSession);
     assert.equal(offline.channel.queue[0].state, 'pending');
     assert.equal(offline.launch.mcpStarted, 1);
