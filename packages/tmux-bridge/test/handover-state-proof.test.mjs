@@ -27,7 +27,7 @@ test('state proof binds correlated response to private file bytes', async (t) =>
   const root = await mkdtemp(join(tmpdir(), 'state-proof-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const session = 'codex:22222222-2222-4222-8222-222222222222', channel = '#example', filename = 'state.yaml', nonce = 'attempt-1';
-  const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: '#example'\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\n`;
+  const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: '#example'\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: []\n  mcp: []\n  plugins: []\n`;
   await writeFile(join(root, filename), content, { mode: 0o600 });
   const response = { schema: 'agent-mesh.handover-state.v1', session, nonce, filename, sha256: createHash('sha256').update(content).digest('hex') };
   const verify = (overrides = {}) => verifyStateResponse({ session, channel, nonce, filename, root, response: JSON.stringify(response), ...overrides });
@@ -57,7 +57,7 @@ test('native request binds response to its own correlation without resuming', as
     assert.ok(!argv.some(value => value.includes(root)));
     assert.ok(options.input.includes(join(root, filename)));
     const nonce = argv[argv.indexOf('--correlation-id') + 1];
-    const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: '#example'\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\n`;
+    const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: '#example'\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: []\n  mcp: []\n  plugins: []\n`;
     await writeFile(join(root, filename), content, { mode: 0o600 });
     return { stdout: JSON.stringify({ schema: 'agent-mesh.handover-state.v1', session, nonce, filename, sha256: createHash('sha256').update(content).digest('hex') }) };
   };

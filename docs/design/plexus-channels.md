@@ -93,3 +93,20 @@ contents. This observation is local evidence at the instant read, not proof
 that no later turn can arrive; safe finality still requires exclusive lifecycle
 control and an authenticated source. Claude and cloud transcripts are not
 supported by this observer.
+# Role-scoped restart preparation
+
+The `agent-mesh.restart.v1` YAML handover block requires `role_profile` when
+used as a state proof. Its schema `agent-mesh.role-profile.v1` contains `role`
+and unique identifier arrays `permissions`, `mcp`, and `plugins`. These are
+references, not commands or grants. A trusted private authority must resolve
+them and reject out-of-scope or human-gated permissions. A missing profile
+fails handover preparation; legacy readers may still parse old state.
+
+The isolated role-launch planner probes only the configured MCP names. An
+unreachable MCP is omitted and listed in the receipt without blocking startup.
+The launch assessor reports the observed MCP count and startup tokens, or null
+when tokens are unavailable; an unexpected permission prompt or component
+requires rollback. These are preparation primitives only: no provider startup,
+permission enforcement, timeout cancellation, live rollback or token collector
+is connected yet. The approved handover remains disabled until native evidence
+and those adapters are present.
