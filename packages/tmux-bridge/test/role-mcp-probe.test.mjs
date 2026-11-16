@@ -69,3 +69,10 @@ test('unobserved process closure fails planning instead of treating MCP as offli
   const probe = (_name, { signal }) => probeStdioMcp({ command: [process.execPath], timeoutMs: 5, signal, spawnProcess: () => child });
   await assert.rejects(planRoleLaunch({ profile, authority, probe, timeoutMs: 1400 }), /probe cancellation unconfirmed/);
 });
+
+test('missing or invalid private MCP configuration stops planning', async () => {
+  const profile = { schema: 'agent-mesh.role-profile.v1', role: 'fixture', permissions: [], mcp: ['wanted'], plugins: [] };
+  const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['wanted'], plugins: [] };
+  await assert.rejects(planRoleLaunch({ profile, authority, probe: roleProbeFromAllowlist({}) }), /not allowlisted/);
+  await assert.rejects(planRoleLaunch({ profile, authority, probe: roleProbeFromAllowlist({ wanted: { command: ['relative-program'] } }) }), /invalid MCP probe configuration/);
+});

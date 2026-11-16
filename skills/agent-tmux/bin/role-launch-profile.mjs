@@ -21,7 +21,7 @@ export async function planRoleLaunch({ profile, authority, probe, timeoutMs = 30
         unavailable.push(name); continue;
       }
       (result === true ? available : unavailable).push(name);
-    } catch (error) { if (error?.message === 'probe cancellation unconfirmed') throw error; unavailable.push(name); }
+    } catch (error) { if (error?.message === 'probe cancellation unconfirmed' || error?.code === 'MCP_PROBE_CONFIGURATION') throw error; unavailable.push(name); }
     finally { clearTimeout(timer); clearTimeout(cleanupTimer); controller.abort(); }
   }
   return { schema: 'agent-mesh.role-launch-plan.v1', role: profile.role, permissions: [...profile.permissions], plugins: [...profile.plugins], mcpToStart: available, mcpUnavailable: unavailable };

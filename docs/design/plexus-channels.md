@@ -134,5 +134,6 @@ probing does not prove that an MCP started in the successor session. It is not
 scheduled or wired to the live handover. Planner deadlines signal cancellation;
 the supplied stdio probe terminates its process group on that signal and waits
 for the child close before reporting any result; failure to observe closure stops
-the plan. Other probe implementations must
+the plan. Missing or invalid private probe configuration stops planning rather than
+being classified as an unreachable MCP. Other probe implementations must
 honor cancellation themselves; an unconfirmed cancellation stops the plan.
