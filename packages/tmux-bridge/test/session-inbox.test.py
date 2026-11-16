@@ -208,7 +208,7 @@ for line in sys.stdin:
             while time.monotonic()<deadline:
                 try:
                     if Path(f'/proc/{daemon}/stat').read_text().rsplit(')',1)[1].split()[0]=='Z': break
-                except FileNotFoundError: break
+                except (FileNotFoundError, ProcessLookupError): break
                 time.sleep(0.02)
             else: self.fail('service outlived its owner')
         finally:
