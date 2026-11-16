@@ -29,8 +29,8 @@ session wrote its state. A path or caller assertion is not sufficient proof.
 correlated actor response to a session, nonce, filename and SHA-256, and checks
 the private file without following a final symlink. `requestStateProof` obtains
 the response through the existing native correlated-result transport; Codex
-resume remains disabled. The verifier does not parse the state format or make a
-graph cutover. A caller must verify its state-format contract before proceeding.
+resume remains disabled. The verifier decodes and validates the restart block,
+but does not reconcile its triggers or make a graph cutover.
 The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.

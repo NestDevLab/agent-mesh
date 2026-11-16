@@ -25,9 +25,11 @@ goal:
 
 `skills` and `triggers` are arrays, including when empty; `goal` is either an
 object or null. Trigger `(kind, id)` pairs are unique. A trusted adapter must
-parse YAML with duplicate keys and unsafe tags rejected, bind the block to the
-correlated old session and channel, and independently reconcile every trigger
-with its source before using it. `validateRestartState` checks the decoded
-object only: it is not a YAML parser, proof of authorship, scheduler or
-authorization to recreate anything. Handover remains disabled until those
-separate checks and final-notice verification are implemented.
+bind the block to the correlated old session and channel, and independently
+reconcile every trigger with its source before using it. The `restart-yaml.py`
+decoder requires PyYAML and rejects duplicate keys, aliases, anchors, explicit
+tags, oversized input and non-JSON values. It accepts either a standalone YAML
+file or a single `## RIAVVIO` section immediately followed by a fenced `yaml`
+block. `validateRestartState` checks the decoded object; neither component is
+a scheduler or authorization to recreate anything. Handover remains disabled
+until trigger reconciliation and final-notice verification are implemented.
