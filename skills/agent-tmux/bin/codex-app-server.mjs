@@ -64,7 +64,8 @@ function readFrame(buffer) {
   return { fin: Boolean(buffer[0] & 0x80), opcode: buffer[0] & 0x0f, payload: buffer.subarray(offset, offset + size), end: offset + size };
 }
 
-export async function withCodexAppServer({ clientName, timeout, timeoutMessage }, work) {
+export async function withCodexAppServer({ clientName, timeout, timeoutMessage, onNotification }, work) {
+  if (onNotification !== undefined && typeof onNotification !== "function") throw new Error("invalid notification handler");
   const path = codexSocket();
   const key = randomBytes(16).toString("base64");
   const accept = createHash("sha1").update(key + WS_GUID).digest("base64");
@@ -86,7 +87,13 @@ export async function withCodexAppServer({ clientName, timeout, timeoutMessage }
     let parsed;
     try { parsed = JSON.parse(text); }
     catch { rejectAll(new Error("invalid JSON from app-server")); return; }
-    if (parsed.method) return;
+    if (parsed.method) {
+      if (onNotification) {
+        try { onNotification(parsed); }
+        catch { rejectAll(new Error("notification handler failed")); socket.destroy(); }
+      }
+      return;
+    }
     const waiter = pending.get(parsed.id);
     if (!waiter) return;
     pending.delete(parsed.id);
@@ -163,7 +170,9 @@ export async function withCodexAppServer({ clientName, timeout, timeoutMessage }
       capabilities: { experimentalApi: true },
     });
     sendText({ method: "initialized" });
-    return await work(request);
+    const result = await work(request);
+    if (failure) throw failure;
+    return result;
   } finally {
     clearTimeout(timer);
     socket.destroy();

@@ -169,3 +169,13 @@ not restart it during the observation window. This is an active discovery
 operation, not a read-only health check. There is no default live connector; do
 not call it on a live thread or treat it as launch evidence. Unit tests use
 only a synthetic app-server callback.
+
+`codex-mcp-startup-notifications.mjs` can accumulate the app-server's native
+startup notifications on an already established connection without issuing an
+inventory request. In an isolated Codex CLI 0.169.0 experiment, a synthetic
+thread emitted `starting` and `ready` notifications bound to that thread. The
+observer keeps names only in memory, bounds its buffer and reports only counts;
+its completeness is unverified and it never claims a process-start or token
+count. Integration must attach before the authorized isolated startup, bind the
+actual thread response, and independently establish session, profile and event
+coverage before using the result as a receipt. It is not enabled for live use.
