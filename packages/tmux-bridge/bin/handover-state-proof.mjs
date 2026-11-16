@@ -2,7 +2,31 @@
 import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { isAbsolute, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { dirname, isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const nativeBin = join(dirname(fileURLToPath(import.meta.url)), 'agent-native-call.mjs');
+const exec = promisify(execFile);
+
+/** Obtain a correlated native-session result, then bind it to file bytes. */
+export async function requestStateProof({ session, root, filename, managedInboxRoot }, runNative = exec) {
+  if (!/^(codex|claude):[0-9a-f-]{36}$/.test(session) || !isAbsolute(root) || /[\r\n\x00]/.test(root) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(filename)) throw new Error('invalid state proof request');
+  const rootInfo = await lstat(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || rootInfo.uid !== process.getuid() || (rootInfo.mode & 0o077) !== 0 || await realpath(root) !== root) throw new Error('state root must be private and canonical');
+  const [agent, nativeId] = session.split(':');
+  if (agent === 'claude' && (typeof managedInboxRoot !== 'string' || !isAbsolute(managedInboxRoot))) throw new Error('managed inbox required');
+  const nonce = `handover-${randomUUID()}`;
+  const message = `Write your handover state in the configured format to ${join(root, filename)} with private permissions. Return only JSON with schema agent-mesh.handover-state.v1, session ${session}, nonce ${nonce}, filename ${filename}, and sha256 containing the lowercase SHA-256 of the completed file.`;
+  const argv = [nativeBin, '--agent', agent, '--session', nativeId, '--correlation-id', nonce, '--timeout', '120', '--message', message];
+  if (agent === 'codex') argv.push('--no-resume');
+  if (agent === 'claude') argv.push('--managed-inbox-root', managedInboxRoot);
+  const result = await runNative(process.execPath, argv, { timeout: 125000, maxBuffer: 8192 });
+  if (!result || typeof result.stdout !== 'string') throw new Error('native result unavailable');
+  return verifyStateResponse({ session, nonce, response: result.stdout, root, filename });
+}
 
 // The caller must obtain response from the native correlated-result transport,
 // bound to session and nonce. This function cannot authenticate arbitrary text.
