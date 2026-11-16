@@ -63,6 +63,15 @@ The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.
 
+`cloud-account-binding.mjs` prepares an opt-in Claude CLI account check. A
+private operator profile binds an account scope to a CLI configuration directory
+and a digest of its reported account and organization; the helper checks the
+same profile before and after an operation and treats changes as uncertain.
+Profile configuration and digests are private. This check relies on a trusted
+CLI and configuration directory, does not prevent a concurrent credential
+switch, and is not provider readback or proof of delivery. It is not connected
+to channel routing or enabled by default.
+
 This is not yet a complete handover workflow: it does not write state for the
 old session, publish or verify the old session's final notice, archive anything,
 or reconcile uncertain transport outcomes. It must not be used for a live

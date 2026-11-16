@@ -10,6 +10,7 @@ export const plexusDiagram = `flowchart LR
   Module["Registered module"] --> Contract["Versioned JSON contract"]
   Contract --> Journal
   Queue -- "bound receipt" --> Session
+  CloudAccount["Cloud account binding"] -. "planned routing" .-> Queue
   Yaml["Bounded YAML decoder"] --> Restart
   Restart["Restart state contract"] --> StatePrep["Reserved state preparation"]
   StatePrep --> Journal
