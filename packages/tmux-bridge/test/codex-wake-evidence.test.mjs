@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -125,6 +125,25 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   }
   const mismatchFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.equal(mismatchFeed.events.filter(e => e.type === 'session.woken').length, 2);
+  // Simulate persisted draining state only; no operational cutover is enabled.
+  const drainRoot = join(root, 'drain'); await mkdir(drainRoot, { mode: 0o700 });
+  nativeId = 'queued-drain'; await prepareChannel('drain', nativeId);
+  let graphState = await call('show', '--json');
+  const draining = graphState.channels.find(item => item.id === 'drain');
+  draining.phase = 'draining'; draining.handover = { predecessor: 'codex:old-fixture', previousGeneration: 0, successor: session, backlog: [correlation] };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-drain', type: 'channel.updated', at: new Date().toISOString(), channel: draining, seq: graphState.lastSeq + 1, host: 'local' })}\n`);
+  const drainArgs = ['--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'drain', '--generation', '1', '--evidence-root', drainRoot, '--graph-state', state];
+  mode = 'uncertain'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...drainArgs], { env }));
+  const callsBeforeRecovery = requests.filter(r => r.method === 'thread/queue/start').length;
+  mode = 'success';
+  const drainResult = JSON.parse((await exec(process.execPath, [bin, '--apply', '--reconcile', '--channel', 'drain', '--evidence-root', drainRoot, '--graph-state', state], { env })).stdout);
+  const drainProof = await verifyCodexWakeEvidence({ evidenceRoot: drainRoot, reference: drainResult.evidence, session });
+  assert.equal(drainProof.schema, 'agent-mesh.codex-wake-evidence.v4');
+  assert.equal(drainProof.source, 'codex-app-server.correlated-recovery-bound');
+  assert.equal(drainProof.channel, 'drain'); assert.equal(drainProof.generation, 1);
+  const drained = (await call('channel', 'get', '--name', 'drain')).channel;
+  assert.equal(drained.queue[0].state, 'observed'); assert.equal(drained.wakeReservation, undefined);
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, callsBeforeRecovery);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);

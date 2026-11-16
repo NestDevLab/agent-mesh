@@ -71,7 +71,7 @@ export function settleWake(state, proof) {
   const next = copy(state), item = next.queue.find(row => row.id === reservation.id && row.session === reservation.session && row.generation === reservation.generation && row.nativeQueueId === reservation.nativeQueueId && row.state === 'accepted' && !row.wakeEvidence);
   if (!item) throw new Error('wake item unavailable');
   item.wakeEvidence = proof.evidence;
-  if (state.phase === 'draining' && state.handover?.backlog.includes(item.id) && proof.schema === 'agent-mesh.codex-wake-evidence.v4' && proof.source === 'codex-app-server.queue-start-bound-readback' && proof.channel === state.id && proof.generation === item.generation && proof.payloadSha256 === createHash('sha256').update(item.payload).digest('hex')) {
+  if (state.phase === 'draining' && state.handover?.backlog.includes(item.id) && proof.schema === 'agent-mesh.codex-wake-evidence.v4' && ['codex-app-server.queue-start-bound-readback', 'codex-app-server.correlated-recovery-bound'].includes(proof.source) && proof.channel === state.id && proof.generation === item.generation && proof.payloadSha256 === createHash('sha256').update(item.payload).digest('hex')) {
     item.state = 'observed'; item.observation = proof.evidence;
   }
   delete next.wakeReservation;

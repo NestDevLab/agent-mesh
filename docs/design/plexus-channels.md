@@ -233,7 +233,10 @@ generation, queue ID and correlation before starting it, then reads back the
 exact native message. When this proof is verified and settled in a draining
 channel, it marks that backlog message observed. Older proof schemas remain
 valid wake evidence but cannot establish this stronger delivery binding.
-This is not a cloud or Claude delivery adapter; native cutover remains disabled.
+If a native start outcome is uncertain, the explicit readback-only recovery can
+settle a draining reservation with a separately named bound-recovery source;
+it never starts the queue again. This is not a cloud or Claude delivery adapter;
+native cutover remains disabled.
 
 For a draining local Claude channel, `observe-claude-delivery` checks one
 managed inbox record in a stable local user transcript snapshot, binding its
