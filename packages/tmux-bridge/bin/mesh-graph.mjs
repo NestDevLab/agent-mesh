@@ -18,6 +18,7 @@ import {
   readFileSync,
   readSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -137,6 +138,7 @@ try {
   switch (command) {
     case "channel": {
       const name = requiredSingleLine(values.name, "--name");
+      assertPrivateChannelState(stateDir);
       if (subcommand === "get") {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
@@ -144,6 +146,7 @@ try {
         break;
       }
       const result = mutate(stateDir, graph => {
+        assertPrivateChannelState(stateDir);
         if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
         const current = (graph.channels || []).find((item) => item.id === name);
         let next;
@@ -1479,6 +1482,16 @@ function assertProjectionDirectory(path) {
 
 function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
+}
+
+function assertPrivateChannelState(statePath) {
+  const root = lstatSync(statePath);
+  if (!root.isDirectory() || root.isSymbolicLink() || root.uid !== process.getuid() || (root.mode & 0o077) !== 0 || realpathSync(statePath) !== resolve(statePath)) throw new Error("channel graph directory must be private and canonical");
+  for (const name of ["events.jsonl", "graph.json", "checkpoint.json", "snapshot.json"]) {
+    const file = join(statePath, name);
+    const info = lstatSync(file, { throwIfNoEntry: false });
+    if (info && (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || info.nlink !== 1 || (info.mode & 0o077) !== 0)) throw new Error(`channel graph file must be private: ${name}`);
+  }
 }
 
 function acquireLock(statePath) {

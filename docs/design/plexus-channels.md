@@ -13,6 +13,9 @@ The graph command now persists channel creation, enqueue and handover start as
 events under the graph writer lock. Queued messages survive replay and
 compaction. The graph and event log contain message bodies and must remain
 private; this is not a scoped remote API.
+Channel operations reject a non-private or non-canonical graph directory and
+reject existing graph, checkpoint, snapshot or event files with unsafe owner,
+permissions, links or file type. They do not silently repair existing state.
 
 The graph command can also reserve a pending message and record a matching
 acceptance receipt. Reservation is durable before transport; a crash or

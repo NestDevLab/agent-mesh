@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +8,21 @@ import { promisify } from 'node:util';
 import test from 'node:test';
 const exec = promisify(execFile);
 const bin = fileURLToPath(new URL('../bin/mesh-graph.mjs', import.meta.url));
+
+test('channel operations reject a graph with non-private persisted files', async (t) => {
+  const state = await mkdtemp(join(tmpdir(), 'channel-permissions-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args])).stdout);
+  const uuid = '22222222-2222-4222-8222-222222222222';
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', `codex:${uuid}`);
+  await chmod(join(state, 'events.jsonl'), 0o644);
+  await assert.rejects(call('channel', 'enqueue', '--name', 'example', '--id', 'one', '--input', 'private'), /must be private/);
+  await assert.rejects(call('channel', 'get', '--name', 'example'), /must be private/);
+  await chmod(join(state, 'events.jsonl'), 0o600);
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue.length, 0);
+});
 
 test('channel and queued messages survive concurrent writers, replay and compaction', async (t) => {
   const state = await mkdtemp(join(tmpdir(), 'channel-store-'));
