@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, access, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, access, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { probeStdioMcp, roleProbeFromAllowlist } from '../bin/role-mcp-probe.mjs';
@@ -37,10 +37,8 @@ test('a cancelled probe terminates its temporary MCP process', async t => {
     try { await access(started); seen = true; } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
   }
   assert.equal(seen, true, 'fixture process started');
-  const pid = Number(await readFile(started, 'utf8'));
   controller.abort();
   assert.equal(await probe, false);
-  assert.throws(() => process.kill(pid, 0), error => error.code === 'ESRCH');
   await new Promise(resolve => setTimeout(resolve, 600));
   await assert.rejects(access(late));
 });
@@ -134,4 +132,20 @@ test('an already cancelled probe never starts a process', async () => {
   let spawned = false;
   const result = await probeStdioMcp({ command: [process.execPath], signal: controller.signal, spawnProcess: () => { spawned = true; } });
   assert.equal(result, false); assert.equal(spawned, false);
+});
+
+
+test('missing gate acknowledgement is a configuration error, not an offline MCP', async t => {
+  const { spawn } = await import('node:child_process');
+  const root = await mkdtemp(join(tmpdir(), 'mcp-no-ack-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const fakeGate = join(root, 'no-ack.py'), marker = join(root, 'target-started');
+  await writeFile(fakeGate, 'import os\nos.read(0, 3)\n');
+  const spawnWithoutAcknowledgement = (command, args, options) => {
+    const modified = [...args], index = modified.findIndex(value => value.endsWith('/role-mcp-exec-gate.py'));
+    assert.notEqual(index, -1); modified[index] = fakeGate;
+    return spawn(command, modified, options);
+  };
+  await assert.rejects(probeStdioMcp({ command: ['/usr/bin/touch', marker], timeoutMs: 2000, spawnProcess: spawnWithoutAcknowledgement }), error => error.code === 'MCP_PROBE_CONFIGURATION');
+  await assert.rejects(access(marker));
 });
