@@ -1,10 +1,10 @@
 flowchart LR
-  Client["Client or waker"] -. "planned routing" .-> Channel["Stable channel"]
+  Client["Client or waker"] -- "channel mode" --> Channel["Stable channel"]
   Channel --> Queue["Channel queue"]
   Channel --> Session["Current session"]
   Queue --> Journal["Graph event journal"]
   Session --> Journal
   Module["Registered module"] --> Contract["Versioned JSON contract"]
   Contract --> Journal
-  Queue -. "planned delivery" .-> Session
+  Queue -- "bound receipt" --> Session
   Handover["Handover"] -. "planned verified cutover" .-> Channel

@@ -62,6 +62,7 @@ python3 test/mesh-groups.test.py
 python3 test/session-inbox.test.py
 python3 test/run-receipt.test.py
 python3 test/agent-waker.test.py
+python3 test/agent-waker-channel.test.py
 python3 test/session-controller.test.py
 python3 test/owner-notify.test.py
 scripts/socket-isolation-test.sh

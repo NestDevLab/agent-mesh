@@ -158,7 +158,95 @@ def record(job: str, outcome: str, session: str, note: str) -> None:
                    capture_output=True)
 
 
+def channel_call(args: argparse.Namespace, operation: str, *options: str) -> dict[str, Any]:
+    command = ['node', str(BIN / 'mesh-graph.mjs')]
+    if args.graph_state:
+        command += ['--state', args.graph_state]
+    command += ['channel', operation, '--name', args.channel, *options]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=30, check=True)
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or not isinstance(value.get('channel'), dict):
+        raise ValueError('invalid channel response')
+    return value['channel']
+
+
+def run_channel(args: argparse.Namespace) -> int:
+    path = Path(args.state) if args.state else state_dir() / f'{args.job}.json'
+    with locked(path) as acquired:
+        if not acquired:
+            print(json.dumps({'job': args.job, 'outcome': 'noop', 'reason': 'previous run still active'}))
+            return 0
+        state, state_errors = load_state(path)
+        if state_errors:
+            print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'unreadable waker state'}))
+            return 3
+        new, errors = run_producer(args.producer, args.producer_timeout)
+        errors = state_errors + errors
+        known = {entry['key'] for entry in state['pending']}
+        for item in new:
+            key = item_key(item)
+            if key not in known:
+                known.add(key)
+                state['pending'].append({'key': key, 'item': item})
+        signature = error_signature(errors)
+        wake_errors = errors if signature and signature != state.get('errorSignature') else []
+        if not errors:
+            state['errorSignature'] = None
+        flight = state.get('inFlight')
+        recipient = {'channel': args.channel}
+        if flight and flight.get('recipient') != recipient:
+            print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'in-flight recipient changed'}))
+            return 3
+        if not flight and (state['pending'] or wake_errors):
+            flight = {'correlationId': f'waker-{uuid.uuid4()}', 'recipient': recipient,
+                      'message': compose(args.job, state['pending'], wake_errors),
+                      'itemKeys': [entry['key'] for entry in state['pending'][:MAX_LISTED]], 'errorSignature': signature}
+            state['inFlight'] = flight
+        save_state(path, state)
+        try:
+            if flight:
+                channel_call(args, 'enqueue', '--id', flight['correlationId'], '--input', flight['message'])
+                accepted = set(flight['itemKeys'])
+                state['pending'] = [entry for entry in state['pending'] if entry['key'] not in accepted]
+                state['lastDelivery'] = {'correlationId': flight['correlationId'], 'at': time.time(),
+                                         'itemKeys': flight['itemKeys'], 'status': 'channel-queued'}
+                if flight['errorSignature']:
+                    state['errorSignature'] = flight['errorSignature']
+                state.pop('inFlight', None)
+                save_state(path, state)
+            channel = channel_call(args, 'get')
+            if channel.get('phase') != 'active':
+                print(json.dumps({'job': args.job, 'outcome': 'queued', 'reason': 'handover'}))
+                return 0
+            if any(item.get('state') == 'inflight' for item in channel['queue']):
+                print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'unresolved delivery'}))
+                return 3
+            pending = next((item for item in channel['queue'] if item.get('state') == 'pending'), None)
+            if not pending:
+                print(json.dumps({'job': args.job, 'outcome': 'noop'}))
+                return 0
+            channel = channel_call(args, 'begin-delivery', '--id', pending['id'])
+            item = next(item for item in channel['queue'] if item['id'] == pending['id'])
+            agent, sep, session = item['session'].partition(':')
+            if not sep or agent not in ('codex', 'claude'):
+                raise ValueError('unsupported channel recipient')
+            code = deliver(agent, session, item['id'], item['payload'], args.managed_inbox_root,
+                           True, resume=args.resume and agent == 'codex')
+            if code != 0:
+                print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'delivery unconfirmed'}))
+                return 3
+            receipt = {'status': 'accepted', 'messageId': item['id'], 'session': item['session'], 'generation': item['generation']}
+            channel_call(args, 'acknowledge', '--id', item['id'], '--input', json.dumps(receipt, separators=(',', ':')))
+            print(json.dumps({'job': args.job, 'outcome': 'acted', 'correlationId': item['id']}))
+            return 0
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, StopIteration):
+            print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'channel unavailable or delivery unresolved'}))
+            return 3
+
+
 def run(args: argparse.Namespace) -> int:
+    if getattr(args, 'channel', None):
+        return run_channel(args)
     path = Path(args.state) if args.state else state_dir() / f"{args.job}.json"
     with locked(path) as acquired:
         if not acquired:
@@ -225,7 +313,10 @@ def main(argv: list[str] | None = None) -> int:
     runner = sub.add_parser("run", help="run the producer once and deliver anything new")
     runner.add_argument("--job", required=True)
     runner.add_argument("--agent", default="claude", choices=("claude", "codex"))
-    runner.add_argument("--session", required=True, help="owning session UUID")
+    recipient = runner.add_mutually_exclusive_group(required=True)
+    recipient.add_argument("--session", help="owning session UUID")
+    recipient.add_argument("--channel", help="stable channel identifier")
+    runner.add_argument("--graph-state", help="override graph state for isolated tests")
     runner.add_argument("--managed-inbox-root", help="required for Claude sessions")
     runner.add_argument("--delivery-only", action="store_true", help="acknowledge the native queue, without waiting for a result")
     runner.add_argument("--resume", action="store_true", help="opt in to native Codex resume when idle")
@@ -233,7 +324,9 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--producer-timeout", type=int, default=280)
     runner.add_argument("producer", nargs=argparse.REMAINDER, help="-- command that prints the JSON report")
     args = parser.parse_args(argv)
-    if args.resume and args.agent != "codex":
+    if args.channel and not args.delivery_only:
+        parser.error("--channel requires --delivery-only")
+    if args.resume and not args.channel and args.agent != "codex":
         parser.error("--resume requires --agent codex")
     if args.producer[:1] == ["--"]:
         args.producer = args.producer[1:]

@@ -30,6 +30,14 @@ For an idle Codex owner, explicit `--agent codex --resume` forwards native
 `--resume` through the existing transport and communications gate. It is opt-in;
 Claude resume is rejected. A queue receipt still does not prove an actor response.
 
+In channel mode, `--channel <name> --delivery-only` persists the notification
+in the graph queue before acknowledging the producer. A handover keeps it
+queued. The first pending message is reserved before invoking the native
+transport; an unconfirmed delivery stays in flight and requires reconciliation.
+The native bound queue receipt is checked before the graph records acceptance.
+Channel delivery does not establish that the receiving actor read the message.
+The channel mode and handover are not yet enabled in existing timers.
+
 Delivery-only acknowledgement requires native JSON `status: queued`, matching
 agent/session/correlation and no `held: true`. Except for the bound delivered
 duplicate described below, held, refused, malformed or missing receipts retain pending items
