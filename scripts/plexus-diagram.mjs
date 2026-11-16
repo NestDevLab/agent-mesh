@@ -28,4 +28,5 @@ export const plexusDiagram = `flowchart LR
   Channel -. "pure switch model" .-> Drain["Observe queued deliveries"]
   Drain -. "then reserve" .-> Notice
   Wake -. "bound native proof" .-> Drain
+  ClaudeReadback["Local Claude transcript observer"] -. "observed inbox record" .-> Drain
 `;

@@ -46,6 +46,7 @@ const agentTmuxBundleFiles = [
   "bin/mesh-graph.mjs",
   "bin/plexus.mjs",
   "bin/channel-state.mjs",
+  "bin/claude-delivery-observation.mjs",
   "bin/handover-state-proof.mjs",
   "bin/handover-notice.mjs",
   "bin/handover-dry-run.mjs",

@@ -174,3 +174,30 @@ test('predecessor notice after a synthetic draining transition persists across r
   assert.equal((await call('channel', 'get', '--name', 'example')).channel.finalNotice.status, 'observed-snapshot');
   await assert.rejects(call('channel', 'finish-handover', '--name', 'example', '--to', `codex:${nextId}`), /old-session state verification unavailable/);
 });
+
+test('local Claude delivery is observed only from a matching user transcript and persists', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'claude-channel-observe-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const state = join(root, 'graph'), sessions = join(root, 'sessions'), project = join(sessions, 'project');
+  await mkdir(sessions, { mode: 0o700 }); await mkdir(project, { mode: 0o700 });
+  const oldId = '22222222-2222-4222-8222-222222222222', newId = '33333333-3333-4333-8333-333333333333', target = `claude:${newId}`;
+  const env = { ...process.env, CLAUDE_SESSION_ROOT: sessions };
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args], { env })).stdout);
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', oldId, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', `codex:${oldId}`);
+  const graph = await call('show', '--json'), channel = graph.channels.find(row => row.id === 'example');
+  channel.session = target; channel.generation = 2; channel.phase = 'draining';
+  channel.handover = { predecessor: `codex:${oldId}`, previousGeneration: 1, successor: target, backlog: ['one'] };
+  channel.queue = [{ id: 'one', payload: 'fixture', state: 'accepted', session: target, generation: 2 }];
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-draining', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  const inbox = { schema: 'agent-mesh.monitor-inbox.v1', deliveryId: 'one', meshId: 'one', prompt: 'fixture' };
+  const text = `AGENT_MESH_INBOX ${JSON.stringify(inbox)}`, path = join(project, `${newId}.jsonl`);
+  await writeFile(path, JSON.stringify({ type: 'queue-operation', operation: 'enqueue', content: text }) + '\n', { mode: 0o600 });
+  await assert.rejects(call('channel', 'observe-claude-delivery', '--name', 'example', '--id', 'one'), /not uniquely observed/);
+  await appendFile(path, JSON.stringify({ type: 'user', sessionId: newId, message: { content: text } }) + '\n');
+  const result = await call('channel', 'observe-claude-delivery', '--name', 'example', '--id', 'one');
+  assert.equal(result.status, 'observed'); assert.match(result.evidence, /^claude-transcript:[a-f0-9]{64}$/);
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'observed');
+});

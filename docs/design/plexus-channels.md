@@ -234,3 +234,10 @@ exact native message. When this proof is verified and settled in a draining
 channel, it marks that backlog message observed. Older proof schemas remain
 valid wake evidence but cannot establish this stronger delivery binding.
 This is not a cloud or Claude delivery adapter; native cutover remains disabled.
+
+For a draining local Claude channel, `observe-claude-delivery` checks one
+managed inbox record in a stable local user transcript snapshot, binding its
+correlation, payload, session and generation before marking the backlog item
+observed. An enqueue-only record is insufficient. This source does not prove
+execution, attention, finality or cloud delivery; its real transport transcript
+shape still requires isolated qualification. Operational cutover remains disabled.

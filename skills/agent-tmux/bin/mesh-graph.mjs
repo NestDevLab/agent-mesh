@@ -37,7 +37,8 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
+import { observeClaudeDelivery } from "./claude-delivery-observation.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
 import { formatFinalNotice } from "./handover-notice.mjs";
@@ -132,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -152,6 +153,25 @@ try {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
         printResult({ channel }, { json: true });
+        break;
+      }
+      if (subcommand === "observe-claude-delivery") {
+        const id = requiredSingleLine(values.id, "--id");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        const pending = channel?.queue?.filter(item => item.id === id && item.state === "accepted" && item.session === channel.session && item.generation === channel.generation);
+        if (channel?.phase !== "draining" || !channel.handover?.backlog?.includes(id) || pending?.length !== 1 || !channel.session.startsWith("claude:")) throw new Error("Claude delivery observation unavailable");
+        const root = process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+        if (!isAbsolute(root)) throw new Error("invalid configured transcript root");
+        const proof = await observeClaudeDelivery({ root, session: channel.session, generation: channel.generation, messageId: id, payload: pending[0].payload });
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          const item = current?.queue?.find(row => row.id === id);
+          if (!item || typeof item.payload !== "string" || createHash("sha256").update(item.payload).digest("hex") !== proof.payloadSha256) throw new Error("delivery changed during observation");
+          const next = observeDelivery(current, id, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: "observed" } };
+        });
+        printResult(result, { json: true });
         break;
       }
       if (subcommand === "observe-notice") {
