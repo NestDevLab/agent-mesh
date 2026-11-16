@@ -28,13 +28,13 @@ test("mesh-graph derives an inspectable graph from append-only events", async ()
     const first = await run(state, [
       "add", "--agent", "codex", "--tmux-target", "mesh-codex-main", "--cwd", "/workspace/mesh",
       "--role-profile", "developer", "--title", "Graph work", "--summary", "initial implementation",
-      "--refs", "management:MGT-0239,amf:record-id", "--json",
+      "--refs", "ledger:item-1,amf:record-id", "--json",
     ]);
     assert.equal(first.code, 0, first.stderr);
     const firstNode = JSON.parse(first.stdout).node;
     assert.match(firstNode.id, /^node-[0-9a-f-]{36}$/);
     assert.equal(firstNode.runtimeUuid, null);
-    assert.deepEqual(firstNode.refs, ["management:MGT-0239", "amf:record-id"]);
+    assert.deepEqual(firstNode.refs, ["ledger:item-1", "amf:record-id"]);
 
     const reconciled = await run(state, [
       "add", "--tmux-target", "mesh-codex-main", "--runtime-uuid", "11111111-1111-4111-8111-111111111111", "--json",
@@ -67,7 +67,7 @@ test("mesh-graph derives an inspectable graph from append-only events", async ()
     assert.equal(graph.nodes.length, 2);
     assert.equal(graph.edges.length, 1);
     assert.equal(graph.nodes.find((node) => node.id === firstNode.id).runtimeUuid, "11111111-1111-4111-8111-111111111111");
-    assert.deepEqual(graph.nodes.find((node) => node.id === firstNode.id).refs, ["management:MGT-0239", "amf:record-id"]);
+    assert.deepEqual(graph.nodes.find((node) => node.id === firstNode.id).refs, ["ledger:item-1", "amf:record-id"]);
     assert.equal(graph.nodes.find((node) => node.id === secondNode.id).status, "closed");
 
     const projection = JSON.parse(await readFile(join(state, "graph.json"), "utf8"));

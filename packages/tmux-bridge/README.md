@@ -182,7 +182,7 @@ node $BIN/mesh-graph.mjs show --json
 The graph command atomically writes only `<state>/graph.json`; launch provenance is
 the separate append-only stream described above. Neither path calls context or work-item
 systems. Nodes may carry explicit opaque `--refs source:record,...` values, such as
-`management:MGT-0239` or `amf:record-id`. The graph validates their shape but never resolves or
+`ledger:item-1` or `amf:record-id`. The graph validates their shape but never resolves or
 infers them. A work-orchestration or recall consumer may read `graph.json` and compose its own
 projection. Keep `summary` to one compact line; session context belongs behind a ref.
 

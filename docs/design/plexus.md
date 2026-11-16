@@ -29,7 +29,7 @@ In practice few nodes carry refs: nothing feeds them automatically, so linking i
 storage. `agent` is also unvalidated, so test harnesses can leave nodes with arbitrary agent names.
 
 Ledgers have no shared store. A file-based ledger and a database-backed work-item store are both
-reachable only through opaque refs such as `management:MGT-0239`, which is the right boundary.
+reachable only through opaque refs such as `ledger:item-1`, which is the right boundary.
 
 ## 2. Data model
 
