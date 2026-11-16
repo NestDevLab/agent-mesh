@@ -24,6 +24,14 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const call = async (...args) => JSON.parse((await exec(process.execPath, [graph, '--state', state, ...args])).stdout);
   await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', thread, '--json');
   await call('migrate', '--apply', '--json');
+  const session = `codex:${thread}`;
+  async function prepareChannel(name) {
+    await call('channel', 'create', '--name', name, '--session', session);
+    await call('channel', 'enqueue', '--name', name, '--id', correlation, '--input', 'fixture');
+    await call('channel', 'begin-delivery', '--name', name, '--id', correlation, '--session', session, '--generation', '1');
+    await call('channel', 'acknowledge', '--name', name, '--id', correlation, '--input', JSON.stringify({ status: 'accepted', messageId: correlation, session, generation: 1, nativeQueueId: 'queued-1' }));
+  }
+  await prepareChannel('success');
   const cursor = (await call('query', 'changes', '--input', JSON.stringify({ initial: 'head' }))).cursor;
   const requests = []; let mode = 'success';
   const server = createAppServer((request, peer) => {
@@ -37,14 +45,20 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   await new Promise(resolve => server.listen(socket, resolve));
   t.after(() => new Promise(resolve => server.close(resolve)));
   const env = { ...process.env, CODEX_REMOTE_SOCK: socket, CODEX_NO_REMOTE: '' };
-  const args = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--evidence-root', evidence, '--graph-state', state];
+  const args = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'success', '--generation', '1', '--evidence-root', evidence, '--graph-state', state];
   await assert.rejects(exec(process.execPath, [bin, ...args], { env }));
   assert.equal(requests.length, 0);
+  await prepareChannel('handover');
+  await call('channel', 'begin-handover', '--name', 'handover');
+  await assert.rejects(exec(process.execPath, [bin, '--apply', '--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'handover', '--generation', '1', '--evidence-root', evidence, '--graph-state', state], { env }));
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 0);
   mode = 'wrong'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...args], { env }));
   assert.deepEqual(await readdir(evidence), []);
   mode = 'success';
   const first = JSON.parse((await exec(process.execPath, [bin, '--apply', ...args], { env })).stdout);
   assert.equal(first.duplicate, false);
+  assert.equal((await call('channel', 'get', '--name', 'success')).channel.wakeReservation.id, correlation);
+  await assert.rejects(call('channel', 'begin-handover', '--name', 'success'));
   const verified = await verifyCodexWakeEvidence({ evidenceRoot: evidence, reference: first.evidence, session: `codex:${thread}` });
   assert.equal(verified.turn, turn);
   assert.equal(verified.correlation, correlation);
@@ -56,7 +70,8 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const feed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.deepEqual(feed.events.filter(e => e.type === 'session.woken').map(e => e.evidence), [first.evidence]);
   const uncertainRoot = join(root, 'uncertain'); await mkdir(uncertainRoot, { mode: 0o700 });
-  const uncertainArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--evidence-root', uncertainRoot, '--graph-state', state];
+  await prepareChannel('uncertain');
+  const uncertainArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'uncertain', '--generation', '1', '--evidence-root', uncertainRoot, '--graph-state', state];
   mode = 'uncertain';
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...uncertainArgs], { env }));
   assert.deepEqual((await readdir(uncertainRoot)).map(name => name.split('-')[0]), ['intent']);
@@ -66,7 +81,8 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const uncertainFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 1);
   const partialRoot = join(root, 'partial'); await mkdir(partialRoot, { mode: 0o700 });
-  const partialArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--evidence-root', partialRoot, '--graph-state', state];
+  await prepareChannel('partial');
+  const partialArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'partial', '--generation', '1', '--evidence-root', partialRoot, '--graph-state', state];
   mode = 'partial';
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...partialArgs], { env }));
   assert.deepEqual((await readdir(partialRoot)).map(name => name.split('-')[0]), ['intent']);
@@ -74,7 +90,8 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 1);
   for (const mismatch of ['wrong-thread', 'wrong-turn', 'wrong-time', 'wrong-client', 'wrong-input']) {
     const mismatchRoot = join(root, mismatch); await mkdir(mismatchRoot, { mode: 0o700 });
-    const mismatchArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--evidence-root', mismatchRoot, '--graph-state', state];
+    await prepareChannel(mismatch);
+    const mismatchArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', mismatch, '--generation', '1', '--evidence-root', mismatchRoot, '--graph-state', state];
     mode = mismatch;
     await assert.rejects(exec(process.execPath, [bin, '--apply', ...mismatchArgs], { env }));
     assert.deepEqual((await readdir(mismatchRoot)).map(name => name.split('-')[0]), ['intent']);

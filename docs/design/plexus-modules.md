@@ -47,9 +47,10 @@ queue acceptance only; the waker does not yet invoke the wake-evidence adapter.
 An ambiguous send remains inflight and cannot be automatically retried.
 The channel journal can reserve an accepted wake by exact session, generation,
 correlation and native queue id. An outstanding reservation blocks handover
-and survives replay; it has no expiry. The experimental wake adapter does not
-yet acquire or settle this reservation, and no recovery operation exists, so
-the reservation interface is not ready for operational use.
+and survives replay; it has no expiry. The experimental wake adapter acquires
+the reservation before starting a turn, but cannot yet settle it even on
+success, and no recovery operation exists. This path is not ready for
+operational use.
 
 For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
 an on-demand read of the configured local app server. It requires the exact

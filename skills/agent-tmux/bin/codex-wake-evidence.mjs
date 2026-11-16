@@ -57,8 +57,8 @@ export async function publishCodexWake({ evidenceRoot, reference, session, graph
   return { schema: 'agent-mesh.wake-record.v1', session, evidence: reference, duplicate: receipt.duplicate };
 }
 
-export async function startCodexWake({ thread, queueId, correlation, evidenceRoot, graphState, apply }) {
-  if (apply !== true || typeof thread !== 'string' || !UUID.test(thread) || typeof queueId !== 'string' || !TOKEN.test(queueId) || typeof correlation !== 'string' || !correlation.startsWith('waker-') || !UUID.test(correlation.slice(6)) || typeof graphState !== 'string' || !isAbsolute(graphState)) throw new Error('explicit wake identity, graph and apply required');
+export async function startCodexWake({ thread, queueId, correlation, channel, generation, evidenceRoot, graphState, apply }) {
+  if (apply !== true || typeof thread !== 'string' || !UUID.test(thread) || typeof queueId !== 'string' || !TOKEN.test(queueId) || typeof correlation !== 'string' || !correlation.startsWith('waker-') || !UUID.test(correlation.slice(6)) || typeof channel !== 'string' || !/^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(channel) || !Number.isSafeInteger(generation) || generation < 1 || typeof graphState !== 'string' || !isAbsolute(graphState)) throw new Error('explicit wake identity, channel, generation, graph and apply required');
   await privateRoot(evidenceRoot);
   await privateRoot(graphState);
   thread = thread.toLowerCase();
@@ -71,6 +71,10 @@ export async function startCodexWake({ thread, queueId, correlation, evidenceRoo
   const evidence = await withCodexAppServer({ clientName: 'agent-mesh-wake-evidence', timeout: 30000, timeoutMessage: 'native wake outcome uncertain' }, async request => {
     const listed = await request('thread/queue/list', { threadId: thread, limit: 100 });
     if (!Array.isArray(listed?.data) || listed.nextCursor != null || listed.data.filter(item => item?.id === queueId && item.clientUserMessageId === correlation && Array.isArray(item.input)).length !== 1) throw new Error('queued waker identity unavailable');
+    const reserved = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'reserve-wake', '--name', channel, '--id', correlation, '--session', session, '--generation', String(generation), '--input', queueId], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 });
+    if (reserved.error || reserved.status !== 0) throw new Error('wake reservation unavailable or uncertain');
+    let reservation; try { reservation = JSON.parse(reserved.stdout)?.channel?.wakeReservation; } catch { throw new Error('wake reservation receipt unavailable'); }
+    if (!reservation || reservation.id !== correlation || reservation.session !== session || reservation.generation !== generation || reservation.nativeQueueId !== queueId) throw new Error('wake reservation receipt mismatch');
     await createDurable(evidenceRoot, `intent-${intent}.json`, `${JSON.stringify({ schema: 'agent-mesh.codex-wake-intent.v1', session, queueId, correlation })}\n`);
     const started = await request('thread/queue/start', { threadId: thread, queuedSubmissionId: queueId });
     const turn = started?.turn;
@@ -91,11 +95,11 @@ export async function startCodexWake({ thread, queueId, correlation, evidenceRoo
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
-    const { values } = parseArgs({ options: { apply: { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
+    const { values } = parseArgs({ options: { apply: { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, channel: { type: 'string' }, generation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
     let result;
     if (values.verify) result = await verifyCodexWakeEvidence({ evidenceRoot: values['evidence-root'], reference: values.verify, session: values.session });
     else if (values.publish) result = await publishCodexWake({ evidenceRoot: values['evidence-root'], reference: values.publish, session: values.session, graphState: values['graph-state'] });
-    else result = await startCodexWake({ thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
+    else result = await startCodexWake({ thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, channel: values.channel, generation: /^[1-9][0-9]*$/.test(values.generation || '') ? Number(values.generation) : NaN, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
     console.log(JSON.stringify(result));
   } catch { console.error('wake observation failed or outcome uncertain; inspect before retry'); process.exitCode = 1; }
 }
