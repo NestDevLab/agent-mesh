@@ -29,6 +29,8 @@ const agentTmuxBundleFiles = [
   "bin/agent-spawn.sh",
   "bin/agent-session.sh",
   "bin/agent-native-call.mjs",
+  "bin/cloud-account-binding.mjs",
+  "bin/codex-app-server.mjs",
   "bin/codex-goal.mjs",
   "bin/agent-goal.mjs",
   "bin/claude-goal.mjs",

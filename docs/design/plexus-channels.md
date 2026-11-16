@@ -67,6 +67,13 @@ not yet supported by this operation.
 private operator profile binds an account scope to a CLI configuration directory
 and a digest of its reported account and organization; the helper checks the
 same profile before and after an operation and treats changes as uncertain.
+The native cloud transport can opt into this binding with an explicitly scoped,
+private `agent-mesh.cloud-account.v1` profile. The queued comms replay binds the
+profile digest and scope, refusing a changed profile. Its provider acknowledgement
+still proves queue acceptance only; it does not prove that the recipient read it.
+The channel waker is not yet connected to this scoped transport. Account checks
+cannot exclude a non-cooperating concurrent switch that is changed and restored
+between the checks; the profile and account directory require operator control.
 Profile configuration and digests are private. This check relies on a trusted
 CLI and configuration directory, does not prevent a concurrent credential
 switch, and is not provider readback or proof of delivery. It is not connected

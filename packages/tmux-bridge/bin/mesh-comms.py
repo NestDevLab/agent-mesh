@@ -107,6 +107,10 @@ def validate(spec):
                             not re.fullmatch(r'(session|cse)_[A-Za-z0-9]{1,128}', spec['destination']) or
                             spec.get('resume') or spec.get('inbox_root')):
         raise ValueError('invalid Claude cloud destination')
+    profile_keys = ('cloud_profile', 'cloud_scope', 'cloud_profile_digest')
+    if any(key in spec for key in profile_keys):
+        if not spec.get('cloud') or not all(isinstance(spec.get(key), str) for key in profile_keys) or not Path(spec['cloud_profile']).is_absolute() or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', spec['cloud_scope']) or not re.fullmatch(r'[0-9a-f]{64}', spec['cloud_profile_digest']):
+            raise ValueError('invalid cloud account profile')
     if 'steer_first' in spec and (spec['steer_first'] is not True or spec['kind'] != 'native' or spec['runtime'] != 'codex' or spec.get('cloud')):
         raise ValueError('invalid steer-or-queue destination')
     claude_goal = spec['runtime'] == 'claude' and not spec.get('cloud') and 'goal_resume' not in spec
@@ -244,6 +248,8 @@ def observe_inbox(spec, ident, confirmed):
 
 def identity(spec):
     destination = [spec['kind'], spec['runtime'], spec['destination'], spec.get('socket'), spec.get('correlation') or encode(spec)]
+    if spec.get('cloud_profile'):
+        destination.append(spec['cloud_scope'])
     return hashlib.sha256(encode(destination).encode()).hexdigest()
 
 
@@ -253,6 +259,8 @@ def command(spec):
                 '--correlation-id', spec['correlation'], '--message', spec['message'], '--delivery-only']
         if spec.get('cloud'):
             args += ['--cloud']
+        if spec.get('cloud_profile'):
+            args += ['--cloud-profile', spec['cloud_profile'], '--cloud-scope', spec['cloud_scope'], '--cloud-profile-digest', spec['cloud_profile_digest']]
         if spec.get('steer_first'):
             args += ['--steer-or-queue']
         if spec.get('inbox_root'):

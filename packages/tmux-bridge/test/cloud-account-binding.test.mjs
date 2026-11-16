@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
-import { claudeSubjectHash, verifyClaudeAccount, withClaudeAccount } from '../bin/cloud-account-binding.mjs';
+import { claudeSubjectHash, loadClaudeAccountProfile, verifyClaudeAccount, withClaudeAccount } from '../bin/cloud-account-binding.mjs';
 
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'cloud-binding-'));
@@ -26,6 +26,21 @@ test('matching provider, profile and account produce only a bound digest', async
   let invoked = false;
   assert.equal(await withClaudeAccount(f.profile, async context => { invoked = true; assert.equal(context.configDir, f.root); return 'receipt'; }, run), 'receipt');
   assert.equal(invoked, true);
+});
+
+test('profile file is private, scoped and digest-bound across replay', async t => {
+  const f = await fixture(t), path = join(f.root, 'profile.json');
+  await writeFile(path, JSON.stringify({ schema: 'agent-mesh.cloud-account.v1', ...f.profile }), { mode: 0o600 });
+  const loaded = await loadClaudeAccountProfile(path, 'fixture');
+  assert.equal((await loadClaudeAccountProfile(path, 'fixture', loaded.digest)).digest, loaded.digest);
+  await assert.rejects(loadClaudeAccountProfile(path, 'other'), /scope/);
+  await chmod(path, 0o644);
+  await assert.rejects(loadClaudeAccountProfile(path, 'fixture'), /file/);
+  await chmod(path, 0o600);
+  await writeFile(path, '{}');
+  await assert.rejects(loadClaudeAccountProfile(path, 'fixture', loaded.digest), /changed/);
+  await symlink(path, join(f.root, 'link.json'));
+  await assert.rejects(loadClaudeAccountProfile(join(f.root, 'link.json'), 'fixture'));
 });
 
 test('wrong account or profile fails before the action', async t => {

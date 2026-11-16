@@ -14,6 +14,7 @@ import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 import { goalCommand, liveClaudeSessions, typeClaudeGoal } from "./claude-goal.mjs";
 import { GOAL_RESUME_MODES, reconcileCodexGoal } from "./codex-goal.mjs";
 import { withCodexAppServer } from "./codex-app-server.mjs";
+import { loadClaudeAccountProfile, withClaudeAccount } from "./cloud-account-binding.mjs";
 
 let activeComms;
 let enqueueStarted = false;
@@ -26,6 +27,9 @@ const { values } = parseArgs({
     timeout: { type: "string", default: "120" },
     "delivery-only": { type: "boolean", default: false },
     cloud: { type: "boolean", default: false },
+    "cloud-profile": { type: "string" },
+    "cloud-scope": { type: "string" },
+    "cloud-profile-digest": { type: "string" },
     "steer-or-queue": { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
     "no-resume": { type: "boolean", default: false },
@@ -68,6 +72,8 @@ const goalOptions = agent === "codex" ? { objective: values.goal?.trim(), resume
 if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
   fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
 }
+if ((!values.cloud && (values["cloud-profile"] || values["cloud-scope"] || values["cloud-profile-digest"])) || Boolean(values["cloud-profile"]) !== Boolean(values["cloud-scope"]) || (values["cloud-profile-digest"] && !values["cloud-profile"])) fail("cloud profile and scope must be supplied together for cloud transport", 2);
+const cloudProfile = values["cloud-profile"] ? await loadClaudeAccountProfile(values["cloud-profile"], values["cloud-scope"], values["cloud-profile-digest"]) : undefined;
 if (values.cloud ? !/^(session|cse)_[A-Za-z0-9]{1,128}$/.test(sessionId)
   : !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
   fail(values.cloud ? "--session must be an exact session_ or cse_ cloud ID" : "--session must be a complete UUID", 2);
@@ -87,6 +93,7 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
   correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume, ...(values.cloud ? { cloud: true } : {}),
+  ...(cloudProfile ? { cloud_profile: values['cloud-profile'], cloud_scope: values['cloud-scope'], cloud_profile_digest: cloudProfile.digest } : {}),
   ...(values["steer-or-queue"] ? { steer_first: true } : {}),
   ...(goalOptions?.objective ? { goal: goalOptions.objective } : {}),
   ...(goalOptions?.resume && goalOptions.resume !== "blocked" ? { goal_resume: goalOptions.resume } : {}) });
@@ -100,10 +107,17 @@ if (comms.status !== 'send') {
 // Cloud follow-ups have a provider queue acknowledgement, but no local transcript.
 // All failures after invoking the provider retain the gate's unknown receipt.
 if (values.cloud) {
-  enqueueStarted = true;
-  const sent = await run(process.env.CLAUDE_BIN || "claude", [
-    "-p", "--cloud", sessionId, "--output-format", "json"
-  ], timeoutSeconds * 1000, message);
+  let sent;
+  if (cloudProfile) {
+    sent = await withClaudeAccount(cloudProfile.profile, async binding => {
+      enqueueStarted = true;
+      return run(binding.command, ["-p", "--cloud", sessionId, "--output-format", "json"], timeoutSeconds * 1000, message, { ...process.env, CLAUDE_CONFIG_DIR: binding.configDir });
+    });
+    await loadClaudeAccountProfile(values["cloud-profile"], values["cloud-scope"], cloudProfile.digest);
+  } else {
+    enqueueStarted = true;
+    sent = await run(process.env.CLAUDE_BIN || "claude", ["-p", "--cloud", sessionId, "--output-format", "json"], timeoutSeconds * 1000, message);
+  }
   let receipt;
   try { receipt = JSON.parse(sent.stdout); } catch { /* Unproven acceptance. */ }
   if (sent.code !== 0 || receipt?.ok !== true || receipt.session_id !== sessionId) {
@@ -393,9 +407,9 @@ async function consumeTranscript(path, start) {
   }
 }
 
-function run(command, args, timeoutMs, input) {
+function run(command, args, timeoutMs, input, env = process.env) {
   return new Promise((resolveRun) => {
-    const child = execFile(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024, env }, (error, stdout, stderr) => {
       resolveRun({
         code: error && typeof error.code === "number" ? error.code : error ? 1 : 0,
         stdout: typeof stdout === "string" ? stdout : "",
