@@ -82,7 +82,9 @@ test('delivery reservation and matching receipt survive graph replay', async (t)
   await call('migrate', '--apply', '--json');
   await call('channel', 'create', '--name', 'example', '--session', session);
   await call('channel', 'enqueue', '--name', 'example', '--id', 'one', '--input', 'payload');
-  await call('channel', 'begin-delivery', '--name', 'example', '--id', 'one');
+  await assert.rejects(call('channel', 'begin-delivery', '--name', 'example', '--id', 'one', '--session', 'codex:other'), /recipient changed/);
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'pending');
+  await call('channel', 'begin-delivery', '--name', 'example', '--id', 'one', '--session', session);
   await rm(join(state, 'checkpoint.json'));
   assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'inflight');
   await assert.rejects(call('channel', 'acknowledge', '--name', 'example', '--id', 'one', '--input', JSON.stringify({ status: 'accepted', messageId: 'one', session: 'codex:wrong', generation: 1 })), /receipt/);

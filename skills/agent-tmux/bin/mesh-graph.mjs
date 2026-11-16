@@ -159,7 +159,7 @@ try {
         } else {
           if (!current) throw new Error("unknown channel");
           if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), channelInput);
-          else if (subcommand === "begin-delivery") next = beginDelivery(current, requiredSingleLine(values.id, "--id"));
+          else if (subcommand === "begin-delivery") next = beginDelivery(current, requiredSingleLine(values.id, "--id"), values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"));
           else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "finish-handover") {

@@ -20,8 +20,9 @@ export function enqueue(state, id, payload) {
   return next;
 }
 
-export function beginDelivery(state, id) {
+export function beginDelivery(state, id, expectedSession) {
   if (state.phase !== 'active') throw new Error('handover in progress');
+  if (expectedSession !== undefined && state.session !== expectedSession) throw new Error('channel recipient changed');
   if (state.queue.some((item) => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
   if (state.queue.find((item) => item.state === 'pending')?.id !== id) throw new Error('message is not first pending');
   const next = copy(state), item = next.queue.find((row) => row.id === id);

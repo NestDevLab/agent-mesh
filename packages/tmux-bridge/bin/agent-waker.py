@@ -234,10 +234,14 @@ def run_channel(args: argparse.Namespace) -> int:
             if not pending:
                 print(json.dumps({'job': args.job, 'outcome': 'noop'}))
                 return 0
-            channel = channel_call(args, 'begin-delivery', '--id', pending['id'])
+            target = channel['session']
+            agent, sep, session = target.partition(':')
+            if not sep or agent not in ('codex', 'claude'):
+                raise ValueError('unsupported channel recipient')
+            channel = channel_call(args, 'begin-delivery', '--id', pending['id'], '--session', target)
             item = next(item for item in channel['queue'] if item['id'] == pending['id'])
             agent, sep, session = item['session'].partition(':')
-            if not sep or agent not in ('codex', 'claude'):
+            if not sep or agent not in ('codex', 'claude') or item['session'] != target:
                 raise ValueError('unsupported channel recipient')
             code = deliver(agent, session, item['id'], item['payload'], args.managed_inbox_root,
                            True, resume=args.resume and agent == 'codex', message_stdin=True)

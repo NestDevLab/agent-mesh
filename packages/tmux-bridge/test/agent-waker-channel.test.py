@@ -17,6 +17,18 @@ uuid = '22222222-2222-4222-8222-222222222222'
 
 
 class ChannelWakerTest(unittest.TestCase):
+    def test_unsupported_recipient_does_not_reserve_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state='fixture', channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
+            queued = {'phase': 'active', 'session': 'claude-cloud:fixture:session_Test', 'generation': 1, 'queue': [{'id': 'one', 'state': 'pending', 'payload': 'fixture'}]}
+            reserved = {**queued, 'queue': [{**queued['queue'][0], 'state': 'inflight', 'session': queued['session'], 'generation': 1}]}
+            def call(args, operation, *options):
+                return reserved if operation == 'begin-delivery' else queued
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', side_effect=call) as channel_call, patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                deliver.assert_not_called()
+                self.assertNotIn('begin-delivery', [call.args[1] for call in channel_call.call_args_list])
+
     def test_native_adapter_receives_message_on_stdin(self):
         from unittest.mock import Mock
         receipt = {'status': 'queued', 'agent': 'codex', 'sessionId': uuid, 'correlationId': 'message-1'}
