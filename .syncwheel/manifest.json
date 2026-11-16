@@ -269,7 +269,7 @@
     },
     {
       "id": "plexus-modules",
-      "branch": "syncwheel/draft/plexus-modules",
+      "branch": "pr/plexus-modules",
       "base": "origin/main",
       "target_remote": "origin",
       "target_branch": "main",
@@ -301,9 +301,9 @@
         "dec1b153bf448d71e550ebe5e8c58b782e564693",
         "0bf7d88e6cde6911532cb1a2caafa8b51109d4f4"
       ],
-      "state": "draft",
+      "state": "published",
       "publication": {
-        "enabled": false
+        "enabled": true
       },
       "meta": {}
     }
