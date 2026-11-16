@@ -189,3 +189,12 @@ fixture. The generated override produced the same result in that fixture. This
 is not proof of complete isolation: the inventory may change or omit dynamic
 plugin servers, and permissions and plugins require independent enforcement.
 No live launch is wired to this planner.
+
+`codex-role-start-assessment.mjs` compares the complete native permission
+profile and sandbox objects against a trusted expected policy and flags observed
+approval or elicitation requests for rollback. It does not perform rollback or
+prove that no prompt was missed. A matching response remains incomplete while
+plugin isolation, MCP event coverage and startup token evidence are unknown.
+The Codex CLI 0.169.0 generated schema says its `disabledPluginIds` response
+field does not yet filter plugin capabilities; it must not be treated as proof
+that excluded plugins are inactive. No live launch uses this assessment.

@@ -64,3 +64,15 @@ test('existing app-server client forwards notifications without issuing an inven
   assert.equal(receipt.counts.ready, 1);
   assert.equal(receipt.mcpStarted, null);
 });
+
+test('a native permission request for the bound thread is observed without retaining content', () => {
+  const observer = createCodexMcpStartupObserver();
+  observer.onNotification({ id: 12, method: 'item/permissions/requestApproval', params: { threadId: id, permissions: 'private-fixture' } });
+  observer.onNotification({ id: 13, method: 'item/fileChange/requestApproval', params: { threadId: other } });
+  observer.bindThread(id);
+  const sample = observer.snapshot();
+  assert.equal(sample.permissionRequestObserved, true);
+  assert.ok(!JSON.stringify(sample).includes('private-fixture'));
+  const empty = createCodexMcpStartupObserver(); empty.bindThread(id);
+  assert.equal(empty.snapshot().permissionRequestObserved, null);
+});
