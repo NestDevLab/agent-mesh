@@ -4,6 +4,7 @@
 import { commsLease } from "./comms-client.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { readSync } from "node:fs";
 import { access, open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -30,6 +31,7 @@ const { values } = parseArgs({
     goal: { type: "string" },
     "goal-resume": { type: "string", default: "blocked" },
     message: { type: "string" },
+    "message-stdin": { type: "boolean", default: false },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
   },
@@ -37,14 +39,15 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--goal TEXT (Codex, local Claude)] [--goal-resume blocked|any|off (Codex only)] [--delivery-only]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> (--message <TEXT> | --message-stdin) [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--goal TEXT (Codex, local Claude)] [--goal-resume blocked|any|off (Codex only)] [--delivery-only]");
   process.exit(0);
 }
 
 const agent = required(values.agent, "--agent");
 const sessionId = required(values.session, "--session");
 const correlationId = required(values["correlation-id"], "--correlation-id");
-const message = required(values.message, "--message");
+if (values["message-stdin"] && values.message !== undefined) fail("--message and --message-stdin are mutually exclusive", 2);
+const message = values["message-stdin"] ? required(readMessageStdin(), "--message-stdin") : required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
 if (values.resume && values["no-resume"]) fail("--resume and --no-resume are mutually exclusive", 2);
@@ -270,6 +273,20 @@ function finish(bodies, begin, end) {
   // extraction protocol for agents that honor them.
   process.stdout.write(`${text.trim()}\n`);
   process.exit(0);
+}
+
+function readMessageStdin() {
+  const max = 65536, chunks = [];
+  let total = 0;
+  for (;;) {
+    const chunk = Buffer.allocUnsafe(Math.min(4096, max + 1 - total));
+    const count = readSync(0, chunk, 0, chunk.length, null);
+    if (!count) break;
+    total += count;
+    if (total > max) fail("stdin message too large", 2);
+    chunks.push(chunk.subarray(0, count));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function messageText(record, role) {

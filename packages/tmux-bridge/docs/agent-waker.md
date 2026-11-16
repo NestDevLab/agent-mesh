@@ -36,6 +36,10 @@ queued. The first pending message is reserved before invoking the native
 transport; an unconfirmed delivery stays in flight and requires reconciliation.
 The native bound queue receipt is checked before the graph records acceptance.
 Channel delivery does not establish that the receiving actor read the message.
+Channel payloads reach the graph and native transport adapter on standard input.
+The existing Codex queue transport still passes its message as a downstream
+CLI argument; do not treat this change as eliminating every process-argument
+exposure.
 The channel mode and handover are not yet enabled in existing timers.
 
 Delivery-only acknowledgement requires native JSON `status: queued`, matching

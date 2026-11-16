@@ -116,9 +116,10 @@ def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False) -> int:
+def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False, message_stdin: bool = False) -> int:
     command = ["node", str(BIN / "agent-native-call.mjs"), "--agent", agent, "--session", session,
-               "--correlation-id", correlation, "--timeout", "5", "--message", message]
+               "--correlation-id", correlation, "--timeout", "5"]
+    command += ["--message-stdin"] if message_stdin else ["--message", message]
     if resume:
         if agent != "codex":
             raise ValueError("waker resume is supported only for Codex")
@@ -127,7 +128,7 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
         command += ["--delivery-only"]
     if inbox_root:
         command += ["--managed-inbox-root", inbox_root]
-    result = subprocess.run(command, text=True, capture_output=True)
+    result = subprocess.run(command, text=True, capture_output=True, **({"input": message} if message_stdin else {}))
     try:
         receipt = json.loads(result.stdout)
     except (ValueError, TypeError):
@@ -162,8 +163,14 @@ def channel_call(args: argparse.Namespace, operation: str, *options: str) -> dic
     command = ['node', str(BIN / 'mesh-graph.mjs')]
     if args.graph_state:
         command += ['--state', args.graph_state]
-    command += ['channel', operation, '--name', args.channel, *options]
-    result = subprocess.run(command, text=True, capture_output=True, timeout=30, check=True)
+    arguments = list(options)
+    payload = None
+    if '--input' in arguments:
+        index = arguments.index('--input') + 1
+        payload = arguments[index]
+        arguments[index] = '-'
+    command += ['channel', operation, '--name', args.channel, *arguments]
+    result = subprocess.run(command, input=payload, text=True, capture_output=True, timeout=30, check=True)
     value = json.loads(result.stdout)
     if not isinstance(value, dict) or not isinstance(value.get('channel'), dict):
         raise ValueError('invalid channel response')
@@ -231,7 +238,7 @@ def run_channel(args: argparse.Namespace) -> int:
             if not sep or agent not in ('codex', 'claude'):
                 raise ValueError('unsupported channel recipient')
             code = deliver(agent, session, item['id'], item['payload'], args.managed_inbox_root,
-                           True, resume=args.resume and agent == 'codex')
+                           True, resume=args.resume and agent == 'codex', message_stdin=True)
             if code != 0:
                 print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'delivery unconfirmed'}))
                 return 3

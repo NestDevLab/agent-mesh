@@ -138,6 +138,7 @@ try {
   switch (command) {
     case "channel": {
       const name = requiredSingleLine(values.name, "--name");
+      const channelInput = values.input === "-" ? readBoundedChannelInput() : values.input;
       assertPrivateChannelState(stateDir);
       if (subcommand === "get") {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
@@ -157,9 +158,9 @@ try {
           next = createChannel(name, session);
         } else {
           if (!current) throw new Error("unknown channel");
-          if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), values.input);
+          if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), channelInput);
           else if (subcommand === "begin-delivery") next = beginDelivery(current, requiredSingleLine(values.id, "--id"));
-          else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(values.input, "--input")));
+          else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "finish-handover") {
             const target = requiredSingleLine(values.to, "--to");
@@ -1482,6 +1483,20 @@ function assertProjectionDirectory(path) {
 
 function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
+}
+
+function readBoundedChannelInput() {
+  const max = 65536, chunks = [];
+  let total = 0;
+  while (true) {
+    const chunk = Buffer.allocUnsafe(Math.min(4096, max + 1 - total));
+    const count = readSync(0, chunk, 0, chunk.length, null);
+    if (!count) break;
+    total += count;
+    if (total > max) throw new Error("channel input too large");
+    chunks.push(chunk.subarray(0, count));
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function assertPrivateChannelState(statePath) {
