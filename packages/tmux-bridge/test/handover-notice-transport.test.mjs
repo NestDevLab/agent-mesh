@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { queueLocalFinalNotice, observeLocalFinalNotice } from '../bin/handover-notice-transport.mjs';
+import { queueLocalFinalNotice, queueReservedFinalNotice, observeLocalFinalNotice } from '../bin/handover-notice-transport.mjs';
 import { formatFinalNotice } from '../bin/handover-notice.mjs';
 
 const id = '22222222-2222-4222-8222-222222222222';
@@ -53,4 +53,16 @@ test('queue is followed by separately observed Claude transcript evidence', asyn
   assert.equal(proof.session, queue.session);
   assert.equal(proof.messageSha256, queue.noticeSha256);
   assert.equal(proof.nonce, queue.nonce);
+});
+
+test('reserved delivery binds session, successor and exact content before native call', async () => {
+  const { createHash } = await import('node:crypto');
+  const reservation = { status: 'requested', session: options.session, id: nonce, successor: `codex:${id}`, noticeSha256: createHash('sha256').update(notice).digest('hex') };
+  const args = { reservation, target: options.target, label: options.label, prefix: options.prefix, managedInboxRoot: options.managedInboxRoot };
+  let calls = 0;
+  const run = async () => { calls++; return { stdout: JSON.stringify(response) }; };
+  assert.equal((await queueReservedFinalNotice(args, run)).status, 'queued-unverified');
+  await assert.rejects(queueReservedFinalNotice({ ...args, label: 'different' }, run), /does not match/);
+  await assert.rejects(queueReservedFinalNotice({ ...args, reservation: { ...reservation, successor: 'codex:other' } }, run), /does not match/);
+  assert.equal(calls, 1);
 });

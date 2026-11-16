@@ -37,6 +37,12 @@ export async function queueLocalFinalNotice({ session, nonce, target, label, pre
   return { schema: 'agent-mesh.notice-queue.v1', session, nonce, noticeSha256: digest(notice), status: 'queued-unverified' };
 }
 
+/** Call only after reserving in the trusted graph and acquiring lifecycle exclusion. */
+export async function queueReservedFinalNotice({ reservation, target, label, prefix, managedInboxRoot }, runNative = exec) {
+  if (!reservation || reservation.status !== 'requested' || typeof reservation.session !== 'string' || typeof reservation.id !== 'string' || !target || target.kind !== 'codex' || reservation.successor !== `codex:${target.id}` || reservation.noticeSha256 !== digest(formatFinalNotice({ target, label, prefix }))) throw new Error('final notice reservation does not match request');
+  return queueLocalFinalNotice({ session: reservation.session, nonce: reservation.id, target, label, prefix, managedInboxRoot }, runNative);
+}
+
 /** Obtain local native transcript evidence independently from the queue receipt. */
 export async function observeLocalFinalNotice({ session, nonce, target, label, prefix, transcriptRoot }) {
   if (typeof session !== 'string') throw new Error('invalid local notice session');

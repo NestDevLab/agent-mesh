@@ -120,3 +120,32 @@ test('delivery reservation and matching receipt survive graph replay', async (t)
   await call('channel', 'acknowledge', '--name', 'example', '--id', 'one', '--input', JSON.stringify({ status: 'accepted', messageId: 'one', session, generation: 1 }));
   assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'accepted');
 });
+
+test('final notice reservation persists and refuses a duplicate before any send', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'notice-reserve-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const writer = join(state, 'writer.mjs'), oldId = '22222222-2222-4222-8222-222222222222', nextId = '33333333-3333-4333-8333-333333333333';
+  await writeFile(writer, `console.log(JSON.stringify({agent:'codex',sessionId:'${nextId}',writers:[{pid:123,kind:'codex'}]}))`);
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args], { env: { ...process.env, MESH_PLEXUS_WRITER_STATUS: writer } })).stdout);
+  for (const id of [oldId, nextId]) await call('add', '--agent', 'codex', '--tmux-target', `test-${id}`, '--cwd', '/synthetic', '--runtime-uuid', id, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', `codex:${oldId}`);
+  await call('channel', 'begin-handover', '--name', 'example');
+  const args = ['channel', 'reserve-notice', '--name', 'example', '--to', `codex:${nextId}`, '--input', JSON.stringify({ prefix: 'Sleeping.', label: 'Continue' })];
+  await assert.rejects(call(...args), /fresh verified link/);
+  let graph = await call('show', '--json');
+  const node = graph.nodes.find(row => row.runtimeUuid === nextId), checkedAt = new Date().toISOString();
+  node.sessionLink = { status: 'ok', resolvedSession: `codex:${nextId}`, link: `codex:${nextId}`, source: 'codex-threads', checkedAt, lastKnown: false };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-link', type: 'node.upserted', at: checkedAt, node, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  await assert.rejects(call(...args), /reservation unavailable/);
+  graph = await call('show', '--json');
+  const channel = graph.channels.find(row => row.id === 'example');
+  channel.statePreparation = { status: 'verified', session: `codex:${oldId}`, generation: channel.generation, id: 'state-1', filename: 'state.yaml', sha256: 'b'.repeat(64), bytes: 2 };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-state', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  const first = (await call(...args)).channel.finalNotice;
+  assert.equal(first.status, 'requested');
+  assert.equal(first.successor, `codex:${nextId}`);
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  assert.deepEqual((await call('channel', 'get', '--name', 'example')).channel.finalNotice, first);
+  await assert.rejects(call(...args), /reservation unavailable/);
+});

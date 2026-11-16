@@ -116,7 +116,11 @@ resulting local transcript. Queue acceptance is not publication proof. The
 caller must first durably reserve the request, verify the successor, and hold
 exclusive lifecycle control; a failed or held enqueue must not be retried
 blindly. These prerequisites are not yet connected, and this adapter is not
-wired to cutover or cloud delivery.
+wired to cutover or cloud delivery. A graph `channel reserve-notice` transition
+requires verified state and a freshly verified Codex successor, binds the
+notice digest and nonce, and survives replay. The adapter can bind an enqueue
+to that reservation, but does not acquire lifecycle exclusion or settle the
+receipt in the graph. The actual cutover remains disabled.
 # Role-scoped restart preparation
 
 The `agent-mesh.restart.v1` YAML handover block requires `role_profile` when

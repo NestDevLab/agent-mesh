@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveWake, reserveStatePreparation, completeStatePreparation } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
 
 test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';
@@ -66,4 +66,18 @@ test('handover queues work and never reroutes an uncertain delivery', () => {
   assert.equal(channel.queue[1].generation, 2);
   assert.deepEqual(enqueue(channel, 'message-2', 'queued'), channel);
   assert.throws(() => enqueue(channel, 'message-2', 'different'), /conflict/);
+});
+
+test('final notice reservation binds the queue receipt and blocks cutover', () => {
+  let state = beginHandover(createChannel('example', 'codex:old'));
+  assert.throws(() => reserveFinalNotice(state, 'handover-1', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  state = reserveStatePreparation(state, 'state-1');
+  state = completeStatePreparation(state, { schema: 'agent-mesh.handover-state.v1', session: 'codex:old', nonce: 'state-1', filename: 'state.yaml', sha256: 'b'.repeat(64), bytes: 2 });
+  state = reserveFinalNotice(state, 'handover-1', 'codex:new', 'a'.repeat(64));
+  assert.throws(() => reserveFinalNotice(state, 'handover-2', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  const receipt = { schema: 'agent-mesh.notice-queue.v1', status: 'queued-unverified', session: 'codex:old', nonce: 'handover-1', noticeSha256: 'a'.repeat(64) };
+  assert.throws(() => recordNoticeQueued(state, { ...receipt, nonce: 'other' }), /reservation/);
+  state = recordNoticeQueued(state, receipt);
+  assert.equal(state.finalNotice.status, 'queued-unverified');
+  assert.throws(() => finishHandover(state, 'codex:new', true), /final notice unresolved/);
 });

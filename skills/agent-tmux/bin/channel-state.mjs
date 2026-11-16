@@ -91,8 +91,26 @@ export function completeStatePreparation(state, proof) {
   return next;
 }
 
+// The durable reservation survives crashes; only authenticated evidence can
+// settle it. It does not itself verify the successor or send a notice.
+export function reserveFinalNotice(state, id, successor, noticeSha256) {
+  if (state.phase !== 'handover' || state.finalNotice || state.statePreparation?.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(id) || !identifier(successor) || successor === state.session || !/^[a-f0-9]{64}$/.test(noticeSha256 || '') || state.queue.some(item => item.state === 'inflight')) throw new Error('final notice reservation unavailable');
+  const next = copy(state);
+  next.finalNotice = { id, session: state.session, generation: state.generation, successor, noticeSha256, status: 'requested' };
+  return next;
+}
+
+export function recordNoticeQueued(state, receipt) {
+  const pending = state.finalNotice;
+  if (state.phase !== 'handover' || !pending || pending.status !== 'requested' || pending.session !== state.session || pending.generation !== state.generation || !receipt || receipt.schema !== 'agent-mesh.notice-queue.v1' || receipt.status !== 'queued-unverified' || receipt.session !== pending.session || receipt.nonce !== pending.id || receipt.noticeSha256 !== pending.noticeSha256) throw new Error('notice queue receipt does not match reservation');
+  const next = copy(state);
+  next.finalNotice.status = 'queued-unverified';
+  return next;
+}
+
 export function finishHandover(state, session, verified) {
   if (state.phase !== 'handover' || !identifier(session) || session === state.session || verified !== true) throw new Error('unverified successor');
+  if (state.finalNotice && state.finalNotice.status !== 'verified') throw new Error('final notice unresolved');
   if (state.statePreparation && state.statePreparation.status !== 'verified') throw new Error('state preparation unresolved');
   if (state.queue.some((item) => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
   const next = copy(state);

@@ -37,9 +37,10 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice } from "./channel-state.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
+import { formatFinalNotice } from "./handover-notice.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -130,7 +131,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "reserve-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -221,6 +222,20 @@ try {
             next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId);
           }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
+          else if (subcommand === "reserve-notice") {
+            const target = requiredSingleLine(values.to, "--to");
+            const match = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(target);
+            if (!match) throw new Error("successor native verification unavailable");
+            const content = JSON.parse(requiredSingleLine(channelInput, "--input"));
+            if (!content || typeof content !== "object" || Array.isArray(content) || Object.keys(content).sort().join(",") !== "label,prefix") throw new Error("invalid notice content");
+            const notice = formatFinalNotice({ target: { kind: "codex", id: match[1] }, label: content.label, prefix: content.prefix });
+            const matches = graph.nodes.filter(node => plexus.sessionIdOf(node) === target), node = matches[0], proof = node?.sessionLink;
+            const started = Date.parse(current.handoverStartedAt), checked = Date.parse(proof?.checkedAt);
+            if (matches.length !== 1 || node.status === "closed" || node.surface?.archived === true || proof?.status !== "ok" || proof.resolvedSession !== target || proof.source !== "codex-threads" || proof.link !== target || proof.lastKnown === true || !Number.isFinite(started) || !Number.isFinite(checked) || checked < started || checked > Date.now()) throw new Error("successor requires fresh verified link");
+            const writer = probeWriter({ harness: "codex", nativeId: match[1] });
+            if (writer?.agent !== "codex" || writer.sessionId !== match[1] || !Array.isArray(writer.writers) || writer.writers.length !== 1 || !Number.isSafeInteger(writer.writers[0]?.pid) || writer.writers[0].pid <= 0 || writer.writers[0].kind !== "codex") throw new Error("successor requires one verified writer");
+            next = reserveFinalNotice(current, `handover-${randomUUID()}`, target, createHash("sha256").update(notice).digest("hex"));
+          }
           else if (subcommand === "finish-handover") {
             const target = requiredSingleLine(values.to, "--to");
             if (current.phase === "active" && current.session === target && current.handoverReceipt?.successor === target) return { graph, result: { channel: current, duplicate: true } };
