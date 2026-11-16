@@ -18,7 +18,8 @@ export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operat
 export const ROLE_WEIGHTS = { owns: 1, "works-on": 1, coordinates: 0.8, reviews: 0.7, discusses: 0.6, observes: 0.3, mentioned: 0.2 };
 export const HALF_LIFE_DAYS = 7;
 export const TOUCH_COALESCE_MS = 10 * 60 * 1000;
-export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated"]);
+export const LIFECYCLE_EVENTS = new Set(["session.started", "session.idle", "session.compacted", "session.stopped", "session.handover"]);
+export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated", ...LIFECYCLE_EVENTS]);
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -84,6 +85,15 @@ export function applyPlexusEvent(state, item) {
   const effects = [];
   const openLinks = () => [...state.links.values()].filter((link) => link.until === null);
   switch (item.type) {
+    case "session.started":
+    case "session.idle":
+    case "session.compacted":
+    case "session.stopped":
+    case "session.handover":
+      parseGraphSessionId(item.session);
+      if (typeof item.evidence !== "string" || !item.evidence || item.evidence.length > 512 || /[\r\n\x00]/.test(item.evidence)) throw new Error("lifecycle event requires an evidence reference");
+      effects.push({ kind: item.type, session: item.session });
+      break;
     case "role.changed":
       if (!state.roleClaims) state.roleClaims = new Map();
       if (item.previous) state.roleClaims.set(item.previous.id, item.previous);
@@ -886,6 +896,8 @@ function feedFor(state, seen, item) {
       if (from && to) out.push({ type: effect.kind, edgeId: effect.edge.id, kind: effect.edge.type, from, to, subject: effect.edge.id });
     } else if (effect.kind === "session.renewed") {
       out.push({ type: "session.renewed", from: effect.from, to: effect.to, subject: effect.to });
+    } else if (LIFECYCLE_EVENTS.has(effect.kind)) {
+      out.push({ type: effect.kind, session: effect.session, subject: effect.session });
     }
   }
   return out;
