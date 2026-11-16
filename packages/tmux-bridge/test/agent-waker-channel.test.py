@@ -17,6 +17,29 @@ uuid = '22222222-2222-4222-8222-222222222222'
 
 
 class ChannelWakerTest(unittest.TestCase):
+    def test_lost_reservation_response_does_not_send_or_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / 'graph'
+            def call(*args):
+                return json.loads(subprocess.run(['node', str(root / 'bin' / 'mesh-graph.mjs'), '--state', str(state), *args], check=True, capture_output=True, text=True).stdout)
+            call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json')
+            call('migrate', '--apply', '--json')
+            call('channel', 'create', '--name', 'example', '--session', f'codex:{uuid}')
+            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
+            original = waker.channel_call
+            def lost_response(args, operation, *options):
+                result = original(args, operation, *options)
+                if operation == 'begin-delivery':
+                    raise subprocess.TimeoutExpired('fixture', 1)
+                return result
+            with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'channel_call', side_effect=lost_response), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                deliver.assert_not_called()
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                deliver.assert_not_called()
+            self.assertEqual(call('channel', 'get', '--name', 'example')['channel']['queue'][0]['state'], 'inflight')
+
     def test_lost_enqueue_response_retries_same_message_without_duplication(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'graph'
