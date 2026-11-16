@@ -15,7 +15,7 @@ export async function readModuleRegistry(path) {
   if (!config || config.schemaVersion !== 1 || !Array.isArray(config.modules)) throw new Error("invalid module registry");
   const names = new Set();
   return config.modules.map((entry) => {
-    if (!entry || !NAME.test(entry.name) || names.has(entry.name)) throw new Error("invalid or duplicate module name");
+    if (!entry || typeof entry.name !== "string" || !NAME.test(entry.name) || names.has(entry.name)) throw new Error("invalid or duplicate module name");
     if (!Array.isArray(entry.command) || !entry.command.length || entry.command.some(v => typeof v !== "string" || !v || v.includes("\0"))) throw new Error("invalid module command");
     const timeoutMs = entry.timeoutMs ?? 10000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw new Error("invalid module timeout");
@@ -44,6 +44,6 @@ export async function describeModule(entry) {
     });
     child.stdin.end("{}\n");
   });
-  if (!result || result.schema !== MODULE_PROTOCOL || result.name !== entry.name || result.namespace !== entry.name || !Array.isArray(result.operations) || !result.operations.includes("describe")) throw new Error("invalid module description");
+  if (!result || result.schema !== MODULE_PROTOCOL || result.name !== entry.name || result.namespace !== entry.name || !Array.isArray(result.operations) || !result.operations.includes("describe") || result.operations.some(op => typeof op !== "string")) throw new Error("invalid module description");
   return result;
 }

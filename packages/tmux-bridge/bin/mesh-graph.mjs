@@ -34,6 +34,7 @@ import * as plexus from "./plexus.mjs";
 import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from "./session-catalog.mjs";
 
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
+import { readModuleRegistry, describeModule } from "./plexus-modules.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -93,6 +94,7 @@ const { values, positionals } = parseArgs({
     evidence: { type: "string" },
     input: { type: "string" },
     config: { type: "string" },
+    name: { type: "string" },
     sort: { type: "string" },
     filter: { type: "string", multiple: true },
     format: { type: "string" },
@@ -119,7 +121,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { module: ["list", "describe"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -131,6 +133,17 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "module": {
+      const configPath = values.config || join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-mesh", "modules.json");
+      const entries = await readModuleRegistry(configPath);
+      if (subcommand === "list") printResult({ modules: entries.map(entry => ({ name: entry.name })) }, { json: true });
+      else if (subcommand === "describe") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        printResult(await describeModule(entry), { json: true });
+      } else throw new Error("unknown module operation");
+      break;
+    }
     case "links": {
       if (subcommand !== "verify") throw new Error("unknown links operation");
       const verify = graph => {

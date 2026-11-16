@@ -46,6 +46,14 @@ and stdout. Every response identifies protocol `agent-mesh.plexus-module.v1`.
 supported operations. The registry must reject duplicate names or namespaces.
 The registry is an operator-owned allowlist, not a marketplace or code sandbox.
 
+The initial read-only discovery surface is `mesh-graph module list` and
+`mesh-graph module describe --name <name>`. It reads the operator-owned
+`$XDG_CONFIG_HOME/agent-mesh/modules.json` (or `--config <path>`). The registry
+has `schemaVersion: 1` and a `modules` array containing `name`, `command` as an
+argument array, and optional `timeoutMs`. Namespace equals name. A missing file
+registers no modules; malformed files and duplicate names fail closed. Describe
+does not update a cursor or write graph state. stderr is not returned to callers.
+
 Before a module can make graph changes, the writer must accept a bounded batch
 under the graph lock, verify its namespace and cursor precondition, and record
 the batch and its next cursor atomically. Retrying an identical batch must return
