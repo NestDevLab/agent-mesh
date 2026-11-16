@@ -28,7 +28,8 @@
       "controller-activity-safety",
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
-      "controller-activity-safety-refresh"
+      "controller-activity-safety-refresh",
+      "decision-owner-routing"
     ],
     "strategy": "cherry-pick"
   },
@@ -245,6 +246,22 @@
       },
       "meta": {
         "purpose": "Publish the authorized activity-based controller correction on a fresh PR branch while integration validation is deferred"
+      }
+    },
+    {
+      "id": "decision-owner-routing",
+      "branch": "pr/decision-owner-routing",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {
+        "purpose": "Route decision requests through explicit owning-thread bindings and publication receipts"
       }
     }
   ],
