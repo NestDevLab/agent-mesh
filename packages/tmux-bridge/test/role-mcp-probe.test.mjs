@@ -13,6 +13,7 @@ test('only an initialized and responsive MCP is accepted by role planning', asyn
   const offline = { command: [process.execPath, '--input-type=module', '-e', 'setInterval(() => {}, 1000)'], timeoutMs: 150 };
   assert.equal(await probeStdioMcp(good), true);
   assert.equal(await probeStdioMcp(offline), false);
+  assert.equal(await probeStdioMcp({ command: ['/bin/false'], timeoutMs: 2000 }), false);
   const profile = { schema: 'agent-mesh.role-profile.v1', role: 'fixture', permissions: [], mcp: ['good', 'offline'], plugins: [] };
   const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['good', 'offline'], plugins: [] };
   const allowlist = { good, offline };
@@ -64,6 +65,7 @@ test('unobserved process closure fails planning instead of treating MCP as offli
   const child = new EventEmitter();
   child.stdin = new EventEmitter(); child.stdin.write = () => true;
   child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+  child.stdio = [child.stdin, child.stdout, null, new EventEmitter(), new EventEmitter()]; child.stdio[3].setEncoding = () => {}; child.stdio[4].end = () => {};
   const profile = { schema: 'agent-mesh.role-profile.v1', role: 'fixture', permissions: [], mcp: ['stuck'], plugins: [] };
   const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['stuck'], plugins: [] };
   const probe = (_name, { signal }) => probeStdioMcp({ command: [process.execPath], timeoutMs: 5, signal, spawnProcess: () => child });
@@ -75,4 +77,30 @@ test('missing or invalid private MCP configuration stops planning', async () => 
   const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['wanted'], plugins: [] };
   await assert.rejects(planRoleLaunch({ profile, authority, probe: roleProbeFromAllowlist({}) }), /not allowlisted/);
   await assert.rejects(planRoleLaunch({ profile, authority, probe: roleProbeFromAllowlist({ wanted: { command: ['relative-program'] } }) }), /invalid MCP probe configuration/);
+});
+
+test('the contained probe stops a detached descendant before returning', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'mcp-contained-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const late = join(root, 'late'), started = join(root, 'started');
+  const childCode = `require('node:fs').writeFileSync(process.argv[1], 'started'); setTimeout(() => require('node:fs').writeFileSync(process.argv[2], 'late'), 600); setInterval(() => {}, 1000)`;
+  const server = `const {spawn}=require('node:child_process'); const c=spawn(process.execPath,['-e',${JSON.stringify(childCode)},${JSON.stringify(started)},${JSON.stringify(late)}],{detached:true,stdio:'ignore'});c.unref(); let b='';process.stdin.on('data',d=>{b+=d;let n;while((n=b.indexOf('\\n'))>=0){const x=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(x.method==='initialize')console.log(JSON.stringify({jsonrpc:'2.0',id:1,result:{protocolVersion:'2024-11-05',capabilities:{},serverInfo:{name:'fixture',version:'1'}}}));if(x.method==='ping'){const timer=setInterval(()=>{if(require('node:fs').existsSync(${JSON.stringify(started)})){clearInterval(timer);console.log(JSON.stringify({jsonrpc:'2.0',id:2,result:{}}));}},10);}}});`;
+  assert.equal(await probeStdioMcp({ command: [process.execPath, '-e', server], timeoutMs: 2000 }), true);
+  await access(started);
+  await new Promise(resolve => setTimeout(resolve, 900));
+  await assert.rejects(access(late));
+});
+
+test('unavailable namespace containment stops planning before command release', async () => {
+  const { EventEmitter } = await import('node:events');
+  const child = new EventEmitter();
+  child.stdin = new EventEmitter(); child.stdin.write = () => true;
+  child.stdout = new EventEmitter(); child.stdout.setEncoding = () => {};
+  const info = new EventEmitter(); info.setEncoding = () => {};
+  const gate = new EventEmitter(); let released = false; gate.end = () => { released = true; };
+  child.stdio = [child.stdin, child.stdout, null, info, gate];
+  const result = probeStdioMcp({ command: [process.execPath], timeoutMs: 1000, spawnProcess: () => child });
+  queueMicrotask(() => { info.emit('data', '{}'); info.emit('end'); child.emit('close'); });
+  await assert.rejects(result, error => error.code === 'MCP_PROBE_CONFIGURATION');
+  assert.equal(released, false);
 });

@@ -146,17 +146,19 @@ permission prompt, interrupted start, quota exhaustion and a queued message.
 It does not verify native delivery, rollback or the real pilot.
 
 An optional stdio probe resolves MCP names exclusively through a trusted
-operator-supplied allowlist and launches a short-lived isolated process without
-a shell. It requires an MCP initialization response and ping, bounds output
-and time, and terminates its process group. It currently supports protocol
-`2024-11-05` only and has been tested with synthetic processes; successful
-probing does not prove that an MCP started in the successor session. It is not
-scheduled or wired to the live handover. Planner deadlines signal cancellation;
-the supplied stdio probe terminates its process group on that signal and waits
-for the child close before reporting any result; failure to observe closure stops
-the plan. Missing or invalid private probe configuration stops planning rather than
-being classified as an unreachable MCP. Other probe implementations must
-honor cancellation themselves; an unconfirmed cancellation stops the plan.
+operator-supplied allowlist and launches without a shell. On Linux the probe
+uses bubblewrap with a separate PID namespace and a blocked gate; it checks the
+namespace init owner, parent and namespace identity before releasing the command.
+It requires an MCP initialization response and ping, bounds output and time,
+then terminates the owned process group and waits for wrapper closure. Missing
+or unverified containment stops planning instead of classifying the MCP offline.
+A synthetic detached-child test checks for a delayed local effect after closure.
+This is not a security boundary: the authorized command retains its configured
+filesystem and network access, and remote effects and all runtime environments
+remain unverified. It supports protocol `2024-11-05` only; a successful probe
+does not prove that an MCP started in the successor. It is not scheduled or
+wired to live handover. Other probes must honor cancellation themselves; an
+unconfirmed cancellation stops the plan.
 
 `codex-mcp-observation.mjs` prepares an opt-in, bounded app-server connection
 sample for a requested thread. It discards server names and endpoint data, fails
