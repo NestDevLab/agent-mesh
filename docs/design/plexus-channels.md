@@ -47,3 +47,12 @@ URLs. Its transcript comparison is only a predicate: an authenticated adapter
 must independently supply a complete observation and prove the successor's
 identity. Formatting or matching caller-supplied data alone is not evidence of
 publication, finality or authorization to archive.
+
+`handover-codex-observation.mjs` can inspect a bounded local Codex transcript
+snapshot for a correlated request followed by the exact final notice and a
+matching completed turn. It fails closed for ambiguous files, malformed or
+partial records, and identity mismatches. It returns hashes, never transcript
+contents. This observation is local evidence at the instant read, not proof
+that no later turn can arrive; safe finality still requires exclusive lifecycle
+control and an authenticated source. Claude and cloud transcripts are not
+supported by this observer.
