@@ -60,7 +60,7 @@ export async function reconcileCodexWake({ channel, graphState, evidenceRoot, ap
   }
   const candidate = matching[0];
   if (matching.length !== 1 || typeof candidate.turn.id !== 'string' || !UUID.test(candidate.turn.id) || !Number.isSafeInteger(candidate.turn.startedAt) || candidate.turn.startedAt <= 0 || !['inProgress', 'completed', 'failed', 'interrupted'].includes(candidate.turn.status) || JSON.stringify(candidate.item.content) !== JSON.stringify([{ type: 'text', text: items[0].payload, text_elements: [] }])) throw new Error('wake readback not uniquely verified');
-  const evidence = { schema: 'agent-mesh.codex-wake-evidence.v2', source: 'codex-app-server.queue-start-readback', session, queueId, correlation, turn: candidate.turn.id, startedAt: candidate.turn.startedAt };
+  const evidence = { schema: 'agent-mesh.codex-wake-evidence.v3', source: 'codex-app-server.correlated-recovery', session, queueId, correlation, turn: candidate.turn.id, startedAt: candidate.turn.startedAt };
   const body = `${JSON.stringify(evidence)}\n`, reference = `codex-wake:${hash(body)}`;
   try { await createDurable(evidenceRoot, `wake-${hash(body)}.json`, body); }
   catch (error) { if (error.code !== 'EEXIST') throw error; await verifyCodexWakeEvidence({ evidenceRoot, reference, session }); }
@@ -82,7 +82,7 @@ export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session
   if (`codex-wake:${hash(body)}` !== reference) throw new Error('wake digest mismatch');
   let value;
   try { value = JSON.parse(body); } catch { throw new Error('invalid wake evidence'); }
-  if (!value || Object.keys(value).sort().join(',') !== 'correlation,queueId,schema,session,source,startedAt,turn' || `${JSON.stringify(value)}\n` !== body || value.schema !== 'agent-mesh.codex-wake-evidence.v2' || value.source !== 'codex-app-server.queue-start-readback' || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
+  if (!value || Object.keys(value).sort().join(',') !== 'correlation,queueId,schema,session,source,startedAt,turn' || `${JSON.stringify(value)}\n` !== body || !((value.schema === 'agent-mesh.codex-wake-evidence.v2' && value.source === 'codex-app-server.queue-start-readback') || (value.schema === 'agent-mesh.codex-wake-evidence.v3' && value.source === 'codex-app-server.correlated-recovery')) || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
   return { ...value, evidence: reference };
 }
 

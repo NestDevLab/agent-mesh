@@ -52,9 +52,12 @@ reservation for that same session and queue id, and refuses already recorded
 wakes. The experimental wake adapter acquires
 the reservation before starting a turn and settles it only after the evidence
 and lifecycle receipt are verified. Re-publishing the same proof with its
-channel can recover a crash after the proof was written. A crash before that
-point stays unresolved; there is no automatic retry or recovery for an
-unproven native outcome. This path is not ready for operational use.
+channel can recover a crash after the proof was written. An explicit recovery
+may instead read the native thread, find a unique correlated user message that
+matches the protected channel item, and verify the durable intent before
+recording a distinct recovery proof. It never starts or resumes a thread.
+Missing, partial, duplicate or mismatched observations remain unresolved;
+there is no automatic retry. This path is not ready for operational use.
 
 For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
 an on-demand read of the configured local app server. It requires the exact
