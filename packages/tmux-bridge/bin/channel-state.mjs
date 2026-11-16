@@ -57,10 +57,20 @@ export function beginHandover(state) {
 // A reservation is durable and has no expiry: a crashed native call is unknown.
 export function reserveWake(state, id, session, generation, nativeQueueId) {
   if (state.phase !== 'active' || state.wakeReservation || state.session !== session || state.generation !== generation || !Number.isSafeInteger(generation) || generation < 1 || !identifier(nativeQueueId)) throw new Error('wake reservation unavailable');
-  const matches = state.queue.filter(item => item.id === id && item.state === 'accepted' && item.session === session && item.generation === generation && item.nativeQueueId === nativeQueueId);
+  const matches = state.queue.filter(item => item.id === id && item.state === 'accepted' && !item.wakeEvidence && item.session === session && item.generation === generation && item.nativeQueueId === nativeQueueId);
   if (matches.length !== 1 || !session.startsWith('codex:')) throw new Error('wake identity unavailable');
   const next = copy(state);
   next.wakeReservation = { id, session, generation, nativeQueueId };
+  return next;
+}
+
+export function settleWake(state, proof) {
+  const reservation = state.wakeReservation;
+  if (!reservation || state.phase !== 'active' || state.session !== reservation.session || state.generation !== reservation.generation || !proof || proof.session !== reservation.session || proof.correlation !== reservation.id || proof.queueId !== reservation.nativeQueueId || !/^codex-wake:[a-f0-9]{64}$/.test(proof.evidence || '')) throw new Error('wake proof does not match reservation');
+  const next = copy(state), item = next.queue.find(row => row.id === reservation.id && row.session === reservation.session && row.generation === reservation.generation && row.nativeQueueId === reservation.nativeQueueId && row.state === 'accepted' && !row.wakeEvidence);
+  if (!item) throw new Error('wake item unavailable');
+  item.wakeEvidence = proof.evidence;
+  delete next.wakeReservation;
   return next;
 }
 

@@ -46,7 +46,7 @@ export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session
   return { ...value, evidence: reference };
 }
 
-export async function publishCodexWake({ evidenceRoot, reference, session, graphState }) {
+export async function publishCodexWake({ evidenceRoot, reference, session, graphState, channel }) {
   if (typeof graphState !== 'string' || !isAbsolute(graphState)) throw new Error('explicit graph state required');
   const proof = await verifyCodexWakeEvidence({ evidenceRoot, reference, session });
   const observation = `codex-wake-${hash(JSON.stringify([session, proof.queueId]))}`;
@@ -54,7 +54,14 @@ export async function publishCodexWake({ evidenceRoot, reference, session, graph
   if (result.error || result.status !== 0) throw new Error('graph recording failed; retain evidence for explicit publication');
   let receipt; try { receipt = JSON.parse(result.stdout); } catch { throw new Error('graph receipt unavailable'); }
   if (receipt?.observation !== observation || typeof receipt.duplicate !== 'boolean') throw new Error('graph receipt mismatch');
-  return { schema: 'agent-mesh.wake-record.v1', session, evidence: reference, duplicate: receipt.duplicate };
+  if (channel !== undefined) {
+    const settled = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'settle-wake', '--name', channel, '--session', session, '--state-root', evidenceRoot, '--input', reference], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 });
+    if (settled.error || settled.status !== 0) throw new Error('wake settlement unavailable; retain evidence for recovery');
+    let status; try { status = JSON.parse(settled.stdout); } catch { throw new Error('wake settlement receipt unavailable'); }
+    const item = status?.channel?.queue?.find(row => row.id === proof.correlation && row.session === session && row.nativeQueueId === proof.queueId);
+    if (item?.wakeEvidence !== reference) throw new Error('wake settlement receipt mismatch');
+  }
+  return { schema: 'agent-mesh.wake-record.v1', session, evidence: reference, duplicate: receipt.duplicate, ...(channel !== undefined ? { settled: true } : {}) };
 }
 
 export async function startCodexWake({ thread, queueId, correlation, channel, generation, evidenceRoot, graphState, apply }) {
@@ -90,7 +97,7 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
   });
   const body = `${JSON.stringify(evidence)}\n`, reference = `codex-wake:${hash(body)}`;
   await createDurable(evidenceRoot, `wake-${hash(body)}.json`, body);
-  return publishCodexWake({ evidenceRoot, reference, session, graphState });
+  return publishCodexWake({ evidenceRoot, reference, session, graphState, channel });
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
@@ -98,7 +105,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const { values } = parseArgs({ options: { apply: { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, channel: { type: 'string' }, generation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
     let result;
     if (values.verify) result = await verifyCodexWakeEvidence({ evidenceRoot: values['evidence-root'], reference: values.verify, session: values.session });
-    else if (values.publish) result = await publishCodexWake({ evidenceRoot: values['evidence-root'], reference: values.publish, session: values.session, graphState: values['graph-state'] });
+    else if (values.publish) result = await publishCodexWake({ evidenceRoot: values['evidence-root'], reference: values.publish, session: values.session, graphState: values['graph-state'], channel: values.channel });
     else result = await startCodexWake({ thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, channel: values.channel, generation: /^[1-9][0-9]*$/.test(values.generation || '') ? Number(values.generation) : NaN, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
     console.log(JSON.stringify(result));
   } catch { console.error('wake observation failed or outcome uncertain; inspect before retry'); process.exitCode = 1; }

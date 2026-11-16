@@ -48,9 +48,11 @@ An ambiguous send remains inflight and cannot be automatically retried.
 The channel journal can reserve an accepted wake by exact session, generation,
 correlation and native queue id. An outstanding reservation blocks handover
 and survives replay; it has no expiry. The experimental wake adapter acquires
-the reservation before starting a turn, but cannot yet settle it even on
-success, and no recovery operation exists. This path is not ready for
-operational use.
+the reservation before starting a turn and settles it only after the evidence
+and lifecycle receipt are verified. Re-publishing the same proof with its
+channel can recover a crash after the proof was written. A crash before that
+point stays unresolved; there is no automatic retry or recovery for an
+unproven native outcome. This path is not ready for operational use.
 
 For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
 an on-demand read of the configured local app server. It requires the exact

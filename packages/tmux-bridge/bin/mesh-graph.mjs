@@ -37,7 +37,8 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, reserveStatePreparation, completeStatePreparation } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation } from "./channel-state.mjs";
+import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
@@ -129,7 +130,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "begin-handover", "prepare-state", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -149,6 +150,24 @@ try {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
         printResult({ channel }, { json: true });
+        break;
+      }
+      if (subcommand === "settle-wake") {
+        const session = requiredSingleLine(values.session, "--session");
+        const evidence = requiredSingleLine(channelInput, "--input");
+        const proof = await verifyCodexWakeEvidence({ evidenceRoot: requiredSingleLine(values["state-root"], "--state-root"), reference: evidence, session });
+        const sourceId = `codex-wake-${createHash("sha256").update(JSON.stringify([session, proof.queueId])).digest("hex")}`;
+        const receiptId = createHash("sha256").update(sourceId).digest("hex");
+        const digest = createHash("sha256").update(JSON.stringify({ type: "session.woken", session, evidence, to: null })).digest("hex");
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current || !(graph.lifecycleReceipts || []).some(item => item.id === receiptId && item.digest === digest)) throw new Error("recorded wake proof unavailable");
+          if (!current.wakeReservation && current.queue.some(item => item.id === proof.correlation && item.session === session && item.nativeQueueId === proof.queueId && item.wakeEvidence === evidence)) return { graph, result: { channel: current, duplicate: true } };
+          const next = settleWake(current, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
+        });
+        printResult(result, { json: true });
         break;
       }
       if (subcommand === "prepare-state") {
