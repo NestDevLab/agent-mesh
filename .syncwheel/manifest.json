@@ -29,7 +29,8 @@
       "oikuma-user-plexus-profile-20261112",
       "grant-authority",
       "controller-activity-safety-refresh",
-      "decision-owner-routing"
+      "decision-owner-routing",
+      "plexus-modules"
     ],
     "strategy": "cherry-pick"
   },
@@ -265,6 +266,22 @@
       "meta": {
         "purpose": "Route decision requests through explicit owning-thread bindings and publication receipts"
       }
+    },
+    {
+      "id": "plexus-modules",
+      "branch": "syncwheel/draft/plexus-modules",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [
+        "5acd2bef7407d3efe9b00bde8e002dde87f3adc5"
+      ],
+      "state": "draft",
+      "publication": {
+        "enabled": false
+      },
+      "meta": {}
     }
   ],
   "syncwheel_tracking": "git-tracked",
