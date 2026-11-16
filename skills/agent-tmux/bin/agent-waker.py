@@ -124,6 +124,8 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
         if agent != "codex":
             raise ValueError("waker resume is supported only for Codex")
         command += ["--resume"]
+    elif message_stdin and agent == "codex":
+        command += ["--no-resume"]
     if delivery_only:
         command += ["--delivery-only"]
     if inbox_root:

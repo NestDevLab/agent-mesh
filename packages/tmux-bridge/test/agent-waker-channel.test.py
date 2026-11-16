@@ -24,6 +24,7 @@ class ChannelWakerTest(unittest.TestCase):
             self.assertEqual(waker.deliver('codex', uuid, 'message-1', 'private fixture', None, True, message_stdin=True), 0)
         self.assertNotIn('private fixture', run.call_args.args[0])
         self.assertIn('--message-stdin', run.call_args.args[0])
+        self.assertIn('--no-resume', run.call_args.args[0])
         self.assertEqual(run.call_args.kwargs['input'], 'private fixture')
 
     def test_lost_reservation_response_does_not_send_or_retry(self):

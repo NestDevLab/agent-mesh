@@ -13,6 +13,7 @@ import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 import { goalCommand, liveClaudeSessions, typeClaudeGoal } from "./claude-goal.mjs";
 import { GOAL_RESUME_MODES, reconcileCodexGoal } from "./codex-goal.mjs";
+import { withCodexAppServer } from "./codex-app-server.mjs";
 
 let activeComms;
 let enqueueStarted = false;
@@ -153,16 +154,34 @@ if (agent === "codex") {
   }
   if (deliveryMethod !== "steer") {
     enqueueStarted = true;
-    const queued = await run(process.env.CODEX_BIN || "codex", [
-      "queue", "--thread", sessionId, "--message", protocolMessage, ...(resume ? ["--resume"] : [])
-    ], (timeoutSeconds + 15) * 1000);
-    if (queued.code !== 0) {
-      if (codexSessionIsNotDirectlyWritable(queued)) {
-        fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+    if (values["message-stdin"] && !values["steer-or-queue"]) {
+      try {
+        await withCodexAppServer({ clientName: "agent-mesh-channel-queue", timeout: (timeoutSeconds + 15) * 1000,
+          timeoutMessage: "queue outcome unknown; inspect before retrying" }, async (request) => {
+          const input = [{ type: "text", text: protocolMessage, text_elements: [] }];
+          const response = await request("thread/queue/add", { threadId: sessionId, clientUserMessageId: correlationId, input });
+          const entry = response?.queuedSubmission;
+          if (typeof entry?.id !== "string" || !entry.id || entry.clientUserMessageId !== correlationId || JSON.stringify(entry.input) !== JSON.stringify(input)) throw new Error("queue receipt mismatch");
+          if (resume) {
+            try { await request("thread/resume", { threadId: sessionId }); }
+            catch { resumeDiagnostic = true; }
+          }
+        });
+      } catch {
+        fail("Codex queue outcome uncertain; inspect before retrying", 70);
       }
-      fail(safeError("Codex native queue failed", queued), 1);
+    } else {
+      const queued = await run(process.env.CODEX_BIN || "codex", [
+        "queue", "--thread", sessionId, "--message", protocolMessage, ...(resume ? ["--resume"] : [])
+      ], (timeoutSeconds + 15) * 1000);
+      if (queued.code !== 0) {
+        if (codexSessionIsNotDirectlyWritable(queued)) {
+          fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+        }
+        fail(safeError("Codex native queue failed", queued), 1);
+      }
+      resumeDiagnostic = Boolean(resume && queued.stderr?.trim());
     }
-    resumeDiagnostic = Boolean(resume && queued.stderr?.trim());
     deliveryMethod = "queue";
   }
 } else {
