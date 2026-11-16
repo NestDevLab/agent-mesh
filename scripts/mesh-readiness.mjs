@@ -48,6 +48,7 @@ const agentTmuxBundleFiles = [
   "bin/handover-notice.mjs",
   "bin/handover-codex-observation.mjs",
   "bin/codex-compaction-evidence.mjs",
+  "bin/codex-wake-evidence.mjs",
   "bin/restart-state.mjs",
   "bin/restart-yaml.py",
   "bin/ledger-view.mjs",

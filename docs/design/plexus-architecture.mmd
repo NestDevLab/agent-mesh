@@ -4,7 +4,8 @@ flowchart LR
   Channel --> Session["Current session"]
   Queue --> Journal["Graph event journal"]
   Session --> Journal
-  Wake["Wake observation"] -. "planned producer" .-> Journal
+  Wake["Codex queued wake evidence"] --> Journal
+  Wake -. "planned waker integration" .-> Queue
   Compaction["Codex compaction evidence"] --> Journal
   Module["Registered module"] --> Contract["Versioned JSON contract"]
   Contract --> Journal

@@ -25,6 +25,20 @@ the feed by `eventId`. A missing wake event is not evidence of zero wakes;
 consumers must establish source and time-window coverage separately. This
 contract does not itself install or enable a wake-event producer.
 
+An experimental, explicitly invoked Codex adapter can bind an exact queued
+submission and waker correlation to the turn returned by `thread/queue/start`.
+It first reserves the queue identity durably in a private evidence directory;
+an ambiguous response leaves that identity reserved and requires manual
+reconciliation rather than an automatic retry. Evidence records the session,
+queue id, correlation, turn id and native start time, without message content;
+its content-addressed reference can be checked locally with `--verify`.
+Publishing a retained proof is idempotent. The operator must use one protected
+evidence root and trust the local socket and waker's correlation: the file is
+not an attestation against a local writer. `--apply` actually starts a queued
+turn. Nothing schedules or enables this adapter, and its native behavior has
+only been exercised with a synthetic server, not verified against a live runtime.
+It is not connected to the waker or Limen and does not prove historical coverage.
+
 For a specific known Codex compaction, `codex-compaction-evidence.mjs` performs
 an on-demand read of the configured local app server. It requires the exact
 thread, turn and `contextCompaction` item, a full turn view and a recorded item
