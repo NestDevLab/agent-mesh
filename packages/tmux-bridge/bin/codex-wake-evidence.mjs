@@ -82,7 +82,9 @@ export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session
   if (`codex-wake:${hash(body)}` !== reference) throw new Error('wake digest mismatch');
   let value;
   try { value = JSON.parse(body); } catch { throw new Error('invalid wake evidence'); }
-  if (!value || Object.keys(value).sort().join(',') !== 'correlation,queueId,schema,session,source,startedAt,turn' || `${JSON.stringify(value)}\n` !== body || !((value.schema === 'agent-mesh.codex-wake-evidence.v2' && value.source === 'codex-app-server.queue-start-readback') || (value.schema === 'agent-mesh.codex-wake-evidence.v3' && value.source === 'codex-app-server.correlated-recovery')) || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
+  const legacy = value && Object.keys(value).sort().join(',') === 'correlation,queueId,schema,session,source,startedAt,turn' && ((value.schema === 'agent-mesh.codex-wake-evidence.v2' && value.source === 'codex-app-server.queue-start-readback') || (value.schema === 'agent-mesh.codex-wake-evidence.v3' && value.source === 'codex-app-server.correlated-recovery'));
+  const bound = value && Object.keys(value).sort().join(',') === 'channel,correlation,generation,payloadSha256,queueId,schema,session,source,startedAt,turn' && value.schema === 'agent-mesh.codex-wake-evidence.v4' && value.source === 'codex-app-server.queue-start-bound-readback' && typeof value.channel === 'string' && /^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value.channel) && Number.isSafeInteger(value.generation) && value.generation > 0 && /^[a-f0-9]{64}$/.test(value.payloadSha256);
+  if (!value || `${JSON.stringify(value)}\n` !== body || !(legacy || bound) || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
   return { ...value, evidence: reference };
 }
 
@@ -120,8 +122,12 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
     if (!Array.isArray(listed?.data) || listed.nextCursor != null || listed.data.filter(item => item?.id === queueId && item.clientUserMessageId === correlation && Array.isArray(item.input)).length !== 1) throw new Error('queued waker identity unavailable');
     const reserved = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'reserve-wake', '--name', channel, '--id', correlation, '--session', session, '--generation', String(generation), '--input', queueId], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 });
     if (reserved.error || reserved.status !== 0) throw new Error('wake reservation unavailable or uncertain');
-    let reservation; try { reservation = JSON.parse(reserved.stdout)?.channel?.wakeReservation; } catch { throw new Error('wake reservation receipt unavailable'); }
+    let reservedChannel; try { reservedChannel = JSON.parse(reserved.stdout)?.channel; } catch { throw new Error('wake reservation receipt unavailable'); }
+    const reservation = reservedChannel?.wakeReservation;
     if (!reservation || reservation.id !== correlation || reservation.session !== session || reservation.generation !== generation || reservation.nativeQueueId !== queueId) throw new Error('wake reservation receipt mismatch');
+    const queued = listed.data.find(item => item?.id === queueId && item.clientUserMessageId === correlation);
+    const boundItems = Array.isArray(reservedChannel.queue) ? reservedChannel.queue.filter(item => item.id === correlation && item.session === session && item.generation === generation && item.nativeQueueId === queueId && item.state === 'accepted' && typeof item.payload === 'string') : [];
+    if (reservedChannel.id !== channel || reservedChannel.session !== session || reservedChannel.generation !== generation || boundItems.length !== 1 || JSON.stringify(queued.input) !== JSON.stringify([{ type: 'text', text: boundItems[0].payload, text_elements: [] }])) throw new Error('native queue payload does not match channel reservation');
     await createDurable(evidenceRoot, `intent-${intent}.json`, `${JSON.stringify({ schema: 'agent-mesh.codex-wake-intent.v1', session, queueId, correlation })}\n`);
     const started = await request('thread/queue/start', { threadId: thread, queuedSubmissionId: queueId });
     const turn = started?.turn;
@@ -131,9 +137,8 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
     const turns = Array.isArray(observed?.turns) ? observed.turns.filter(item => item?.id === turn.id) : [];
     const observedTurn = turns[0];
     const messages = Array.isArray(observedTurn?.items) ? observedTurn.items.filter(item => item?.type === 'userMessage' && item.clientId === correlation) : [];
-    const queued = listed.data.find(item => item?.id === queueId && item.clientUserMessageId === correlation);
     if (observed?.id !== thread || turns.length !== 1 || (observedTurn.itemsView !== undefined && observedTurn.itemsView !== 'full') || observedTurn.startedAt !== turn.startedAt || messages.length !== 1 || !Array.isArray(messages[0].content) || JSON.stringify(messages[0].content) !== JSON.stringify(queued.input)) throw new Error('wake readback unavailable; outcome uncertain');
-    return { schema: 'agent-mesh.codex-wake-evidence.v2', source: 'codex-app-server.queue-start-readback', session, queueId, correlation, turn: turn.id, startedAt: turn.startedAt };
+    return { schema: 'agent-mesh.codex-wake-evidence.v4', source: 'codex-app-server.queue-start-bound-readback', session, queueId, correlation, turn: turn.id, startedAt: turn.startedAt, channel, generation, payloadSha256: hash(boundItems[0].payload) };
   });
   const body = `${JSON.stringify(evidence)}\n`, reference = `codex-wake:${hash(body)}`;
   await createDurable(evidenceRoot, `wake-${hash(body)}.json`, body);

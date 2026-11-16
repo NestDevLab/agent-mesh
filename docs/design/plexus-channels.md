@@ -227,3 +227,10 @@ predecessor. Provider queue acceptance is not recipient observation. The
 observation argument is a host-supplied contract, not an authenticated adapter;
 no graph operation accepts it or enables live cutover. The rehearsal stops at
 the switched-and-awaiting-delivery phase and cannot prove notice finality.
+
+A new Codex wake proof binds the native queued payload to the channel,
+generation, queue ID and correlation before starting it, then reads back the
+exact native message. When this proof is verified and settled in a draining
+channel, it marks that backlog message observed. Older proof schemas remain
+valid wake evidence but cannot establish this stronger delivery binding.
+This is not a cloud or Claude delivery adapter; native cutover remains disabled.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
 
 test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';
@@ -93,4 +93,24 @@ test('switch drains observed backlog before reserving a predecessor notice', () 
   state = recordNoticeQueued(state, receipt);
   assert.equal(state.finalNotice.status, 'queued-unverified');
   assert.equal(state.phase, 'draining');
+});
+
+
+test('bound native wake evidence observes only its exact draining backlog', async () => {
+  const { createHash } = await import('node:crypto');
+  let state = beginHandover(createChannel('example', 'codex:old'));
+  state = enqueue(state, 'message-1', 'fixture');
+  state = reserveStatePreparation(state, 'state-1');
+  state = completeStatePreparation(state, { schema: 'agent-mesh.handover-state.v1', session: 'codex:old', nonce: 'state-1', filename: 'state.yaml', sha256: 'b'.repeat(64), bytes: 2 });
+  state = switchHandover(state, 'codex:new', true);
+  state = beginDelivery(state, 'message-1');
+  state = acknowledge(state, 'message-1', { status: 'accepted', messageId: 'message-1', session: 'codex:new', generation: 2, nativeQueueId: 'queue-1' });
+  state = reserveWake(state, 'message-1', 'codex:new', 2, 'queue-1');
+  const proof = { session: 'codex:new', correlation: 'message-1', queueId: 'queue-1', evidence: `codex-wake:${'a'.repeat(64)}`, schema: 'agent-mesh.codex-wake-evidence.v4', source: 'codex-app-server.queue-start-bound-readback', channel: 'example', generation: 2, payloadSha256: createHash('sha256').update('fixture').digest('hex') };
+  const mismatch = settleWake(state, { ...proof, channel: 'other' });
+  assert.equal(mismatch.queue[0].state, 'accepted');
+  assert.throws(() => reserveFinalNotice(mismatch, 'notice', 'codex:new', 'a'.repeat(64)), /unavailable/);
+  state = settleWake(state, proof);
+  assert.equal(state.queue[0].state, 'observed');
+  assert.equal(reserveFinalNotice(state, 'notice', 'codex:new', 'a'.repeat(64)).finalNotice.session, 'codex:old');
 });

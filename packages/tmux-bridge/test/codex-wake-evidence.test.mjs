@@ -37,7 +37,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const server = createAppServer((request, peer) => {
     if (!request.id) return;
     requests.push(request);
-    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture', text_elements: [] }] }], nextCursor: null } });
+    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: mode === 'wrong-queue-payload' ? 'different' : 'fixture', text_elements: [] }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
     else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
@@ -54,7 +54,13 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 0);
   mode = 'wrong'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...args], { env }));
   assert.deepEqual(await readdir(evidence), []);
-  mode = 'success';
+  nativeId = 'queued-payload'; await prepareChannel('payload', nativeId);
+  mode = 'wrong-queue-payload';
+  await assert.rejects(exec(process.execPath, [bin, '--apply', '--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'payload', '--generation', '1', '--evidence-root', evidence, '--graph-state', state], { env }));
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 0);
+  assert.equal((await call('channel', 'get', '--name', 'payload')).channel.wakeReservation.nativeQueueId, nativeId);
+  assert.deepEqual(await readdir(evidence), []);
+  nativeId = 'queued-1'; mode = 'success';
   const first = JSON.parse((await exec(process.execPath, [bin, '--apply', ...args], { env })).stdout);
   assert.equal(first.duplicate, false);
   const success = (await call('channel', 'get', '--name', 'success')).channel;
@@ -64,6 +70,8 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const verified = await verifyCodexWakeEvidence({ evidenceRoot: evidence, reference: first.evidence, session: `codex:${thread}` });
   assert.equal(verified.turn, turn);
   assert.equal(verified.correlation, correlation);
+  assert.equal(verified.schema, 'agent-mesh.codex-wake-evidence.v4');
+  assert.equal(verified.channel, 'success'); assert.equal(verified.generation, 1);
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 1);
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...args], { env }));
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 1);
