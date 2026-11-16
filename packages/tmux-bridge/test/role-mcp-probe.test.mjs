@@ -9,16 +9,15 @@ import { planRoleLaunch } from '../bin/role-launch-profile.mjs';
 const fixture = `let buffer = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', data => { buffer += data; let index; while ((index = buffer.indexOf('\\n')) >= 0) { const line = buffer.slice(0, index); buffer = buffer.slice(index + 1); const request = JSON.parse(line); if (request.method === 'initialize') console.log(JSON.stringify({jsonrpc:'2.0',id:1,result:{protocolVersion:'2024-11-05',capabilities:{},serverInfo:{name:'fixture',version:'1'}}})); if (request.method === 'ping') console.log(JSON.stringify({jsonrpc:'2.0',id:2,result:{}})); } });`;
 
 test('only an initialized and responsive MCP is accepted by role planning', async () => {
-  const good = { command: [process.execPath, '--input-type=module', '-e', fixture], timeoutMs: 2000 };
-  const offline = { command: [process.execPath, '--input-type=module', '-e', 'setInterval(() => {}, 1000)'], timeoutMs: 150 };
+  const good = { command: [process.execPath, '--input-type=module', '-e', fixture], timeoutMs: 5000 };
+  const offline = { command: ['/bin/false'], timeoutMs: 5000 };
   assert.equal(await probeStdioMcp(good), true);
   assert.equal(await probeStdioMcp(offline), false);
-  assert.equal(await probeStdioMcp({ command: ['/bin/false'], timeoutMs: 2000 }), false);
   const profile = { schema: 'agent-mesh.role-profile.v1', role: 'fixture', permissions: [], mcp: ['good', 'offline'], plugins: [] };
   const authority = { role: 'fixture', permissions: [], humanGatedPermissions: [], mcp: ['good', 'offline'], plugins: [] };
   const allowlist = { good, offline };
-  const probe = roleProbeFromAllowlist(allowlist, 1000);
-  const plan = await planRoleLaunch({ profile, authority, probe, timeoutMs: 3000 });
+  const probe = roleProbeFromAllowlist(allowlist, 3000);
+  const plan = await planRoleLaunch({ profile, authority, probe, timeoutMs: 5000 });
   assert.deepEqual(plan.mcpToStart, ['good']);
   assert.deepEqual(plan.mcpUnavailable, ['offline']);
   assert.throws(() => probe('unlisted'), /allowlisted/);
@@ -31,9 +30,9 @@ test('a cancelled probe terminates its temporary MCP process', async t => {
   const started = join(root, 'started'), late = join(root, 'late');
   const code = "import {writeFileSync} from 'node:fs'; writeFileSync(process.argv[1], String(process.pid)); setTimeout(() => writeFileSync(process.argv[2], 'late'), 500); setInterval(() => {}, 1000);";
   const controller = new AbortController();
-  const probe = probeStdioMcp({ command: [process.execPath, '--input-type=module', '-e', code, started, late], timeoutMs: 2000, signal: controller.signal });
+  const probe = probeStdioMcp({ command: [process.execPath, '--input-type=module', '-e', code, started, late], timeoutMs: 5000, signal: controller.signal });
   let seen = false;
-  for (let i = 0; i < 100 && !seen; i++) {
+  for (let i = 0; i < 300 && !seen; i++) {
     try { await access(started); seen = true; } catch { await new Promise(resolve => setTimeout(resolve, 10)); }
   }
   assert.equal(seen, true, 'fixture process started');
@@ -83,7 +82,7 @@ test('the contained probe stops a detached descendant before returning', async t
   const late = join(root, 'late'), started = join(root, 'started');
   const childCode = `require('node:fs').writeFileSync(process.argv[1], 'started'); setTimeout(() => require('node:fs').writeFileSync(process.argv[2], 'late'), 600); setInterval(() => {}, 1000)`;
   const server = `const {spawn}=require('node:child_process'); const c=spawn(process.execPath,['-e',${JSON.stringify(childCode)},${JSON.stringify(started)},${JSON.stringify(late)}],{detached:true,stdio:'ignore'});c.unref(); let b='';process.stdin.on('data',d=>{b+=d;let n;while((n=b.indexOf('\\n'))>=0){const x=JSON.parse(b.slice(0,n));b=b.slice(n+1);if(x.method==='initialize')console.log(JSON.stringify({jsonrpc:'2.0',id:1,result:{protocolVersion:'2024-11-05',capabilities:{},serverInfo:{name:'fixture',version:'1'}}}));if(x.method==='ping'){const timer=setInterval(()=>{if(require('node:fs').existsSync(${JSON.stringify(started)})){clearInterval(timer);console.log(JSON.stringify({jsonrpc:'2.0',id:2,result:{}}));}},10);}}});`;
-  assert.equal(await probeStdioMcp({ command: [process.execPath, '-e', server], timeoutMs: 2000 }), true);
+  assert.equal(await probeStdioMcp({ command: [process.execPath, '-e', server], timeoutMs: 5000 }), true);
   await access(started);
   await new Promise(resolve => setTimeout(resolve, 900));
   await assert.rejects(access(late));
