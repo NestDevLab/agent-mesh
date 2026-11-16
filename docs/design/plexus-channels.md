@@ -115,3 +115,11 @@ and those adapters are present.
 sessions, MCPs or timers. Its synthetic fault tests cover two roles, offline MCP,
 permission prompt, interrupted start, quota exhaustion and a queued message.
 It does not verify native delivery, rollback or the real pilot.
+
+An optional stdio probe resolves MCP names exclusively through a trusted
+operator-supplied allowlist and launches a short-lived isolated process without
+a shell. It requires an MCP initialization response and ping, bounds output
+and time, and terminates its process group. It currently supports protocol
+`2024-11-05` only and has been tested with synthetic processes; successful
+probing does not prove that an MCP started in the successor session. It is not
+scheduled or wired to the live handover.

@@ -52,6 +52,7 @@ const agentTmuxBundleFiles = [
   "bin/codex-wake-evidence.mjs",
   "bin/restart-state.mjs",
   "bin/role-launch-profile.mjs",
+  "bin/role-mcp-probe.mjs",
   "bin/restart-yaml.py",
   "bin/ledger-view.mjs",
   "bin/session-catalog.mjs",
