@@ -103,8 +103,12 @@ matching completed turn. It fails closed for ambiguous files, malformed or
 partial records, and identity mismatches. It returns hashes, never transcript
 contents. This observation is local evidence at the instant read, not proof
 that no later turn can arrive; safe finality still requires exclusive lifecycle
-control and an authenticated source. Claude and cloud transcripts are not
-supported by this observer.
+control and an authenticated source.
+
+`handover-claude-observation.mjs` performs a comparable local Claude snapshot
+check bound to session, request nonce, exact notice and completed turn. It
+rejects later user turns and tool calls. Both observers return evidence only;
+neither sends a message, proves remote cloud delivery, or enables a cutover.
 # Role-scoped restart preparation
 
 The `agent-mesh.restart.v1` YAML handover block requires `role_profile` when
