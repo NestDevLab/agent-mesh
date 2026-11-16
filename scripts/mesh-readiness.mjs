@@ -46,6 +46,7 @@ const agentTmuxBundleFiles = [
   "bin/channel-state.mjs",
   "bin/handover-state-proof.mjs",
   "bin/handover-notice.mjs",
+  "bin/handover-dry-run.mjs",
   "bin/handover-codex-observation.mjs",
   "bin/codex-compaction-evidence.mjs",
   "bin/codex-wake-evidence.mjs",

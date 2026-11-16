@@ -110,3 +110,8 @@ requires rollback. These are preparation primitives only: no provider startup,
 permission enforcement, timeout cancellation, live rollback or token collector
 is connected yet. The approved handover remains disabled until native evidence
 and those adapters are present.
+
+`handover-dry-run.mjs` rehearses only in memory; it never contacts native
+sessions, MCPs or timers. Its synthetic fault tests cover two roles, offline MCP,
+permission prompt, interrupted start, quota exhaustion and a queued message.
+It does not verify native delivery, rollback or the real pilot.
