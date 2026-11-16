@@ -11,7 +11,9 @@ export const plexusDiagram = `flowchart LR
   Contract --> Journal
   Queue -- "bound receipt" --> Session
   Yaml["Bounded YAML decoder"] --> Restart
-  Restart["Restart state contract"] -. "planned validation" .-> Handover
+  Restart["Restart state contract"] --> StatePrep["Reserved state preparation"]
+  StatePrep --> Journal
+  StatePrep -. "planned proof revalidation" .-> Handover
   Notice["Successor notice formatter"] -. "planned publication" .-> Handover
   Observation["Codex notice snapshot"] -. "planned finality check" .-> Handover
   Handover["Handover"] -. "planned verified cutover" .-> Channel

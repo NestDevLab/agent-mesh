@@ -26,7 +26,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -37,7 +37,8 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, reserveStatePreparation, completeStatePreparation } from "./channel-state.mjs";
+import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -66,6 +67,9 @@ const { values, positionals } = parseArgs({
     state: { type: "string" },
     session: { type: "string" },
     generation: { type: "string" },
+    "state-root": { type: "string" },
+    filename: { type: "string" },
+    "managed-inbox-root": { type: "string" },
     project: { type: "string" },
     archive: { type: "string" },
     ttl: { type: "string" },
@@ -125,7 +129,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "begin-handover", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "begin-handover", "prepare-state", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -145,6 +149,30 @@ try {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
         printResult({ channel }, { json: true });
+        break;
+      }
+      if (subcommand === "prepare-state") {
+        const root = requiredSingleLine(values["state-root"], "--state-root"), filename = requiredSingleLine(values.filename, "--filename");
+        if (!isAbsolute(root) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(filename)) throw new Error("invalid state preparation path");
+        const info = lstatSync(root);
+        if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0 || realpathSync(root) !== root) throw new Error("state root must be private and canonical");
+        const nonce = `handover-${randomUUID()}`;
+        const result = await prepareState({ reserve: () => mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current) throw new Error("unknown channel");
+          if (!/^(codex|claude):[0-9a-f-]{36}$/.test(current.session) || (current.session.startsWith("claude:") && (!values["managed-inbox-root"] || !isAbsolute(values["managed-inbox-root"])))) throw new Error("unsupported state preparation recipient");
+          const next = reserveStatePreparation(current, nonce);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, statePreparation: next.statePreparation } };
+        }), request: pending => requestStateProof({ session: pending.session, channel: name, root, filename, managedInboxRoot: values["managed-inbox-root"], nonce: pending.id }), complete: proof => mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current) throw new Error("unknown channel");
+          const next = completeStatePreparation(current, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, statePreparation: next.statePreparation } };
+        }) });
+        printResult(result, { json: true });
         break;
       }
       const result = mutate(stateDir, graph => {

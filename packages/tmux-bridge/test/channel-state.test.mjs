@@ -1,6 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveStatePreparation, completeStatePreparation } from '../bin/channel-state.mjs';
+
+test('state preparation reserves once and binds proof to the channel generation', () => {
+  let channel = beginHandover(createChannel('example', 'codex:old'));
+  channel = reserveStatePreparation(channel, 'handover-1');
+  assert.throws(() => reserveStatePreparation(channel, 'handover-2'), /unresolved/);
+  assert.throws(() => finishHandover(channel, 'codex:new', true), /unresolved/);
+  channel = enqueue(channel, 'queued', 'fixture');
+  const proof = { schema: 'agent-mesh.handover-state.v1', session: 'codex:old', nonce: 'handover-1', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 42 };
+  assert.throws(() => completeStatePreparation(channel, { ...proof, nonce: 'other' }), /invalid/);
+  assert.throws(() => completeStatePreparation({ ...channel, generation: 2 }, proof), /changed/);
+  assert.throws(() => completeStatePreparation({ ...channel, session: 'codex:other' }, proof), /changed/);
+  channel = completeStatePreparation(channel, proof);
+  assert.equal(channel.statePreparation.status, 'verified');
+  assert.equal(channel.queue[0].state, 'pending');
+  assert.throws(() => completeStatePreparation(channel, proof), /invalid/);
+});
 
 test('handover queues work and never reroutes an uncertain delivery', () => {
   assert.equal(createChannel('#example', 'session:one').id, '#example');

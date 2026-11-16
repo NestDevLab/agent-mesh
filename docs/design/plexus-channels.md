@@ -31,6 +31,12 @@ the private file without following a final symlink. `requestStateProof` obtains
 the response through the existing native correlated-result transport; Codex
 resume remains disabled. The verifier decodes and validates the restart block,
 but does not reconcile its triggers or make a graph cutover.
+`channel prepare-state` durably reserves a single correlated request before
+contacting the current session, then records the validated state digest only if
+the same handover, session and generation remain current. Messages may still be
+queued while the request runs. A failure or lost response leaves the request
+unresolved and prevents an automatic resend; recovery is not yet implemented.
+The proof does not authorize cutover, archive, or final-message publication.
 The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.

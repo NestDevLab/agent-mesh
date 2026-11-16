@@ -45,11 +45,30 @@ export function beginHandover(state) {
   if (state.phase !== 'active') throw new Error('handover already in progress');
   const next = copy(state);
   next.phase = 'handover';
+  delete next.statePreparation;
+  return next;
+}
+
+// A reserved request is intentionally not retried automatically after a crash.
+export function reserveStatePreparation(state, id) {
+  if (state.phase !== 'handover' || state.statePreparation || !identifier(id)) throw new Error('state preparation unavailable or unresolved');
+  if (state.queue.some(item => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
+  const next = copy(state);
+  next.statePreparation = { id, session: state.session, generation: state.generation, status: 'requested' };
+  return next;
+}
+
+export function completeStatePreparation(state, proof) {
+  const pending = state.statePreparation;
+  if (state.phase !== 'handover' || !pending || pending.status !== 'requested' || pending.session !== state.session || pending.generation !== state.generation || !proof || proof.schema !== 'agent-mesh.handover-state.v1' || proof.nonce !== pending.id || proof.session !== pending.session || !/^[0-9a-f]{64}$/.test(proof.sha256) || typeof proof.filename !== 'string' || !Number.isSafeInteger(proof.bytes) || proof.bytes < 1) throw new Error('state preparation changed or proof invalid');
+  const next = copy(state);
+  next.statePreparation = { ...pending, status: 'verified', filename: proof.filename, sha256: proof.sha256, bytes: proof.bytes };
   return next;
 }
 
 export function finishHandover(state, session, verified) {
   if (state.phase !== 'handover' || !identifier(session) || session === state.session || verified !== true) throw new Error('unverified successor');
+  if (state.statePreparation && state.statePreparation.status !== 'verified') throw new Error('state preparation unresolved');
   if (state.queue.some((item) => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
   const next = copy(state);
   next.session = session;

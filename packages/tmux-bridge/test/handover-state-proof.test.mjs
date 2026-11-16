@@ -4,7 +4,24 @@ import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { requestStateProof, verifyStateResponse } from '../bin/handover-state-proof.mjs';
+import { prepareState, requestStateProof, verifyStateResponse } from '../bin/handover-state-proof.mjs';
+import { beginHandover, completeStatePreparation, createChannel, enqueue, reserveStatePreparation } from '../bin/channel-state.mjs';
+
+test('preparation reserves before transport, retains a lost response, and binds concurrent queue changes', async () => {
+  let channel = beginHandover(createChannel('example', 'codex:old'));
+  const proof = { schema: 'agent-mesh.handover-state.v1', session: 'codex:old', nonce: 'handover-1', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 42 };
+  let sends = 0;
+  const reserve = () => { channel = reserveStatePreparation(channel, 'handover-1'); return { statePreparation: channel.statePreparation }; };
+  const complete = value => { channel = completeStatePreparation(channel, value); return channel; };
+  await assert.rejects(prepareState({ reserve, request: async () => { sends++; throw new Error('lost response'); }, complete }), /lost response/);
+  assert.equal(channel.statePreparation.status, 'requested');
+  await assert.rejects(prepareState({ reserve, request: async () => { sends++; return proof; }, complete }), /unresolved/);
+  assert.equal(sends, 1);
+  channel = beginHandover(createChannel('example', 'codex:old'));
+  const result = await prepareState({ reserve, request: async pending => { assert.equal(pending.id, proof.nonce); channel = enqueue(channel, 'one', 'fixture'); return proof; }, complete });
+  assert.equal(result.statePreparation.status, 'verified');
+  assert.equal(result.queue[0].state, 'pending');
+});
 
 test('state proof binds correlated response to private file bytes', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'state-proof-'));
@@ -47,6 +64,8 @@ test('native request binds response to its own correlation without resuming', as
   const proof = await requestStateProof({ session, channel: '#example', root, filename }, fake);
   assert.equal(proof.session, session);
   assert.ok(proof.nonce.startsWith('handover-'));
+  assert.equal((await requestStateProof({ session, channel: '#example', root, filename, nonce: 'handover-fixed' }, fake)).nonce, 'handover-fixed');
+  await assert.rejects(requestStateProof({ session, channel: '#example', root, filename, nonce: 'unsafe nonce' }, fake), /nonce/);
   await assert.rejects(requestStateProof({ session, channel: '#example', root, filename }, async () => ({ stdout: JSON.stringify({ status: 'held' }) })), /binding/);
   await assert.rejects(requestStateProof({ session, channel: '#example', root, filename }, async () => { throw new Error('timeout'); }), /timeout/);
 });

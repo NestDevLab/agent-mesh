@@ -19,14 +19,24 @@ const exec = (command, args, { input, ...options }) => new Promise((resolve, rej
   child.stdin.end(input);
 });
 
+// reserve and complete are atomic host mutations; a failed request deliberately
+// leaves the reservation unresolved so a caller cannot silently resend it.
+export async function prepareState({ reserve, request, complete }) {
+  const reservation = reserve();
+  const pending = reservation?.statePreparation;
+  if (!pending || pending.status !== 'requested' || typeof pending.session !== 'string' || typeof pending.id !== 'string') throw new Error('state preparation reservation unavailable');
+  const proof = await request(pending);
+  return complete(proof);
+}
+
 /** Obtain a correlated native-session result, then bind it to file bytes. */
-export async function requestStateProof({ session, channel, root, filename, managedInboxRoot }, runNative = exec) {
+export async function requestStateProof({ session, channel, root, filename, managedInboxRoot, nonce = `handover-${randomUUID()}` }, runNative = exec) {
   if (!/^(codex|claude):[0-9a-f-]{36}$/.test(session) || !isAbsolute(root) || /[\r\n\x00]/.test(root) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(filename)) throw new Error('invalid state proof request');
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || rootInfo.uid !== process.getuid() || (rootInfo.mode & 0o077) !== 0 || await realpath(root) !== root) throw new Error('state root must be private and canonical');
   const [agent, nativeId] = session.split(':');
   if (agent === 'claude' && (typeof managedInboxRoot !== 'string' || !isAbsolute(managedInboxRoot))) throw new Error('managed inbox required');
-  const nonce = `handover-${randomUUID()}`;
+  if (typeof nonce !== 'string' || !/^[a-zA-Z0-9._:-]{1,128}$/.test(nonce)) throw new Error('invalid request nonce');
   if (typeof channel !== 'string' || !/^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(channel)) throw new Error('invalid state proof channel');
   const message = `Write your handover state with a RIAVVIO YAML block using agent-mesh.restart.v1 to ${join(root, filename)} with private permissions. Bind the block to session ${session} and channel ${channel}, and include harness, working_directory, skills, triggers and goal. Return only JSON with schema agent-mesh.handover-state.v1, session ${session}, nonce ${nonce}, filename ${filename}, and sha256 containing the lowercase SHA-256 of the completed file.`;
   const argv = [nativeBin, '--agent', agent, '--session', nativeId, '--correlation-id', nonce, '--timeout', '120', '--message-stdin'];
