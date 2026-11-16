@@ -201,3 +201,29 @@ test('local Claude delivery is observed only from a matching user transcript and
   await rm(join(state, 'checkpoint.json'), { force: true });
   assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'observed');
 });
+
+test('graph revalidates the bound restart file without advancing handover', async t => {
+  const { createHash } = await import('node:crypto');
+  const root = await mkdtemp(join(tmpdir(), 'handover-revalidate-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const state = join(root, 'graph'), files = join(root, 'files'); await mkdir(files, { mode: 0o700 });
+  const id = '22222222-2222-4222-8222-222222222222', session = `codex:${id}`, filename = 'state.yaml';
+  const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: '#example'\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: []\n  mcp: []\n  plugins: []\n`;
+  await writeFile(join(files, filename), content, { mode: 0o600 });
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args])).stdout);
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', id, '--json');
+  await call('migrate', '--apply', '--json'); await call('channel', 'create', '--name', '#example', '--session', session);
+  await call('channel', 'begin-handover', '--name', '#example');
+  let graph = await call('show', '--json');
+  const channel = graph.channels.find(row => row.id === '#example');
+  channel.statePreparation = { status: 'verified', session, generation: 1, id: 'fixture-state', filename, sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-state', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  graph = await call('show', '--json'); const seq = graph.lastSeq;
+  const args = ['channel', 'revalidate-state', '--name', '#example', '--state-root', files];
+  const proof = await call(...args);
+  assert.equal(proof.status, 'verified-snapshot'); assert.equal(proof.generation, 1);
+  assert.equal((await call('show', '--json')).lastSeq, seq);
+  await writeFile(join(files, filename), content.replace('operator', 'operatOr'), { mode: 0o600 });
+  await assert.rejects(call(...args), /digest mismatch/);
+  assert.equal((await call('channel', 'get', '--name', '#example')).channel.phase, 'handover');
+});

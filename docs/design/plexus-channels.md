@@ -251,4 +251,6 @@ A previously verified restart-state receipt can be revalidated against the
 current private file before a future cutover. Revalidation checks generation,
 session, digest, size and YAML, and rejects path replacement during the read.
 It is a snapshot, not an exclusion lock: the host must bind it to the later
-operation. The live cutover does not yet call it and remains disabled.
+operation. The graph `channel revalidate-state` command binds the snapshot to the
+persisted preparation and checks the channel again after reading without changing
+the graph. The live cutover does not yet call it and remains disabled.

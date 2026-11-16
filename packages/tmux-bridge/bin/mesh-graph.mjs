@@ -40,7 +40,7 @@ import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
 import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
 import { observeClaudeDelivery } from "./claude-delivery-observation.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
-import { prepareState, requestStateProof } from "./handover-state-proof.mjs";
+import { prepareState, requestStateProof, revalidateStateProof } from "./handover-state-proof.mjs";
 import { formatFinalNotice } from "./handover-notice.mjs";
 import { observeLocalFinalNotice } from "./handover-notice-transport.mjs";
 
@@ -133,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -210,6 +210,18 @@ try {
           return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
         });
         printResult(result, { json: true });
+        break;
+      }
+      if (subcommand === "revalidate-state") {
+        const root = requiredSingleLine(values["state-root"], "--state-root");
+        if (!isAbsolute(root)) throw new Error("absolute state root required");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        if (!channel || channel.phase !== "handover" || channel.wakeReservation || channel.queue?.some(item => item.state === "inflight")) throw new Error("state revalidation unavailable");
+        const proof = await revalidateStateProof({ root, channel: name, session: channel.session, generation: channel.generation, statePreparation: channel.statePreparation });
+        assertPrivateChannelState(stateDir);
+        const current = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        if (!current || current.phase !== "handover" || current.session !== channel.session || current.generation !== channel.generation || current.wakeReservation || current.queue?.some(item => item.state === "inflight") || JSON.stringify(current.statePreparation) !== JSON.stringify(channel.statePreparation)) throw new Error("channel changed during state revalidation");
+        printResult({ schema: "agent-mesh.state-revalidation.v1", channel: name, session: channel.session, generation: channel.generation, filename: proof.filename, sha256: proof.sha256, bytes: proof.bytes, status: "verified-snapshot" }, { json: true });
         break;
       }
       if (subcommand === "prepare-state") {
