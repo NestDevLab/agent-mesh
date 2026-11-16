@@ -40,3 +40,10 @@ old session, publish or verify the old session's final notice, archive anything,
 or reconcile uncertain transport outcomes. It must not be used for a live
 handover until those steps and their failure recovery are implemented and
 verified. The local graph is a trusted operator interface, not a remote API.
+
+`handover-notice.mjs` builds a notice from already resolved identifiers. It
+supports same-project cloud anchors, cross-project cloud URLs and Codex thread
+URLs. Its transcript comparison is only a predicate: an authenticated adapter
+must independently supply a complete observation and prove the successor's
+identity. Formatting or matching caller-supplied data alone is not evidence of
+publication, finality or authorization to archive.

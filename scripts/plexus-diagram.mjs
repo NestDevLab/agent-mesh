@@ -10,5 +10,6 @@ export const plexusDiagram = `flowchart LR
   Queue -- "bound receipt" --> Session
   Yaml["Bounded YAML decoder"] --> Restart
   Restart["Restart state contract"] -. "planned validation" .-> Handover
+  Notice["Successor notice formatter"] -. "planned publication" .-> Handover
   Handover["Handover"] -. "planned verified cutover" .-> Channel
 `;

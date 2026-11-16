@@ -45,6 +45,7 @@ const agentTmuxBundleFiles = [
   "bin/plexus.mjs",
   "bin/channel-state.mjs",
   "bin/handover-state-proof.mjs",
+  "bin/handover-notice.mjs",
   "bin/restart-state.mjs",
   "bin/restart-yaml.py",
   "bin/ledger-view.mjs",
