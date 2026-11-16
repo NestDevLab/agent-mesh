@@ -41,11 +41,11 @@ The proof does not authorize cutover, archive, or final-message publication.
 `trigger-transaction.mjs` supplies a generic transaction engine, not a live
 scheduler adapter. Its injected journal must atomically reserve overlapping
 trigger sets and durably record intent before each move. Its adapter must
-compare the original target and version atomically and expose the operation ID
-on readback. Definite refusal rolls back earlier verified moves using the same
+compare the original target and a never-reused state version atomically and
+expose the operation ID on readback. Definite refusal rolls back earlier verified moves using the same
 compare-and-set contract; an ambiguous result stays unresolved and is not
 retried. Dry-run reads and journals a plan without moving triggers. Concrete
-timer and cloud adapters and automatic recovery are not yet provided; this
+timer and cloud adapters are not yet provided; this
 engine is not authorization to change live triggers.
 
 `trigger-journal.mjs` implements the local journal in an explicitly selected,
@@ -54,7 +54,11 @@ persists snapshots using fsync and atomic replacement, and rejects reused
 transaction IDs. Uncertain transactions keep their reservation after restart.
 A leftover lock requires operator reconciliation; it is never removed as stale
 automatically. The journal is a trusted local operator component and does not
-itself prove a scheduler change or provide recovery of an uncertain move.
+itself prove a scheduler change. Explicit recovery of an `uncertain` receipt
+first inspects every trigger and rolls back only versions linked to the original
+operation; other changes remain unresolved. A recovery lock prevents concurrent
+recovery. Abrupt process loss while an operation is still `applying` or
+`rolling-back`, or an abandoned lock, requires separate operator reconciliation.
 The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.

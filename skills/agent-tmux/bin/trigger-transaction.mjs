@@ -51,3 +51,41 @@ export async function reconcileTriggers({ triggers, from, to, transactionId, ada
   }
   receipt.status = 'verified'; await save(); return receipt;
 }
+
+/** Explicitly roll back an uncertain transaction after inspecting all targets. */
+export async function recoverUncertainTriggers({ transactionId, adapter, journal }) {
+  if (!token(transactionId) || typeof adapter?.read !== 'function' || typeof adapter?.move !== 'function' || typeof journal?.withRecovery !== 'function') throw new Error('invalid trigger recovery');
+  return journal.withRecovery(transactionId, async (receipt, save) => {
+    if (receipt.id !== transactionId || receipt.status !== 'uncertain' || receipt.dryRun !== false || !Array.isArray(receipt.triggers)) throw new Error('invalid uncertain receipt');
+    const observations = [];
+    for (let i = 0; i < receipt.triggers.length; i++) {
+      const row = receipt.triggers[i], observed = await adapter.read(row);
+      if (!observed || !token(observed.version)) throw new Error('trigger observation unavailable');
+      const forwardId = `${transactionId}:${i}`, rollbackId = `${transactionId}:rollback:${i}`;
+      if (observed.target === receipt.from && observed.version === row.before) observations.push({ kind: 'unchanged', observed });
+      else if (observed.target === receipt.from && observed.lastOperationId === rollbackId && (!row.rollbackVersion || row.rollbackVersion === observed.version)) observations.push({ kind: 'rolled-back', observed });
+      else if (observed.target === receipt.to && observed.lastOperationId === forwardId && (!row.after || row.after === observed.version)) observations.push({ kind: 'moved', observed });
+      else throw new Error('trigger changed outside transaction');
+    }
+    for (let i = receipt.triggers.length - 1; i >= 0; i--) {
+      const row = receipt.triggers[i], { kind, observed } = observations[i];
+      if (kind !== 'moved') {
+        row.status = kind === 'unchanged' ? 'not-applied' : 'rolled-back';
+        if (kind === 'rolled-back') row.rollbackVersion = observed.version;
+        continue;
+      }
+      const operationId = `${transactionId}:rollback:${i}`;
+      row.after = observed.version; row.status = 'rolling-back'; receipt.status = 'rolling-back'; await save(receipt);
+      let result, confirmed;
+      try {
+        result = await adapter.move({ kind: row.kind, id: row.id, expectedTarget: receipt.to, expectedVersion: observed.version, target: receipt.from, operationId });
+        if (result?.status === 'applied' && token(result.version)) confirmed = await adapter.read(row);
+      } catch { /* The outcome may have been applied. */ }
+      if (confirmed?.target !== receipt.from || confirmed.version !== result?.version || confirmed.lastOperationId !== operationId) {
+        row.status = 'uncertain'; receipt.status = 'uncertain'; await save(receipt); return receipt;
+      }
+      row.status = 'rolled-back'; row.rollbackVersion = result.version; await save(receipt);
+    }
+    receipt.status = 'rolled-back'; await save(receipt); return receipt;
+  });
+}

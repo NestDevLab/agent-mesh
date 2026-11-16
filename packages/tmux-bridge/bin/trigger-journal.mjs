@@ -1,6 +1,6 @@
 /** Private crash-conservative journal for trigger transactions. */
 import { constants, closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 
 const token = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
@@ -71,6 +71,25 @@ export function triggerJournal(root) {
       if (!token(id)) throw new Error('invalid transaction id');
       const entry = load().entries.find(item => item.id === id);
       return entry ? structuredClone(entry) : null;
+    },
+    async withRecovery(id, callback) {
+      checkRoot();
+      if (!token(id) || typeof callback !== 'function') throw new Error('invalid recovery request');
+      const recoveryLock = join(root, `.trigger-recovery-${createHash('sha256').update(id).digest('hex')}.lock`);
+      let fd;
+      try { fd = openSync(recoveryLock, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600); }
+      catch (error) { if (error.code === 'EEXIST') throw new Error('recovery lock held or requires reconciliation'); throw error; }
+      try {
+        fsyncSync(fd); syncRoot();
+        const journal = triggerJournal(root), entry = await journal.get(id);
+        if (!entry || entry.status !== 'uncertain' || !entry.receipt) throw new Error('transaction not recoverable');
+        return await callback(entry.receipt, receipt => journal.write(receipt));
+      } finally {
+        const owned = fstatSync(fd); closeSync(fd);
+        const current = lstatSync(recoveryLock);
+        if (current.dev !== owned.dev || current.ino !== owned.ino) throw new Error('recovery lock changed');
+        unlinkSync(recoveryLock); syncRoot();
+      }
     }
   };
 }
