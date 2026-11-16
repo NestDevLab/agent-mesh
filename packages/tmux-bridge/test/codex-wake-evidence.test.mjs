@@ -31,6 +31,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
     requests.push(request);
     if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: 'queued-1', clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture' }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
+    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: thread, turns: [{ id: turn, startedAt: 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: correlation, content: [{ type: 'text', text: 'fixture' }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
   });
   await new Promise(resolve => server.listen(socket, resolve));
@@ -64,6 +65,13 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, starts);
   const uncertainFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 1);
+  const partialRoot = join(root, 'partial'); await mkdir(partialRoot, { mode: 0o700 });
+  const partialArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--evidence-root', partialRoot, '--graph-state', state];
+  mode = 'partial';
+  await assert.rejects(exec(process.execPath, [bin, '--apply', ...partialArgs], { env }));
+  assert.deepEqual((await readdir(partialRoot)).map(name => name.split('-')[0]), ['intent']);
+  const partialFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
+  assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 1);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);

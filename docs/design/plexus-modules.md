@@ -27,6 +27,8 @@ contract does not itself install or enable a wake-event producer.
 
 An experimental, explicitly invoked Codex adapter can bind an exact queued
 submission and waker correlation to the turn returned by `thread/queue/start`.
+It requires a full native thread readback with the same turn, start time,
+message client id and input; incomplete or mismatched readback is unknown.
 It first reserves the queue identity durably in a private evidence directory;
 an ambiguous response leaves that identity reserved and requires manual
 reconciliation rather than an automatic retry. Evidence records the session,

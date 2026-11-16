@@ -42,7 +42,7 @@ export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session
   if (`codex-wake:${hash(body)}` !== reference) throw new Error('wake digest mismatch');
   let value;
   try { value = JSON.parse(body); } catch { throw new Error('invalid wake evidence'); }
-  if (!value || Object.keys(value).sort().join(',') !== 'correlation,queueId,schema,session,source,startedAt,turn' || `${JSON.stringify(value)}\n` !== body || value.schema !== 'agent-mesh.codex-wake-evidence.v1' || value.source !== 'codex-app-server.queue-start' || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
+  if (!value || Object.keys(value).sort().join(',') !== 'correlation,queueId,schema,session,source,startedAt,turn' || `${JSON.stringify(value)}\n` !== body || value.schema !== 'agent-mesh.codex-wake-evidence.v2' || value.source !== 'codex-app-server.queue-start-readback' || value.session !== session || typeof value.turn !== 'string' || !UUID.test(value.turn) || typeof value.queueId !== 'string' || !TOKEN.test(value.queueId) || typeof value.correlation !== 'string' || !value.correlation.startsWith('waker-') || !UUID.test(value.correlation.slice(6)) || !Number.isSafeInteger(value.startedAt) || value.startedAt <= 0) throw new Error('wake evidence identity mismatch');
   return { ...value, evidence: reference };
 }
 
@@ -75,7 +75,14 @@ export async function startCodexWake({ thread, queueId, correlation, evidenceRoo
     const started = await request('thread/queue/start', { threadId: thread, queuedSubmissionId: queueId });
     const turn = started?.turn;
     if (!turn || typeof turn.id !== 'string' || !UUID.test(turn.id) || turn.status !== 'inProgress' || !Number.isSafeInteger(turn.startedAt) || turn.startedAt <= 0) throw new Error('native wake outcome uncertain');
-    return { schema: 'agent-mesh.codex-wake-evidence.v1', source: 'codex-app-server.queue-start', session, queueId, correlation, turn: turn.id, startedAt: turn.startedAt };
+    const readback = await request('thread/read', { threadId: thread, includeTurns: true });
+    const observed = readback?.thread;
+    const turns = Array.isArray(observed?.turns) ? observed.turns.filter(item => item?.id === turn.id) : [];
+    const observedTurn = turns[0];
+    const messages = Array.isArray(observedTurn?.items) ? observedTurn.items.filter(item => item?.type === 'userMessage' && item.clientId === correlation) : [];
+    const queued = listed.data.find(item => item?.id === queueId && item.clientUserMessageId === correlation);
+    if (observed?.id !== thread || turns.length !== 1 || (observedTurn.itemsView !== undefined && observedTurn.itemsView !== 'full') || observedTurn.startedAt !== turn.startedAt || messages.length !== 1 || !Array.isArray(messages[0].content) || JSON.stringify(messages[0].content) !== JSON.stringify(queued.input)) throw new Error('wake readback unavailable; outcome uncertain');
+    return { schema: 'agent-mesh.codex-wake-evidence.v2', source: 'codex-app-server.queue-start-readback', session, queueId, correlation, turn: turn.id, startedAt: turn.startedAt };
   });
   const body = `${JSON.stringify(evidence)}\n`, reference = `codex-wake:${hash(body)}`;
   await createDurable(evidenceRoot, `wake-${hash(body)}.json`, body);
