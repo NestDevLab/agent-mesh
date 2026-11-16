@@ -37,7 +37,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const server = createAppServer((request, peer) => {
     if (!request.id) return;
     requests.push(request);
-    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: mode === 'wrong-queue-payload' ? 'different' : 'fixture', text_elements: [] }] }], nextCursor: null } });
+    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: mode === 'auto-drained' ? [] : [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: mode === 'wrong-queue-payload' ? 'different' : 'fixture', text_elements: [] }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
     else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
@@ -53,6 +53,13 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   await assert.rejects(exec(process.execPath, [bin, '--apply', '--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'handover', '--generation', '1', '--evidence-root', evidence, '--graph-state', state], { env }));
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 0);
   mode = 'wrong'; await assert.rejects(exec(process.execPath, [bin, '--apply', ...args], { env }));
+  assert.deepEqual(await readdir(evidence), []);
+  nativeId = 'queued-auto'; await prepareChannel('auto-drained', nativeId);
+  mode = 'auto-drained';
+  await assert.rejects(exec(process.execPath, [bin, '--apply', '--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'auto-drained', '--generation', '1', '--evidence-root', evidence, '--graph-state', state], { env }));
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, 0);
+  const auto = (await call('channel', 'get', '--name', 'auto-drained')).channel;
+  assert.equal(auto.queue[0].state, 'accepted'); assert.equal(auto.wakeReservation, undefined);
   assert.deepEqual(await readdir(evidence), []);
   nativeId = 'queued-payload'; await prepareChannel('payload', nativeId);
   mode = 'wrong-queue-payload';

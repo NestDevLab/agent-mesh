@@ -254,3 +254,11 @@ It is a snapshot, not an exclusion lock: the host must bind it to the later
 operation. The graph `channel revalidate-state` command binds the snapshot to the
 persisted preparation and checks the channel again after reading without changing
 the graph. The live cutover does not yet call it and remains disabled.
+
+A network-isolated experiment with Codex CLI 0.169.0 and a temporary home
+observed a queued submission leave the queue and a turn start before an
+explicit queue/start call. Without model connectivity, the full turn readback
+did not expose a correlated user item in the observation window. The existing
+producer refuses an empty queue and does not retry the start; it cannot yet
+prove this automatic-start path or count it as zero. An authenticated, uniquely
+correlated observation path is still required.
