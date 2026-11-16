@@ -173,7 +173,7 @@ try {
         const desc = await describeModule(entry);
         if (!desc.operations.includes("process")) throw new Error("module does not support process");
         const graph = { nodes: [{ id: "synthetic-node", agent: "codex", runtimeUuid: "22222222-2222-4222-8222-222222222222" }], moduleStates: [] };
-        const result = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph, cursor: null, events: [] });
+        const result = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", mode: "conformance", graph, cursor: null, events: [] });
         if (Object.keys(result).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
         validateModuleBatch(entry.name, entry.namespaces, { id: result.batchId, cursor: null, nextCursor: "synthetic-cursor", attributes: result.attributes, events: result.events }, graph, plexus.sessionIdOf);
         printResult({ module: entry.name, conformance: "pass", scope: "synthetic protocol response only" }, { json: true });

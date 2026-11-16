@@ -76,5 +76,6 @@ the last batch id while holding the graph lock. An identical retry of the last
 batch returns a duplicate receipt, while a reused id with different content or
 an older cursor fails. No exactly-once guarantee is claimed for arbitrary
 external effects made by an executable. `module conformance` checks a synthetic
-description and process response; it is not a sandbox or a proof of side-effect
+description and process response with `mode: "conformance"` and synthetic graph
+data; a module must not contact live sources in that mode. This command is not a sandbox or a proof of side-effect
 isolation. Configuration and OS access remain under the operator's control.
