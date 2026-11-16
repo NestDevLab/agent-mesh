@@ -11,13 +11,21 @@ export async function reconcileTriggers({ triggers, from, to, transactionId, ada
     if (!token(trigger?.kind) || !token(trigger?.id) || seen.has(`${trigger.kind}\0${trigger.id}`)) throw new Error('invalid or duplicate trigger');
     seen.add(`${trigger.kind}\0${trigger.id}`);
   }
-  const receipt = { schema: 'agent-mesh.trigger-transaction.v1', id: transactionId, from, to, dryRun, status: 'planning', triggers: [] };
+  const receipt = { schema: 'agent-mesh.trigger-transaction.v1', id: transactionId, from, to, dryRun, status: 'planning', triggers: triggers.map(({ kind, id }) => ({ kind, id, status: 'pending' })) };
   await journal.begin({ id: transactionId, triggers: structuredClone(triggers), dryRun });
   const save = () => journal.write(structuredClone(receipt));
-  for (const trigger of triggers) {
-    const current = await adapter.read(trigger);
-    if (!current || current.target !== from || !token(current.version)) throw new Error('trigger source or version not verified');
-    receipt.triggers.push({ kind: trigger.kind, id: trigger.id, before: current.version, status: 'planned' });
+  for (let i = 0; i < triggers.length; i++) {
+    let current;
+    try { current = await adapter.read(triggers[i]); } catch { /* No mutation has been attempted. */ }
+    if (!current || current.target !== from || !token(current.version)) {
+      receipt.triggers[i].status = 'unverified';
+      receipt.status = 'not-applied';
+      receipt.reason = 'trigger source or version not verified';
+      await save();
+      return receipt;
+    }
+    receipt.triggers[i].before = current.version;
+    receipt.triggers[i].status = 'planned';
   }
   receipt.status = dryRun ? 'dry-run' : 'applying';
   await save();

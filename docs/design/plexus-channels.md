@@ -44,7 +44,9 @@ trigger sets and durably record intent before each move. Its adapter must
 compare the original target and a never-reused state version atomically and
 expose the operation ID on readback. Definite refusal rolls back earlier verified moves using the same
 compare-and-set contract; an ambiguous result stays unresolved and is not
-retried. Dry-run reads and journals a plan without moving triggers. Concrete
+retried. A failed preflight read records a terminal not-applied receipt before
+releasing its reservation; no trigger move has been attempted. Dry-run reads
+and journals a plan without moving triggers. Concrete
 timer and cloud adapters are not yet provided; this
 engine is not authorization to change live triggers.
 

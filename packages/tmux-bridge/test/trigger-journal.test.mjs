@@ -112,3 +112,20 @@ test('journal refuses unsafe permissions, invalid state and abandoned locks', as
   await writeFile(join(root, '.trigger-transactions.lock'), 'fixture', { mode: 0o600 });
   await assert.rejects(journal.begin(reservation), /lock held/);
 });
+
+test('preflight read failure is durably not-applied and releases the reservation', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-preflight-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const triggers = [{ kind: 'timer', id: 'one' }, { kind: 'timer', id: 'two' }];
+  let moves = 0;
+  const adapter = { read: async ({ id }) => { if (id === 'two') throw new Error('offline'); return { target: 'codex:old', version: 'v1' }; }, move: async () => { moves++; } };
+  const journal = triggerJournal(root);
+  const receipt = await reconcileTriggers({ triggers, from: 'codex:old', to: 'codex:new', transactionId: 'first', adapter, journal, dryRun: false });
+  assert.equal(receipt.status, 'not-applied');
+  assert.equal(receipt.triggers[1].status, 'unverified');
+  assert.equal(moves, 0);
+  const stored = await triggerJournal(root).get('first');
+  assert.equal(stored.status, 'not-applied');
+  assert.equal(stored.receipt.reason, 'trigger source or version not verified');
+  await triggerJournal(root).begin({ id: 'second', triggers, dryRun: true });
+});

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join } from 'node:path';
 
 const token = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
-const terminal = new Set(['verified', 'rolled-back', 'dry-run']);
+const terminal = new Set(['verified', 'rolled-back', 'dry-run', 'not-applied']);
 const statuses = new Set(['planning', 'applying', 'rolling-back', 'uncertain', ...terminal]);
 const key = trigger => JSON.stringify([trigger.kind, trigger.id]);
 
