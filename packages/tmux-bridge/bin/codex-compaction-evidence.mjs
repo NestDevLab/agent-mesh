@@ -17,7 +17,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 export function compactionFromThread(response, { thread, turn, item }) {
   if (typeof thread !== 'string' || !UUID.test(thread) || typeof turn !== 'string' || !TOKEN.test(turn) || typeof item !== 'string' || !TOKEN.test(item) || response?.thread?.id !== thread || !Array.isArray(response.thread.turns)) throw new Error('native thread identity unavailable');
   const turns = response.thread.turns.filter(value => value?.id === turn);
-  if (turns.length !== 1 || turns[0].itemsView !== 'full' || !Array.isArray(turns[0].items)) throw new Error('native turn unavailable or incomplete');
+  // The native Turn schema defaults an omitted itemsView to "full".
+  if (turns.length !== 1 || (turns[0].itemsView !== undefined && turns[0].itemsView !== 'full') || !Array.isArray(turns[0].items) || !['completed', 'interrupted', 'failed', 'inProgress'].includes(turns[0].status)) throw new Error('native turn unavailable or incomplete');
   const items = turns[0].items.filter(value => value?.id === item);
   if (items.length !== 1 || items[0].type !== 'contextCompaction' || !Number.isSafeInteger(items[0].completedAtMs) || items[0].completedAtMs <= 0) throw new Error('completed compaction unavailable');
   return { schema: 'agent-mesh.codex-compaction-evidence.v1', source: 'codex-app-server.thread-read', session: `codex:${thread}`, turn, item, completedAtMs: items[0].completedAtMs };

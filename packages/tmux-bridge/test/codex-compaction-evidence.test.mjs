@@ -12,17 +12,21 @@ import { createAppServer } from './fixtures/fake-app-server.mjs';
 const exec = promisify(execFile), thread = '22222222-2222-4222-8222-222222222222', turn = 'turn-fixture', item = 'item-fixture';
 const bin = fileURLToPath(new URL('../bin/codex-compaction-evidence.mjs', import.meta.url));
 const graph = fileURLToPath(new URL('../bin/mesh-graph.mjs', import.meta.url));
-const response = () => ({ thread: { id: thread, turns: [{ id: turn, itemsView: 'full', items: [{ id: item, type: 'contextCompaction', completedAtMs: 123456789 }] }] } });
+const response = () => ({ thread: { id: thread, turns: [{ id: turn, status: 'completed', itemsView: 'full', items: [{ id: item, type: 'contextCompaction', completedAtMs: 123456789 }] }] } });
 
 test('only an exact completed native compaction in a full turn is accepted', () => {
   const identity = { thread, turn, item };
   assert.equal(compactionFromThread(response(), identity).completedAtMs, 123456789);
+  const implicitFull = response(); delete implicitFull.thread.turns[0].itemsView;
+  assert.equal(compactionFromThread(implicitFull, identity).completedAtMs, 123456789);
   const missingTime = response(); missingTime.thread.turns[0].items[0].completedAtMs = null;
   const summary = response(); summary.thread.turns[0].itemsView = 'summary';
+  const invalidView = response(); invalidView.thread.turns[0].itemsView = null;
+  const missingStatus = response(); delete missingStatus.thread.turns[0].status;
   const wrongType = response(); wrongType.thread.turns[0].items[0].type = 'agentMessage';
   const duplicate = response(); duplicate.thread.turns.push(duplicate.thread.turns[0]);
   const duplicateItem = response(); duplicateItem.thread.turns[0].items.push(duplicateItem.thread.turns[0].items[0]);
-  for (const value of [missingTime, summary, wrongType, duplicate, duplicateItem, { thread: { id: 'other', turns: [] } }]) assert.throws(() => compactionFromThread(value, identity));
+  for (const value of [missingTime, summary, invalidView, missingStatus, wrongType, duplicate, duplicateItem, { thread: { id: 'other', turns: [] } }]) assert.throws(() => compactionFromThread(value, identity));
 });
 
 test('native read records private evidence before an idempotent graph event', async t => {
