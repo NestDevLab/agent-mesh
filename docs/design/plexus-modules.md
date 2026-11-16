@@ -11,11 +11,19 @@ must be explicitly configured; absence of configuration enables no modules.
 
 ## Lifecycle evidence
 
-The lifecycle vocabulary is `session.started`, `session.idle`,
+The lifecycle vocabulary is `session.started`, `session.woken`, `session.idle`,
 `session.compacted`, `session.stopped`, and `session.handover`. A producer may
 record one of these only when it has evidence for that transition. Discovery,
 quietness, a queued message, or an expired lease alone are not proof that a
 process stopped, compacted or handed over. Event ids must be stable on retry.
+
+`session.woken` means that a wake-caused turn was actually observed for the
+named session, with source evidence that binds the wake to that turn. Starting
+a process, scheduling or accepting a message, or a generic unrelated turn is
+not proof of a wake. Use a stable observation id across retries and deduplicate
+the feed by `eventId`. A missing wake event is not evidence of zero wakes;
+consumers must establish source and time-window coverage separately. This
+contract does not itself install or enable a wake-event producer.
 
 Events use the graph's existing ordered, append-only store. Their consumers must
 detect the retention watermark and report an expired cursor rather than silently

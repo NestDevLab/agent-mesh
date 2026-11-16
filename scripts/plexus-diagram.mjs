@@ -5,6 +5,7 @@ export const plexusDiagram = `flowchart LR
   Channel --> Session["Current session"]
   Queue --> Journal["Graph event journal"]
   Session --> Journal
+  Wake["Wake observation"] -. "planned producer" .-> Journal
   Module["Registered module"] --> Contract["Versioned JSON contract"]
   Contract --> Journal
   Queue -- "bound receipt" --> Session

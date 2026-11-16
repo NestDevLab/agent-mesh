@@ -61,6 +61,27 @@ test("lifecycle feed exposes evidence locally but not to scoped consumers", asyn
   assert.ok(!("evidence" in scoped.events[0]));
 });
 
+test("observed wake events are session-bound and retries do not double count", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-wake-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const cursor = (await query(state, "changes", { initial: "head" })).cursor;
+  const args = ["lifecycle", "record", "--session", `codex:${CODEX}`, "--type", "session.woken", "--id", "wake-example", "--evidence", "native:turn-example"];
+  assert.equal((await ok(state, args)).duplicate, false);
+  assert.equal((await ok(state, args)).duplicate, true);
+  assert.notEqual((await run(state, [...args.slice(0, -1), "native:other"])).code, 0);
+  const feed = await query(state, "changes", { sinceCursor: cursor });
+  const wake = feed.events.filter(event => event.type === "session.woken");
+  assert.equal(wake.length, 1);
+  assert.equal(wake[0].session, `codex:${CODEX}`);
+  assert.equal(wake[0].evidence, "native:turn-example");
+  assert.ok(wake[0].eventId && Number.isSafeInteger(wake[0].seq) && wake[0].at && wake[0].host);
+  const scoped = await query(state, "changes", { sinceCursor: cursor, scope: scopeA });
+  assert.equal(scoped.events.filter(event => event.type === "session.woken").length, 1);
+  assert.ok(!('evidence' in scoped.events.find(event => event.type === "session.woken")));
+});
+
 test("cloud registration has exact account-qualified identity and survives graph replay", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "plexus-cloud-"));
   t.after(() => rm(state, { recursive: true, force: true }));

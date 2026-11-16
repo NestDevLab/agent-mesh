@@ -19,7 +19,7 @@ export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operat
 export const ROLE_WEIGHTS = { owns: 1, "works-on": 1, coordinates: 0.8, reviews: 0.7, discusses: 0.6, observes: 0.3, mentioned: 0.2 };
 export const HALF_LIFE_DAYS = 7;
 export const TOUCH_COALESCE_MS = 10 * 60 * 1000;
-export const LIFECYCLE_EVENTS = new Set(["session.started", "session.idle", "session.compacted", "session.stopped", "session.handover"]);
+export const LIFECYCLE_EVENTS = new Set(["session.started", "session.woken", "session.idle", "session.compacted", "session.stopped", "session.handover"]);
 export const PLEXUS_EVENTS = new Set(["channel.updated", "role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated", ...LIFECYCLE_EVENTS]);
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -92,6 +92,7 @@ export function applyPlexusEvent(state, item) {
       state.channels.set(item.channel.id, item.channel);
       break;
     case "session.started":
+    case "session.woken":
     case "session.idle":
     case "session.compacted":
     case "session.stopped":
