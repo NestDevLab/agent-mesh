@@ -16,6 +16,8 @@ test("registry is private configuration and duplicate names fail closed", async 
     const entry = { name: "example", command: [process.execPath, "fixture.mjs"] };
     await writeFile(file, JSON.stringify({ schemaVersion: 1, modules: [entry, entry] }));
     await assert.rejects(readModuleRegistry(file), /duplicate/);
+    await writeFile(file, JSON.stringify({ schemaVersion: 1, modules: [{ ...entry, namespaces: ["shared"] }, { ...entry, name: "other", namespaces: ["shared"] }] }));
+    await assert.rejects(readModuleRegistry(file), /namespace/);
     await writeFile(file, "{");
     await assert.rejects(readModuleRegistry(file));
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -32,15 +34,15 @@ test("graph discovers and describes only registered modules", async () => {
     const list = await exec(process.execPath, [graph, "module", "list", "--config", config]);
     assert.deepEqual(JSON.parse(list.stdout), { modules: [{ name: "example" }] });
     const describe = await exec(process.execPath, [graph, "module", "describe", "--config", config, "--name", "example"]);
-    assert.equal(JSON.parse(describe.stdout).namespace, "example");
+    assert.deepEqual(JSON.parse(describe.stdout).namespaces, ["example"]);
     await assert.rejects(exec(process.execPath, [graph, "module", "describe", "--config", config, "--name", "unknown"]));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("describe verifies identity and enforces timeouts", async () => {
-  const good = "process.stdout.write(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',namespace:'example',operations:['describe']}))";
+  const good = "process.stdout.write(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',namespaces:['example'],operations:['describe']}))";
   const entry = { name: "example", command: [process.execPath, "-e", good], timeoutMs: 1000 };
-  assert.equal((await describeModule(entry)).namespace, "example");
+  assert.deepEqual((await describeModule(entry)).namespaces, ["example"]);
   await assert.rejects(describeModule({ ...entry, name: "other" }), /invalid module response/);
   await assert.rejects(describeModule({ ...entry, command: [process.execPath, "-e", "setTimeout(()=>{}, 10000)"], timeoutMs: 20 }), /timed out/);
 });

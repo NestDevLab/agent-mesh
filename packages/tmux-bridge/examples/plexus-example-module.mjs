@@ -14,7 +14,7 @@ if (process.argv[2] === "process") {
   process.stdout.write(JSON.stringify({
     schema: "agent-mesh.plexus-module.v1",
     name: "example",
-    namespace: "example",
+    namespaces: ["example"],
     operations: ["describe", "process"],
   }) + "\n");
 }

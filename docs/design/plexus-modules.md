@@ -42,7 +42,7 @@ The example module and all fixtures use synthetic data only.
 The host invokes a configured argument vector followed by an operation; no shell
 expansion is involved. Requests and responses are single JSON objects on stdin
 and stdout. Every response identifies protocol `agent-mesh.plexus-module.v1`.
-`describe` receives `{}` and returns the module name, its exact namespace and
+`describe` receives `{}` and returns the module name, its exact namespaces and
 supported operations. The registry must reject duplicate names or namespaces.
 The registry is an operator-owned allowlist, not a marketplace or code sandbox.
 
@@ -50,7 +50,8 @@ The initial read-only discovery surface is `mesh-graph module list` and
 `mesh-graph module describe --name <name>`. It reads the operator-owned
 `$XDG_CONFIG_HOME/agent-mesh/modules.json` (or `--config <path>`). The registry
 has `schemaVersion: 1` and a `modules` array containing `name`, `command` as an
-argument array, and optional `timeoutMs`. Namespace equals name. A missing file
+argument array, optional `namespaces` (default: the module name), and optional
+`timeoutMs`. One command may own several namespaces. A missing file
 registers no modules; malformed files and duplicate names fail closed. Describe
 does not update a cursor or write graph state. stderr is not returned to callers.
 
@@ -60,14 +61,14 @@ validates its response and commits the bounded batch and cursor as one graph
 event under the lock. An intervening run for the same module causes a cursor
 conflict. The request contains `schema`, `graph`, `cursor`, and `events`; the
 response contains `schema`, `name`, `batchId`, `attributes`, and `events`.
-Attributes identify a session and a key; they are projected under that module's
-name on its node. Events identify a session, a namespaced type, and JSON data.
+Attributes identify a session and a namespaced key; they are projected under
+that namespace on its node. Events identify a session, a namespaced type, and JSON data.
 The cursor is host-owned, not selected by a module. An initial run starts at the
 current head; an expired cursor fails closed and requires reconciliation. A
 no-change run does not append a new batch solely to observe its own events.
 
 `module apply` is an operator-level interface for an already computed batch;
-the configured name determines its namespace. Both paths check the cursor and
+the configured name determines its permitted namespaces. Both paths check the cursor and
 the last batch id while holding the graph lock. An identical retry of the last
 batch returns a duplicate receipt, while a reused id with different content or
 an older cursor fails. No exactly-once guarantee is claimed for arbitrary

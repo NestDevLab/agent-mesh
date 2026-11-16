@@ -16,12 +16,12 @@ test("module batches atomically update their own state and survive replay and co
   const dir = await mkdtemp(join(tmpdir(), "plexus-batch-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const state = join(dir, "state"), config = join(dir, "modules.json");
-  await writeFile(config, JSON.stringify({ schemaVersion: 1, modules: [{ name: "example", command: ["example"] }, { name: "other", command: ["example"] }] }));
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, modules: [{ name: "example", namespaces: ["example", "sleep", "cost"], command: ["example"] }, { name: "other", command: ["example"] }] }));
   const call = async (...args) => JSON.parse((await exec(process.execPath, [graph, "--state", state, ...args])).stdout);
   await call("add", "--agent", "codex", "--tmux-target", "test", "--cwd", "/synthetic", "--runtime-uuid", uuid, "--json");
   await call("migrate", "--apply", "--json");
   const start = await call("query", "changes", "--input", JSON.stringify({ initial: "head" }));
-  const batch = { id: "a1", cursor: null, nextCursor: "one", attributes: [{ session, key: "count", value: 1 }], events: [{ type: "example.changed", session, data: { count: 1 } }] };
+  const batch = { id: "a1", cursor: null, nextCursor: "one", attributes: [{ session, key: "example.count", value: 1 }, { session, key: "sleep.count", value: 2 }, { session, key: "cost.count", value: 3 }], events: [{ type: "example.changed", session, data: { count: 1 } }] };
   const apply = (name, input) => call("module", "apply", "--config", config, "--name", name, "--input", JSON.stringify(input));
   assert.equal((await apply("example", batch)).duplicate, false);
   assert.equal((await apply("example", batch)).duplicate, true);
@@ -33,6 +33,8 @@ test("module batches atomically update their own state and survive replay and co
   await rm(join(state, "checkpoint.json"));
   let projection = await call("show", "--json");
   assert.equal(projection.nodes[0].moduleAttributes.example.count, 1);
+  assert.equal(projection.nodes[0].moduleAttributes.sleep.count, 2);
+  assert.equal(projection.nodes[0].moduleAttributes.cost.count, 3);
   assert.equal(projection.moduleStates[0].cursor, "one");
   await call("compact", "--all-history", "--apply", "--json");
   await rm(join(state, "checkpoint.json"), { force: true });

@@ -175,7 +175,7 @@ try {
         const graph = { nodes: [{ id: "synthetic-node", agent: "codex", runtimeUuid: "22222222-2222-4222-8222-222222222222" }], moduleStates: [] };
         const result = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph, cursor: null, events: [] });
         if (Object.keys(result).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
-        validateModuleBatch(entry.name, { id: result.batchId, cursor: null, nextCursor: "synthetic-cursor", attributes: result.attributes, events: result.events }, graph, plexus.sessionIdOf);
+        validateModuleBatch(entry.name, entry.namespaces, { id: result.batchId, cursor: null, nextCursor: "synthetic-cursor", attributes: result.attributes, events: result.events }, graph, plexus.sessionIdOf);
         printResult({ module: entry.name, conformance: "pass", scope: "synthetic protocol response only" }, { json: true });
       } else if (subcommand === "run") {
         const entry = entries.find(item => item.name === values.name);
@@ -192,7 +192,7 @@ try {
           if (feed.reset) throw new Error("module cursor expired; reconciliation required");
           return { graph, cursor, feed };
         });
-        const events = snapshot.feed.events.filter(item => !item.type.startsWith(`${entry.name}.`));
+        const events = snapshot.feed.events.filter(item => !entry.namespaces.some(namespace => item.type.startsWith(`${namespace}.`)));
         const output = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph: snapshot.graph, cursor: snapshot.cursor, events });
         if (Object.keys(output).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
         if (snapshot.cursor !== null && events.length === 0 && Array.isArray(output.attributes) && output.attributes.length === 0 && Array.isArray(output.events) && output.events.length === 0) {
@@ -201,19 +201,20 @@ try {
         }
         const batch = { id: output.batchId, cursor: snapshot.cursor, nextCursor: snapshot.feed.cursor, attributes: output.attributes, events: output.events };
         const result = mutate(stateDir, graph => {
-          const checked = validateModuleBatch(entry.name, batch, graph, plexus.sessionIdOf);
+          const checked = validateModuleBatch(entry.name, entry.namespaces, batch, graph, plexus.sessionIdOf);
           if (checked.duplicate) return { graph, result: { module: entry.name, batchId: batch.id, duplicate: true } };
           return { graph, event: event("module.batch", { module: entry.name, batch, digest: checked.digest }), result: { module: entry.name, batchId: batch.id, duplicate: false } };
         });
         printResult(result, { json: true });
       } else if (subcommand === "apply") {
-        if (!entries.some(item => item.name === values.name)) throw new Error("module is not registered");
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
         const raw = values.input === "-" ? readFileSync(0, "utf8") : values.input;
         if (typeof raw !== "string" || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("invalid module input");
         const batch = JSON.parse(raw);
         const result = mutate(stateDir, graph => {
           if (!graph.migrated || graph.unnumbered) throw new Error("module batches require a migrated graph");
-          const checked = validateModuleBatch(values.name, batch, graph, plexus.sessionIdOf);
+          const checked = validateModuleBatch(entry.name, entry.namespaces, batch, graph, plexus.sessionIdOf);
           if (checked.duplicate) return { graph, result: { module: values.name, batchId: batch.id, duplicate: true } };
           return { graph, event: event("module.batch", { module: values.name, batch, digest: checked.digest }), result: { module: values.name, batchId: batch.id, duplicate: false } };
         });

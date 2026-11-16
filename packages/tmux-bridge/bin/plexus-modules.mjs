@@ -13,14 +13,17 @@ export async function readModuleRegistry(path) {
   if (Buffer.byteLength(text) > MAX_BYTES) throw new Error("module registry is too large");
   const config = JSON.parse(text);
   if (!config || config.schemaVersion !== 1 || !Array.isArray(config.modules)) throw new Error("invalid module registry");
-  const names = new Set();
+  const names = new Set(), namespaces = new Set();
   return config.modules.map((entry) => {
     if (!entry || typeof entry.name !== "string" || !NAME.test(entry.name) || names.has(entry.name)) throw new Error("invalid or duplicate module name");
+    const owned = entry.namespaces ?? [entry.name];
+    if (!Array.isArray(owned) || !owned.length || owned.length > 32 || owned.some(ns => typeof ns !== "string" || !NAME.test(ns) || namespaces.has(ns)) || new Set(owned).size !== owned.length) throw new Error("invalid or duplicate module namespace");
     if (!Array.isArray(entry.command) || !entry.command.length || entry.command.some(v => typeof v !== "string" || !v || v.includes("\0"))) throw new Error("invalid module command");
     const timeoutMs = entry.timeoutMs ?? 10000;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000) throw new Error("invalid module timeout");
     names.add(entry.name);
-    return { name: entry.name, command: [...entry.command], timeoutMs };
+    for (const namespace of owned) namespaces.add(namespace);
+    return { name: entry.name, namespaces: [...owned], command: [...entry.command], timeoutMs };
   });
 }
 
@@ -53,6 +56,7 @@ export async function invokeModule(entry, operation, request) {
 
 export async function describeModule(entry) {
   const result = await invokeModule(entry, "describe", {});
-  if (!result || result.schema !== MODULE_PROTOCOL || result.name !== entry.name || result.namespace !== entry.name || !Array.isArray(result.operations) || !result.operations.includes("describe") || result.operations.some(op => typeof op !== "string")) throw new Error("invalid module description");
+  const owned = entry.namespaces ?? [entry.name];
+  if (!result || result.schema !== MODULE_PROTOCOL || result.name !== entry.name || !Array.isArray(result.namespaces) || result.namespaces.length !== owned.length || owned.some(ns => !result.namespaces.includes(ns)) || new Set(result.namespaces).size !== owned.length || !Array.isArray(result.operations) || !result.operations.includes("describe") || result.operations.some(op => typeof op !== "string")) throw new Error("invalid module description");
   return result;
 }
