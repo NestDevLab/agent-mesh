@@ -12,3 +12,9 @@ export function isPlexusMechanismFile(relativePath) {
 export function containsPrivatePlexusPolicy(text) {
   return privatePatterns.some((pattern) => pattern.test(text));
 }
+
+// Python writes interpreter-specific binary caches while the test suite runs.
+// Keep scanning any source files placed in such directories.
+export function isGeneratedPythonBytecode(relativePath, trackedFiles) {
+  return trackedFiles instanceof Set && !trackedFiles.has(relativePath) && /(?:^|\/)__pycache__\/[^/]+\.cpython-\d+(?:\.opt-\d+)?\.pyc$/.test(relativePath);
+}
