@@ -18,7 +18,8 @@ export const plexusDiagram = `flowchart LR
   RoleProfile -. "synthetic rehearsal" .-> Rehearsal["In-memory handover rehearsal"]
   RoleProfile -. "planned runtime launch" .-> Handover
   StatePrep --> Journal
-  StatePrep -. "planned proof revalidation" .-> Handover
+  StatePrep --> Revalidate["Restart state revalidation"]
+  Revalidate -. "planned lifecycle exclusion" .-> Handover
   TriggerTxn["Trigger transaction engine"] --> TriggerJournal["Private trigger journal"]
   TriggerRecovery["Explicit uncertain recovery"] --> TriggerJournal
   TriggerTxn -. "planned scheduler adapters" .-> Handover

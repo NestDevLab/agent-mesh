@@ -246,3 +246,9 @@ record; an enqueue-only record is insufficient. Native inbox user records can
 carry the `isMeta` flag and remain eligible when this correlation is proven. This source does not prove
 execution, attention, finality or cloud delivery; its real transport transcript
 shape still requires isolated qualification. Operational cutover remains disabled.
+
+A previously verified restart-state receipt can be revalidated against the
+current private file before a future cutover. Revalidation checks generation,
+session, digest, size and YAML, and rejects path replacement during the read.
+It is a snapshot, not an exclusion lock: the host must bind it to the later
+operation. The live cutover does not yet call it and remains disabled.

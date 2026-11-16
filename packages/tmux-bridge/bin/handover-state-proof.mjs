@@ -62,8 +62,8 @@ export async function verifyStateResponse({ session, channel, nonce, response, r
     const before = await file.stat();
     if (!before.isFile() || before.uid !== process.getuid() || before.nlink !== 1 || (before.mode & 0o077) !== 0 || before.size < 1 || before.size > 1024 * 1024) throw new Error('invalid state file');
     const bytes = await file.readFile();
-    const after = await file.stat();
-    if (before.ino !== after.ino || before.dev !== after.dev || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('state file changed during verification');
+    const after = await file.stat(), current = await lstat(join(root, filename)), currentRoot = await lstat(root);
+    if (!current.isFile() || current.isSymbolicLink() || current.ino !== after.ino || current.dev !== after.dev || current.size !== after.size || current.mtimeMs !== after.mtimeMs || current.ctimeMs !== after.ctimeMs || !currentRoot.isDirectory() || currentRoot.isSymbolicLink() || currentRoot.ino !== rootInfo.ino || currentRoot.dev !== rootInfo.dev || before.ino !== after.ino || before.dev !== after.dev || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('state file changed during verification');
     const digest = createHash('sha256').update(bytes).digest('hex');
     if (digest !== attestation.sha256) throw new Error('state file digest mismatch');
     if (typeof channel !== 'string' || !/^#?[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(channel)) throw new Error('invalid state proof channel');
@@ -72,6 +72,19 @@ export async function verifyStateResponse({ session, channel, nonce, response, r
     let restart;
     try { restart = JSON.parse(decoded.stdout); } catch { throw new Error('invalid restart YAML result'); }
     validateRestartState(restart, { session, channel, requireRoleProfile: true });
+    const final = await lstat(join(root, filename)), finalRoot = await lstat(root);
+    if (!final.isFile() || final.isSymbolicLink() || final.dev !== after.dev || final.ino !== after.ino || final.size !== after.size || final.mtimeMs !== after.mtimeMs || final.ctimeMs !== after.ctimeMs || !finalRoot.isDirectory() || finalRoot.isSymbolicLink() || finalRoot.dev !== rootInfo.dev || finalRoot.ino !== rootInfo.ino) throw new Error('state file changed during verification');
     return { schema: attestation.schema, session, nonce, filename, sha256: digest, bytes: bytes.length };
   } finally { await file.close(); }
+}
+
+// Revalidate the bytes referenced by a previously authenticated graph receipt.
+// The caller owns lifecycle exclusion and must also bind this check to its
+// subsequent action; a snapshot cannot prevent later file replacement.
+export async function revalidateStateProof({ root, channel, session, generation, statePreparation }) {
+  if (!statePreparation || statePreparation.status !== 'verified' || statePreparation.session !== session || !Number.isSafeInteger(generation) || generation < 1 || statePreparation.generation !== generation || typeof statePreparation.id !== 'string' || typeof statePreparation.filename !== 'string' || !/^[0-9a-f]{64}$/.test(statePreparation.sha256 || '') || !Number.isSafeInteger(statePreparation.bytes) || statePreparation.bytes < 1) throw new Error('state preparation receipt mismatch');
+  const response = JSON.stringify({ schema: 'agent-mesh.handover-state.v1', session, nonce: statePreparation.id, filename: statePreparation.filename, sha256: statePreparation.sha256 });
+  const result = await verifyStateResponse({ session, channel, nonce: statePreparation.id, response, root, filename: statePreparation.filename });
+  if (result.bytes !== statePreparation.bytes) throw new Error('state preparation size mismatch');
+  return result;
 }
