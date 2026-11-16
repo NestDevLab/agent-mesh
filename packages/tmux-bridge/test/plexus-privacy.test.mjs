@@ -17,6 +17,7 @@ test('Plexus public mechanism paths and private references are classified', () =
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/bin/codex-compaction-evidence.mjs'), true);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/codex-compaction-evidence.test.mjs'), true);
   assert.equal(isPlexusMechanismFile('skills/agent-tmux/bin/codex-compaction-evidence.mjs'), true);
+  for (const path of ['packages/tmux-bridge/bin/codex-wake-evidence.mjs', 'packages/tmux-bridge/test/codex-wake-evidence.test.mjs', 'skills/agent-tmux/bin/codex-wake-evidence.mjs']) assert.equal(isPlexusMechanismFile(path), true, path);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/bin/restart-state.mjs'), true);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/restart-state.test.mjs'), true);
   assert.equal(isPlexusMechanismFile('skills/agent-tmux/bin/restart-state.mjs'), true);

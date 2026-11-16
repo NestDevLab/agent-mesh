@@ -31,9 +31,11 @@ class ChannelWakerTest(unittest.TestCase):
 
     def test_native_adapter_receives_message_on_stdin(self):
         from unittest.mock import Mock
-        receipt = {'status': 'queued', 'agent': 'codex', 'sessionId': uuid, 'correlationId': 'message-1'}
+        receipt = {'status': 'queued', 'agent': 'codex', 'sessionId': uuid, 'correlationId': 'message-1', 'nativeQueueId': 'queue-1'}
+        output = {}
         with patch.object(waker.subprocess, 'run', return_value=Mock(returncode=0, stdout=json.dumps(receipt))) as run:
-            self.assertEqual(waker.deliver('codex', uuid, 'message-1', 'private fixture', None, True, message_stdin=True), 0)
+            self.assertEqual(waker.deliver('codex', uuid, 'message-1', 'private fixture', None, True, message_stdin=True, receipt_out=output), 0)
+        self.assertEqual(output, {'nativeQueueId': 'queue-1'})
         self.assertNotIn('private fixture', run.call_args.args[0])
         self.assertIn('--message-stdin', run.call_args.args[0])
         self.assertIn('--no-resume', run.call_args.args[0])
@@ -122,12 +124,19 @@ class ChannelWakerTest(unittest.TestCase):
             call('migrate', '--apply', '--json')
             call('channel', 'create', '--name', 'example', '--session', f'codex:{uuid}')
             args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
-            with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'channel_call', wraps=waker.channel_call) as channel_call, patch.object(waker, 'deliver', return_value=0) as deliver, contextlib.redirect_stdout(io.StringIO()):
+            def accepted(*args, **kwargs):
+                kwargs['receipt_out']['nativeQueueId'] = 'queue-1'
+                return 0
+            with patch.object(waker, 'run_producer', return_value=([{'event': 'one'}], [])), patch.object(waker, 'channel_call', wraps=waker.channel_call) as channel_call, patch.object(waker, 'deliver', side_effect=accepted) as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 0)
                 self.assertEqual(deliver.call_args.args[0:2], ('codex', uuid))
                 reservation = next(call.args for call in channel_call.call_args_list if call.args[1] == 'begin-delivery')
                 self.assertEqual(reservation[-2:], ('--generation', '1'))
-            self.assertEqual(call('channel', 'get', '--name', 'example')['channel']['queue'][0]['state'], 'accepted')
+            item = call('channel', 'get', '--name', 'example')['channel']['queue'][0]
+            self.assertEqual(item['state'], 'accepted')
+            self.assertEqual(item['nativeQueueId'], 'queue-1')
+            self.assertEqual(item['session'], f'codex:{uuid}')
+            self.assertEqual(item['generation'], 1)
             with patch.object(waker, 'run_producer', return_value=([{'event': 'two'}], [])), patch.object(waker, 'deliver', return_value=78) as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 3)
                 self.assertEqual(waker.run(args), 3)

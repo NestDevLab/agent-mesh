@@ -2,6 +2,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, finishHandover, reserveStatePreparation, completeStatePreparation } from '../bin/channel-state.mjs';
 
+test('native queue identity is scoped to its accepted Codex delivery', () => {
+  const session = 'codex:22222222-2222-4222-8222-222222222222';
+  let channel = createChannel('example', session);
+  channel = beginDelivery(enqueue(channel, 'message-1', 'fixture'), 'message-1', session, 1);
+  const receipt = { status: 'accepted', messageId: 'message-1', session, generation: 1, nativeQueueId: 'queue-1' };
+  assert.throws(() => acknowledge(channel, 'message-1', { ...receipt, nativeQueueId: '../unsafe' }), /queue receipt/);
+  assert.throws(() => acknowledge(channel, 'message-1', { ...receipt, generation: 2 }), /receipt/);
+  assert.equal(acknowledge(channel, 'message-1', receipt).queue[0].nativeQueueId, 'queue-1');
+  let other = createChannel('other', 'claude:22222222-2222-4222-8222-222222222222');
+  other = beginDelivery(enqueue(other, 'message-1', 'fixture'), 'message-1', other.session, 1);
+  assert.throws(() => acknowledge(other, 'message-1', { ...receipt, session: other.session }), /queue receipt/);
+});
+
 test('state preparation reserves once and binds proof to the channel generation', () => {
   let channel = beginHandover(createChannel('example', 'codex:old'));
   channel = reserveStatePreparation(channel, 'handover-1');

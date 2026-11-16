@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -116,7 +117,7 @@ def compose(job: str, pending: list[dict[str, Any]], errors: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False, message_stdin: bool = False) -> int:
+def deliver(agent: str, session: str, correlation: str, message: str, inbox_root: str | None, delivery_only: bool = False, resume: bool = False, message_stdin: bool = False, receipt_out: dict | None = None) -> int:
     command = ["node", str(BIN / "agent-native-call.mjs"), "--agent", agent, "--session", session,
                "--correlation-id", correlation, "--timeout", "5"]
     command += ["--message-stdin"] if message_stdin else ["--message", message]
@@ -152,6 +153,12 @@ def deliver(agent: str, session: str, correlation: str, message: str, inbox_root
         return 78
     if delivery_only and (not isinstance(receipt, dict) or receipt.get("status") != "queued"):
         return 78
+    if delivery_only and receipt_out is not None and result.returncode == 0 and bound:
+        native_id = receipt.get('nativeQueueId')
+        if native_id is not None:
+            if agent != 'codex' or not isinstance(native_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', native_id):
+                return 78
+            receipt_out['nativeQueueId'] = native_id
     return result.returncode
 
 
@@ -246,12 +253,14 @@ def run_channel(args: argparse.Namespace) -> int:
             agent, sep, session = item['session'].partition(':')
             if not sep or agent not in ('codex', 'claude') or item['session'] != target or item['generation'] != generation:
                 raise ValueError('unsupported channel recipient')
+            transport_receipt = {}
             code = deliver(agent, session, item['id'], item['payload'], args.managed_inbox_root,
-                           True, resume=args.resume and agent == 'codex', message_stdin=True)
+                           True, resume=args.resume and agent == 'codex', message_stdin=True, receipt_out=transport_receipt)
             if code != 0:
                 print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'delivery unconfirmed'}))
                 return 3
             receipt = {'status': 'accepted', 'messageId': item['id'], 'session': item['session'], 'generation': item['generation']}
+            receipt.update(transport_receipt)
             channel_call(args, 'acknowledge', '--id', item['id'], '--input', json.dumps(receipt, separators=(',', ':')))
             print(json.dumps({'job': args.job, 'outcome': 'acted', 'correlationId': item['id']}))
             return 0

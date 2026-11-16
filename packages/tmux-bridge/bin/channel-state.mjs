@@ -37,6 +37,10 @@ export function beginDelivery(state, id, expectedSession, expectedGeneration) {
 export function acknowledge(state, id, receipt) {
   const next = copy(state), item = next.queue.find((row) => row.id === id);
   if (!item || item.state !== 'inflight' || !receipt || receipt.status !== 'accepted' || receipt.messageId !== id || receipt.session !== item.session || receipt.generation !== item.generation) throw new Error('unverified delivery receipt');
+  if (receipt.nativeQueueId !== undefined) {
+    if (!item.session.startsWith('codex:') || !identifier(receipt.nativeQueueId)) throw new Error('invalid native queue receipt');
+    item.nativeQueueId = receipt.nativeQueueId;
+  }
   item.state = 'accepted';
   return next;
 }
