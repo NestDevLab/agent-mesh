@@ -41,6 +41,7 @@ const agentTmuxBundleFiles = [
   "bin/mesh-graph.mjs",
   "bin/plexus.mjs",
   "bin/channel-state.mjs",
+  "bin/handover-state-proof.mjs",
   "bin/ledger-view.mjs",
   "bin/session-catalog.mjs",
   "bin/session-links.mjs",

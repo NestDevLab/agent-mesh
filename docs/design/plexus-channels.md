@@ -21,6 +21,12 @@ caller is responsible for verifying transport receipts before recording them.
 
 Handover completion is disabled until an adapter can verify that the old
 session wrote its state. A path or caller assertion is not sufficient proof.
+`handover-state-proof.mjs` prepares the file-verification part: it binds a
+correlated actor response to a session, nonce, filename and SHA-256, and checks
+the private file without following a final symlink. It does not authenticate the
+response, parse the state format, or invoke a session; a future adapter must
+obtain that response from the correlated native transport and verify its own
+state-format contract before enabling cutover.
 The prepared Codex path additionally requires a fresh unarchived native-thread
 observation and exactly one detected writer. Claude and cloud successors are
 not yet supported by this operation.
