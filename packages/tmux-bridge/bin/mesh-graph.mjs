@@ -36,7 +36,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge } from "./channel-state.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -123,7 +123,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "begin-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -155,6 +155,8 @@ try {
         } else {
           if (!current) throw new Error("unknown channel");
           if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), values.input);
+          else if (subcommand === "begin-delivery") next = beginDelivery(current, requiredSingleLine(values.id, "--id"));
+          else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(values.input, "--input")));
           else if (subcommand === "begin-handover") next = beginHandover(current);
           else throw new Error("unknown channel operation");
         }

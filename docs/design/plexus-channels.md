@@ -14,8 +14,13 @@ events under the graph writer lock. Queued messages survive replay and
 compaction. The graph and event log contain message bodies and must remain
 private; this is not a scoped remote API.
 
-This is not yet a complete channel service: delivery and handover completion
-are not exposed by the graph command. It has no transport, authorization,
+The graph command can also reserve a pending message and record a matching
+acceptance receipt. Reservation is durable before transport; a crash or
+uncertain outcome leaves the item in flight and blocks handover. A local
+caller is responsible for verifying transport receipts before recording them.
+
+This is not yet a complete channel service: handover completion is not exposed
+by the graph command. It has no transport, authorization,
 waker integration, recovery procedure or session verification. The caller must not treat the
 `verified` argument as evidence by itself. It must establish all of these
 properties before connecting the transitions to live sessions.

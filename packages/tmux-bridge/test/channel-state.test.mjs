@@ -5,7 +5,10 @@ import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, fini
 test('handover queues work and never reroutes an uncertain delivery', () => {
   let channel = createChannel('example', 'session:one');
   channel = enqueue(channel, 'message-1', 'hello');
+  channel = enqueue(channel, 'message-0', 'second');
+  assert.throws(() => beginDelivery(channel, 'message-0'), /first pending/);
   channel = beginDelivery(channel, 'message-1');
+  assert.throws(() => beginDelivery(channel, 'message-0'), /inflight/);
   channel = beginHandover(channel);
   channel = enqueue(channel, 'message-2', 'queued');
   assert.throws(() => beginDelivery(channel, 'message-2'), /handover/);
@@ -14,7 +17,7 @@ test('handover queues work and never reroutes an uncertain delivery', () => {
   channel = acknowledge(channel, 'message-1', { status: 'accepted', messageId: 'message-1', session: 'session:one', generation: 1 });
   assert.throws(() => finishHandover(channel, 'session:two', false), /successor/);
   channel = finishHandover(channel, 'session:two', true);
-  channel = beginDelivery(channel, 'message-2');
+  channel = beginDelivery(channel, 'message-0');
   assert.equal(channel.queue[1].session, 'session:two');
   assert.equal(channel.queue[1].generation, 2);
   assert.deepEqual(enqueue(channel, 'message-2', 'queued'), channel);

@@ -21,6 +21,8 @@ export function enqueue(state, id, payload) {
 
 export function beginDelivery(state, id) {
   if (state.phase !== 'active') throw new Error('handover in progress');
+  if (state.queue.some((item) => item.state === 'inflight')) throw new Error('unresolved inflight delivery');
+  if (state.queue.find((item) => item.state === 'pending')?.id !== id) throw new Error('message is not first pending');
   const next = copy(state), item = next.queue.find((row) => row.id === id);
   if (!item || item.state !== 'pending') throw new Error('message not pending');
   item.state = 'inflight';
