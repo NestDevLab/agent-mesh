@@ -31,7 +31,7 @@ test('channel and queued messages survive concurrent writers, replay and compact
   assert.deepEqual(channel.queue.map(row => row.id).sort(), ['one', 'two']);
 });
 
-test('cutover requires fresh successor verification and is replayed with its lifecycle event', async (t) => {
+test('cutover fails closed until old-session state authorship is verified', async (t) => {
   const state = await mkdtemp(join(tmpdir(), 'channel-cutover-'));
   t.after(() => rm(state, { recursive: true, force: true }));
   const writer = join(state, 'writer-fixture.mjs');
@@ -52,13 +52,10 @@ test('cutover requires fresh successor verification and is replayed with its lif
   await appendFile(join(state, 'events.jsonl'), `${JSON.stringify(fixture)}\n`);
   await assert.rejects(call('channel', 'finish-handover', '--name', 'example', '--to', target), /one verified writer/);
   await writeFile(writer, `console.log(JSON.stringify({agent:'codex',sessionId:'33333333-3333-4333-8333-333333333333',writers:[{pid:123,kind:'codex'}]}))`);
-  const result = await call('channel', 'finish-handover', '--name', 'example', '--to', target);
-  assert.equal(result.channel.session, target);
-  assert.equal(result.channel.handoverReceipt.link, `codex://threads/${two}`);
-  assert.equal((await call('channel', 'finish-handover', '--name', 'example', '--to', target)).duplicate, true);
+  await assert.rejects(call('channel', 'finish-handover', '--name', 'example', '--to', target), /old-session state verification unavailable/);
   await rm(join(state, 'checkpoint.json'));
-  assert.equal((await call('channel', 'get', '--name', 'example')).channel.session, target);
-  assert.ok((await call('query', 'changes', '--input', '{}')).events.some(item => item.type === 'session.handover' && item.to === target));
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.session, `codex:${one}`);
+  assert.equal((await call('channel', 'get', '--name', 'example')).channel.phase, 'handover');
 });
 
 test('delivery reservation and matching receipt survive graph replay', async (t) => {

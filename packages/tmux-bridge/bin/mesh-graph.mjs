@@ -36,7 +36,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, finishHandover } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge } from "./channel-state.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -170,11 +170,9 @@ try {
             if (!/^codex:[0-9a-f-]{36}$/.test(target) || proof.source !== "codex-threads" || proof.link !== target) throw new Error("successor native verification unavailable");
             const writer = probeWriter({ harness: "codex", nativeId: target.slice(6) });
             if (writer?.agent !== "codex" || writer.sessionId !== target.slice(6) || !Array.isArray(writer.writers) || writer.writers.length !== 1 || !Number.isSafeInteger(writer.writers[0]?.pid) || writer.writers[0].pid <= 0 || writer.writers[0].kind !== "codex") throw new Error("successor requires one verified writer");
-            const link = `codex://threads/${target.slice(6)}`;
-            next = finishHandover(current, target, true);
-            next.handoverReceipt = { previous: current.session, successor: target, link, checkedAt: proof.checkedAt, writer: writer.writers[0] };
-            delete next.handoverStartedAt;
-            return { graph, event: event("session.handover", { session: current.session, to: target, evidence: `channel:${name}`, channel: next }), result: { channel: next, duplicate: false } };
+            // A caller assertion or a file path is not proof that the old
+            // session wrote its state; no verified adapter exists yet.
+            throw new Error("old-session state verification unavailable; cutover disabled");
           }
           else throw new Error("unknown channel operation");
         }

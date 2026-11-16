@@ -19,11 +19,11 @@ acceptance receipt. Reservation is durable before transport; a crash or
 uncertain outcome leaves the item in flight and blocks handover. A local
 caller is responsible for verifying transport receipts before recording them.
 
-Handover completion currently supports only a Codex successor with a fresh
-unarchived native-thread observation and exactly one detected writer. It
-atomically changes the channel and emits `session.handover`, with a native
-thread link in the channel receipt. Missing or ambiguous evidence fails closed;
-Claude and cloud successors are not yet supported by this operation.
+Handover completion is disabled until an adapter can verify that the old
+session wrote its state. A path or caller assertion is not sufficient proof.
+The prepared Codex path additionally requires a fresh unarchived native-thread
+observation and exactly one detected writer. Claude and cloud successors are
+not yet supported by this operation.
 
 This is not yet a complete handover workflow: it does not write state for the
 old session, publish or verify the old session's final notice, archive anything,
