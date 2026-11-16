@@ -6,7 +6,7 @@ const privatePatterns = [
 ];
 
 export function isPlexusMechanismFile(relativePath) {
-  return /^(?:docs\/design\/plexus[-.]|packages\/tmux-bridge\/README\.md$|(?:packages\/tmux-bridge\/(?:bin|examples|test)|skills\/agent-tmux\/bin)\/(?:plexus[-.]|channel-|module-batches|mesh-(?:graph|channel)|agent-waker|session-(?:sleep|handover)|(?:sleep|handover)-))/.test(relativePath);
+  return /^(?:docs\/design\/plexus[-.]|packages\/tmux-bridge\/README\.md$|(?:packages\/tmux-bridge\/(?:bin|examples|test)|skills\/agent-tmux\/bin)\/(?:plexus[-.]|channel-|module-batches|mesh-(?:graph|channel)|agent-waker|session-(?:sleep|handover)|(?:sleep|handover|restart)-))/.test(relativePath);
 }
 
 export function containsPrivatePlexusPolicy(text) {
