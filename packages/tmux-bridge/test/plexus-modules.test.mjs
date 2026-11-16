@@ -41,6 +41,6 @@ test("describe verifies identity and enforces timeouts", async () => {
   const good = "process.stdout.write(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',namespace:'example',operations:['describe']}))";
   const entry = { name: "example", command: [process.execPath, "-e", good], timeoutMs: 1000 };
   assert.equal((await describeModule(entry)).namespace, "example");
-  await assert.rejects(describeModule({ ...entry, name: "other" }), /description/);
+  await assert.rejects(describeModule({ ...entry, name: "other" }), /invalid module response/);
   await assert.rejects(describeModule({ ...entry, command: [process.execPath, "-e", "setTimeout(()=>{}, 10000)"], timeoutMs: 20 }), /timed out/);
 });
