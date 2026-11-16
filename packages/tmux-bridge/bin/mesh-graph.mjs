@@ -214,7 +214,11 @@ try {
           else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
           else if (subcommand === "reserve-wake") {
             if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
-            next = reserveWake(current, requiredSingleLine(values.id, "--id"), requiredSingleLine(values.session, "--session"), Number(values.generation), requiredSingleLine(channelInput, "--input"));
+            const session = requiredSingleLine(values.session, "--session"), queueId = requiredSingleLine(channelInput, "--input");
+            const sourceId = `codex-wake-${createHash("sha256").update(JSON.stringify([session, queueId])).digest("hex")}`;
+            const receiptId = createHash("sha256").update(sourceId).digest("hex");
+            if ((graph.lifecycleReceipts || []).some(item => item.id === receiptId) || (graph.channels || []).some(item => item.id !== name && item.wakeReservation?.session === session && item.wakeReservation?.nativeQueueId === queueId)) throw new Error("wake identity already reserved or recorded");
+            next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId);
           }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "finish-handover") {

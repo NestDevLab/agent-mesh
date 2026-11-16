@@ -25,19 +25,19 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', thread, '--json');
   await call('migrate', '--apply', '--json');
   const session = `codex:${thread}`;
-  async function prepareChannel(name) {
+  async function prepareChannel(name, nativeId = 'queued-1') {
     await call('channel', 'create', '--name', name, '--session', session);
     await call('channel', 'enqueue', '--name', name, '--id', correlation, '--input', 'fixture');
     await call('channel', 'begin-delivery', '--name', name, '--id', correlation, '--session', session, '--generation', '1');
-    await call('channel', 'acknowledge', '--name', name, '--id', correlation, '--input', JSON.stringify({ status: 'accepted', messageId: correlation, session, generation: 1, nativeQueueId: 'queued-1' }));
+    await call('channel', 'acknowledge', '--name', name, '--id', correlation, '--input', JSON.stringify({ status: 'accepted', messageId: correlation, session, generation: 1, nativeQueueId: nativeId }));
   }
   await prepareChannel('success');
   const cursor = (await call('query', 'changes', '--input', JSON.stringify({ initial: 'head' }))).cursor;
-  const requests = []; let mode = 'success';
+  const requests = []; let mode = 'success', nativeId = 'queued-1';
   const server = createAppServer((request, peer) => {
     if (!request.id) return;
     requests.push(request);
-    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: 'queued-1', clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture' }] }], nextCursor: null } });
+    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture' }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
     else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture' }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
@@ -70,14 +70,18 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const again = JSON.parse((await exec(process.execPath, [bin, '--publish', first.evidence, '--session', `codex:${thread}`, '--channel', 'success', '--evidence-root', evidence, '--graph-state', state], { env })).stdout);
   assert.equal(again.duplicate, true);
   assert.equal(again.settled, true);
+  await prepareChannel('duplicate');
+  await assert.rejects(call('channel', 'reserve-wake', '--name', 'duplicate', '--id', correlation, '--session', session, '--generation', '1', '--input', 'queued-1'));
   const feed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.deepEqual(feed.events.filter(e => e.type === 'session.woken').map(e => e.evidence), [first.evidence]);
   const uncertainRoot = join(root, 'uncertain'); await mkdir(uncertainRoot, { mode: 0o700 });
-  await prepareChannel('uncertain');
-  const uncertainArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'uncertain', '--generation', '1', '--evidence-root', uncertainRoot, '--graph-state', state];
+  nativeId = 'queued-uncertain'; await prepareChannel('uncertain', nativeId);
+  const uncertainArgs = ['--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'uncertain', '--generation', '1', '--evidence-root', uncertainRoot, '--graph-state', state];
   mode = 'uncertain';
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...uncertainArgs], { env }));
   await assert.rejects(call('channel', 'begin-handover', '--name', 'uncertain'));
+  await prepareChannel('competing', nativeId);
+  await assert.rejects(call('channel', 'reserve-wake', '--name', 'competing', '--id', correlation, '--session', session, '--generation', '1', '--input', nativeId));
   assert.deepEqual((await readdir(uncertainRoot)).map(name => name.split('-')[0]), ['intent']);
   const starts = requests.filter(r => r.method === 'thread/queue/start').length;
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...uncertainArgs], { env }));
@@ -85,8 +89,8 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const uncertainFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
   assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 1);
   const partialRoot = join(root, 'partial'); await mkdir(partialRoot, { mode: 0o700 });
-  await prepareChannel('partial');
-  const partialArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'partial', '--generation', '1', '--evidence-root', partialRoot, '--graph-state', state];
+  nativeId = 'queued-partial'; await prepareChannel('partial', nativeId);
+  const partialArgs = ['--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'partial', '--generation', '1', '--evidence-root', partialRoot, '--graph-state', state];
   mode = 'partial';
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...partialArgs], { env }));
   assert.deepEqual((await readdir(partialRoot)).map(name => name.split('-')[0]), ['intent']);
@@ -94,8 +98,8 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 1);
   for (const mismatch of ['wrong-thread', 'wrong-turn', 'wrong-time', 'wrong-client', 'wrong-input']) {
     const mismatchRoot = join(root, mismatch); await mkdir(mismatchRoot, { mode: 0o700 });
-    await prepareChannel(mismatch);
-    const mismatchArgs = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', mismatch, '--generation', '1', '--evidence-root', mismatchRoot, '--graph-state', state];
+    nativeId = `queued-${mismatch}`; await prepareChannel(mismatch, nativeId);
+    const mismatchArgs = ['--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', mismatch, '--generation', '1', '--evidence-root', mismatchRoot, '--graph-state', state];
     mode = mismatch;
     await assert.rejects(exec(process.execPath, [bin, '--apply', ...mismatchArgs], { env }));
     assert.deepEqual((await readdir(mismatchRoot)).map(name => name.split('-')[0]), ['intent']);

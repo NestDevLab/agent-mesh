@@ -47,7 +47,9 @@ queue acceptance only; the waker does not yet invoke the wake-evidence adapter.
 An ambiguous send remains inflight and cannot be automatically retried.
 The channel journal can reserve an accepted wake by exact session, generation,
 correlation and native queue id. An outstanding reservation blocks handover
-and survives replay; it has no expiry. The experimental wake adapter acquires
+and survives replay; it has no expiry. The graph refuses another channel's
+reservation for that same session and queue id, and refuses already recorded
+wakes. The experimental wake adapter acquires
 the reservation before starting a turn and settles it only after the evidence
 and lifecycle receipt are verified. Re-publishing the same proof with its
 channel can recover a crash after the proof was written. A crash before that
