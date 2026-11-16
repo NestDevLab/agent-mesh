@@ -11,12 +11,12 @@ export async function planRoleLaunch({ profile, authority, probe, timeoutMs = 30
   if (profile.permissions.some(value => authority.humanGatedPermissions.includes(value))) throw new Error('human-gated permission cannot be pregranted');
   const available = [], unavailable = [];
   for (const name of profile.mcp) {
-    let timer;
+    let timer; const controller = new AbortController();
     try {
-      const result = await Promise.race([Promise.resolve().then(() => probe(name)), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('unreachable')), timeoutMs); })]);
+      const result = await Promise.race([Promise.resolve().then(() => probe(name, { signal: controller.signal })), new Promise((_, reject) => { timer = setTimeout(() => { controller.abort(); reject(new Error('unreachable')); }, timeoutMs); })]);
       (result === true ? available : unavailable).push(name);
     } catch { unavailable.push(name); }
-    finally { clearTimeout(timer); }
+    finally { clearTimeout(timer); controller.abort(); }
   }
   return { schema: 'agent-mesh.role-launch-plan.v1', role: profile.role, permissions: [...profile.permissions], plugins: [...profile.plugins], mcpToStart: available, mcpUnavailable: unavailable };
 }

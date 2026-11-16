@@ -4,29 +4,35 @@ import { isAbsolute } from 'node:path';
 
 export function roleProbeFromAllowlist(allowlist, timeoutMs = 3000) {
   if (!allowlist || typeof allowlist !== 'object' || Array.isArray(allowlist)) throw new Error('invalid MCP allowlist');
-  return name => {
+  return (name, { signal } = {}) => {
     if (typeof name !== 'string' || !Object.hasOwn(allowlist, name)) throw new Error('MCP is not allowlisted');
     const entry = allowlist[name];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error('invalid MCP allowlist entry');
-    return probeStdioMcp({ command: entry.command, env: entry.env, timeoutMs });
+    return probeStdioMcp({ command: entry.command, env: entry.env, timeoutMs, signal });
   };
 }
 
 // The profile contains identifiers only. Callers must resolve them using a
 // trusted private allowlist; never construct this command from session text.
-export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000 }) {
-  if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command.every(value => typeof value === 'string' && value.length > 0 && value.length < 8192 && !value.includes('\0')) || !isAbsolute(command[0]) || !env || typeof env !== 'object' || Array.isArray(env) || !Object.entries(env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && !value.includes('\0')) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000) throw new Error('invalid MCP probe configuration');
+export async function probeStdioMcp({ command, env = {}, timeoutMs = 3000, signal }) {
+  if (!Array.isArray(command) || command.length < 1 || command.length > 64 || !command.every(value => typeof value === 'string' && value.length > 0 && value.length < 8192 && !value.includes('\0')) || !isAbsolute(command[0]) || !env || typeof env !== 'object' || Array.isArray(env) || !Object.entries(env).every(([key, value]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && typeof value === 'string' && !value.includes('\0')) || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30000 || (signal !== undefined && !(signal instanceof AbortSignal))) throw new Error('invalid MCP probe configuration');
   return new Promise(resolve => {
     let child, timer, buffer = '', phase = 'initialize', finished = false;
+    let onAbort;
     const finish = result => {
       if (finished) return;
       finished = true; clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
       if (child?.pid) { try { process.kill(-child.pid, 'SIGKILL'); } catch {} }
       resolve(result);
     };
+    if (signal?.aborted) { finish(false); return; }
     try { child = spawn(command[0], command.slice(1), { detached: true, shell: false, stdio: ['pipe', 'pipe', 'ignore'], env }); }
     catch { finish(false); return; }
     timer = setTimeout(() => finish(false), timeoutMs);
+    onAbort = () => finish(false);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) { finish(false); return; }
     child.once('error', () => finish(false));
     child.once('close', () => finish(false));
     child.stdin.on('error', () => finish(false));
