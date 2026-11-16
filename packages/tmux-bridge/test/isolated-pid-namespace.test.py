@@ -69,6 +69,22 @@ class IsolatedPidNamespaceTest(unittest.TestCase):
                 if not lease._stopped:
                     lease.stop()
 
+    def test_supervisor_death_before_and_after_release(self):
+        for phase in ('before', 'after'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                escaped, payload, supervisor = root / 'escaped.py', root / 'payload.py', root / 'supervisor.py'
+                escaped.write_text('import os,pathlib,signal,sys,time\nos.setsid()\nsignal.signal(signal.SIGTERM,signal.SIG_IGN)\npathlib.Path(sys.argv[1]).write_text("started")\ntime.sleep(2)\npathlib.Path(sys.argv[2]).write_text("late")\n')
+                payload.write_text('import subprocess,sys,time\nsubprocess.Popen([sys.executable,sys.argv[1],sys.argv[2],sys.argv[3]])\nwhile True:time.sleep(1)\n')
+                supervisor.write_text('import importlib.util,os,pathlib,sys,time\nspec=importlib.util.spec_from_file_location("owned",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)\nroot=pathlib.Path(sys.argv[2]);lease=m.IsolatedNamespace.prepare(str(root),[sys.executable,str(root/"payload.py"),str(root/"escaped.py"),str(root/"started"),str(root/"late")])\nif sys.argv[3]=="before":os._exit(0)\nlease.release()\nfor _ in range(500):\n if (root/"started").exists():os._exit(0)\n time.sleep(.01)\nos._exit(2)\n')
+                result = subprocess.run([sys.executable, '-B', str(supervisor), str(BIN / 'isolated-pid-namespace.py'), directory, phase], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=12)
+                self.assertEqual(result.returncode, 0)
+                time.sleep(2.4)
+                self.assertEqual((root / 'started').exists(), phase == 'after')
+                self.assertFalse((root / 'late').exists())
+                listing = subprocess.run(['ps', '-eo', 'args'], capture_output=True, text=True, check=True).stdout
+                self.assertNotIn(directory, listing)
+
     def test_unverified_identity_closes_gate_without_running_fixture(self):
         with tempfile.TemporaryDirectory() as directory:
             marker = Path(directory) / 'ran'

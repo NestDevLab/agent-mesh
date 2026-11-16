@@ -215,6 +215,8 @@ the pinned init and reports local init exit with descendant and remote effects
 still unverified. Preparation failure closes the gate without releasing it; if
 ownership or cleanup cannot be established it reports uncertainty. The lease
 must remain in the creating process and is not a persistent recovery mechanism,
-an authorization boundary or an integrated live session launcher. The sandbox
-uses a read-only host filesystem with a private writable workspace and is for
-isolated fixtures only.
+an authorization boundary or an integrated live session launcher. Isolated
+tests cover abrupt supervisor exit both before and after release, including a
+child that changes process group; neither case proves behavior for external
+services or other runtime configurations. The sandbox uses a read-only host
+filesystem with a private writable workspace and is for isolated fixtures only.
