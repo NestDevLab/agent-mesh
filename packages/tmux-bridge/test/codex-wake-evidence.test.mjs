@@ -37,9 +37,9 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const server = createAppServer((request, peer) => {
     if (!request.id) return;
     requests.push(request);
-    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture' }] }], nextCursor: null } });
+    if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: 'fixture', text_elements: [] }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
-    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture' }] }] }] } } });
+    else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
   });
   await new Promise(resolve => server.listen(socket, resolve));
@@ -86,8 +86,19 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const starts = requests.filter(r => r.method === 'thread/queue/start').length;
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...uncertainArgs], { env }));
   assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, starts);
+  const recoverArgs = ['--reconcile', '--channel', 'uncertain', '--evidence-root', uncertainRoot, '--graph-state', state];
+  await assert.rejects(exec(process.execPath, [bin, ...recoverArgs], { env }));
+  mode = 'wrong-client';
+  await assert.rejects(exec(process.execPath, [bin, '--apply', ...recoverArgs], { env }));
+  assert.ok((await call('channel', 'get', '--name', 'uncertain')).channel.wakeReservation);
+  mode = 'success';
+  const recovered = JSON.parse((await exec(process.execPath, [bin, '--apply', ...recoverArgs], { env })).stdout);
+  assert.equal(recovered.settled, true);
+  assert.equal((await verifyCodexWakeEvidence({ evidenceRoot: uncertainRoot, reference: recovered.evidence, session })).source, 'codex-app-server.correlated-recovery');
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, starts);
+  assert.equal((await call('channel', 'get', '--name', 'uncertain')).channel.wakeReservation, undefined);
   const uncertainFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
-  assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 1);
+  assert.equal(uncertainFeed.events.filter(e => e.type === 'session.woken').length, 2);
   const partialRoot = join(root, 'partial'); await mkdir(partialRoot, { mode: 0o700 });
   nativeId = 'queued-partial'; await prepareChannel('partial', nativeId);
   const partialArgs = ['--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'partial', '--generation', '1', '--evidence-root', partialRoot, '--graph-state', state];
@@ -95,7 +106,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   await assert.rejects(exec(process.execPath, [bin, '--apply', ...partialArgs], { env }));
   assert.deepEqual((await readdir(partialRoot)).map(name => name.split('-')[0]), ['intent']);
   const partialFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
-  assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 1);
+  assert.equal(partialFeed.events.filter(e => e.type === 'session.woken').length, 2);
   for (const mismatch of ['wrong-thread', 'wrong-turn', 'wrong-time', 'wrong-client', 'wrong-input']) {
     const mismatchRoot = join(root, mismatch); await mkdir(mismatchRoot, { mode: 0o700 });
     nativeId = `queued-${mismatch}`; await prepareChannel(mismatch, nativeId);
@@ -105,7 +116,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
     assert.deepEqual((await readdir(mismatchRoot)).map(name => name.split('-')[0]), ['intent']);
   }
   const mismatchFeed = await call('query', 'changes', '--input', JSON.stringify({ sinceCursor: cursor }));
-  assert.equal(mismatchFeed.events.filter(e => e.type === 'session.woken').length, 1);
+  assert.equal(mismatchFeed.events.filter(e => e.type === 'session.woken').length, 2);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);
