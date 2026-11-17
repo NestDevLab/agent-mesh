@@ -65,3 +65,32 @@ def observe_owned_restart(*, writer_pid, pane_pid, session, trusted_executable,
             raise RuntimeError('process identity changed during observation')
         return {'schema': 'agent-mesh.claude-owned-restart-observation.v1',
                 'checkpoint': expected, 'process': first, 'observation': proof}
+
+
+def _main():
+    # Internal graph child: the parent holds the graph lock and supplies the
+    # checkpoint. Never invoke as evidence of caller authority on its own.
+    import sys
+    try:
+        raw = sys.stdin.buffer.read(2 * 1024 * 1024 + 1)
+        if len(raw) > 2 * 1024 * 1024:
+            raise ValueError('request too large')
+        data = json.loads(raw)
+        checkpoint = data['checkpoint']
+        request = data['request']
+        result = observe_owned_restart(
+            writer_pid=request['writerPid'], pane_pid=request['panePid'],
+            session=request['session'], trusted_executable=request['trustedExecutable'],
+            transcript_root=request['transcriptRoot'], frame=request['frame'],
+            state_sha256=request['stateSha256'], profile_sha256=request['profileSha256'],
+            handover_id=request['handoverId'], launch_id=request['launchId'],
+            source_session=request['sourceSession'], generation=request['generation'],
+            read_checkpoint=lambda: checkpoint, node_executable=data['nodeExecutable'])
+        print(json.dumps(result, separators=(',', ':')))
+    except Exception:
+        print('owned restart observation failed', file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == '__main__':
+    _main()

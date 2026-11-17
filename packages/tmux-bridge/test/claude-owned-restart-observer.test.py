@@ -1,4 +1,5 @@
 import hashlib
+import datetime
 import importlib.util
 import json
 import os
@@ -76,6 +77,41 @@ class OwnedRestartObservationTest(unittest.TestCase):
         self.args['read_checkpoint'] = read
         with self.assertRaises((RuntimeError, ProcessLookupError, FileNotFoundError)):
             observer.observe_owned_restart(**self.args)
+
+    def test_graph_reads_its_locked_checkpoint_and_does_not_settle(self):
+        graph = str(base / 'mesh-graph.mjs')
+        state = str(Path(self.tmp.name) / 'graph')
+        node = '/usr/local/bin/node'
+        def call(*args, input=None, check=True):
+            return subprocess.run([node, graph, '--state', state, *args], input=input,
+                                  text=True, capture_output=True, check=check, timeout=15)
+        old_id = '22222222-2222-4222-8222-222222222222'
+        source = 'claude:' + old_id
+        call('add', '--agent', 'claude', '--tmux-target', 'fixture', '--cwd', '/tmp', '--runtime-uuid', old_id, '--json')
+        call('migrate', '--apply', '--json')
+        call('channel', 'create', '--name', 'fixture', '--session', source)
+        handover = json.loads(call('channel', 'begin-handover', '--name', 'fixture').stdout)['channel']['handoverId']
+        graph_state = json.loads(call('show', '--json').stdout)
+        channel = next(item for item in graph_state['channels'] if item['id'] == 'fixture')
+        channel['successorLaunch'] = {**self.checkpoint, 'session': source, 'handoverId': handover}
+        event = {'schema': 'agent-mesh.session-graph-event.v1', 'id': 'fixture-invoking',
+                 'type': 'channel.updated', 'at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                 'channel': channel, 'seq': graph_state['lastSeq'] + 1, 'host': 'local'}
+        events = Path(state) / 'events.jsonl'
+        with events.open('a') as output:
+            output.write(json.dumps(event) + '\n')
+        before = events.read_bytes()
+        request = {'writerPid': self.process.pid, 'panePid': os.getpid(), 'session': SESSION,
+                   'trustedExecutable': sys.executable, 'transcriptRoot': self.args['transcript_root'],
+                   'frame': FRAME, 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
+                   'handoverId': handover, 'launchId': 'launch', 'sourceSession': source, 'generation': 1}
+        args = ('channel', 'observe-owned-restart', '--name', 'fixture', '--input', '-')
+        proof = json.loads(call(*args, input=json.dumps(request)).stdout)
+        self.assertEqual(proof['checkpoint']['status'], 'invoking')
+        self.assertEqual(events.read_bytes(), before)
+        request['profileSha256'] = '0' * 64
+        self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
+        self.assertEqual(events.read_bytes(), before)
 
     def test_wrong_frame_or_reservation_is_rejected(self):
         self.args['frame'] = FRAME + ' altered'
