@@ -259,19 +259,23 @@ test('successor launch reservation survives replay and cannot be duplicated', as
   const fixture = await successorFixture(state, session);
   channel.statePreparation = { status: 'verified', session, generation: 1, id: 'prep', filename: 'state.yaml', sha256: fixture.sha256, bytes: fixture.bytes };
   await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-prepared', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
-  const args = ['channel', 'reserve-successor', '--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--state-root', fixture.files, '--input', JSON.stringify({ id: 'launch-1', profileSha256: fixture.profileSha256 })];
+  const args = ['channel', 'reserve-successor', '--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--state-root', fixture.files, '--input', JSON.stringify({ id: 'launch-1', profileSha256: fixture.profileSha256, successorSession: 'claude:33333333-3333-4333-8333-333333333333' })];
   const wrong = [...args]; wrong[wrong.length - 1] = JSON.stringify({ id: 'launch-1', profileSha256: 'b'.repeat(64) });
   await assert.rejects(call(...wrong), /does not match verified restart state/);
   const path = join(fixture.files, 'state.yaml'), original = await readFile(path, 'utf8');
   await writeFile(path, original.replace('role: operator', 'role: changed'));
   await assert.rejects(call(...args), /digest mismatch/);
   await writeFile(path, original);
+  const spoof = [...args]; spoof[spoof.length - 1] = JSON.stringify({ id: 'launch-1', profileSha256: fixture.profileSha256, successorSession: 'claude:33333333-3333-4333-8333-333333333333', bridgeLaunchId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  await assert.rejects(call(...spoof), /invalid successor launch reservation/);
   const reserved = await call(...args);
+  assert.match(reserved.channel.successorLaunch.bridgeLaunchId, /^[0-9a-f-]{36}$/);
   assert.equal(reserved.channel.successorLaunch.status, 'requested');
-  await assert.rejects(call(...args), /unresolved/);
+  await assert.rejects(call(...args), /unresolved|already registered or reserved/);
   await rm(join(state, 'checkpoint.json'), { force: true });
   const restored = (await call('channel', 'get', '--name', 'example')).channel;
   assert.equal(restored.successorLaunch.id, 'launch-1');
+  assert.equal(restored.successorLaunch.bridgeLaunchId, reserved.channel.successorLaunch.bridgeLaunchId);
   assert.equal(restored.successorLaunch.stateSha256, fixture.sha256);
   assert.equal(restored.successorLaunch.profileSha256, fixture.profileSha256);
   assert.equal(restored.successorLaunch.handoverId, channel.handoverId);
@@ -285,7 +289,7 @@ test('successor launch reservation survives replay and cannot be duplicated', as
   } else {
     assert.deepEqual(current.retiredLaunchIds, ['launch-1']);
     await assert.rejects(call('channel', 'invoke-successor', ...identity), /unresolved/);
-    await assert.rejects(call(...args), /unresolved/);
+    await assert.rejects(call(...args), /unresolved|already registered or reserved/);
   }
 });
 

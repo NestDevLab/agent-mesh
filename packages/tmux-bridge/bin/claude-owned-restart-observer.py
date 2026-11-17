@@ -105,7 +105,7 @@ def _main():
         if not request.get('target'):
             raise ValueError('target required')
         socket = os.environ.get('MESH_TMUX_SOCKET') or 'mesh'
-        with _launch.launch_evidence(request['launchRecordPath'], launch_id=request['bridgeLaunchId'],
+        with _launch.launch_evidence(request['launchRecordPath'], launch_id=checkpoint['bridgeLaunchId'],
                                      target=request['target'], socket=socket,
                                      session=request['session']) as launch:
             result = observe_owned_restart(
@@ -117,6 +117,7 @@ def _main():
                 source_session=request['sourceSession'], generation=request['generation'],
                 read_checkpoint=lambda: checkpoint, node_executable=data['nodeExecutable'],
                 target=request['target'])
+            result['checkpoint']['bridgeLaunchId'] = checkpoint['bridgeLaunchId']
             result['launch'] = launch
         print(json.dumps(result, separators=(',', ':')))
     except Exception:

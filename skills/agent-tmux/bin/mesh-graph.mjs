@@ -155,10 +155,11 @@ try {
         // stdin, and only the graph checkpoint is passed to the child.
         if (values.input !== "-") throw new Error("owned restart observation requires stdin");
         const request = JSON.parse(channelInput);
+        if (!request || typeof request !== "object" || Array.isArray(request) || Object.hasOwn(request, "bridgeLaunchId")) throw new Error("bridge launch identity is derived from the checkpoint");
         const result = withLock(stateDir, () => {
           assertPrivateChannelState(stateDir);
           const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
-          if (!channel || channel.phase !== 'handover' || !channel.successorLaunch) throw new Error('successor checkpoint unavailable');
+          if (!channel || channel.phase !== 'handover' || !channel.successorLaunch?.bridgeLaunchId) throw new Error('successor checkpoint unavailable');
           const checkpoint = channel.successorLaunch;
           const child = spawnSync('/usr/bin/python3', [join(dirname(fileURLToPath(import.meta.url)), 'claude-owned-restart-observer.py')], {
             input: JSON.stringify({ request, checkpoint, nodeExecutable: process.execPath }), encoding: 'utf8', timeout: 20000, maxBuffer: 8192,
@@ -328,7 +329,7 @@ try {
           const current = (graph.channels || []).find(item => item.id === name);
           if (!current || current.handoverId !== prior.handoverId || current.session !== prior.session || current.generation !== prior.generation || JSON.stringify(current.statePreparation) !== JSON.stringify(prior.statePreparation)) throw new Error("channel changed during successor preflight");
           if (launch.successorSession && ((graph.nodes || []).some(node => plexus.sessionIdOf(node) === launch.successorSession) || (graph.channels || []).some(item => item.session === launch.successorSession || item.successorLaunch?.successorSession === launch.successorSession))) throw new Error("successor session already registered or reserved");
-          const next = reserveSuccessorLaunch(current, expected, launch);
+          const next = reserveSuccessorLaunch(current, expected, launch.successorSession ? { ...launch, bridgeLaunchId: randomUUID() } : launch);
           return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
         });
         printResult(result, { json: true });

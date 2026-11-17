@@ -78,10 +78,12 @@ export function abortHandover(state, expected) {
 export function reserveSuccessorLaunch(state, expected, launch) {
   if (!identifier(expected?.handoverId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation) throw new Error('handover identity changed');
   if (launch?.successorSession !== undefined && (!claudeSession(launch.successorSession) || launch.successorSession === expected.session)) throw new Error('invalid successor session');
+  if (launch?.bridgeLaunchId !== undefined && (!launch.successorSession || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(launch.bridgeLaunchId))) throw new Error('invalid bridge launch identity');
   if (state.phase !== 'handover' || state.successorLaunch || state.wakeReservation || state.finalNotice || state.queue.some(item => item.state === 'inflight') || state.statePreparation?.status !== 'verified' || !/^[a-f0-9]{64}$/.test(state.statePreparation.sha256 || '') || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(launch?.id) || (state.retiredLaunchIds || []).includes(launch.id) || (state.retiredLaunchIds || []).length >= 256 || !/^[a-f0-9]{64}$/.test(launch?.profileSha256 || '')) throw new Error('successor launch unavailable or unresolved');
   const next = copy(state);
   next.successorLaunch = { id: launch.id, profileSha256: launch.profileSha256, handoverId: state.handoverId, session: state.session, generation: state.generation, status: 'requested', stateSha256: state.statePreparation.sha256 };
   if (launch.successorSession !== undefined) next.successorLaunch.successorSession = launch.successorSession;
+  if (launch.bridgeLaunchId !== undefined) next.successorLaunch.bridgeLaunchId = launch.bridgeLaunchId;
   return next;
 }
 

@@ -99,7 +99,8 @@ class OwnedRestartObservationTest(unittest.TestCase):
         handover = json.loads(call('channel', 'begin-handover', '--name', 'fixture').stdout)['channel']['handoverId']
         graph_state = json.loads(call('show', '--json').stdout)
         channel = next(item for item in graph_state['channels'] if item['id'] == 'fixture')
-        channel['successorLaunch'] = {**self.checkpoint, 'session': source, 'handoverId': handover}
+        channel['successorLaunch'] = {**self.checkpoint, 'session': source, 'handoverId': handover,
+                                      'bridgeLaunchId': 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'}
         event = {'schema': 'agent-mesh.session-graph-event.v1', 'id': 'fixture-invoking',
                  'type': 'channel.updated', 'at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                  'channel': channel, 'seq': graph_state['lastSeq'] + 1, 'host': 'local'}
@@ -110,18 +111,23 @@ class OwnedRestartObservationTest(unittest.TestCase):
         launch_path = str(Path(self.tmp.name) / 'launch.jsonl')
         launch_cmd = ['/usr/bin/python3', str(base / 'bridge-launch-record.py'), '--state', launch_path,
                       'start', '--agent', 'claude', '--target', 'fixture', '--cwd', '/tmp',
-                      '--route-status', 'native', '--requested-session-id', UUID, '--tmux-socket', 'mesh']
+                      '--route-status', 'native', '--requested-session-id', UUID, '--tmux-socket', 'mesh',
+                      '--launch-id', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa']
         launch = json.loads(subprocess.run(launch_cmd, capture_output=True, text=True, check=True).stdout)
         request = {'writerPid': self.process.pid, 'panePid': os.getpid(), 'session': SESSION,
                    'trustedExecutable': sys.executable, 'transcriptRoot': self.args['transcript_root'],
-                   'frame': FRAME, 'target': 'fixture', 'bridgeLaunchId': launch['launchId'], 'launchRecordPath': launch_path, 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
+                   'frame': FRAME, 'target': 'fixture', 'launchRecordPath': launch_path, 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
                    'handoverId': handover, 'launchId': 'launch', 'sourceSession': source, 'generation': 1}
         args = ('channel', 'observe-owned-restart', '--name', 'fixture', '--input', '-')
         proof = json.loads(call(*args, input=json.dumps(request)).stdout)
         self.assertEqual(proof['checkpoint']['status'], 'invoking')
         self.assertEqual(proof['target'], 'fixture')
         self.assertEqual(proof['launch']['launchId'], launch['launchId'])
+        self.assertEqual(proof['checkpoint']['bridgeLaunchId'], launch['launchId'])
         self.assertEqual(events.read_bytes(), before)
+        request['bridgeLaunchId'] = launch['launchId']
+        self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
+        del request['bridgeLaunchId']
         request['target'] = 'other'
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
         request['target'] = 'fixture'
@@ -129,9 +135,9 @@ class OwnedRestartObservationTest(unittest.TestCase):
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
         self.assertEqual(events.read_bytes(), before)
         request['profileSha256'] = 'b' * 64
-        replacement = json.loads(subprocess.run(launch_cmd, capture_output=True, text=True, check=True).stdout)
+        replacement_cmd = launch_cmd[:-1] + ['bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb']
+        replacement = json.loads(subprocess.run(replacement_cmd, capture_output=True, text=True, check=True).stdout)
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
-        request['bridgeLaunchId'] = replacement['launchId']
         Path(launch_path).chmod(0o644)
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
         self.assertEqual(events.read_bytes(), before)

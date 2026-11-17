@@ -73,7 +73,7 @@ console.log(JSON.stringify({{available:r.plan.mcpToStart,unavailable:r.plan.mcpU
 const {{invokeSealedClaudeSuccessor}}=await import('{controller_uri}');
 const {{parseRestartDeliveryFrame}}=await import('{frame_uri}');
 const {{createHash}}=await import('node:crypto');
-const binding={{handoverId:'attempt',launchId:'launch',session:opts.session,successorSession:'claude:33333333-3333-4333-8333-333333333333',generation:1,stateSha256:opts.expectedStateSha256,profileSha256:opts.expectedProfileSha256}};
+const binding={{handoverId:'attempt',launchId:'launch',session:opts.session,successorSession:'claude:33333333-3333-4333-8333-333333333333',bridgeLaunchId:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',generation:1,stateSha256:opts.expectedStateSha256,profileSha256:opts.expectedProfileSha256}};
 let calls=0,marks=0,received='',candidate=[];
 const call={{binding,fd:opts.fd,channel:opts.channel,authority:opts.authority,inventory:opts.inventory,verifyPolicy:async()=>({{approvalPolicy:'never',policyVerified:true,pluginPlanVerified:true}}),markInvoking:async b=>{{marks++;return {{channel:{{phase:'handover',handoverId:b.handoverId,session:b.session,generation:b.generation,successorLaunch:{{id:b.launchId,...b,status:'invoking'}}}}}};}},launch:async value=>{{calls++;received=createHash('sha256').update(parseRestartDeliveryFrame(value.frame.text).text).digest('hex');candidate=Object.keys(value.candidate.config.mcpServers);}}}};
 const outcome=await invokeSealedClaudeSuccessor(call); let rejected=false;

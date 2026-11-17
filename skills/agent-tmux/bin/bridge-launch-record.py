@@ -80,7 +80,7 @@ def start(args: argparse.Namespace) -> int:
         model = args.model
     if effort is None:
         effort = args.effort
-    launch_id = str(uuid.uuid4())
+    launch_id = args.launch_id or str(uuid.uuid4())
     event = {
         "schema": SCHEMA,
         "event": "launch.started",
@@ -213,6 +213,7 @@ def parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--agent", required=True)
     start_parser.add_argument("--target", required=True)
     start_parser.add_argument("--cwd", required=True)
+    start_parser.add_argument("--launch-id", type=canonical_uuid)
     start_parser.add_argument("--thread-id")
     start_parser.add_argument("--requested-session-id", type=canonical_uuid)
     start_parser.add_argument("--tmux-socket")

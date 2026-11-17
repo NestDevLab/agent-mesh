@@ -35,3 +35,10 @@ test('a checkpoint for another successor never invokes the launcher', async () =
   await assert.rejects(invokeReservedSuccessor({ binding: bound, preflight, markInvoking: async b => ({ channel: { ...channel(b), successorLaunch: { ...channel(b).successorLaunch, successorSession: 'claude:44444444-4444-4444-8444-444444444444' } } }), launch: async () => { calls++; } }), /checkpoint/);
   assert.equal(calls, 0);
 });
+
+test('a checkpoint for another bridge launch never invokes the launcher', async () => {
+  const bound = { ...binding, bridgeLaunchId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' };
+  let calls = 0;
+  await assert.rejects(invokeReservedSuccessor({ binding: bound, preflight, markInvoking: async b => ({ channel: { ...channel(b), successorLaunch: { ...channel(b).successorLaunch, bridgeLaunchId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } } }), launch: async () => { calls++; } }), /checkpoint/);
+  assert.equal(calls, 0);
+});

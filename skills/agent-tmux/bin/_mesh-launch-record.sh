@@ -21,6 +21,9 @@ mesh_launch_record_start() {
     [[ -z "$effort" ]] || args+=(--effort "$effort")
     [[ -z "$launched_at_ms" ]] || args+=(--launched-at-ms "$launched_at_ms")
     [[ -z "$requested_session" ]] || args+=(--requested-session-id "$requested_session")
+    if [[ -n "$requested_session" && -n "${MESH_BRIDGE_LAUNCH_ID:-}" ]]; then
+        args+=(--launch-id "$MESH_BRIDGE_LAUNCH_ID")
+    fi
     [[ -z "${MESH_TMUX_SOCKET:-}" ]] || args+=(--tmux-socket "$MESH_TMUX_SOCKET")
     python3 "$MESH_LAUNCH_RECORD_BIN" "${args[@]}" >/dev/null
 }
