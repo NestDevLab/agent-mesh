@@ -41,19 +41,22 @@ export async function invokeSealedSuccessor({ binding, fd, channel, authority, p
 // Candidate configuration is private and may contain credentials. It is passed
 // only to the trusted launcher; never return it in a receipt or log it. Native
 // launch, permission enforcement and complete MCP startup remain unverified.
-export async function invokeSealedClaudeSuccessor({ binding, fd, channel, authority, inventory, verifyPolicy, markInvoking, launch }) {
+export async function invokeSealedClaudeSuccessor({ binding, fd, channel, authority, inventory, pluginInventory = {}, verifyPolicy, markInvoking, launch }) {
   if (typeof verifyPolicy !== 'function' || typeof launch !== 'function' || !/^claude:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(binding?.successorSession || '') || binding.successorSession === binding.session || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(binding?.bridgeLaunchId || '')) throw new Error('trusted launch adapters and successor identity required');
   const { prepareSealedClaudeRoleMcp } = await import('./claude-role-mcp-preflight.mjs');
   const { readSealedRestartForDelivery } = await import('./sealed-restart-delivery.mjs');
   const { frameRestartDelivery } = await import('./restart-delivery-frame.mjs');
+  const { revalidateClaudePluginDirs } = await import('./claude-role-plugin-config.mjs');
   let prepared;
   const preflight = async b => {
-    prepared = await prepareSealedClaudeRoleMcp({ fd, channel, session: b.session, expectedStateSha256: b.stateSha256, expectedProfileSha256: b.profileSha256, authority, inventory });
+    prepared = await prepareSealedClaudeRoleMcp({ fd, channel, session: b.session, expectedStateSha256: b.stateSha256, expectedProfileSha256: b.profileSha256, authority, inventory, pluginInventory });
     const policy = await verifyPolicy({ binding: structuredClone(b), plan: structuredClone(prepared.plan) });
+    await revalidateClaudePluginDirs(prepared.pluginCandidate);
     return { schema: 'agent-mesh.successor-preflight.v1', status: 'ready', ...b, approvalPolicy: policy?.approvalPolicy, policyVerified: policy?.policyVerified, roleProfileVerified: true, mcpPreflightComplete: true, pluginPlanVerified: policy?.pluginPlanVerified, mcpChecked: prepared.plan.mcpToStart.length + prepared.plan.mcpUnavailable.length };
   };
   return invokeReservedSuccessor({ binding, preflight, markInvoking, launch: async b => {
+    await revalidateClaudePluginDirs(prepared.pluginCandidate);
     const delivery = readSealedRestartForDelivery({ fd, session: b.session, channel, expectedSha256: b.stateSha256, expectedProfileSha256: b.profileSha256 });
-    await launch({ binding: b, plan: structuredClone(prepared.plan), candidate: structuredClone(prepared.candidate), delivery, frame: frameRestartDelivery(delivery) });
+    await launch({ binding: b, plan: structuredClone(prepared.plan), candidate: structuredClone(prepared.candidate), pluginCandidate: structuredClone(prepared.pluginCandidate), delivery, frame: frameRestartDelivery(delivery) });
   } });
 }

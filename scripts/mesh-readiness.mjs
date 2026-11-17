@@ -61,6 +61,7 @@ const agentTmuxBundleFiles = [
   "bin/bound-role-preflight.mjs",
   "bin/claude-role-mcp-config.mjs",
   "bin/claude-role-mcp-preflight.mjs",
+  "bin/claude-role-plugin-config.mjs",
   "bin/sealed-restart.py",
   "bin/sealed-restart-validate.py",
   "bin/sealed-restart-validate.mjs",
