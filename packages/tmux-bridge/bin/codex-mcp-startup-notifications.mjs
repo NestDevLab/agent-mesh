@@ -1,7 +1,8 @@
 /** Passive, bounded sampling of already delivered native startup notifications. */
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const statuses = new Set(['starting', 'ready', 'failed', 'cancelled']);
-const permissionMethods = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'mcpServer/elicitation/request']);
+const legacyApprovalMethods = new Set(['applyPatchApproval', 'execCommandApproval']);
+const permissionMethods = new Set(['item/commandExecution/requestApproval', 'item/fileChange/requestApproval', 'item/permissions/requestApproval', 'mcpServer/elicitation/request', ...legacyApprovalMethods]);
 const validName = name => typeof name === 'string' && name.length > 0 && name.length <= 512 && !/[\x00-\x1f\x7f]/.test(name);
 
 // Attach before starting the thread. The native response can bind the thread
@@ -14,10 +15,11 @@ export function createCodexMcpStartupObserver() {
       if (!permission && event?.method !== 'mcpServer/startupStatus/updated') return;
       const p = event.params;
       if (permission) {
-        if (!Object.hasOwn(event, 'id') || !p || typeof p.threadId !== 'string' || !uuid.test(p.threadId)) { invalid = true; return; }
-        if (threadId && p.threadId !== threadId) return;
+        const requestId = event.id, subject = legacyApprovalMethods.has(event.method) ? p?.conversationId : p?.threadId;
+        if (!(typeof requestId === 'string' || (typeof requestId === 'number' && Number.isFinite(requestId))) || typeof subject !== 'string' || !uuid.test(subject)) { invalid = true; return; }
+        if (threadId && subject !== threadId) return;
         if (buffered.length >= 4096) { invalid = true; return; }
-        buffered.push({ threadId: p.threadId, permission: true });
+        buffered.push({ threadId: subject, permission: true });
         return;
       }
       if (!p || typeof p.threadId !== 'string' || !uuid.test(p.threadId) || !validName(p.name) || !statuses.has(p.status)) { invalid = true; return; }

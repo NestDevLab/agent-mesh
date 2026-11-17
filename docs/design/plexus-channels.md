@@ -196,7 +196,8 @@ No live launch is wired to this planner.
 
 `codex-role-start-assessment.mjs` compares the complete native permission
 profile and sandbox objects against a trusted expected policy and flags observed
-approval or elicitation requests for rollback. It does not perform rollback or
+approval or elicitation requests for rollback, including the legacy Codex
+approval requests identified by conversation ID. It does not perform rollback or
 prove that no prompt was missed. A matching response remains incomplete while
 plugin isolation, MCP event coverage and startup token evidence are unknown.
 The Codex CLI 0.169.0 generated schema says its `disabledPluginIds` response
