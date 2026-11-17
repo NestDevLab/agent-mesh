@@ -28,11 +28,17 @@ test('a completed exact local Claude response is bound to its session and anchor
   assert.equal(proof.nonce, nonce);
 });
 
+test('a fresh exact notice after a tool call can be observed', async t => {
+  const f = await fixture(t, [request, assistant([{ type: 'tool_use', id: 'fixture', name: 'fixture' }], 'tool_use'), answer]);
+  assert.equal((await f.observe()).session, `claude:${id}`);
+});
+
 test('later turns, tool use, incomplete answers and session mismatch fail closed', async t => {
   for (const records of [
     [request, answer, { ...request, message: { content: 'later turn' } }],
     [request, answer, assistant([{ type: 'tool_use', id: 'fixture', name: 'fixture' }], 'tool_use', 'message-2')],
     [request, answer, assistant([{ type: 'tool_use', id: 'fixture', name: 'fixture' }], null)],
+    [request, answer, assistant([{ type: 'tool_use', id: 'fixture', name: 'fixture' }], null), assistant([], 'end_turn')],
     [request, assistant([{ type: 'text', text: message }], 'tool_use')],
     [request, assistant([{ type: 'text', text: message }, { type: 'tool_use', id: 'fixture' }], 'end_turn')],
     [request, { ...answer, sessionId: '44444444-4444-4444-8444-444444444444' }],
