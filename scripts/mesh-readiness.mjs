@@ -51,6 +51,8 @@ const agentTmuxBundleFiles = [
   "bin/handover-notice.mjs",
   "bin/handover-dry-run.mjs",
   "bin/successor-launch-controller.mjs",
+  "bin/trigger-transaction.mjs",
+  "bin/trigger-journal.mjs",
   "bin/bound-role-preflight.mjs",
   "bin/claude-role-mcp-config.mjs",
   "bin/sealed-restart.py",
