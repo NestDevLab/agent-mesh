@@ -20,7 +20,7 @@ export async function observePluginTree(root) {
     if (before.isSymbolicLink()) throw new Error('plugin tree contains symlink');
     if (before.isDirectory()) {
       const names = await readdir(path);
-      if (names.some(item => item.includes('\ufffd'))) throw new Error('plugin tree name is not valid UTF-8');
+      if (names.some(item => item.includes('\ufffd') || item.includes('\\'))) throw new Error('plugin tree name is not valid UTF-8');
       names.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
       records.push(['dir', relative, String(before.mode & 0o777n)]);
       for (const child of names) await visit(join(path, child), relative ? `${relative}/${child}` : child, depth + 1);
