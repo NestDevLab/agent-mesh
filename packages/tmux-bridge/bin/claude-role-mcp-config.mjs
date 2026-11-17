@@ -7,6 +7,9 @@ const object = value => value !== null && typeof value === 'object' && !Array.is
 // configuration probed. The result may contain secrets: never log it or pass
 // it as a command-line JSON argument. Strict mode and actual isolation must be
 // verified by the native launcher; this function neither starts nor authorizes it.
+// Strict mode can also exclude MCP servers contributed by enabled plugins.
+// Include any role-authorized plugin MCP explicitly in the trusted inventory;
+// enabling a plugin alone is not evidence that its MCP server will start.
 export function planClaudeMcpConfig({ launchPlan, inventory }) {
   if (!object(launchPlan) || launchPlan.schema !== 'agent-mesh.role-launch-plan.v1' || !names(launchPlan.mcpToStart) || !names(launchPlan.mcpUnavailable) || launchPlan.mcpToStart.some(item => launchPlan.mcpUnavailable.includes(item)) || !object(inventory)) throw new Error('invalid MCP plan or inventory');
   const entries = Object.keys(inventory);

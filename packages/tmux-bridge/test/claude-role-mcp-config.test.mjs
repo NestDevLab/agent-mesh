@@ -20,3 +20,10 @@ test('empty role is strict and malformed or absent requested configurations fail
   assert.throws(() => planClaudeMcpConfig({ launchPlan, inventory: { online: {} } }), /invalid/);
   assert.throws(() => planClaudeMcpConfig({ launchPlan: { ...launchPlan, mcpUnavailable: ['online'] }, inventory }), /invalid/);
 });
+
+test('role-authorized plugin MCP must be explicitly included in the inventory', () => {
+  const plan = { ...launchPlan, mcpToStart: ['plugin:allowed'], mcpUnavailable: [] };
+  assert.throws(() => planClaudeMcpConfig({ launchPlan: plan, inventory }), /missing/);
+  const candidate = planClaudeMcpConfig({ launchPlan: plan, inventory: { 'plugin:allowed': { command: 'fixture-plugin' } } });
+  assert.deepEqual(Object.keys(candidate.config.mcpServers), ['plugin:allowed']);
+});
