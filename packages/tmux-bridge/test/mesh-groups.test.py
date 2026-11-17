@@ -2,6 +2,8 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import fcntl
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -32,6 +34,53 @@ class MeshGroupsTest(unittest.TestCase):
     def assignment(self, session="codex:root", *, apply=True, sessions=None, links=None, items=None):
         return self.store.ensure_membership(self.admin, session, sessions or {session: {}},
                                             links or [], items or {}, apply=apply)
+
+    def test_mandatory_cli_inputs_filter_nonledger_refs_and_read_native_children(self):
+        spec = importlib.util.spec_from_file_location("groups_cli_test", BIN / "mesh-groups.py")
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        root, child = "codex:root", "codex:child"
+        graph = {"nodes": [{"id": "root", "agent": "codex", "runtimeUuid": "root", "domains": ["release"]},
+                           {"id": "child", "agent": "codex", "runtimeUuid": "child"},
+                           {"id": "pending", "agent": "codex", "runtimeUuid": None}],
+                 "links": [{"session": root, "ref": ref, "role": "owns", "until": None}
+                           for ref in ["tracker:ITEM-42", "thread:other"]]}
+        native = Path(self.tmp.name) / "native.sqlite"
+        with sqlite3.connect(native) as db:
+            db.execute("CREATE TABLE thread_spawn_edges(parent_thread_id, child_thread_id)")
+            db.execute("INSERT INTO thread_spawn_edges VALUES ('root', 'child')")
+        responses = [graph, {"sessions": [{"sessionId": root}, {"sessionId": child}]},
+                     {"adapters": [{"scheme": "tracker"}]},
+                     {"items": [{"ref": "tracker:ITEM-42", "title": "Release", "status": "open"}], "errors": []}]
+        def run(command, **kwargs):
+            if "query" in command:
+                self.assertNotIn("thread:other", command)
+            return subprocess.CompletedProcess(command, 0, json.dumps(responses.pop(0)), "")
+        with patch.object(cli.subprocess, "run", side_effect=run), patch.dict(os.environ, {"CODEX_STATE_DB": str(native)}):
+            sessions, links, items = cli.assignment_inputs()
+        self.assertEqual(sessions[child]["parent"], root)
+        self.assertEqual(sessions[root]["domains"], ["release"])
+        result = self.store.reconcile_membership(self.admin, sessions, links, items, apply=True)
+        self.assertEqual(result["counts"], {"practice": 1, "covered": 1})
+
+    def test_mandatory_session_start_dispatch_is_detached_and_fail_open(self):
+        spec = importlib.util.spec_from_file_location("group_hook_test", BIN / "agent-session-inbox.py")
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        for agent in ["codex", "claude"]:
+            with patch.object(sys, "argv", ["hook", "hook", "--agent", agent]), \
+                 patch.object(sys, "stdin", io.StringIO(json.dumps({"session_id": "example", "hook_event_name": "SessionStart"}))), \
+                 patch.dict(os.environ, {"AGENT_MESH_INBOX_DISABLED": "1"}), \
+                 patch.object(hook.subprocess, "Popen", side_effect=OSError("unavailable")) as execute:
+                hook.main()
+            self.assertIn(agent + ":example", execute.call_args.args[0])
+            self.assertIn("--apply", execute.call_args.args[0])
+            self.assertTrue(execute.call_args.kwargs["start_new_session"])
+        with patch.object(sys, "argv", ["hook", "hook", "--agent", "codex"]), \
+             patch.object(sys, "stdin", io.StringIO(json.dumps({"session_id": "example", "hook_event_name": "Stop"}))), \
+             patch.object(hook.subprocess, "Popen") as execute:
+            hook.main()
+            execute.assert_not_called()
 
     def test_mandatory_triage_preview_and_idempotency(self):
         preview = self.assignment(apply=False)

@@ -660,6 +660,7 @@ fi
 
 _mesh_ensure_group() {
     local target="$1" session
+    mesh_graph_enabled || return 0
     session="$(mesh_graph_cmd show --json | node -e '
 let body = ""; process.stdin.on("data", chunk => body += chunk);
 process.stdin.on("end", () => {

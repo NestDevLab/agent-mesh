@@ -104,7 +104,7 @@ def assignment_inputs(session=None):
         cloud = node.get("cloudIdentity")
         if cloud:
             return ":".join(cloud[key] for key in ("provider", "accountScope", "nativeId"))
-        return f"{node.get('agent')}:{node.get('runtimeUuid', '').lower()}"
+        return f"{node.get('agent')}:{node['runtimeUuid'].lower()}" if node.get("runtimeUuid") else None
     by_node = {node["id"]: identity(node) for node in graph["nodes"]}
     parents = {}
     for edge in graph.get("edges", []):
@@ -135,6 +135,10 @@ def assignment_inputs(session=None):
                    and link.get("until") is None and link.get("role") in {"owns", "works-on"}
                    and link["ref"].split(":", 1)[0] not in {"area", "group", "session-link"}})
     items = {}
+    if refs:
+        configured = run([sys.executable, str(directory / "mesh-ledger.py"), "adapters", "--json"])
+        schemes = {adapter["scheme"] for adapter in configured["adapters"]}
+        refs = [ref for ref in refs if ref.split(":", 1)[0] in schemes]
     if refs:
         data = run([sys.executable, str(directory / "mesh-ledger.py"), "query", "--refs", *refs, "--json"])
         if data.get("errors"):
