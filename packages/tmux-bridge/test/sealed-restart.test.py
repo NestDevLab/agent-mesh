@@ -41,7 +41,7 @@ class SealedRestartTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='sealed-restart-') as root:
             path = Path(root) / 'state.yaml'
             session = 'codex:22222222-2222-4222-8222-222222222222'
-            body = (f'schema: agent-mesh.restart.v1\nsession: {session}\nchannel: fixture\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: []\n  mcp: []\n  plugins: []\n').encode()
+            body = (f'schema: agent-mesh.restart.v1\nsession: {session}\nchannel: fixture\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: []\n  mcp: [online, offline]\n  plugins: []\n').encode()
             path.write_bytes(body)
             path.chmod(0o600)
             digest = hashlib.sha256(body).hexdigest()
@@ -53,6 +53,11 @@ class SealedRestartTest(unittest.TestCase):
                 result = subprocess.run(['node', '--input-type=module', '-e', script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
                 import json
                 self.assertEqual(json.loads(result.stdout), {'role': 'operator', 'state': digest})
+                preflight = (MODULE.parent / 'bound-role-preflight.mjs').as_uri()
+                restart = (MODULE.parent / 'restart-state.mjs').as_uri()
+                plan_script = f"import {{ prepareSealedRoleLaunch }} from '{preflight}'; import {{ roleProfileDigest }} from '{restart}'; const profile={{schema:'agent-mesh.role-profile.v1',role:'operator',permissions:[],mcp:['online','offline'],plugins:[]}}; const r=await prepareSealedRoleLaunch({{fd:Number(process.argv[1]),session:process.argv[2],channel:'fixture',expectedStateSha256:process.argv[3],expectedProfileSha256:roleProfileDigest(profile),authority:{{role:'operator',permissions:[],humanGatedPermissions:[],mcp:['online','offline'],plugins:[]}},probe:async name=>name==='online'}}); console.log(JSON.stringify({{checked:r.mcpChecked,available:r.plan.mcpToStart.length,unavailable:r.plan.mcpUnavailable.length}}));"
+                planned = subprocess.run(['node', '--input-type=module', '-e', plan_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
+                self.assertEqual(json.loads(planned.stdout), {'checked': 2, 'available': 1, 'unavailable': 1})
                 wrong = subprocess.run(['node', '--input-type=module', '-e', script, str(fd), session, 'a' * 64], pass_fds=(fd,), text=True, capture_output=True)
                 self.assertNotEqual(wrong.returncode, 0)
                 plain = os.open(path, os.O_RDONLY)
