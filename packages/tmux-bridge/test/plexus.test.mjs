@@ -47,6 +47,27 @@ const scopeA = {
   handleKey: "space-a-handle-key-0123456789",
 };
 
+test("module event payloads do not cross scoped feed boundaries", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-module-scope-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const start = (await query(state, "changes", { initial: "head" })).cursor;
+  const config = join(state, "modules.json");
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, modules: [{ name: "example", command: ["example"] }] }));
+  const data = { nested: { session: `codex:${OTHER}`, value: "excluded-value" } };
+  const batch = { id: "a1", cursor: null, nextCursor: "one", attributes: [], events: [{ type: "example.changed", session: `codex:${CODEX}`, data }] };
+  await ok(state, ["module", "apply", "--config", config, "--name", "example", "--input", JSON.stringify(batch)]);
+  const local = await query(state, "changes", { sinceCursor: start });
+  const scoped = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+  assert.deepEqual(local.events.find((event) => event.type === "example.changed").data, data);
+  const event = scoped.events.find((entry) => entry.type === "example.changed");
+  assert.ok(event);
+  assert.equal(Object.hasOwn(event, "data"), false);
+  assert.equal(JSON.stringify(scoped).includes("excluded-value"), false);
+  assert.equal(JSON.stringify(scoped).includes(OTHER), false);
+});
+
 test("lifecycle feed exposes evidence locally but not to scoped consumers", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "plexus-life-scope-"));
   t.after(() => rm(state, { recursive: true, force: true }));

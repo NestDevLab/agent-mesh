@@ -859,7 +859,7 @@ function feedFor(state, seen, item, scope) {
   const out = [];
   if (item.type === "module.batch") {
     applyModuleBatch(state, item, sessionIdOf);
-    return item.batch.events.map((entry, index) => ({ type: entry.type, session: entry.session, data: entry.data, subject: `${item.id}:${index}` }));
+    return item.batch.events.map((entry, index) => ({ type: entry.type, session: entry.session, ...(scope === null ? { data: entry.data } : {}), subject: `${item.id}:${index}` }));
   }
   if (item.type === "node.upserted") {
     const id = sessionIdOf(item.node);
