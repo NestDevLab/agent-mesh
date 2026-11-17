@@ -16,6 +16,8 @@ export const plexusDiagram = `flowchart LR
   Restart["Restart state contract"] --> StatePrep["Reserved state preparation"]
   Restart --> RoleProfile["Role-scoped launch plan"]
   RoleProfile -. "synthetic rehearsal" .-> Rehearsal["In-memory handover rehearsal"]
+  RoleProfile -. "isolated assessment" .-> IsolatedRollback["Owned isolated rollback"]
+  IsolatedRollback -. "live handover blocked" .-> Handover
   RoleProfile -. "planned runtime launch" .-> Handover
   StatePrep --> Journal
   StatePrep --> Revalidate["Restart state revalidation"]

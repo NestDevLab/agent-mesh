@@ -5,6 +5,9 @@ base = pathlib.Path(__file__).resolve().parents[1] / 'bin'
 spec = importlib.util.spec_from_file_location('owned', base / 'isolated-pid-namespace.py')
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+rollback_spec = importlib.util.spec_from_file_location('isolated_rollback', base / 'isolated-role-rollback.py')
+rollback_module = importlib.util.module_from_spec(rollback_spec)
+rollback_spec.loader.exec_module(rollback_module)
 binary = os.environ.get('AGENT_MESH_TEST_CODEX_BIN')
 if not binary:
     print('SKIP: set AGENT_MESH_TEST_CODEX_BIN to an absolute Codex binary path')
@@ -97,7 +100,7 @@ with tempfile.TemporaryDirectory(prefix='permission-rollback-isolated-') as td:
             time.sleep(0.1)
         if not req or not beat.exists():
             raise RuntimeError('expected isolated elicitation unavailable')
-        js = "import {createCodexMcpStartupObserver} from OBS;import {assessCodexRoleStart} from ASSESS;const x=JSON.parse(await new Promise(r=>{let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>r(s))}));const o=createCodexMcpStartupObserver();o.onNotification(x.event);o.bindThread(x.started.thread.id);const expected={profile:{id:':read-only',extends:null},approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false}};const a=assessCodexRoleStart({startResponse:x.started,sample:o.snapshot(),expected});console.log(JSON.stringify({status:a.status,failures:a.failures}));"
+        js = "import {createCodexMcpStartupObserver} from OBS;import {assessCodexRoleStart} from ASSESS;const x=JSON.parse(await new Promise(r=>{let s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>r(s))}));const o=createCodexMcpStartupObserver();o.onNotification(x.event);o.bindThread(x.started.thread.id);const expected={profile:{id:':read-only',extends:null},approvalPolicy:'never',sandbox:{type:'readOnly',networkAccess:false}};const a=assessCodexRoleStart({startResponse:x.started,sample:o.snapshot(),expected});console.log(JSON.stringify(a));"
         js = js.replace('OBS', json.dumps((base / 'codex-mcp-startup-notifications.mjs').as_uri())).replace('ASSESS', json.dumps((base / 'codex-role-start-assessment.mjs').as_uri()))
         assessed = json.loads(subprocess.check_output(['/usr/bin/node', '--input-type=module', '-e', js], input=json.dumps({'started': started, 'event': req}).encode(), timeout=5))
         if assessed['status'] != 'rollback-required' or 'unexpected-permission-request' not in assessed['failures']:
@@ -107,7 +110,13 @@ with tempfile.TemporaryDirectory(prefix='permission-rollback-isolated-') as td:
         observed_before = beat.read_text()
         if observed_before == first:
             raise RuntimeError('fixture heartbeat was not active')
-        receipt = new.stop()
+        rollback = rollback_module.IsolatedRoleRollback('codex:' + newthread, new.stop)
+        decision = rollback.apply(assessed)
+        if decision['status'] != 'local-init-exited' or decision['handover'] != 'blocked':
+            raise RuntimeError('owned rollback did not verify namespace init exit')
+        if rollback.apply(assessed) != decision:
+            raise RuntimeError('replayed rollback changed its receipt')
+        receipt = decision['namespaceStop']
         time.sleep(0.8)
         observed_after = beat.read_text()
         oldRead = oldc.request('thread/loaded/list', {'limit': 100})

@@ -235,6 +235,17 @@ turn. This does not wire rollback into handover, prove remote cleanup or permit
 interactive approvals in a live role. Without the variable the test reports a
 skip; an unavailable or incompatible runtime with the variable set is a failure.
 
+`isolated-role-rollback.py` connects a caller-bound Codex role assessment to
+one stop of a caller-owned isolated successor. An incomplete assessment blocks
+handover without stopping; an unsafe one records its stop attempt in memory
+before the callback and does not retry an uncertain result in that process. A
+crash loses this record, so recovery must not retry automatically. Even a
+confirmed namespace init exit leaves descendant and remote effects unverified
+and handover blocked. The
+caller must authenticate the assessment and bind it to the correct native
+connection and namespace lease; this primitive does not establish those facts,
+move a channel, or provide a live rollback controller.
+
 The pure handover model separates switching to a successor from observing the
 messages queued before the switch, then reserving the final notice for the
 predecessor. Provider queue acceptance is not recipient observation. The
