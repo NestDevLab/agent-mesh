@@ -25,3 +25,17 @@ export async function prepareClaudeRoleMcp({ profile, authority, inventory, time
   const candidate = planClaudeMcpConfig({ launchPlan: plan, inventory: snapshot });
   return { schema: 'agent-mesh.claude-role-mcp-preflight.v1', plan, candidate };
 }
+
+// The caller authenticates the graph receipt and must keep the same sealed
+// descriptor alive until the native successor receives it. Neither a matching
+// digest nor a responsive server proves trusted authority or native startup.
+export async function prepareSealedClaudeRoleMcp({ fd, session, channel, expectedStateSha256, expectedProfileSha256, authority, inventory, timeoutMs }) {
+  if (typeof expectedProfileSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedProfileSha256)) throw new Error('invalid expected profile digest');
+  const { validateSealedRestart } = await import('./sealed-restart-validate.mjs');
+  const proof = validateSealedRestart({ fd, session, channel, expectedSha256: expectedStateSha256 });
+  if (proof.profileSha256 !== expectedProfileSha256) throw new Error('role profile digest mismatch');
+  const result = await prepareClaudeRoleMcp({ profile: proof.roleProfile, authority, inventory, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+  const final = validateSealedRestart({ fd, session, channel, expectedSha256: expectedStateSha256 });
+  if (final.profileSha256 !== proof.profileSha256) throw new Error('sealed role profile changed');
+  return { ...result, stateSha256: proof.stateSha256, profileSha256: proof.profileSha256 };
+}
