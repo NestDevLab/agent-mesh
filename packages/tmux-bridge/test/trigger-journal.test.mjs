@@ -196,12 +196,11 @@ test('recovery fences a delayed forward CAS before declaring rollback', async t 
   const journal = triggerJournal(root), triggers = [{ kind: 'fixture', id: 'one' }];
   const writer = reconcileTriggers({ triggers, from: 'old', to: 'new', transactionId: 'tx', adapter, journal, dryRun: false }).catch(error => error);
   await reached;
-  const receipt = (await journal.get('tx')).receipt;
-  receipt.status = 'uncertain'; receipt.triggers[0].status = 'uncertain';
-  await journal.write(receipt);
+  assert.equal((await journal.get('tx')).status, 'applying');
   const recovered = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
   assert.equal(recovered.status, 'rolled-back'); assert.equal(state.version, 'v2');
-  release(); await writer;
+  release(); const staleWriter = await writer;
+  assert.match(staleWriter.message, /invalid journal update/);
   assert.equal(state.target, 'old'); assert.equal(state.lastOperationId, 'tx:rollback:0');
   assert.equal((await journal.get('tx')).status, 'rolled-back');
 });
@@ -217,4 +216,24 @@ test('recovery refuses an adapter which reuses a version for the fence', async t
   const result = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
   assert.equal(result.status, 'uncertain');
   await assert.rejects(journal.begin({ id: 'other', triggers, dryRun: false }), /overlapping/);
+});
+
+
+test('takeover of a crashed applying transaction rolls back a proven move', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-crash-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const journal = triggerJournal(root), triggers = [{ kind: 'fixture', id: 'one' }];
+  await journal.begin({ id: 'tx', triggers, dryRun: false });
+  const interrupted = { schema: 'agent-mesh.trigger-transaction.v1', id: 'tx', from: 'old', to: 'new', dryRun: false, status: 'applying', triggers: [{ ...triggers[0], before: 'v1', status: 'applying', operationId: 'tx:0' }] };
+  await journal.write(interrupted);
+  let state = { target: 'new', version: 'v2', lastOperationId: 'tx:0' };
+  const adapter = { read: async () => structuredClone(state), move: async args => {
+    assert.equal(args.expectedTarget, state.target); assert.equal(args.expectedVersion, state.version);
+    state = { target: args.target, version: 'v3', lastOperationId: args.operationId };
+    return { status: 'applied', version: state.version };
+  } };
+  const recovered = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
+  assert.equal(recovered.status, 'rolled-back'); assert.equal(state.target, 'old');
+  await assert.rejects(journal.write(interrupted, 0), /invalid journal update/);
+  assert.equal((await journal.get('tx')).epoch, 1);
 });

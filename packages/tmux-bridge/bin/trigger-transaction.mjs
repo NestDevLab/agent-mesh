@@ -14,8 +14,8 @@ export async function reconcileTriggers({ triggers, from, to, transactionId, ada
     seen.add(`${trigger.kind}\0${trigger.id}`);
   }
   const receipt = { schema: 'agent-mesh.trigger-transaction.v1', id: transactionId, from, to, dryRun, status: 'planning', triggers: triggers.map(({ kind, id }) => ({ kind, id, status: 'pending' })) };
-  await journal.begin({ id: transactionId, triggers: structuredClone(triggers), dryRun });
-  const save = () => journal.write(structuredClone(receipt));
+  const epoch = await journal.begin({ id: transactionId, triggers: structuredClone(triggers), dryRun });
+  const save = () => journal.write(structuredClone(receipt), epoch);
   for (let i = 0; i < triggers.length; i++) {
     let current;
     try { current = await adapter.read(triggers[i]); } catch { /* No mutation has been attempted. */ }
