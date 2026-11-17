@@ -42,6 +42,8 @@ def sealed_plugin_snapshot(root, expected_sha256):
                 if not stat.S_ISDIR(before.st_mode):
                     raise ValueError('plugin directory changed')
                 records.append(['dir', relative, str(before.st_mode & 0o777)])
+                if not relative:
+                    archive.comment = f'agent-mesh-root-mode:{before.st_mode & 0o777:o}'.encode('ascii')
                 if relative:
                     info = zipfile.ZipInfo(relative + '/')
                     info.external_attr = (stat.S_IFDIR | (before.st_mode & 0o777)) << 16 | 0x10

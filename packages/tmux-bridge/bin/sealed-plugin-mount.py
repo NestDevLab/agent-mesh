@@ -38,12 +38,17 @@ class SealedPluginMount:
             raise ValueError('incomplete or changed plugin archive')
         self._fds = []
         self._closed = False
-        self.arguments = ['--dir', destination, '--tmpfs', destination]
+        self.arguments = []
         seen = set()
         directories = {''}
         total = 0
         try:
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                match = re.fullmatch(rb'agent-mesh-root-mode:([0-7]{1,3})', archive.comment)
+                if not match:
+                    raise ValueError('plugin root mode missing')
+                root_mode = match.group(1).decode('ascii')
+                self.arguments += ['--perms', root_mode, '--dir', destination, '--perms', root_mode, '--tmpfs', destination]
                 infos = archive.infolist()
                 if len(infos) > MAX_ENTRIES:
                     raise ValueError('plugin archive exceeds entry limit')
