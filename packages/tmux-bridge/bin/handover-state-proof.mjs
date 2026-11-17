@@ -49,7 +49,8 @@ export async function requestStateProof({ session, channel, root, filename, mana
 
 // The caller must obtain response from the native correlated-result transport,
 // bound to session and nonce. This function cannot authenticate arbitrary text.
-export async function verifyStateResponse({ session, channel, nonce, response, root, filename }) {
+export async function verifyStateResponse({ session, channel, nonce, response, root, filename, includeRoleProfile = false }) {
+  if (typeof includeRoleProfile !== 'boolean') throw new Error('invalid role profile option');
   if (!/^(codex|claude):[0-9a-f-]{36}$/.test(session) || !/^[a-zA-Z0-9._:-]{1,128}$/.test(nonce) || !isAbsolute(root) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(filename)) throw new Error('invalid state proof request');
   const rootInfo = await lstat(root);
   if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink() || rootInfo.uid !== process.getuid() || (rootInfo.mode & 0o077) !== 0 || await realpath(root) !== root) throw new Error('state root must be private and canonical');
@@ -74,17 +75,17 @@ export async function verifyStateResponse({ session, channel, nonce, response, r
     validateRestartState(restart, { session, channel, requireRoleProfile: true });
     const final = await lstat(join(root, filename)), finalRoot = await lstat(root);
     if (!final.isFile() || final.isSymbolicLink() || final.dev !== after.dev || final.ino !== after.ino || final.size !== after.size || final.mtimeMs !== after.mtimeMs || final.ctimeMs !== after.ctimeMs || !finalRoot.isDirectory() || finalRoot.isSymbolicLink() || finalRoot.dev !== rootInfo.dev || finalRoot.ino !== rootInfo.ino) throw new Error('state file changed during verification');
-    return { schema: attestation.schema, session, nonce, filename, sha256: digest, bytes: bytes.length, profileSha256: roleProfileDigest(restart.role_profile) };
+    return { schema: attestation.schema, session, nonce, filename, sha256: digest, bytes: bytes.length, profileSha256: roleProfileDigest(restart.role_profile), ...(includeRoleProfile ? { roleProfile: restart.role_profile } : {}) };
   } finally { await file.close(); }
 }
 
 // Revalidate the bytes referenced by a previously authenticated graph receipt.
 // The caller owns lifecycle exclusion and must also bind this check to its
 // subsequent action; a snapshot cannot prevent later file replacement.
-export async function revalidateStateProof({ root, channel, session, generation, statePreparation }) {
+export async function revalidateStateProof({ root, channel, session, generation, statePreparation, includeRoleProfile = false }) {
   if (!statePreparation || statePreparation.status !== 'verified' || statePreparation.session !== session || !Number.isSafeInteger(generation) || generation < 1 || statePreparation.generation !== generation || typeof statePreparation.id !== 'string' || typeof statePreparation.filename !== 'string' || !/^[0-9a-f]{64}$/.test(statePreparation.sha256 || '') || !Number.isSafeInteger(statePreparation.bytes) || statePreparation.bytes < 1) throw new Error('state preparation receipt mismatch');
   const response = JSON.stringify({ schema: 'agent-mesh.handover-state.v1', session, nonce: statePreparation.id, filename: statePreparation.filename, sha256: statePreparation.sha256 });
-  const result = await verifyStateResponse({ session, channel, nonce: statePreparation.id, response, root, filename: statePreparation.filename });
+  const result = await verifyStateResponse({ session, channel, nonce: statePreparation.id, response, root, filename: statePreparation.filename, includeRoleProfile });
   if (result.bytes !== statePreparation.bytes) throw new Error('state preparation size mismatch');
   return result;
 }
