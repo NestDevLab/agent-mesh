@@ -439,3 +439,9 @@ Semantic skips do not consume the eligible-action target. For example, a hook
 budget of 200 can process 100 refusals and then prepare ten eligible summaries;
 it stops before creating an eleventh summary or expanding the review pool.
 Existing larger frozen plans still retain the ten-confirmed-success apply cap.
+
+### Trigger recovery contract
+
+Trigger reconciliation is inactive unless an operator supplies an adapter and a private journal. The adapter must atomically compare both target and version, record the operation ID, and issue a fresh, never-reused version on every applied move, including a same-target move. A backend that cannot enforce this contract must not be used for recovery.
+
+Recovery takes over an `applying`, `rolling-back`, or `uncertain` journal entry by advancing its durable epoch. Stale journal writers are rejected. It reads all targets and uses CAS to restore or fence each one before recording rollback; an unverified response remains uncertain. A process can die while holding a journal or recovery lock: these locks fail closed and require separate reconciliation; this mechanism does not automatically clear them. A successful synthetic test does not establish that any real trigger backend meets the contract.
