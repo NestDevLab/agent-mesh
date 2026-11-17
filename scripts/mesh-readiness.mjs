@@ -50,6 +50,7 @@ const agentTmuxBundleFiles = [
   "bin/handover-state-proof.mjs",
   "bin/handover-notice.mjs",
   "bin/handover-dry-run.mjs",
+  "bin/successor-launch-controller.mjs",
   "bin/handover-codex-observation.mjs",
   "bin/codex-compaction-evidence.mjs",
   "bin/codex-wake-evidence.mjs",
