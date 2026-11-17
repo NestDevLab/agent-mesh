@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, abortHandover, reserveSuccessorLaunch, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, abortHandover, reserveSuccessorLaunch, markSuccessorInvoking, cancelUninvokedSuccessor, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
 
 test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';
@@ -162,4 +162,13 @@ test('a successor launch reservation prevents abort and premature switch', () =>
   assert.throws(() => reserveSuccessorLaunch(reserved, expected, launch), /unresolved/);
   assert.throws(() => abortHandover(reserved, expected), /unresolved/);
   assert.throws(() => switchHandover(reserved, 'codex:new', true), /unresolved/);
+  const binding = { ...expected, launchId: launch.id };
+  const invoking = markSuccessorInvoking(reserved, binding);
+  assert.throws(() => cancelUninvokedSuccessor(invoking, binding), /unresolved/);
+  assert.throws(() => markSuccessorInvoking(invoking, binding), /unresolved/);
+  const canceled = cancelUninvokedSuccessor(reserved, binding);
+  assert.equal(canceled.successorLaunch, undefined);
+  assert.throws(() => markSuccessorInvoking(canceled, binding), /unresolved/);
+  assert.throws(() => reserveSuccessorLaunch(canceled, expected, launch), /unresolved/);
+  assert.equal(abortHandover(canceled, expected).phase, 'active');
 });

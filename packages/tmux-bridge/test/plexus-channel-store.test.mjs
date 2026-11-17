@@ -257,6 +257,18 @@ test('successor launch reservation survives replay and cannot be duplicated', as
   assert.equal(restored.successorLaunch.id, 'launch-1');
   assert.equal(restored.successorLaunch.stateSha256, 'a'.repeat(64));
   assert.equal(restored.successorLaunch.handoverId, channel.handoverId);
+  const identity = ['--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--input', 'launch-1'];
+  const raced = await Promise.allSettled([call('channel', 'invoke-successor', ...identity), call('channel', 'cancel-successor', ...identity)]);
+  assert.equal(raced.filter(item => item.status === 'fulfilled').length, 1);
+  const current = (await call('channel', 'get', '--name', 'example')).channel;
+  if (current.successorLaunch) {
+    assert.equal(current.successorLaunch.status, 'invoking');
+    await assert.rejects(call('channel', 'cancel-successor', ...identity), /unresolved/);
+  } else {
+    assert.deepEqual(current.retiredLaunchIds, ['launch-1']);
+    await assert.rejects(call('channel', 'invoke-successor', ...identity), /unresolved/);
+    await assert.rejects(call(...args), /unresolved/);
+  }
 });
 
 

@@ -55,6 +55,7 @@ export function beginHandover(state, handoverId) {
   if (handoverId !== undefined) next.handoverId = handoverId;
   else delete next.handoverId;
   delete next.statePreparation;
+  delete next.retiredLaunchIds;
   return next;
 }
 
@@ -66,6 +67,7 @@ export function abortHandover(state, expected) {
   const next = copy(state);
   next.phase = 'active';
   delete next.handoverId;
+  delete next.retiredLaunchIds;
   delete next.statePreparation;
   return next;
 }
@@ -74,9 +76,27 @@ export function abortHandover(state, expected) {
 // proof of creation. It has no expiry and must not be retried automatically.
 export function reserveSuccessorLaunch(state, expected, launch) {
   if (!identifier(expected?.handoverId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation) throw new Error('handover identity changed');
-  if (state.phase !== 'handover' || state.successorLaunch || state.wakeReservation || state.finalNotice || state.queue.some(item => item.state === 'inflight') || state.statePreparation?.status !== 'verified' || !/^[a-f0-9]{64}$/.test(state.statePreparation.sha256 || '') || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(launch?.id) || !/^[a-f0-9]{64}$/.test(launch?.profileSha256 || '')) throw new Error('successor launch unavailable or unresolved');
+  if (state.phase !== 'handover' || state.successorLaunch || state.wakeReservation || state.finalNotice || state.queue.some(item => item.state === 'inflight') || state.statePreparation?.status !== 'verified' || !/^[a-f0-9]{64}$/.test(state.statePreparation.sha256 || '') || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(launch?.id) || (state.retiredLaunchIds || []).includes(launch.id) || (state.retiredLaunchIds || []).length >= 256 || !/^[a-f0-9]{64}$/.test(launch?.profileSha256 || '')) throw new Error('successor launch unavailable or unresolved');
   const next = copy(state);
   next.successorLaunch = { id: launch.id, profileSha256: launch.profileSha256, handoverId: state.handoverId, session: state.session, generation: state.generation, status: 'requested', stateSha256: state.statePreparation.sha256 };
+  return next;
+}
+
+// The launcher must persist invoking before any native side effect. A cancel
+// can win only while requested; both operations must run under the graph lock.
+function pendingSuccessor(state, expected) {
+  const launch = state.successorLaunch;
+  if (state.phase !== 'handover' || !identifier(expected?.handoverId) || !identifier(expected?.launchId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation || !launch || launch.handoverId !== expected.handoverId || launch.session !== expected.session || launch.generation !== expected.generation || launch.id !== expected.launchId || launch.status !== 'requested') throw new Error('successor launch identity changed or unresolved');
+}
+export function markSuccessorInvoking(state, expected) {
+  pendingSuccessor(state, expected);
+  const next = copy(state); next.successorLaunch.status = 'invoking'; return next;
+}
+export function cancelUninvokedSuccessor(state, expected) {
+  pendingSuccessor(state, expected);
+  const next = copy(state);
+  next.retiredLaunchIds = [...(next.retiredLaunchIds || []), next.successorLaunch.id];
+  delete next.successorLaunch;
   return next;
 }
 
