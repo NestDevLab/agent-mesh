@@ -24,6 +24,7 @@ export async function invokeSealedSuccessor({ binding, fd, channel, authority, p
   if (typeof verifyPolicy !== 'function' || typeof launch !== 'function') throw new Error('trusted launch adapters required');
   const { prepareSealedRoleLaunch } = await import('./bound-role-preflight.mjs');
   const { readSealedRestartForDelivery } = await import('./sealed-restart-delivery.mjs');
+  const { frameRestartDelivery } = await import('./restart-delivery-frame.mjs');
   let plan;
   const preflight = async b => {
     const prepared = await prepareSealedRoleLaunch({ fd, channel, session: b.session, expectedStateSha256: b.stateSha256, expectedProfileSha256: b.profileSha256, authority, probe });
@@ -33,7 +34,7 @@ export async function invokeSealedSuccessor({ binding, fd, channel, authority, p
   };
   return invokeReservedSuccessor({ binding, preflight, markInvoking, launch: async b => {
     const delivery = readSealedRestartForDelivery({ fd, session: b.session, channel, expectedSha256: b.stateSha256, expectedProfileSha256: b.profileSha256 });
-    await launch({ binding: b, plan: structuredClone(plan), delivery });
+    await launch({ binding: b, plan: structuredClone(plan), delivery, frame: frameRestartDelivery(delivery) });
   } });
 }
 
@@ -44,6 +45,7 @@ export async function invokeSealedClaudeSuccessor({ binding, fd, channel, author
   if (typeof verifyPolicy !== 'function' || typeof launch !== 'function') throw new Error('trusted launch adapters required');
   const { prepareSealedClaudeRoleMcp } = await import('./claude-role-mcp-preflight.mjs');
   const { readSealedRestartForDelivery } = await import('./sealed-restart-delivery.mjs');
+  const { frameRestartDelivery } = await import('./restart-delivery-frame.mjs');
   let prepared;
   const preflight = async b => {
     prepared = await prepareSealedClaudeRoleMcp({ fd, channel, session: b.session, expectedStateSha256: b.stateSha256, expectedProfileSha256: b.profileSha256, authority, inventory });
@@ -52,6 +54,6 @@ export async function invokeSealedClaudeSuccessor({ binding, fd, channel, author
   };
   return invokeReservedSuccessor({ binding, preflight, markInvoking, launch: async b => {
     const delivery = readSealedRestartForDelivery({ fd, session: b.session, channel, expectedSha256: b.stateSha256, expectedProfileSha256: b.profileSha256 });
-    await launch({ binding: b, plan: structuredClone(prepared.plan), candidate: structuredClone(prepared.candidate), delivery });
+    await launch({ binding: b, plan: structuredClone(prepared.plan), candidate: structuredClone(prepared.candidate), delivery, frame: frameRestartDelivery(delivery) });
   } });
 }

@@ -60,6 +60,7 @@ const agentTmuxBundleFiles = [
   "bin/sealed-restart-validate.py",
   "bin/sealed-restart-validate.mjs",
   "bin/sealed-restart-delivery.mjs",
+  "bin/restart-delivery-frame.mjs",
   "bin/handover-codex-observation.mjs",
   "bin/codex-compaction-evidence.mjs",
   "bin/codex-wake-evidence.mjs",

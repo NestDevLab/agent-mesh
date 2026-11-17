@@ -68,12 +68,14 @@ console.log(JSON.stringify({{available:r.plan.mcpToStart,unavailable:r.plan.mcpU
                 claude = subprocess.run(['node', '--input-type=module', '-e', claude_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
                 self.assertEqual(json.loads(claude.stdout), {'available': ['online'], 'unavailable': ['offline'], 'candidate': ['online'], 'state': digest, 'rejected': True})
                 controller_uri = (MODULE.parent / 'successor-launch-controller.mjs').as_uri()
+                frame_uri = (MODULE.parent / 'restart-delivery-frame.mjs').as_uri()
                 claude_control = claude_script.split('const r=await prepareSealedClaudeRoleMcp(opts);')[0] + f"""
 const {{invokeSealedClaudeSuccessor}}=await import('{controller_uri}');
+const {{parseRestartDeliveryFrame}}=await import('{frame_uri}');
 const {{createHash}}=await import('node:crypto');
 const binding={{handoverId:'attempt',launchId:'launch',session:opts.session,generation:1,stateSha256:opts.expectedStateSha256,profileSha256:opts.expectedProfileSha256}};
 let calls=0,marks=0,received='',candidate=[];
-const call={{binding,fd:opts.fd,channel:opts.channel,authority:opts.authority,inventory:opts.inventory,verifyPolicy:async()=>({{approvalPolicy:'never',policyVerified:true,pluginPlanVerified:true}}),markInvoking:async b=>{{marks++;return {{channel:{{phase:'handover',handoverId:b.handoverId,session:b.session,generation:b.generation,successorLaunch:{{id:b.launchId,...b,status:'invoking'}}}}}};}},launch:async value=>{{calls++;received=createHash('sha256').update(value.delivery.text).digest('hex');candidate=Object.keys(value.candidate.config.mcpServers);}}}};
+const call={{binding,fd:opts.fd,channel:opts.channel,authority:opts.authority,inventory:opts.inventory,verifyPolicy:async()=>({{approvalPolicy:'never',policyVerified:true,pluginPlanVerified:true}}),markInvoking:async b=>{{marks++;return {{channel:{{phase:'handover',handoverId:b.handoverId,session:b.session,generation:b.generation,successorLaunch:{{id:b.launchId,...b,status:'invoking'}}}}}};}},launch:async value=>{{calls++;received=createHash('sha256').update(parseRestartDeliveryFrame(value.frame.text).text).digest('hex');candidate=Object.keys(value.candidate.config.mcpServers);}}}};
 const outcome=await invokeSealedClaudeSuccessor(call); let rejected=false;
 try{{await invokeSealedClaudeSuccessor({{...call,verifyPolicy:async()=>({{approvalPolicy:'ask',policyVerified:true,pluginPlanVerified:true}})}})}}catch{{rejected=true}}
 console.log(JSON.stringify({{status:outcome.status,received,candidate,calls,marks,rejected}}));"""
