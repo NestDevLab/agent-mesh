@@ -407,7 +407,8 @@
       "target_branch": "main",
       "integration_branch": "main-integration",
       "commits": [
-        "7adc7d09918eb0ebe6532b487841d101f41330c1"
+        "7adc7d09918eb0ebe6532b487841d101f41330c1",
+        "80a4cd467cc7f5de1cc0c3076f6d4334ecbe88bc"
       ],
       "state": "published",
       "publication": {
