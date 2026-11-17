@@ -63,6 +63,7 @@ LIMEN_CONFIG=""
 FORCE_CAPACITY="false"
 GOVERNED_CHILD="false"
 ALLOW_DESKTOP_THREAD="false"
+REQUIRE_NEW="false"
 ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
@@ -106,6 +107,10 @@ while [[ $# -gt 0 ]]; do
             GOVERNED_CHILD="true"
             shift
             ;;
+        --require-new)
+            REQUIRE_NEW="true"
+            shift
+            ;;
         --allow-desktop-thread)
             ALLOW_DESKTOP_THREAD="true"
             shift
@@ -128,6 +133,9 @@ CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 source "$CONF"
 
 REQUESTED_CMD="${ARGS[0]:-}"
+if [[ "$REQUIRE_NEW" == "true" && "$REQUESTED_CMD" != "new" ]]; then
+    echo "ERROR: --require-new is only supported with new" >&2; exit 2
+fi
 AUTO_LIMEN_UNAVAILABLE="false"
 ROUTE_STATUS="not_requested"
 ROUTE_REASON=""
@@ -585,6 +593,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
             ;;
     esac
     if mtmux has-session -t "$TARGET" 2>/dev/null; then
+        [[ "$REQUIRE_NEW" != "true" ]] || { echo "ERROR: target already exists" >&2; exit 3; }
         _print_attach_hint
         echo "$TARGET"
         exit 0
@@ -604,6 +613,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
     RUN_ID="mesh-${TARGET}-$(date +%s%N)"
     export MESH_GRAPH_ROLE_PROFILE="$SESSION_PROFILE"
     CHILD=("$0" --governed-child --agent "$AGENT_NAME")
+    [[ "$REQUIRE_NEW" == "true" ]] && CHILD+=(--require-new)
     [[ -n "$SESSION_TITLE" ]] && CHILD+=(--title "$SESSION_TITLE")
     [[ -n "$SESSION_APPROVAL_POLICY" ]] && CHILD+=(--approval-policy "$SESSION_APPROVAL_POLICY")
     [[ "$ALLOW_DESKTOP_THREAD" == "true" ]] && CHILD+=(--allow-desktop-thread)
@@ -756,6 +766,7 @@ case "$cmd" in
         TARGET=$(_tmux_target "$TMUX_NAME")
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
+            [[ "$REQUIRE_NEW" != "true" ]] || { echo "ERROR: target already exists" >&2; exit 3; }
             if [[ -n "$SESSION_TITLE" ]]; then
                 echo "WARN: session '$TARGET' already exists; --title was not updated" >&2
             fi

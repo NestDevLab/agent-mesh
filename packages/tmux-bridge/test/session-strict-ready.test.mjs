@@ -33,13 +33,13 @@ AGENT_HAS_CWD_PICKER="false"
 AGENT_REQUIRE_FREE_SESSION_WRITER="false"
 `);
     const state = join(root, 'state');
-    if (mode !== 'slow-new') await writeFile(state, 'present');
+    if (!['slow-new', 'collision'].includes(mode)) await writeFile(state, 'present');
     const fakeTmux = join(root, 'fake-bin', 'tmux');
     await writeFile(fakeTmux, `#!/bin/bash
 shift 2
 case "$1" in
   has-session) test -f "$TEST_STATE" ;;
-  new-session) touch "$TEST_STATE" ;;
+  new-session) if [[ "$TEST_MODE" == collision ]]; then exit 1; fi; touch "$TEST_STATE" ;;
   kill-session) printf killed > "$TEST_STATE.killed"; rm -f "$TEST_STATE" ;;
   capture-pane) if [[ "$TEST_MODE" == "slow-new" ]]; then echo Loading; else echo 'READY>'; fi ;;
   display-message)
@@ -108,4 +108,27 @@ test('strict new rejects a dead existing pane without removing it', async () => 
   assert.equal(result.code, 124, result.stderr);
   assert.equal(result.killed, false);
   assert.equal(result.stdout, '');
+});
+
+
+test('require-new refuses an existing ready target without changing it', async () => {
+  const result = await probe('ready-existing', ['--require-new', 'new', tmpdir(), 'test-target']);
+  assert.equal(result.code, 3); assert.match(result.stderr, /target already exists/);
+  assert.equal(result.killed, false); assert.equal(result.stdout, '');
+});
+
+test('require-new does not proceed when target appears before creation', async () => {
+  const result = await probe('collision', ['--require-new', 'new', tmpdir(), 'test-target']);
+  assert.notEqual(result.code, 0); assert.equal(result.killed, false); assert.equal(result.stdout, '');
+});
+
+test('require-new is rejected for resume', async () => {
+  const result = await probe('ready-existing', ['--require-new', 'resume', '11111111-1111-4111-8111-111111111111', 'test-target']);
+  assert.equal(result.code, 2); assert.match(result.stderr, /only supported with new/);
+});
+
+test('require-new refuses an existing target before governed dispatch', async () => {
+  const result = await probe('ready-existing', ['--require-new', '--profile', 'worker', '--limen-config', '/fixture-policy', 'new', tmpdir(), 'test-target']);
+  assert.equal(result.code, 3); assert.match(result.stderr, /target already exists/);
+  assert.equal(result.killed, false); assert.equal(result.stdout, '');
 });
