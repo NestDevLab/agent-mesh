@@ -97,6 +97,8 @@ def status(db):
 
 def validate(spec):
     spec = dict(spec)
+    if 'message_stdin' in spec and (spec['message_stdin'] is not True or spec.get('kind') != 'tmux' or not spec.get('correlation') or spec.get('result_token')):
+        raise ValueError('invalid stdin replay mode')
     if spec.get('kind') == 'native':
         spec.setdefault('resume', spec.get('runtime') == 'codex')
     if spec.get('kind') not in ('native', 'tmux', 'inbox') or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', str(spec.get('runtime', ''))):
@@ -277,7 +279,11 @@ def command(spec):
     if spec['kind'] == 'tmux':
         args = [str(BIN/'agent-send.sh'), '--agent', spec['runtime'], '--quiet', '--submit-only']
         if spec.get('correlation'):
-            args += ['--correlation-id', spec['correlation'], '--result-token', spec['result_token']]
+            args += ['--correlation-id', spec['correlation']]
+            if spec.get('result_token'):
+                args += ['--result-token', spec['result_token']]
+        if spec.get('message_stdin'):
+            return args + ['--message-stdin', spec['destination'], str(spec.get('timeout', 120))]
         return args + [spec['destination'], spec['message'], str(spec.get('timeout', 120))]
     return [sys.executable, str(BIN/'agent-inbox-native.py'), '--replay']
 
@@ -323,7 +329,8 @@ def flush(db, fd):
         if observe_outside_lock:
             fcntl.flock(fd, fcntl.LOCK_UN)
         try:
-            result = subprocess.run(command(spec), input=encode(spec) if spec['kind'] == 'inbox' else None,
+            replay_input = encode(spec) if spec['kind'] == 'inbox' else spec['message'] if spec.get('message_stdin') else None
+            result = subprocess.run(command(spec), input=replay_input,
                                     text=True, capture_output=True, timeout=90, env=env, pass_fds=(reader,))
             if observe_outside_lock:
                 fcntl.flock(fd, fcntl.LOCK_EX)

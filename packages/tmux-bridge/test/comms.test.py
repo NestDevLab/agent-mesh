@@ -177,6 +177,27 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         with c.locked() as (db, _):
             self.assertEqual(c.status(db)['counts'], {'queued': 1})
 
+    def test_private_tmux_replay_uses_stdin_not_process_arguments(self):
+        spec = {'kind': 'tmux', 'runtime': 'claude', 'destination': 'fixture-target',
+                'message': 'fixture-private-payload', 'correlation': 'fixture',
+                'result_token': '', 'timeout': 10, 'socket': 'fixture', 'message_stdin': True}
+        c.change('queue', 'claude', 'test hold', 'test')
+        with c.locked() as (db, _):
+            self.assertEqual(c.admit(db, spec)['status'], 'queued')
+        calls = []
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs['input']))
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        with patch.object(c.subprocess, 'run', side_effect=run):
+            result = c.change('on', 'claude', 'resume test', 'test')
+        self.assertEqual(result['counts'], {'delivered': 1})
+        self.assertEqual(calls[0][1], spec['message'])
+        self.assertIn('--message-stdin', calls[0][0])
+        self.assertNotIn(spec['message'], calls[0][0])
+        for invalid in ({**spec, 'message_stdin': False}, {**spec, 'correlation': ''}, {**spec, 'result_token': '1234'}, {**spec, 'kind': 'native'}):
+            with self.assertRaisesRegex(ValueError, 'stdin replay'):
+                c.validate(invalid)
+
     def test_off_rejects_without_storing_message(self):
         c.change('off', 'all', 'test off', 'test')
         with c.locked() as (db, _):

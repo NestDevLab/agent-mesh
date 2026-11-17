@@ -4,6 +4,8 @@
 # Usage:
 #   agent-send.sh [--quiet] --agent <NAME> [--correlation-id <ID>]
 #     [--result-token <TOKEN>] [--submit-only] <TMUX_TARGET> <PROMPT> [TIMEOUT_SECONDS]
+#   agent-send.sh --agent <NAME> --submit-only --correlation-id <ID>
+#     --message-stdin <TMUX_TARGET> [TIMEOUT_SECONDS]
 #
 # --submit-only returns once the turn starts. With it, --correlation-id may be
 # given without --result-token to send the same prompt again.
@@ -38,6 +40,7 @@ source "$SCRIPT_DIR/_mesh-launch-record.sh"
 AGENT_NAME="codex"
 QUIET="false"
 SUBMIT_ONLY=false
+MESSAGE_STDIN=false
 CORRELATION_ID=""
 RESULT_TOKEN=""
 ARGS=()
@@ -45,6 +48,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --agent) AGENT_NAME="$2"; shift 2 ;;
         --submit-only) SUBMIT_ONLY=true; shift ;;
+        --message-stdin) MESSAGE_STDIN=true; shift ;;
         --quiet) QUIET="true"; shift ;;
         --correlation-id) CORRELATION_ID="$2"; shift 2 ;;
         --result-token) RESULT_TOKEN="$2"; shift 2 ;;
@@ -58,7 +62,18 @@ CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 # shellcheck source=/dev/null
 source "$CONF"
 
-TARGET="${1:-}"; PROMPT="${2:-}"; TIMEOUT="${3:-120}"
+TARGET="${1:-}"
+if [[ "$MESSAGE_STDIN" == true ]]; then
+    [[ "$SUBMIT_ONLY" == true && -n "$CORRELATION_ID" && $# -le 2 && -z "$RESULT_TOKEN" ]] \
+        || { echo "ERROR: --message-stdin requires --submit-only and correlation ID" >&2; exit 1; }
+    TIMEOUT="${2:-120}"
+    # Frames end in a non-newline delimiter; reject input that command
+    # substitution would silently trim. Never put private input in argv.
+    PROMPT="$(python3 -c 'import sys; b=sys.stdin.buffer.read(1048577); (0 < len(b) <= 1048576 and not b.endswith(b"\n") and b"\0" not in b) or sys.exit("invalid stdin message"); sys.stdout.write(b.decode("utf-8", "strict"))')" \
+        || { echo "ERROR: invalid stdin message" >&2; exit 1; }
+else
+    PROMPT="${2:-}"; TIMEOUT="${3:-120}"
+fi
 POLL="${AGENT_POLL_INTERVAL:-2}"
 IDLE_NEEDED="${AGENT_IDLE_ROUNDS:-3}"
 STALL="${AGENT_STALL_TIMEOUT:-300}"
@@ -66,12 +81,7 @@ STALL="${AGENT_STALL_TIMEOUT:-300}"
 [[ -z "$TARGET" ]] && { echo "ERROR: TMUX_TARGET required" >&2; exit 1; }
 [[ -z "$PROMPT" ]] && { echo "ERROR: PROMPT required" >&2; exit 1; }
 # The helper owns the gate lock through submit confirmation, not through the reply.
-COMMS_REQUEST="$(python3 - "$AGENT_NAME" "$TARGET" "$PROMPT" "$CORRELATION_ID" "$RESULT_TOKEN" "$TIMEOUT" "${MESH_TMUX_SOCKET:-mesh}" <<'PYCOMMS'
-import json,sys
-r,t,m,c,token,timeout,socket=sys.argv[1:]
-print(json.dumps(dict(kind='tmux',runtime=r,destination=t,message=m,correlation=c,result_token=token,timeout=int(timeout),socket=socket)))
-PYCOMMS
-)"
+COMMS_REQUEST="$(printf '%s' "$PROMPT" | python3 -c 'import json,sys; r,t,c,token,timeout,socket,private=sys.argv[1:]; spec=dict(kind="tmux",runtime=r,destination=t,message=sys.stdin.read(),correlation=c,result_token=token,timeout=int(timeout),socket=socket); spec.update({"message_stdin":True} if private == "true" else {}); print(json.dumps(spec))' "$AGENT_NAME" "$TARGET" "$CORRELATION_ID" "$RESULT_TOKEN" "$TIMEOUT" "${MESH_TMUX_SOCKET:-mesh}" "$MESSAGE_STDIN")"
 coproc COMMS_GATE { exec python3 "$SCRIPT_DIR/mesh-comms.py" lease; }
 COMMS_PID=$COMMS_GATE_PID
 COMMS_IN=${COMMS_GATE[1]}
