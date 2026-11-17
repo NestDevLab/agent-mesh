@@ -67,6 +67,18 @@ const r=await prepareSealedClaudeRoleMcp(opts);let rejected=false;try{{await pre
 console.log(JSON.stringify({{available:r.plan.mcpToStart,unavailable:r.plan.mcpUnavailable,candidate:Object.keys(r.candidate.config.mcpServers),state:r.stateSha256,rejected}}));"""
                 claude = subprocess.run(['node', '--input-type=module', '-e', claude_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
                 self.assertEqual(json.loads(claude.stdout), {'available': ['online'], 'unavailable': ['offline'], 'candidate': ['online'], 'state': digest, 'rejected': True})
+                controller_uri = (MODULE.parent / 'successor-launch-controller.mjs').as_uri()
+                claude_control = claude_script.split('const r=await prepareSealedClaudeRoleMcp(opts);')[0] + f"""
+const {{invokeSealedClaudeSuccessor}}=await import('{controller_uri}');
+const {{createHash}}=await import('node:crypto');
+const binding={{handoverId:'attempt',launchId:'launch',session:opts.session,generation:1,stateSha256:opts.expectedStateSha256,profileSha256:opts.expectedProfileSha256}};
+let calls=0,marks=0,received='',candidate=[];
+const call={{binding,fd:opts.fd,channel:opts.channel,authority:opts.authority,inventory:opts.inventory,verifyPolicy:async()=>({{approvalPolicy:'never',policyVerified:true,pluginPlanVerified:true}}),markInvoking:async b=>{{marks++;return {{channel:{{phase:'handover',handoverId:b.handoverId,session:b.session,generation:b.generation,successorLaunch:{{id:b.launchId,...b,status:'invoking'}}}}}};}},launch:async value=>{{calls++;received=createHash('sha256').update(value.delivery.text).digest('hex');candidate=Object.keys(value.candidate.config.mcpServers);}}}};
+const outcome=await invokeSealedClaudeSuccessor(call); let rejected=false;
+try{{await invokeSealedClaudeSuccessor({{...call,verifyPolicy:async()=>({{approvalPolicy:'ask',policyVerified:true,pluginPlanVerified:true}})}})}}catch{{rejected=true}}
+console.log(JSON.stringify({{status:outcome.status,received,candidate,calls,marks,rejected}}));"""
+                controlled = subprocess.run(['node', '--input-type=module', '-e', claude_control, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
+                self.assertEqual(json.loads(controlled.stdout), {'status': 'outcome-unverified', 'received': digest, 'candidate': ['online'], 'calls': 1, 'marks': 1, 'rejected': True})
                 delivery = (MODULE.parent / 'sealed-restart-delivery.mjs').as_uri()
                 delivery_script = f"import {{ createHash }} from 'node:crypto'; import {{ readSealedRestartForDelivery }} from '{delivery}'; import {{ roleProfileDigest }} from '{restart}'; const p={{schema:'agent-mesh.role-profile.v1',role:'operator',permissions:[],mcp:['online','offline'],plugins:[]}}; const r=readSealedRestartForDelivery({{fd:Number(process.argv[1]),session:process.argv[2],channel:'fixture',expectedSha256:process.argv[3],expectedProfileSha256:roleProfileDigest(p)}}); console.log(createHash('sha256').update(r.text).digest('hex'));"
                 delivered = subprocess.run(['node', '--input-type=module', '-e', delivery_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)

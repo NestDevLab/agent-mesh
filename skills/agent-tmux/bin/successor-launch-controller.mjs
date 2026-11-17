@@ -36,3 +36,22 @@ export async function invokeSealedSuccessor({ binding, fd, channel, authority, p
     await launch({ binding: b, plan: structuredClone(plan), delivery });
   } });
 }
+
+// Candidate configuration is private and may contain credentials. It is passed
+// only to the trusted launcher; never return it in a receipt or log it. Native
+// launch, permission enforcement and complete MCP startup remain unverified.
+export async function invokeSealedClaudeSuccessor({ binding, fd, channel, authority, inventory, verifyPolicy, markInvoking, launch }) {
+  if (typeof verifyPolicy !== 'function' || typeof launch !== 'function') throw new Error('trusted launch adapters required');
+  const { prepareSealedClaudeRoleMcp } = await import('./claude-role-mcp-preflight.mjs');
+  const { readSealedRestartForDelivery } = await import('./sealed-restart-delivery.mjs');
+  let prepared;
+  const preflight = async b => {
+    prepared = await prepareSealedClaudeRoleMcp({ fd, channel, session: b.session, expectedStateSha256: b.stateSha256, expectedProfileSha256: b.profileSha256, authority, inventory });
+    const policy = await verifyPolicy({ binding: structuredClone(b), plan: structuredClone(prepared.plan) });
+    return { schema: 'agent-mesh.successor-preflight.v1', status: 'ready', ...b, approvalPolicy: policy?.approvalPolicy, policyVerified: policy?.policyVerified, roleProfileVerified: true, mcpPreflightComplete: true, pluginPlanVerified: policy?.pluginPlanVerified, mcpChecked: prepared.plan.mcpToStart.length + prepared.plan.mcpUnavailable.length };
+  };
+  return invokeReservedSuccessor({ binding, preflight, markInvoking, launch: async b => {
+    const delivery = readSealedRestartForDelivery({ fd, session: b.session, channel, expectedSha256: b.stateSha256, expectedProfileSha256: b.profileSha256 });
+    await launch({ binding: b, plan: structuredClone(prepared.plan), candidate: structuredClone(prepared.candidate), delivery });
+  } });
+}
