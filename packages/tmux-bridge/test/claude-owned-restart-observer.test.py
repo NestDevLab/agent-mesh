@@ -82,8 +82,14 @@ class OwnedRestartObservationTest(unittest.TestCase):
         graph = str(base / 'mesh-graph.mjs')
         state = str(Path(self.tmp.name) / 'graph')
         node = '/usr/local/bin/node'
+        tools_dir = Path(self.tmp.name) / 'tools'
+        tools_dir.mkdir()
+        fake_tmux = tools_dir / 'tmux'
+        fake_tmux.write_text('#!/bin/sh\nprintf \"fixture|%s|claude|0|0\\n\" ' + str(os.getpid()) + '\n')
+        fake_tmux.chmod(0o755)
+        env = dict(os.environ, PATH=str(tools_dir) + ':' + os.environ['PATH'])
         def call(*args, input=None, check=True):
-            return subprocess.run([node, graph, '--state', state, *args], input=input,
+            return subprocess.run([node, graph, '--state', state, *args], input=input, env=env,
                                   text=True, capture_output=True, check=check, timeout=15)
         old_id = '22222222-2222-4222-8222-222222222222'
         source = 'claude:' + old_id
@@ -103,12 +109,16 @@ class OwnedRestartObservationTest(unittest.TestCase):
         before = events.read_bytes()
         request = {'writerPid': self.process.pid, 'panePid': os.getpid(), 'session': SESSION,
                    'trustedExecutable': sys.executable, 'transcriptRoot': self.args['transcript_root'],
-                   'frame': FRAME, 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
+                   'frame': FRAME, 'target': 'fixture', 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
                    'handoverId': handover, 'launchId': 'launch', 'sourceSession': source, 'generation': 1}
         args = ('channel', 'observe-owned-restart', '--name', 'fixture', '--input', '-')
         proof = json.loads(call(*args, input=json.dumps(request)).stdout)
         self.assertEqual(proof['checkpoint']['status'], 'invoking')
+        self.assertEqual(proof['target'], 'fixture')
         self.assertEqual(events.read_bytes(), before)
+        request['target'] = 'other'
+        self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
+        request['target'] = 'fixture'
         request['profileSha256'] = '0' * 64
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
         self.assertEqual(events.read_bytes(), before)

@@ -22,13 +22,14 @@ _spec.loader.exec_module(_owned)
 def observe_owned_restart(*, writer_pid, pane_pid, session, trusted_executable,
                           transcript_root, frame, state_sha256, profile_sha256, handover_id,
                           launch_id, source_session, generation, read_checkpoint,
-                          node_executable):
+                          node_executable, target=None):
     if (not isinstance(frame, str) or len(frame.encode('utf-8')) > 1024 * 1024 + 256
             or not isinstance(state_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', state_sha256)
             or not isinstance(profile_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', profile_sha256)
             or not all(isinstance(x, str) and x for x in (handover_id, launch_id, source_session))
             or type(generation) is not int or generation < 1 or not callable(read_checkpoint)
-            or not isinstance(node_executable, str) or not os.path.isabs(node_executable)):
+            or not isinstance(node_executable, str) or not os.path.isabs(node_executable)
+            or (target is not None and (not isinstance(target, str) or not re.fullmatch(r'[a-z0-9-]+', target)))):
         raise ValueError('invalid observation request')
     expected = {'id': launch_id, 'handoverId': handover_id, 'session': source_session,
                 'generation': generation, 'status': 'invoking', 'stateSha256': state_sha256,
@@ -40,7 +41,25 @@ def observe_owned_restart(*, writer_pid, pane_pid, session, trusted_executable,
             raise RuntimeError('successor checkpoint mismatch')
         return {k: state[k] for k in expected}
 
+    def check_target():
+        if target is None:
+            return
+        env = os.environ.copy()
+        env.pop('AGENT_WRITER_PROC_ROOT', None)
+        result = subprocess.run([str(_here / 'agent-session.sh'), '--agent', 'claude',
+                                 'target-status', target, '--writer-pid', str(writer_pid), '--json'],
+                                capture_output=True, text=True, timeout=8, env=env, check=False)
+        if result.returncode != 0 or len(result.stdout) > 4096:
+            raise RuntimeError('target ownership unavailable')
+        try:
+            proof = json.loads(result.stdout)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError('invalid target ownership') from exc
+        if proof != {'target': target, 'pane_pid': pane_pid, 'writer_pid': writer_pid}:
+            raise RuntimeError('target ownership mismatch')
+
     with _owned.OwnedClaudeProcess(writer_pid, pane_pid, session, trusted_executable) as lease:
+        check_target()
         checkpoint()
         first = lease.verify()
         request = {'root': transcript_root, 'session': session, 'frame': frame,
@@ -61,10 +80,12 @@ def observe_owned_restart(*, writer_pid, pane_pid, session, trusted_executable,
                 or type(proof.get('transcriptBytes')) is not int or proof['transcriptBytes'] < 1):
             raise RuntimeError('transcript observation mismatch')
         checkpoint()
+        check_target()
         if lease.verify() != first:
             raise RuntimeError('process identity changed during observation')
         return {'schema': 'agent-mesh.claude-owned-restart-observation.v1',
-                'checkpoint': expected, 'process': first, 'observation': proof}
+                'checkpoint': expected, 'process': first, 'observation': proof,
+                **({'target': target} if target is not None else {})}
 
 
 def _main():
@@ -78,6 +99,8 @@ def _main():
         data = json.loads(raw)
         checkpoint = data['checkpoint']
         request = data['request']
+        if not request.get('target'):
+            raise ValueError('target required')
         result = observe_owned_restart(
             writer_pid=request['writerPid'], pane_pid=request['panePid'],
             session=request['session'], trusted_executable=request['trustedExecutable'],
@@ -85,7 +108,8 @@ def _main():
             state_sha256=request['stateSha256'], profile_sha256=request['profileSha256'],
             handover_id=request['handoverId'], launch_id=request['launchId'],
             source_session=request['sourceSession'], generation=request['generation'],
-            read_checkpoint=lambda: checkpoint, node_executable=data['nodeExecutable'])
+            read_checkpoint=lambda: checkpoint, node_executable=data['nodeExecutable'],
+            target=request['target'])
         print(json.dumps(result, separators=(',', ':')))
     except Exception:
         print('owned restart observation failed', file=sys.stderr)
