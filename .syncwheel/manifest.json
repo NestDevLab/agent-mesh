@@ -30,7 +30,8 @@
       "grant-authority",
       "controller-activity-safety-refresh",
       "decision-owner-routing",
-      "plexus-modules"
+      "plexus-modules",
+      "mandatory-membership"
     ],
     "strategy": "cherry-pick"
   },
@@ -392,6 +393,20 @@
         "9d7d09838a81723bdb1b63acc300ed94aa8f4d8d",
         "e44def73ae5fe65a795f8ab222452f1a5d86ec0a"
       ],
+      "state": "published",
+      "publication": {
+        "enabled": true
+      },
+      "meta": {}
+    },
+    {
+      "id": "mandatory-membership",
+      "branch": "pr/mandatory-membership",
+      "base": "origin/main",
+      "target_remote": "origin",
+      "target_branch": "main",
+      "integration_branch": "main-integration",
+      "commits": [],
       "state": "published",
       "publication": {
         "enabled": true
