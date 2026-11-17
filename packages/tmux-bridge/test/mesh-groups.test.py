@@ -29,6 +29,99 @@ class MeshGroupsTest(unittest.TestCase):
         self.first = GroupActor(session_id="runtime-a:session-1")
         self.second = GroupActor(session_id="runtime-b:session-2")
 
+    def assignment(self, session="codex:root", *, apply=True, sessions=None, links=None, items=None):
+        return self.store.ensure_membership(self.admin, session, sessions or {session: {}},
+                                            links or [], items or {}, apply=apply)
+
+    def test_mandatory_triage_preview_and_idempotency(self):
+        preview = self.assignment(apply=False)
+        self.assertEqual(preview["strategy"], "triage")
+        self.assertFalse(self.state.exists())
+        first = self.assignment()
+        self.assertEqual(first["strategy"], "triage")
+        self.assertEqual(self.assignment()["strategy"], "covered")
+        self.assertEqual(len(self.store.list_groups(self.admin)), 1)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            list(pool.map(lambda _: self.assignment(), range(3)))
+        self.assertEqual(len(self.store.list_groups(self.admin)[0]["members"]), 1)
+
+    def test_mandatory_practice_uses_exact_ref_and_truncates_title(self):
+        ref = "tracker:ITEM-42"
+        links = [{"session": "codex:root", "ref": ref, "role": "owns", "until": None}]
+        result = self.assignment(links=links, items={ref: {"title": "x" * 90, "status": "open"}})
+        self.assertEqual(result["strategy"], "practice")
+        group = self.store.list_groups(self.admin)[0]
+        self.assertEqual(group["name"], "📌 ITEM-42: " + "x" * 70)
+        self.assertEqual(group["role_key"], ref.lower())
+        self.assertEqual(group["ledger_links"], [{"ref": ref, "lead": True}])
+        self.assertEqual(self.assignment(links=links)["strategy"], "covered")
+
+    def test_mandatory_practice_reuses_linked_group_and_preserves_lead(self):
+        lead = self.store.create_group(self.admin, "Lead")["group_id"]
+        other = self.store.create_group(self.admin, "Other")["group_id"]
+        self.store.link_ledger(self.admin, other, "tracker:release")
+        self.store.link_ledger(self.admin, lead, "tracker:release", lead=True)
+        links = [{"session": "codex:root", "ref": "tracker:release", "role": "works-on", "until": None}]
+        result = self.assignment(links=links, items={"tracker:release": {"title": "Release", "status": "active"}})
+        self.assertEqual(result["groups"], [lead])
+        self.assertTrue(self.store.get_group(self.admin, lead)["ledger_links"][0]["lead"])
+        self.assertFalse(self.store.get_group(self.admin, other)["ledger_links"][0]["lead"])
+
+    def test_mandatory_area_skips_closed_items_and_closed_links(self):
+        area = self.store.create_group(self.admin, "Area")["group_id"]
+        self.store.link_ledger(self.admin, area, "area:release", lead=True)
+        links = [{"session": "codex:root", "ref": "tracker:done", "role": "owns", "until": None},
+                 {"session": "codex:root", "ref": "tracker:old", "role": "works-on", "until": "ended"}]
+        result = self.assignment(sessions={"codex:root": {"domains": ["release"]}}, links=links,
+                                 items={"tracker:done": {"title": "Done", "status": "done"},
+                                        "tracker:old": {"title": "Old", "status": "open"}})
+        self.assertEqual((result["strategy"], result["groups"]), ("area", [area]))
+
+    def test_mandatory_child_inherits_root_without_joining(self):
+        sessions = {"codex:a-child": {"parent": "codex:middle"},
+                    "codex:middle": {"parent": "codex:z-root"}, "codex:z-root": {},
+                    "claude:child": {"parent": "codex:z-root"}, "codex:archived": {"archived": True}}
+        preview = self.store.reconcile_membership(self.admin, sessions, [], [], apply=False)
+        self.assertEqual(preview["uncovered_before"], 4)
+        self.assertEqual(preview["uncovered_after"], 4)
+        self.assertEqual(preview["projected_uncovered_after"], 0)
+        self.assertFalse(self.state.exists())
+        result = self.store.reconcile_membership(self.admin, sessions, [], {}, apply=True)
+        self.assertEqual(result["uncovered_after"], 0)
+        self.assertEqual(result["counts"], {"triage": 2, "covered": 2})
+        self.assertEqual(result["triage_size"], 2)
+        members = self.store.list_groups(self.admin)[0]["members"]
+        self.assertEqual({row["session_id"] for row in members}, {"codex:z-root", "claude:child"})
+        inherited = self.assignment("codex:a-child", sessions=sessions)
+        self.assertEqual(inherited["root_session_id"], "codex:z-root")
+        again = self.store.reconcile_membership(self.admin, sessions, [], {}, apply=True)
+        self.assertEqual(again["counts"], {"covered": 4})
+
+    def test_mandatory_invalid_role_rolls_back_and_reports_error(self):
+        sessions = {"codex:root": {}, "codex:other": {}}
+        links = [{"session": "codex:root", "ref": "tracker:bad+role", "role": "owns", "until": None}]
+        result = self.store.reconcile_membership(self.admin, sessions, links,
+                  {"tracker:bad+role": {"title": "Invalid", "status": "open"}}, apply=True)
+        self.assertEqual(len(result["errors"]), 1)
+        self.assertEqual(result["uncovered_after"], 1)
+        self.assertEqual(len(self.store.list_groups(self.admin)), 1)
+
+    def test_mandatory_all_practices_and_areas_and_role_reuse(self):
+        role = self.store.create_group(self.admin, "Existing", role_key="tracker:a")["group_id"]
+        links = [{"session": "codex:root", "ref": ref, "role": "works-on", "until": None}
+                 for ref in ["tracker:A", "tracker:B"]]
+        items = {ref: {"title": ref, "status": "open"} for ref in ["tracker:A", "tracker:B"]}
+        result = self.assignment(links=links, items=items)
+        self.assertEqual(len(result["groups"]), 2)
+        self.assertIn(role, result["groups"])
+        self.assertEqual(self.store.get_group(self.admin, role)["ledger_links"], [{"ref": "tracker:A", "lead": True}])
+        for domain in ["alpha", "beta"]:
+            key = self.store.create_group(self.admin, domain)["group_id"]
+            self.store.link_ledger(self.admin, key, "area:" + domain, lead=True)
+        result = self.assignment("claude:area", sessions={"claude:area": {"domains": ["alpha", "beta"]}})
+        self.assertEqual(result["strategy"], "area")
+        self.assertEqual(len(result["groups"]), 2)
+
     def cli(self, *args, message=None, success=True):
         result = subprocess.run([sys.executable, str(BIN / "agent-mesh"), "group", *args, "--json"],
                                 input=message, text=True, capture_output=True, timeout=10,

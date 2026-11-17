@@ -88,6 +88,61 @@ def require_cloud_registration(session_id):
     raise ValueError("an open cloud graph registration is required")
 
 
+def assignment_inputs(session=None):
+    """Read the authoritative graph/catalog and exact source-owned item metadata."""
+    directory = Path(__file__).resolve().parent
+    def run(command):
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+        if result.returncode:
+            raise ValueError("membership input query failed: " + result.stderr.strip()[:300])
+        return json.loads(result.stdout)
+    graph_args = ["--state", os.environ["MESH_GRAPH_STATE"]] if os.environ.get("MESH_GRAPH_STATE") else []
+    graph = run(["node", str(directory / "mesh-graph.mjs"), "show", "--json", *graph_args])
+    catalog = run(["node", str(directory / "mesh-graph.mjs"), "catalog", "list", "--archive", "include", *graph_args])
+    sessions = {row["sessionId"]: row for row in catalog["sessions"]}
+    def identity(node):
+        cloud = node.get("cloudIdentity")
+        if cloud:
+            return ":".join(cloud[key] for key in ("provider", "accountScope", "nativeId"))
+        return f"{node.get('agent')}:{node.get('runtimeUuid', '').lower()}"
+    by_node = {node["id"]: identity(node) for node in graph["nodes"]}
+    parents = {}
+    for edge in graph.get("edges", []):
+        if edge.get("type") == "spawned-by" and not edge.get("until"):
+            parents.setdefault(by_node.get(edge["to"]), set()).add(by_node.get(edge["from"]))
+    for node in graph["nodes"]:
+        key = identity(node)
+        if key not in sessions:
+            continue
+        sessions[key].setdefault("domains", []).extend(node.get("domains", []))
+        for launch in node.get("launches", []):
+            if launch.get("kind") == "spawn" and launch.get("caller"):
+                matches = [sid for sid in sessions if sid == launch["caller"] or sid.split(":", 1)[1] == launch["caller"]]
+                if len(matches) == 1:
+                    parents.setdefault(key, set()).add(matches[0])
+    # Native spawn edges also cover children created outside the tmux bridge.
+    native = Path(os.environ.get("CODEX_STATE_DB", Path.home() / ".codex" / "state_5.sqlite"))
+    if native.exists():
+        with sqlite3.connect(native.absolute().as_uri() + "?mode=ro", uri=True) as db:
+            if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='thread_spawn_edges'").fetchone():
+                for parent, child in db.execute("SELECT parent_thread_id, child_thread_id FROM thread_spawn_edges"):
+                    parents.setdefault("codex:" + child.lower(), set()).add("codex:" + parent.lower())
+    for key, values in parents.items():
+        if key in sessions and len(values) == 1 and None not in values:
+            sessions[key]["parent"] = next(iter(values))
+    links = graph.get("links", [])
+    refs = sorted({link["ref"] for link in links if (session is None or link.get("session") == session)
+                   and link.get("until") is None and link.get("role") in {"owns", "works-on"}
+                   and link["ref"].split(":", 1)[0] not in {"area", "group", "session-link"}})
+    items = {}
+    if refs:
+        data = run([sys.executable, str(directory / "mesh-ledger.py"), "query", "--refs", *refs, "--json"])
+        if data.get("errors"):
+            raise ValueError("membership ledger query returned errors")
+        items = {row["ref"]: row for row in data["items"]}
+    return sessions, links, items
+
+
 def parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--state", help="Override the local group database directory")
@@ -96,6 +151,12 @@ def parser():
     common.add_argument("--json", action="store_true", help="Emit JSON (the default)")
     cli = argparse.ArgumentParser(prog="agent-mesh group", description=__doc__)
     sub = cli.add_subparsers(dest="command", required=True)
+
+    for command in ("ensure", "reconcile"):
+        assignment = sub.add_parser(command, parents=[common], help="Ensure mandatory group membership")
+        assignment.add_argument("--apply", action="store_true", help="Apply assignments (default: preview)")
+        if command == "ensure":
+            assignment.add_argument("--session", required=True)
 
     create = sub.add_parser("create", parents=[common], help="Create a group")
     create.add_argument("name")
@@ -150,6 +211,13 @@ def dispatch(args):
     if is_cloud_session(args.as_session):
         raise ValueError("cloud session actors require an authenticated adapter")
     actor = GroupActor(session_id=args.as_session, manage=args.as_session is None)
+    if args.command in {"ensure", "reconcile"}:
+        if not actor.manage:
+            raise ValueError("group management is not authorized")
+        sessions, links, items = assignment_inputs(getattr(args, "session", None))
+        if args.command == "ensure":
+            return store.ensure_membership(actor, args.session, sessions, links, items, apply=args.apply)
+        return store.reconcile_membership(actor, sessions, links, items, apply=args.apply)
     if args.command == "create":
         return store.create_group(actor, args.name, role_key=args.role)
     if args.command == "list":
@@ -191,7 +259,10 @@ def dispatch(args):
 
 if __name__ == "__main__":
     try:
-        print(json.dumps(dispatch(parser().parse_args()), ensure_ascii=True))
-    except (ValueError, OSError, sqlite3.Error) as error:
+        result = dispatch(parser().parse_args())
+        print(json.dumps(result, ensure_ascii=True))
+        if result.get("errors"):
+            sys.exit(1)
+    except (ValueError, OSError, sqlite3.Error, subprocess.TimeoutExpired) as error:
         print(f"agent-mesh group: {error}", file=sys.stderr)
         sys.exit(1)
