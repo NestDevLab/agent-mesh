@@ -255,5 +255,6 @@ test('successor launch reservation survives replay and cannot be duplicated', as
   await rm(join(state, 'checkpoint.json'), { force: true });
   const restored = (await call('channel', 'get', '--name', 'example')).channel;
   assert.equal(restored.successorLaunch.id, 'launch-1');
+  assert.equal(restored.successorLaunch.stateSha256, 'a'.repeat(64));
   assert.equal(restored.successorLaunch.handoverId, channel.handoverId);
 });

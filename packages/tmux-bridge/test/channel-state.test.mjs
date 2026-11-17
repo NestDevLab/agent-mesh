@@ -155,8 +155,10 @@ test('a successor launch reservation prevents abort and premature switch', () =>
   channel = completeStatePreparation(channel, { schema: 'agent-mesh.handover-state.v1', session, nonce: 'prep', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 1 });
   const launch = { id: 'launch-1', profileSha256: 'b'.repeat(64) };
   assert.throws(() => reserveSuccessorLaunch(channel, { ...expected, handoverId: 'stale' }, launch), /identity/);
+  assert.throws(() => reserveSuccessorLaunch({ ...channel, statePreparation: { ...channel.statePreparation, sha256: 'bad' } }, expected, launch), /unresolved/);
   const reserved = reserveSuccessorLaunch(channel, expected, launch);
   assert.equal(reserved.successorLaunch.status, 'requested');
+  assert.equal(reserved.successorLaunch.stateSha256, 'a'.repeat(64));
   assert.throws(() => reserveSuccessorLaunch(reserved, expected, launch), /unresolved/);
   assert.throws(() => abortHandover(reserved, expected), /unresolved/);
   assert.throws(() => switchHandover(reserved, 'codex:new', true), /unresolved/);
