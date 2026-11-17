@@ -22,7 +22,7 @@ class ChannelWakerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(Path(directory) / 'graph'), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False, wake_evidence_root=str(Path(directory) / 'evidence'))
             channel = {'phase': 'draining', 'session': f'codex:{uuid}', 'generation': 2, 'handover': {'backlog': ['one']}, 'queue': [{'id': 'one', 'state': 'accepted', 'session': f'codex:{uuid}', 'generation': 2, 'nativeQueueId': 'queue-1'}]}
-            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', return_value=channel), patch.object(waker, 'start_codex_channel_wake', side_effect=ValueError('uncertain')) as start, patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', return_value=channel), patch.object(waker, 'preflight_codex_channel_wake', return_value=True), patch.object(waker, 'start_codex_channel_wake', side_effect=ValueError('uncertain')) as start, patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 3)
                 self.assertEqual(waker.run(args), 3)
                 self.assertEqual(start.call_count, 1)
@@ -35,10 +35,19 @@ class ChannelWakerTest(unittest.TestCase):
             evidence = 'codex-wake:' + 'a' * 64
             channel = {'phase': 'draining', 'session': f'codex:{uuid}', 'generation': 2, 'handover': {'backlog': ['one']}, 'queue': [{'id': 'one', 'state': 'accepted', 'session': f'codex:{uuid}', 'generation': 2, 'nativeQueueId': 'queue-1'}]}
             observed = {**channel, 'queue': [{**channel['queue'][0], 'state': 'observed', 'wakeEvidence': evidence}]}
-            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', side_effect=[channel, observed]), patch.object(waker, 'start_codex_channel_wake', return_value=evidence), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', side_effect=[channel, observed]), patch.object(waker, 'preflight_codex_channel_wake', return_value=True), patch.object(waker, 'start_codex_channel_wake', return_value=evidence), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(waker.run(args), 0)
                 deliver.assert_not_called()
             self.assertEqual(json.loads(Path(args.state).read_text())['wakeAttempt']['status'], 'verified')
+
+    def test_codex_busy_preflight_does_not_record_or_start_attempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(Path(directory) / 'graph'), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False, wake_evidence_root=str(Path(directory) / 'evidence'))
+            channel = {'phase': 'draining', 'session': f'codex:{uuid}', 'generation': 2, 'handover': {'backlog': ['one']}, 'queue': [{'id': 'one', 'state': 'accepted', 'session': f'codex:{uuid}', 'generation': 2, 'nativeQueueId': 'queue-1'}]}
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', return_value=channel), patch.object(waker, 'preflight_codex_channel_wake', return_value=False), patch.object(waker, 'start_codex_channel_wake') as start, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                start.assert_not_called()
+            self.assertNotIn('wakeAttempt', json.loads(Path(args.state).read_text()))
 
     def test_lost_claude_receipt_recovers_from_correlated_transcript_without_resend(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -40,6 +40,7 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
     requests.push(request);
     if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: mode === 'auto-drained' ? [] : [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: mode === 'wrong-queue-payload' ? 'different' : 'fixture', text_elements: [] }] }], nextCursor: null } });
     else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
+    else if (request.method === 'thread/read' && request.params.includeTurns === false) peer.send({ id: request.id, result: { thread: { id: thread, status: { type: mode === 'busy' ? 'active' : 'idle' } } } });
     else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : mode === 'auto-same-second' ? Math.floor(autoReservedMs / 1000) : nativeId === 'queued-auto-proof' && mode !== 'auto-old-turn' ? Math.floor(Date.now() / 1000) : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', startedAtMs: nativeId === 'queued-auto-proof' ? Date.now() : 123456789001, clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
   });
@@ -47,6 +48,14 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   t.after(() => new Promise(resolve => server.close(resolve)));
   const env = { ...process.env, CODEX_REMOTE_SOCK: socket, CODEX_NO_REMOTE: '' };
   const args = ['--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation, '--channel', 'success', '--generation', '1', '--evidence-root', evidence, '--graph-state', state];
+  mode = 'busy';
+  const busy = JSON.parse((await exec(process.execPath, [bin, '--preflight', '--thread', thread, '--queue-id', 'queued-1', '--correlation', correlation], { env })).stdout);
+  assert.equal(busy.status, 'not-ready');
+  const beforeBusy = requests.filter(r => r.method === 'thread/queue/start').length;
+  await assert.rejects(exec(process.execPath, [bin, '--apply', ...args], { env }));
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, beforeBusy);
+  assert.equal((await call('channel', 'get', '--name', 'success')).channel.wakeReservation, undefined);
+  mode = 'success'; requests.length = 0;
   await assert.rejects(exec(process.execPath, [bin, ...args], { env }));
   assert.equal(requests.length, 0);
   await prepareChannel('handover');

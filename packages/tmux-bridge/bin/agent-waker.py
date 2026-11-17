@@ -206,6 +206,19 @@ def observe_claude_channel_delivery(args: argparse.Namespace, message_id: str, r
         raise ValueError('invalid delivery observation')
 
 
+def preflight_codex_channel_wake(item: dict[str, Any], channel: dict[str, Any]) -> bool:
+    session = channel['session']
+    if not session.startswith('codex:'):
+        raise ValueError('invalid Codex wake target')
+    command = ['node', str(BIN / 'codex-wake-evidence.mjs'), '--preflight', '--thread', session[6:],
+               '--queue-id', item['nativeQueueId'], '--correlation', item['id']]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=20, check=True)
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or value.get('schema') != 'agent-mesh.wake-preflight.v1' or value.get('session') != session or value.get('queueId') != item['nativeQueueId'] or value.get('correlation') != item['id'] or value.get('status') not in ('ready', 'not-ready'):
+        raise ValueError('invalid wake preflight')
+    return value['status'] == 'ready'
+
+
 def start_codex_channel_wake(args: argparse.Namespace, item: dict[str, Any], channel: dict[str, Any]) -> str:
     session = channel['session']
     if not session.startswith('codex:') or not args.graph_state or not os.path.isabs(args.graph_state) or not os.path.isabs(args.wake_evidence_root):
@@ -312,6 +325,9 @@ def run_channel(args: argparse.Namespace) -> int:
                         return 3
                     if not isinstance(identity['queueId'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', identity['queueId']):
                         raise ValueError('native queue identity unavailable')
+                    if not preflight_codex_channel_wake(awaiting, channel):
+                        print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'wake not ready'}))
+                        return 3
                     state['wakeAttempt'] = {'identity': identity, 'status': 'attempted'}
                     save_state(path, state)
                     evidence = start_codex_channel_wake(args, awaiting, channel)

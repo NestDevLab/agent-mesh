@@ -274,9 +274,13 @@ This is not a cloud or Claude delivery adapter; native cutover remains disabled.
 
 The channel waker can opt in to explicit Codex backlog wake with absolute
 private graph and evidence roots, and without resume. It persists an attempt
-before calling the producer, checks the graph settlement, and never retries an
+after a read-only native idle/queue preflight and before calling the producer,
+checks the graph settlement, and never retries an
 uncertain attempt automatically. A submission that already left the native
 queue remains unverified; this route does not provide complete wake coverage.
+The producer repeats the preflight before reserving a wake. Status may change
+after either read; a raced or uncertain start remains unresolved rather than
+being retried.
 The option is disabled unless explicitly supplied and does not enable timers.
 
 For a draining local Claude channel, `observe-claude-delivery` checks one

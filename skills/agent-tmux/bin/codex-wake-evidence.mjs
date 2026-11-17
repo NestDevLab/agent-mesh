@@ -39,6 +39,22 @@ export async function observeAutoCodexWake() {
   throw new Error('auto wake observation disabled: queue consumption is unproven');
 }
 
+async function wakeReadiness(request, thread, queueId, correlation) {
+  const read = await request('thread/read', { threadId: thread, includeTurns: false });
+  if (read?.thread?.id !== thread || !['idle', 'active', 'notLoaded', 'systemError'].includes(read.thread.status?.type)) throw new Error('native thread status unavailable');
+  if (read.thread.status.type !== 'idle') return false;
+  const queue = await request('thread/queue/list', { threadId: thread, limit: 100 });
+  if (!Array.isArray(queue?.data) || queue.nextCursor != null) throw new Error('native queue inventory incomplete');
+  return queue.data.filter(item => item?.id === queueId && item.clientUserMessageId === correlation && Array.isArray(item.input)).length === 1;
+}
+
+export async function preflightCodexWake({ thread, queueId, correlation }) {
+  if (typeof thread !== 'string' || !UUID.test(thread) || typeof queueId !== 'string' || !TOKEN.test(queueId) || typeof correlation !== 'string' || !correlation.startsWith('waker-') || !UUID.test(correlation.slice(6))) throw new Error('invalid wake preflight identity');
+  thread = thread.toLowerCase();
+  const ready = await withCodexAppServer({ clientName: 'agent-mesh-wake-preflight', timeout: 15000, timeoutMessage: 'native preflight unavailable' }, request => wakeReadiness(request, thread, queueId, correlation));
+  return { schema: 'agent-mesh.wake-preflight.v1', session: `codex:${thread}`, queueId, correlation, status: ready ? 'ready' : 'not-ready' };
+}
+
 export async function verifyCodexWakeEvidence({ evidenceRoot, reference, session }) {
   if (typeof reference !== 'string' || !/^codex-wake:[a-f0-9]{64}$/.test(reference) || typeof session !== 'string' || !session.startsWith('codex:') || !UUID.test(session.slice(6))) throw new Error('invalid wake verification request');
   await privateRoot(evidenceRoot);
@@ -90,6 +106,7 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
   if (result.error || result.status !== 0 || !graph.migrated || matches.length !== 1 || matches[0].status === 'closed' || matches[0].surface?.archived === true) throw new Error('wake session not registered or closed');
   const intent = hash(JSON.stringify([session, queueId]));
   const evidence = await withCodexAppServer({ clientName: 'agent-mesh-wake-evidence', timeout: 30000, timeoutMessage: 'native wake outcome uncertain' }, async request => {
+    if (!await wakeReadiness(request, thread, queueId, correlation)) throw new Error('native wake not ready');
     const listed = await request('thread/queue/list', { threadId: thread, limit: 100 });
     if (!Array.isArray(listed?.data) || listed.nextCursor != null || listed.data.filter(item => item?.id === queueId && item.clientUserMessageId === correlation && Array.isArray(item.input)).length !== 1) throw new Error('queued waker identity unavailable');
     const reserved = spawnSync(process.execPath, [join(here, 'mesh-graph.mjs'), '--state', graphState, 'channel', 'reserve-wake', '--name', channel, '--id', correlation, '--session', session, '--generation', String(generation), '--input', queueId], { encoding: 'utf8', timeout: 30000, maxBuffer: 65536 });
@@ -119,10 +136,12 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   try {
-    const { values } = parseArgs({ options: { apply: { type: 'boolean' }, reconcile: { type: 'boolean' }, 'observe-auto': { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, channel: { type: 'string' }, generation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
+    const { values } = parseArgs({ options: { apply: { type: 'boolean' }, preflight: { type: 'boolean' }, reconcile: { type: 'boolean' }, 'observe-auto': { type: 'boolean' }, thread: { type: 'string' }, 'queue-id': { type: 'string' }, correlation: { type: 'string' }, channel: { type: 'string' }, generation: { type: 'string' }, 'evidence-root': { type: 'string' }, 'graph-state': { type: 'string' }, verify: { type: 'string' }, publish: { type: 'string' }, session: { type: 'string' } }, strict: true });
+    if (values.preflight && (values.apply || values.reconcile || values['observe-auto'] || values.verify || values.publish)) throw new Error('conflicting wake operations');
     if (values['observe-auto'] && (values.reconcile || values.verify || values.publish)) throw new Error('conflicting wake operations');
     let result;
-    if (values['observe-auto']) result = await observeAutoCodexWake({ channel: values.channel, thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, generation: /^[1-9][0-9]*$/.test(values.generation || '') ? Number(values.generation) : NaN, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
+    if (values.preflight) result = await preflightCodexWake({ thread: values.thread, queueId: values['queue-id'], correlation: values.correlation });
+    else if (values['observe-auto']) result = await observeAutoCodexWake({ channel: values.channel, thread: values.thread, queueId: values['queue-id'], correlation: values.correlation, generation: /^[1-9][0-9]*$/.test(values.generation || '') ? Number(values.generation) : NaN, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
     else if (values.reconcile) result = await reconcileCodexWake({ channel: values.channel, evidenceRoot: values['evidence-root'], graphState: values['graph-state'], apply: values.apply });
     else if (values.verify) result = await verifyCodexWakeEvidence({ evidenceRoot: values['evidence-root'], reference: values.verify, session: values.session });
     else if (values.publish) result = await publishCodexWake({ evidenceRoot: values['evidence-root'], reference: values.publish, session: values.session, graphState: values['graph-state'], channel: values.channel });
