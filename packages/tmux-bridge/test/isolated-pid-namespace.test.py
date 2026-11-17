@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -95,6 +96,46 @@ class IsolatedPidNamespaceTest(unittest.TestCase):
             self.assertFalse(marker.exists())
             listing = subprocess.run(['ps', '-eo', 'args'], capture_output=True, text=True, check=True).stdout
             self.assertNotIn(directory, listing)
+
+    def test_sealed_plugin_mount_is_ready_before_release_and_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plugin = root / 'source-plugin'
+            plugin.mkdir()
+            (plugin / 'fixture.txt').write_text('original')
+            observer = (BIN / 'plugin-tree-observation.mjs').as_uri()
+            script = f"import {{observePluginTree}} from '{observer}';console.log(JSON.stringify(await observePluginTree(process.argv[1])))"
+            observed = subprocess.run(['/usr/local/bin/node', '--input-type=module', '-e', script, str(plugin)], capture_output=True, text=True, check=True)
+            spec = importlib.util.spec_from_file_location('snapshot', BIN / 'sealed-plugin-snapshot.py')
+            snapshot = importlib.util.module_from_spec(spec); spec.loader.exec_module(snapshot)
+            fd = snapshot.sealed_plugin_snapshot(str(plugin), json.loads(observed.stdout)['sha256'])
+            marker = root / 'result.json'
+            destination = root / 'mounted-plugin'
+            code = "import json,pathlib,sys,time\np=pathlib.Path(sys.argv[1]);r={'value':(p/'fixture.txt').read_text(),'blocked':False}\ntry:(p/'fixture.txt').write_text('changed')\nexcept OSError:r['blocked']=True\npathlib.Path(sys.argv[2]).write_text(json.dumps(r))\nwhile True:time.sleep(1)"
+            try:
+                lease = module.IsolatedNamespace.prepare(directory, [sys.executable, '-c', code, str(destination), str(marker)], plugin_archives=[(fd, str(destination))])
+                try:
+                    self.assertFalse(marker.exists())
+                    (plugin / 'fixture.txt').write_text('host changed')
+                    lease.release()
+                    self.wait_for(marker)
+                    self.assertEqual(json.loads(marker.read_text()), {'value': 'original', 'blocked': True})
+                    self.assertEqual(lease.stop()['status'], 'init-exited')
+                finally:
+                    if not lease._stopped:
+                        lease.stop()
+            finally:
+                os.close(fd)
+
+    def test_plugin_mount_rejects_outside_or_nested_destinations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError):
+                module.IsolatedNamespace.prepare(directory, ['/usr/bin/true'], plugin_archives=[(0, '/etc')])
+            root = Path(directory)
+            first = root / 'plugin'
+            first.mkdir()
+            with self.assertRaises(ValueError):
+                module.IsolatedNamespace.prepare(directory, ['/usr/bin/true'], plugin_archives=[(0, str(first)), (0, str(first / 'nested'))])
 
     def test_invalid_workspace_or_command_does_not_launch(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -5,6 +5,7 @@ No handover or session lifecycle uses this module. It is not an authorization
 boundary and cannot undo remote effects. A caller must keep the lease alive.
 """
 import errno
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,9 @@ import uuid
 
 BWRAP = '/usr/bin/bwrap'
 GATE = str(Path(__file__).resolve().with_name('namespace-exec-gate.py'))
+_MOUNT_SPEC = importlib.util.spec_from_file_location('sealed_plugin_mount', Path(__file__).resolve().with_name('sealed-plugin-mount.py'))
+_MOUNT = importlib.util.module_from_spec(_MOUNT_SPEC)
+_MOUNT_SPEC.loader.exec_module(_MOUNT)
 
 
 def _identity(pid):
@@ -44,7 +48,7 @@ class IsolatedNamespace:
         self._stopped = False
 
     @classmethod
-    def prepare(cls, workspace, command, *, timeout=5):
+    def prepare(cls, workspace, command, *, timeout=5, plugin_archives=()):
         if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
             raise RuntimeError('pidfd support unavailable')
         root = Path(workspace)
@@ -55,6 +59,22 @@ class IsolatedNamespace:
             raise ValueError('workspace must be private')
         if not isinstance(command, list) or not command or len(command) > 64 or not os.path.isabs(command[0]) or any(not isinstance(item, str) or not item or len(item) > 8192 or '\x00' in item for item in command) or isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0 < timeout <= 30:
             raise ValueError('invalid isolated command')
+        if not isinstance(plugin_archives, (list, tuple)) or len(plugin_archives) > 16:
+            raise ValueError('invalid plugin archives')
+        destinations = []
+        for item in plugin_archives:
+            if not isinstance(item, (list, tuple)) or len(item) != 2 or type(item[0]) is not int or not isinstance(item[1], str):
+                raise ValueError('invalid plugin archive binding')
+            destination = Path(item[1])
+            if (not destination.is_absolute() or str(destination) != item[1] or '..' in destination.parts
+                    or destination == root or root not in destination.parents or not destination.parent.is_dir()
+                    or destination.parent.resolve(strict=True) != destination.parent):
+                raise ValueError('plugin destination must be inside the workspace')
+            if destination.is_symlink() or (destination.exists() and (not destination.is_dir() or destination.resolve(strict=True) != destination)):
+                raise ValueError('invalid plugin mount destination')
+            if any(destination == prior or destination in prior.parents or prior in destination.parents for prior in destinations):
+                raise ValueError('overlapping plugin destinations')
+            destinations.append(destination)
         fifo = root / f'.namespace-gate-{uuid.uuid4().hex}'
         os.mkfifo(fifo, 0o600)
         before = fifo.lstat()
@@ -63,13 +83,18 @@ class IsolatedNamespace:
         pidfd = None
         gatefd = None
         verified = False
+        mounts = []
         try:
+            for archive, destination in plugin_archives:
+                mounts.append(_MOUNT.SealedPluginMount(archive, destination))
+            mount_args = [argument for mount in mounts for argument in mount.arguments]
+            mount_fds = [fd for mount in mounts for fd in mount.pass_fds]
             args = [BWRAP, '--ro-bind', '/', '/', '--tmpfs', '/tmp', '--bind', str(root), str(root),
-                    '--proc', '/proc', '--dev', '/dev', '--unshare-pid', '--unshare-net', '--die-with-parent',
+                    *mount_args, '--proc', '/proc', '--dev', '/dev', '--unshare-pid', '--unshare-net', '--die-with-parent',
                     '--info-fd', str(writefd), '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin',
                     '--chdir', str(root), sys.executable, '-B', GATE, str(fifo), '--', *command]
             process = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                       pass_fds=(writefd,), start_new_session=True)
+                                       pass_fds=(writefd, *mount_fds), start_new_session=True)
             os.close(writefd)
             writefd = None
             deadline = time.monotonic() + timeout
@@ -115,6 +140,8 @@ class IsolatedNamespace:
             pidfd = None
             return result
         except Exception as exc:
+            if process is None:
+                raise
             # Never release the gate on error. If ownership was verified, the
             # pinned namespace init can be stopped without targeting another PID.
             if pidfd is not None:
@@ -156,6 +183,8 @@ class IsolatedNamespace:
                         stream.close()
             raise RuntimeError('isolated preparation failed; cleanup may be unverified') from exc
         finally:
+            for mount in mounts:
+                mount.close()
             os.close(readfd)
             if writefd is not None:
                 os.close(writefd)

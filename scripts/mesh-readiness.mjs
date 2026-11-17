@@ -65,6 +65,8 @@ const agentTmuxBundleFiles = [
   "bin/plugin-tree-observation.mjs",
   "bin/sealed-plugin-snapshot.py",
   "bin/sealed-plugin-mount.py",
+  "bin/isolated-pid-namespace.py",
+  "bin/namespace-exec-gate.py",
   "bin/sealed-restart.py",
   "bin/sealed-restart-validate.py",
   "bin/sealed-restart-validate.mjs",
