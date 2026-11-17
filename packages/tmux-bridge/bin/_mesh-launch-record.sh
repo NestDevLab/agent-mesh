@@ -9,7 +9,7 @@ mesh_launch_caller() {
 }
 
 mesh_launch_record_start() {
-    local agent="$1" target="$2" cwd="$3" profile="$4" thread_id="$5" route_status="$6" route_reason="${7:-}" launched_at_ms="${8:-}"
+    local agent="$1" target="$2" cwd="$3" profile="$4" thread_id="$5" route_status="$6" route_reason="${7:-}" launched_at_ms="${8:-}" requested_session="${9:-}"
     local args route_json="${MESH_LIMEN_ROUTE:-}" model="${SESSION_MODEL:-}" effort="${SESSION_EFFORT:-}"
     args=(--state "$MESH_LAUNCH_RECORD_FILE" start --agent "$agent" --target "$target" --cwd "$cwd"
         --route-status "$route_status" --caller "$(mesh_launch_caller)")
@@ -20,6 +20,8 @@ mesh_launch_record_start() {
     [[ -z "$model" ]] || args+=(--model "$model")
     [[ -z "$effort" ]] || args+=(--effort "$effort")
     [[ -z "$launched_at_ms" ]] || args+=(--launched-at-ms "$launched_at_ms")
+    [[ -z "$requested_session" ]] || args+=(--requested-session-id "$requested_session")
+    [[ -z "${MESH_TMUX_SOCKET:-}" ]] || args+=(--tmux-socket "$MESH_TMUX_SOCKET")
     python3 "$MESH_LAUNCH_RECORD_BIN" "${args[@]}" >/dev/null
 }
 

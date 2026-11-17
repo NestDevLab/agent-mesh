@@ -803,7 +803,26 @@ case "$cmd" in
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )
         fi
-        mesh_launch_record_start "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "" "$ROUTE_STATUS" "$ROUTE_REASON" "$LAUNCHED_AT_MS" \
+        # This is the requested CLI identity, not evidence that the process
+        # actually started or that the runtime accepted it. Ambiguity is omitted.
+        REQUESTED_SESSION=""
+        if [[ "$AGENT_NAME" == claude ]]; then
+            SESSION_ID_COUNT=0
+            for ((i=0; i<${#PASSTHRU[@]}; i++)); do
+                case "${PASSTHRU[i]}" in
+                    --session-id)
+                        SESSION_ID_COUNT=$((SESSION_ID_COUNT + 1))
+                        REQUESTED_SESSION="${PASSTHRU[i+1]:-}" ;;
+                    --session-id=*)
+                        SESSION_ID_COUNT=$((SESSION_ID_COUNT + 1))
+                        REQUESTED_SESSION="${PASSTHRU[i]#--session-id=}" ;;
+                esac
+            done
+            if [[ "$SESSION_ID_COUNT" != 1 || ! "$REQUESTED_SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+                REQUESTED_SESSION=""
+            fi
+        fi
+        mesh_launch_record_start "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "" "$ROUTE_STATUS" "$ROUTE_REASON" "$LAUNCHED_AT_MS" "$REQUESTED_SESSION" \
             || { mtmux kill-session -t "$TARGET" 2>/dev/null || true; echo "ERROR: launch record failed for '$TARGET'; new target removed" >&2; exit 1; }
         mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
             >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2

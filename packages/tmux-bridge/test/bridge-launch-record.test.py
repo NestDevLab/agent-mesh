@@ -68,6 +68,15 @@ class BridgeLaunchRecordTest(unittest.TestCase):
         self.assertEqual(event["caller"], "caller-thread")
         self.assertIsNone(event["threadId"])
 
+    def test_requested_session_is_not_a_resolved_thread(self):
+        wanted = '12345678-1234-4234-8234-123456789abc'
+        self.run_record('start', '--agent', 'claude', '--target', 'fixture', '--cwd', '/tmp',
+                        '--route-status', 'native', '--requested-session-id', wanted, '--tmux-socket', 'fixture')
+        event = self.read_events()[0]
+        self.assertEqual(event['requestedSessionId'], wanted)
+        self.assertEqual(event['tmuxSocket'], 'fixture')
+        self.assertIsNone(event['threadId'])
+
     def test_reconcile_records_one_exact_non_child_thread(self):
         self.start()
         with sqlite3.connect(self.db) as connection:
