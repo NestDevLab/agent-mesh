@@ -293,7 +293,7 @@ try {
         if (!isAbsolute(root) || !/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid successor reservation parameters");
         const expected = { handoverId: requiredSingleLine(values.id, "--id"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) };
         const launch = JSON.parse(requiredSingleLine(channelInput, "--input"));
-        if (!launch || typeof launch !== "object" || Array.isArray(launch) || Object.keys(launch).sort().join(",") !== "id,profileSha256") throw new Error("invalid successor launch reservation");
+        if (!launch || typeof launch !== "object" || Array.isArray(launch) || !["id,profileSha256", "id,profileSha256,successorSession"].includes(Object.keys(launch).sort().join(","))) throw new Error("invalid successor launch reservation");
         assertPrivateChannelState(stateDir);
         const prior = (loadGraph(stateDir).channels || []).find(item => item.id === name);
         if (!prior || prior.phase !== "handover" || prior.handoverId !== expected.handoverId || prior.session !== expected.session || prior.generation !== expected.generation) throw new Error("handover identity changed");
@@ -304,6 +304,7 @@ try {
           if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
           const current = (graph.channels || []).find(item => item.id === name);
           if (!current || current.handoverId !== prior.handoverId || current.session !== prior.session || current.generation !== prior.generation || JSON.stringify(current.statePreparation) !== JSON.stringify(prior.statePreparation)) throw new Error("channel changed during successor preflight");
+          if (launch.successorSession && ((graph.nodes || []).some(node => plexus.sessionIdOf(node) === launch.successorSession) || (graph.channels || []).some(item => item.session === launch.successorSession || item.successorLaunch?.successorSession === launch.successorSession))) throw new Error("successor session already registered or reserved");
           const next = reserveSuccessorLaunch(current, expected, launch);
           return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
         });

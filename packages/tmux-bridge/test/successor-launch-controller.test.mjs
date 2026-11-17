@@ -28,3 +28,10 @@ test('an uncertain launch is attempted once and never marked successful', async 
   const result = await invokeReservedSuccessor({ binding, preflight, markInvoking: async b => ({ channel: channel(b) }), launch: async () => { calls++; throw Error('lost reply'); } });
   assert.equal(result.status, 'outcome-uncertain'); assert.equal(calls, 1);
 });
+
+test('a checkpoint for another successor never invokes the launcher', async () => {
+  const bound = { ...binding, successorSession: 'claude:33333333-3333-4333-8333-333333333333' };
+  let calls = 0;
+  await assert.rejects(invokeReservedSuccessor({ binding: bound, preflight, markInvoking: async b => ({ channel: { ...channel(b), successorLaunch: { ...channel(b).successorLaunch, successorSession: 'claude:44444444-4444-4444-8444-444444444444' } } }), launch: async () => { calls++; } }), /checkpoint/);
+  assert.equal(calls, 0);
+});

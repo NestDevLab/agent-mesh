@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 const identifier = (value) => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value);
 const channelIdentifier = (value) => typeof value === 'string' && /^#?[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(value);
 const copy = (state) => structuredClone(state);
+const claudeSession = value => typeof value === 'string' && /^claude:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 
 export function createChannel(id, session) {
   if (!channelIdentifier(id) || !identifier(session)) throw new Error('invalid channel or session');
@@ -76,9 +77,11 @@ export function abortHandover(state, expected) {
 // proof of creation. It has no expiry and must not be retried automatically.
 export function reserveSuccessorLaunch(state, expected, launch) {
   if (!identifier(expected?.handoverId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation) throw new Error('handover identity changed');
+  if (launch?.successorSession !== undefined && (!claudeSession(launch.successorSession) || launch.successorSession === expected.session)) throw new Error('invalid successor session');
   if (state.phase !== 'handover' || state.successorLaunch || state.wakeReservation || state.finalNotice || state.queue.some(item => item.state === 'inflight') || state.statePreparation?.status !== 'verified' || !/^[a-f0-9]{64}$/.test(state.statePreparation.sha256 || '') || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(launch?.id) || (state.retiredLaunchIds || []).includes(launch.id) || (state.retiredLaunchIds || []).length >= 256 || !/^[a-f0-9]{64}$/.test(launch?.profileSha256 || '')) throw new Error('successor launch unavailable or unresolved');
   const next = copy(state);
   next.successorLaunch = { id: launch.id, profileSha256: launch.profileSha256, handoverId: state.handoverId, session: state.session, generation: state.generation, status: 'requested', stateSha256: state.statePreparation.sha256 };
+  if (launch.successorSession !== undefined) next.successorLaunch.successorSession = launch.successorSession;
   return next;
 }
 
