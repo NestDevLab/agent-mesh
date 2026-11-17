@@ -28,7 +28,9 @@ export class AuthorizationJournal {
   private highestRevision = 0;
   private highestEntry = "";
 
-  constructor(private readonly path: string) {}
+  private readonly path: string;
+
+  constructor(path: string) { this.path = path; }
 
   private async entries(): Promise<AuthorizationEntry[]> {
     let bytes: string;
