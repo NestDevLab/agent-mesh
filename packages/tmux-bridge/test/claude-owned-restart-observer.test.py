@@ -107,19 +107,32 @@ class OwnedRestartObservationTest(unittest.TestCase):
         with events.open('a') as output:
             output.write(json.dumps(event) + '\n')
         before = events.read_bytes()
+        launch_path = str(Path(self.tmp.name) / 'launch.jsonl')
+        launch_cmd = ['/usr/bin/python3', str(base / 'bridge-launch-record.py'), '--state', launch_path,
+                      'start', '--agent', 'claude', '--target', 'fixture', '--cwd', '/tmp',
+                      '--route-status', 'native', '--requested-session-id', UUID, '--tmux-socket', 'mesh']
+        launch = json.loads(subprocess.run(launch_cmd, capture_output=True, text=True, check=True).stdout)
         request = {'writerPid': self.process.pid, 'panePid': os.getpid(), 'session': SESSION,
                    'trustedExecutable': sys.executable, 'transcriptRoot': self.args['transcript_root'],
-                   'frame': FRAME, 'target': 'fixture', 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
+                   'frame': FRAME, 'target': 'fixture', 'bridgeLaunchId': launch['launchId'], 'launchRecordPath': launch_path, 'stateSha256': DIGEST, 'profileSha256': 'b' * 64,
                    'handoverId': handover, 'launchId': 'launch', 'sourceSession': source, 'generation': 1}
         args = ('channel', 'observe-owned-restart', '--name', 'fixture', '--input', '-')
         proof = json.loads(call(*args, input=json.dumps(request)).stdout)
         self.assertEqual(proof['checkpoint']['status'], 'invoking')
         self.assertEqual(proof['target'], 'fixture')
+        self.assertEqual(proof['launch']['launchId'], launch['launchId'])
         self.assertEqual(events.read_bytes(), before)
         request['target'] = 'other'
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
         request['target'] = 'fixture'
         request['profileSha256'] = '0' * 64
+        self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
+        self.assertEqual(events.read_bytes(), before)
+        request['profileSha256'] = 'b' * 64
+        replacement = json.loads(subprocess.run(launch_cmd, capture_output=True, text=True, check=True).stdout)
+        self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
+        request['bridgeLaunchId'] = replacement['launchId']
+        Path(launch_path).chmod(0o644)
         self.assertNotEqual(call(*args, input=json.dumps(request), check=False).returncode, 0)
         self.assertEqual(events.read_bytes(), before)
 

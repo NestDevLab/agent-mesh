@@ -17,6 +17,9 @@ _here = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location('claude_owned_process', _here / 'claude-owned-process.py')
 _owned = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_owned)
+_launch_spec = importlib.util.spec_from_file_location('claude_launch_evidence', _here / 'claude-launch-evidence.py')
+_launch = importlib.util.module_from_spec(_launch_spec)
+_launch_spec.loader.exec_module(_launch)
 
 
 def observe_owned_restart(*, writer_pid, pane_pid, session, trusted_executable,
@@ -101,15 +104,20 @@ def _main():
         request = data['request']
         if not request.get('target'):
             raise ValueError('target required')
-        result = observe_owned_restart(
-            writer_pid=request['writerPid'], pane_pid=request['panePid'],
-            session=request['session'], trusted_executable=request['trustedExecutable'],
-            transcript_root=request['transcriptRoot'], frame=request['frame'],
-            state_sha256=request['stateSha256'], profile_sha256=request['profileSha256'],
-            handover_id=request['handoverId'], launch_id=request['launchId'],
-            source_session=request['sourceSession'], generation=request['generation'],
-            read_checkpoint=lambda: checkpoint, node_executable=data['nodeExecutable'],
-            target=request['target'])
+        socket = os.environ.get('MESH_TMUX_SOCKET') or 'mesh'
+        with _launch.launch_evidence(request['launchRecordPath'], launch_id=request['bridgeLaunchId'],
+                                     target=request['target'], socket=socket,
+                                     session=request['session']) as launch:
+            result = observe_owned_restart(
+                writer_pid=request['writerPid'], pane_pid=request['panePid'],
+                session=request['session'], trusted_executable=request['trustedExecutable'],
+                transcript_root=request['transcriptRoot'], frame=request['frame'],
+                state_sha256=request['stateSha256'], profile_sha256=request['profileSha256'],
+                handover_id=request['handoverId'], launch_id=request['launchId'],
+                source_session=request['sourceSession'], generation=request['generation'],
+                read_checkpoint=lambda: checkpoint, node_executable=data['nodeExecutable'],
+                target=request['target'])
+            result['launch'] = launch
         print(json.dumps(result, separators=(',', ':')))
     except Exception:
         print('owned restart observation failed', file=sys.stderr)
