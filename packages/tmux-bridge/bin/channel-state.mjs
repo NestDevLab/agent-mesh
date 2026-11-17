@@ -55,6 +55,16 @@ export function beginHandover(state) {
   return next;
 }
 
+// Roll back only before the successor switch. An unresolved native state
+// preparation may still be writing, so its outcome must first be reconciled.
+export function abortHandover(state) {
+  if (state.phase !== 'handover' || (state.statePreparation && (state.statePreparation.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation)) || state.queue.some(item => item.state === 'inflight') || state.wakeReservation || state.finalNotice) throw new Error('handover rollback unavailable or unresolved');
+  const next = copy(state);
+  next.phase = 'active';
+  delete next.statePreparation;
+  return next;
+}
+
 // A reservation is durable and has no expiry: a crashed native call is unknown.
 export function reserveWake(state, id, session, generation, nativeQueueId, mode = 'start') {
   if (mode !== 'start' || !['active', 'draining'].includes(state.phase) || state.wakeReservation || state.session !== session || state.generation !== generation || !Number.isSafeInteger(generation) || generation < 1 || !identifier(nativeQueueId)) throw new Error('wake reservation unavailable');

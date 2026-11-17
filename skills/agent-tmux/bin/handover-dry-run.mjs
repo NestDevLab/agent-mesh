@@ -1,5 +1,5 @@
 /** In-memory rehearsal only. No native session, service, timer or graph is changed. */
-import { beginHandover, createChannel, enqueue, switchHandover, reserveStatePreparation, completeStatePreparation } from './channel-state.mjs';
+import { beginHandover, abortHandover, createChannel, enqueue, switchHandover, reserveStatePreparation, completeStatePreparation } from './channel-state.mjs';
 import { planRoleLaunch, assessRoleLaunch } from './role-launch-profile.mjs';
 
 export async function rehearseHandover({ role, oldSession, newSession, profile, authority, offlineMcp = [], fault = 'none', messageDuringHandover = false }) {
@@ -10,7 +10,7 @@ export async function rehearseHandover({ role, oldSession, newSession, profile, 
   const observed = { mcpStarted: [...plan.mcpToStart], pluginsStarted: [...plan.plugins], permissionPrompt: fault === 'permission', startupTokens: null };
   const launch = assessRoleLaunch({ plan, observed });
   if (fault === 'interrupted' || fault === 'quota' || launch.status !== 'ready') {
-    channel = { ...channel, phase: 'active' };
+    channel = abortHandover(channel);
     return { schema: 'agent-mesh.handover-rehearsal.v1', simulated: true, outcome: 'rolled-back', reason: fault === 'none' ? launch.reason : fault, channel, launch };
   }
   channel = reserveStatePreparation(channel, 'fixture-state');

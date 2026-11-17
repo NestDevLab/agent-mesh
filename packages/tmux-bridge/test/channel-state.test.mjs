@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, abortHandover, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
 
 test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';
@@ -113,4 +113,23 @@ test('bound native wake evidence observes only its exact draining backlog', asyn
   state = settleWake(state, proof);
   assert.equal(state.queue[0].state, 'observed');
   assert.equal(reserveFinalNotice(state, 'notice', 'codex:new', 'a'.repeat(64)).finalNotice.session, 'codex:old');
+});
+
+
+test('abort preserves queued messages and rejects unresolved preparation', () => {
+  const original = createChannel('example', 'codex:old');
+  const pending = enqueue(beginHandover(original), 'msg-1', 'fixture');
+  const rolledBack = abortHandover(pending);
+  assert.equal(rolledBack.phase, 'active');
+  assert.equal(rolledBack.session, original.session);
+  assert.equal(rolledBack.generation, original.generation);
+  assert.deepEqual(rolledBack.queue, pending.queue);
+  assert.throws(() => abortHandover(original), /unavailable/);
+  const reserved = reserveStatePreparation(pending, 'prep');
+  assert.throws(() => abortHandover(reserved), /unresolved/);
+  const verified = completeStatePreparation(reserved, { schema: 'agent-mesh.handover-state.v1', session: original.session, nonce: 'prep', filename: 'fixture.yaml', sha256: 'a'.repeat(64), bytes: 1 });
+  const afterVerified = abortHandover(verified);
+  assert.equal(afterVerified.statePreparation, undefined);
+  assert.deepEqual(afterVerified.queue, pending.queue);
+  assert.throws(() => abortHandover({ ...verified, statePreparation: { ...verified.statePreparation, generation: 2 } }), /unresolved/);
 });
