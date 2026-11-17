@@ -34,13 +34,14 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   }
   await prepareChannel('success');
   const cursor = (await call('query', 'changes', '--input', JSON.stringify({ initial: 'head' }))).cursor;
-  const requests = []; let mode = 'success', nativeId = 'queued-1', autoReservedMs = 0;
+  const requests = []; let mode = 'success', nativeId = 'queued-1', autoReservedMs = 0, delayedReads = 0;
   const server = createAppServer((request, peer) => {
     if (!request.id) return;
     requests.push(request);
     if (request.method === 'thread/queue/list') peer.send({ id: request.id, result: { data: mode === 'auto-drained' ? [] : [{ id: nativeId, clientUserMessageId: mode === 'wrong' ? 'wrong' : correlation, input: [{ type: 'text', text: mode === 'wrong-queue-payload' ? 'different' : 'fixture', text_elements: [] }] }], nextCursor: null } });
-    else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: 123456789, items: [] } } });
+    else if (request.method === 'thread/queue/start') peer.send({ id: request.id, result: { turn: { id: turn, status: mode === 'uncertain' ? 'completed' : 'inProgress', startedAt: mode === 'null-start' ? null : 123456789, items: [] } } });
     else if (request.method === 'thread/read' && request.params.includeTurns === false) peer.send({ id: request.id, result: { thread: { id: thread, status: { type: mode === 'busy' ? 'active' : 'idle' } } } });
+    else if (request.method === 'thread/read' && mode === 'null-start' && delayedReads++ === 0) peer.send({ id: request.id, result: { thread: { id: thread, turns: [{ id: turn, startedAt: null, itemsView: 'full', items: [] }] } } });
     else if (request.method === 'thread/read') peer.send({ id: request.id, result: { thread: { id: mode === 'wrong-thread' ? turn : thread, turns: [{ id: mode === 'wrong-turn' ? thread : turn, status: 'completed', startedAt: mode === 'wrong-time' ? 123456788 : mode === 'auto-same-second' ? Math.floor(autoReservedMs / 1000) : nativeId === 'queued-auto-proof' && mode !== 'auto-old-turn' ? Math.floor(Date.now() / 1000) : 123456789, itemsView: mode === 'partial' ? 'summary' : 'full', items: [{ type: 'userMessage', id: 'msg-1', startedAtMs: nativeId === 'queued-auto-proof' ? Date.now() : 123456789001, clientId: mode === 'wrong-client' ? 'other' : correlation, content: [{ type: 'text', text: mode === 'wrong-input' ? 'different' : 'fixture', text_elements: [] }] }] }] } } });
     else peer.send({ id: request.id, result: {} });
   });
@@ -177,6 +178,13 @@ test('queued wake needs explicit apply, a native start and durable correlated pr
   const oldBody = `${JSON.stringify(oldProof)}\n`, oldDigest = createHash('sha256').update(oldBody).digest('hex');
   await writeFile(join(autoRoot, `wake-${oldDigest}.json`), oldBody, { mode: 0o600 });
   await assert.rejects(verifyCodexWakeEvidence({ evidenceRoot: autoRoot, reference: `codex-wake:${oldDigest}`, session }), /identity mismatch/);
+  const delayedRoot = join(root, 'delayed'); await mkdir(delayedRoot, { mode: 0o700 });
+  nativeId = 'queued-delayed'; await prepareChannel('delayed', nativeId); mode = 'null-start';
+  const beforeDelayed = requests.filter(r => r.method === 'thread/queue/start').length;
+  const delayed = JSON.parse((await exec(process.execPath, [bin, '--apply', '--thread', thread, '--queue-id', nativeId, '--correlation', correlation, '--channel', 'delayed', '--generation', '1', '--evidence-root', delayedRoot, '--graph-state', state], { env })).stdout);
+  assert.equal((await verifyCodexWakeEvidence({ evidenceRoot: delayedRoot, reference: delayed.evidence, session })).startedAt, 123456789);
+  assert.equal(requests.filter(r => r.method === 'thread/queue/start').length, beforeDelayed + 1);
+  assert.ok(delayedReads >= 2);
   const file = join(evidence, `wake-${first.evidence.slice('codex-wake:'.length)}.json`);
   const saved = JSON.parse(await readFile(file, 'utf8')); saved.startedAt++;
   await writeFile(file, `${JSON.stringify(saved)}\n`);

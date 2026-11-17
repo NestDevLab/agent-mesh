@@ -120,14 +120,28 @@ export async function startCodexWake({ thread, queueId, correlation, channel, ge
     await createDurable(evidenceRoot, `intent-${intent}.json`, `${JSON.stringify({ schema: 'agent-mesh.codex-wake-intent.v1', session, queueId, correlation })}\n`);
     const started = await request('thread/queue/start', { threadId: thread, queuedSubmissionId: queueId });
     const turn = started?.turn;
-    if (!turn || typeof turn.id !== 'string' || !UUID.test(turn.id) || turn.status !== 'inProgress' || !Number.isSafeInteger(turn.startedAt) || turn.startedAt <= 0) throw new Error('native wake outcome uncertain');
-    const readback = await request('thread/read', { threadId: thread, includeTurns: true });
-    const observed = readback?.thread;
-    const turns = Array.isArray(observed?.turns) ? observed.turns.filter(item => item?.id === turn.id) : [];
-    const observedTurn = turns[0];
-    const messages = Array.isArray(observedTurn?.items) ? observedTurn.items.filter(item => item?.type === 'userMessage' && item.clientId === correlation) : [];
-    if (observed?.id !== thread || turns.length !== 1 || (observedTurn.itemsView !== undefined && observedTurn.itemsView !== 'full') || observedTurn.startedAt !== turn.startedAt || messages.length !== 1 || !Array.isArray(messages[0].content) || JSON.stringify(messages[0].content) !== JSON.stringify(queued.input)) throw new Error('wake readback unavailable; outcome uncertain');
-    return { schema: 'agent-mesh.codex-wake-evidence.v4', source: 'codex-app-server.queue-start-bound-readback', session, queueId, correlation, turn: turn.id, startedAt: turn.startedAt, channel, generation, payloadSha256: hash(boundItems[0].payload) };
+    if (!turn || typeof turn.id !== 'string' || !UUID.test(turn.id) || turn.status !== 'inProgress' || (turn.startedAt != null && (!Number.isSafeInteger(turn.startedAt) || turn.startedAt <= 0))) throw new Error('native wake outcome uncertain');
+    // Some runtimes return a valid start with startedAt=null before the turn is
+    // persisted. Poll only readback; never repeat queue/start after acceptance.
+    const attempts = turn.startedAt == null ? 21 : 1;
+    let startedAt;
+    for (let i = 0; i < attempts; i++) {
+      const readback = await request('thread/read', { threadId: thread, includeTurns: true });
+      const observed = readback?.thread;
+      if (observed?.id !== thread || !Array.isArray(observed.turns)) throw new Error('wake readback unavailable; outcome uncertain');
+      const turns = observed.turns.filter(item => item?.id === turn.id);
+      if (turns.length > 1) throw new Error('wake readback ambiguous');
+      const observedTurn = turns[0];
+      const messages = Array.isArray(observedTurn?.items) ? observedTurn.items.filter(item => item?.type === 'userMessage' && item.clientId === correlation) : [];
+      if (messages.length > 1 || (messages.length === 1 && (!Array.isArray(messages[0].content) || JSON.stringify(messages[0].content) !== JSON.stringify(queued.input)))) throw new Error('wake readback mismatch');
+      if (observedTurn && (observedTurn.itemsView === undefined || observedTurn.itemsView === 'full') && Number.isSafeInteger(observedTurn.startedAt) && observedTurn.startedAt > 0 && messages.length === 1) {
+        if (turn.startedAt != null && observedTurn.startedAt !== turn.startedAt) throw new Error('wake readback timestamp mismatch');
+        startedAt = observedTurn.startedAt; break;
+      }
+      if (i + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    if (!startedAt) throw new Error('wake readback unavailable; outcome uncertain');
+    return { schema: 'agent-mesh.codex-wake-evidence.v4', source: 'codex-app-server.queue-start-bound-readback', session, queueId, correlation, turn: turn.id, startedAt, channel, generation, payloadSha256: hash(boundItems[0].payload) };
   });
   const body = `${JSON.stringify(evidence)}\n`, reference = `codex-wake:${hash(body)}`;
   await createDurable(evidenceRoot, `wake-${hash(body)}.json`, body);

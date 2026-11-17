@@ -266,6 +266,9 @@ generation, queue ID and correlation before starting it, then reads back the
 exact native message. When this proof is verified and settled in a draining
 channel, it marks that backlog message observed. Older proof schemas remain
 valid wake evidence but cannot establish this stronger delivery binding.
+When a start response has no timestamp, the producer polls only the readback
+for a bounded interval and accepts a timestamp only with the same turn and exact
+correlated message. It never repeats the native start after acceptance.
 If a native start outcome is uncertain, readback-only recovery is disabled: a
 steered message can match while the submission remains queued. Recovery evidence
 schemas v3 and v4 with the correlated-recovery source are rejected. Reservations
