@@ -49,6 +49,18 @@ class SessionInboxTest(unittest.TestCase):
             proc.communicate(timeout=5)
         self.temp.cleanup()
 
+    def test_hook_timeout_reports_fixed_diagnostic_without_context(self):
+        spec = importlib.util.spec_from_file_location('hook_timeout_test', SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(module, 'hook', side_effect=module.HookBudgetExpired()), \
+             patch.object(sys, 'argv', [str(SCRIPT), 'hook', '--root', str(self.root)]), \
+             contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            module.main()
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertEqual(stderr.getvalue(), 'agent-session-inbox: hook budget expired\n')
+
     def hook(self, agent='claude', session=SESSION, event='SessionStart', owner=None, extra_env=None, payload=None):
         env = {**os.environ, 'AGENT_MESH_HARNESS_PID': str(owner or os.getpid()), **(extra_env or {})}
         return subprocess.run([sys.executable, str(SCRIPT), 'hook', '--root', str(self.root), '--agent', agent],
