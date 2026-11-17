@@ -32,6 +32,7 @@ test('later turns, tool use, incomplete answers and session mismatch fail closed
   for (const records of [
     [request, answer, { ...request, message: { content: 'later turn' } }],
     [request, answer, assistant([{ type: 'tool_use', id: 'fixture', name: 'fixture' }], 'tool_use', 'message-2')],
+    [request, answer, assistant([{ type: 'tool_use', id: 'fixture', name: 'fixture' }], null)],
     [request, assistant([{ type: 'text', text: message }], 'tool_use')],
     [request, assistant([{ type: 'text', text: message }, { type: 'tool_use', id: 'fixture' }], 'end_turn')],
     [request, { ...answer, sessionId: '44444444-4444-4444-8444-444444444444' }],
