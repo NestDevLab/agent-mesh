@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 /** Validate a parsed restart block; never execute its instructions. */
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 const nonempty = value => typeof value === 'string' && value.trim().length > 0 && value.length <= 8192 && !value.includes('\0');
@@ -10,6 +11,13 @@ export function validateRoleProfile(profile) {
     if (!Array.isArray(values) || values.length > 256 || !values.every(profileId) || new Set(values).size !== values.length) throw new Error(`invalid role profile ${key}`);
   }
   return true;
+}
+
+// Hash the validated identifier sets in a stable, order-independent form.
+export function roleProfileDigest(profile) {
+  validateRoleProfile(profile);
+  const canonical = { schema: profile.schema, role: profile.role, permissions: [...profile.permissions].sort(), mcp: [...profile.mcp].sort(), plugins: [...profile.plugins].sort() };
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
 
 export function validateRestartState(block, { session, channel, requireRoleProfile = false } = {}) {

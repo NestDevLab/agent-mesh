@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateRestartState } from './restart-state.mjs';
+import { validateRestartState, roleProfileDigest } from './restart-state.mjs';
 
 const nativeBin = join(dirname(fileURLToPath(import.meta.url)), 'agent-native-call.mjs');
 const yamlBin = join(dirname(fileURLToPath(import.meta.url)), 'restart-yaml.py');
@@ -74,7 +74,7 @@ export async function verifyStateResponse({ session, channel, nonce, response, r
     validateRestartState(restart, { session, channel, requireRoleProfile: true });
     const final = await lstat(join(root, filename)), finalRoot = await lstat(root);
     if (!final.isFile() || final.isSymbolicLink() || final.dev !== after.dev || final.ino !== after.ino || final.size !== after.size || final.mtimeMs !== after.mtimeMs || final.ctimeMs !== after.ctimeMs || !finalRoot.isDirectory() || finalRoot.isSymbolicLink() || finalRoot.dev !== rootInfo.dev || finalRoot.ino !== rootInfo.ino) throw new Error('state file changed during verification');
-    return { schema: attestation.schema, session, nonce, filename, sha256: digest, bytes: bytes.length };
+    return { schema: attestation.schema, session, nonce, filename, sha256: digest, bytes: bytes.length, profileSha256: roleProfileDigest(restart.role_profile) };
   } finally { await file.close(); }
 }
 

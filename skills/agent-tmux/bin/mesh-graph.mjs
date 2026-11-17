@@ -288,6 +288,28 @@ try {
         printResult(result, { json: true });
         break;
       }
+      if (subcommand === "reserve-successor") {
+        const root = requiredSingleLine(values["state-root"], "--state-root");
+        if (!isAbsolute(root) || !/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid successor reservation parameters");
+        const expected = { handoverId: requiredSingleLine(values.id, "--id"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) };
+        const launch = JSON.parse(requiredSingleLine(channelInput, "--input"));
+        if (!launch || typeof launch !== "object" || Array.isArray(launch) || Object.keys(launch).sort().join(",") !== "id,profileSha256") throw new Error("invalid successor launch reservation");
+        assertPrivateChannelState(stateDir);
+        const prior = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        if (!prior || prior.phase !== "handover" || prior.handoverId !== expected.handoverId || prior.session !== expected.session || prior.generation !== expected.generation) throw new Error("handover identity changed");
+        const proof = await revalidateStateProof({ root, channel: name, session: prior.session, generation: prior.generation, statePreparation: prior.statePreparation });
+        if (launch.profileSha256 !== proof.profileSha256) throw new Error("launch profile does not match verified restart state");
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current || current.handoverId !== prior.handoverId || current.session !== prior.session || current.generation !== prior.generation || JSON.stringify(current.statePreparation) !== JSON.stringify(prior.statePreparation)) throw new Error("channel changed during successor preflight");
+          const next = reserveSuccessorLaunch(current, expected, launch);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
+        });
+        printResult(result, { json: true });
+        break;
+      }
       const result = mutate(stateDir, graph => {
         assertPrivateChannelState(stateDir);
         if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
@@ -317,12 +339,6 @@ try {
             next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId, values.source === undefined ? 'start' : requiredSingleLine(values.source, '--source'));
           }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current, `handover-${randomUUID()}`), handoverStartedAt: new Date().toISOString() };
-          else if (subcommand === "reserve-successor") {
-            if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
-            const launch = JSON.parse(requiredSingleLine(channelInput, "--input"));
-            if (!launch || typeof launch !== "object" || Array.isArray(launch) || Object.keys(launch).sort().join(",") !== "id,profileSha256") throw new Error("invalid successor launch reservation");
-            next = reserveSuccessorLaunch(current, { handoverId: requiredSingleLine(values.id, "--id"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) }, launch);
-          }
           else if (["invoke-successor", "cancel-successor"].includes(subcommand)) {
             if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
             const expected = { handoverId: requiredSingleLine(values.id, "--id"), launchId: requiredSingleLine(channelInput, "--input"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) };
