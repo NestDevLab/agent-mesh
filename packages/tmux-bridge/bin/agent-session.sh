@@ -366,6 +366,11 @@ _claude_trust_dialog_selection() {
     fi
 }
 
+_claude_onboarding_visible() {
+    local output="$1"
+    [[ "$output" == *"Choose the text style"* && "$output" == *"To change this later"* ]]
+}
+
 _wait_for_ready() {
     local target="$1" max_wait="${2:-30}" elapsed=0 out selection verified
     local claude_trust_confirmed="false"
@@ -373,6 +378,10 @@ _wait_for_ready() {
     while [[ $elapsed -lt $max_wait ]]; do
         sleep 1; elapsed=$(( elapsed + 1 ))
         out=$(mtmux capture-pane -t "$target" -p 2>/dev/null)
+        if [[ "${AGENT_NAME:-}" == "claude" ]] && _claude_onboarding_visible "$out"; then
+            echo "ERROR: Claude onboarding is incomplete; refusing to send a prompt" >&2
+            return 2
+        fi
         # Auto-confirm cwd picker if the agent shows one
         if [[ "$AGENT_HAS_CWD_PICKER" == "true" ]] && echo "$out" | grep -q "$AGENT_PICKER_PATTERN"; then
             mtmux send-keys -t "$target" "" Enter
@@ -445,7 +454,9 @@ _require_resumed_ready() {
     [[ "${MESH_STRICT_READY:-0}" == "1" ]] || return 0
     pane="$(mtmux capture-pane -t "$target" -p 2>/dev/null || true)"
     command="$(mtmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)"
-    if [[ -z "$command" ]]; then
+    if [[ "${AGENT_NAME:-}" == "claude" ]] && _claude_onboarding_visible "$pane"; then
+        reason="claude_onboarding_incomplete"
+    elif [[ -z "$command" ]]; then
         reason="pane_unavailable"
     elif grep -qE 'Automatic reconnect could not restore this session|Reconnect failed — check the endpoint, then relaunch' <<<"$pane"; then
         reason="terminal_reconnect_failure"
