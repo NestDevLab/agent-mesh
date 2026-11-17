@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, symlink, rename } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, symlink, rename, writeFile, link } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -48,4 +48,18 @@ test('revalidation rejects a directory replaced after planning', async t => {
   assert.equal(await revalidateClaudePluginDirs(candidate), true);
   await rename(approved, join(root, 'previous')); await mkdir(approved);
   await assert.rejects(revalidateClaudePluginDirs(candidate), /identity changed/);
+});
+
+test('revalidation detects file changes and rejects links inside plugin trees', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'plugin-content-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const approved = join(root, 'approved'); await mkdir(approved);
+  const file = join(approved, 'entry.js'); await writeFile(file, 'first');
+  const candidate = await planClaudePluginDirs({ launchPlan: plan(['approved']), inventory: { approved } });
+  await writeFile(file, 'other');
+  await assert.rejects(revalidateClaudePluginDirs(candidate), /content changed/);
+  await symlink(file, join(approved, 'indirect'));
+  await assert.rejects(planClaudePluginDirs({ launchPlan: plan(['approved']), inventory: { approved } }), /symlink/);
+  await rm(join(approved, 'indirect'));
+  await link(file, join(approved, 'hardlink'));
+  await assert.rejects(planClaudePluginDirs({ launchPlan: plan(['approved']), inventory: { approved } }), /unsupported/);
 });
