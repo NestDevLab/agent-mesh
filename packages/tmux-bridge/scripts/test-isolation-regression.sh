@@ -67,6 +67,7 @@ python3 test/namespace-exec-gate.test.py
 python3 test/isolated-pid-namespace.test.py
 python3 -B test/isolated-role-rollback.test.py
 python3 -B test/codex-native-rollback.integration.py
+python3 -B test/claude-native-mailbox.integration.py
 python3 test/session-controller.test.py
 python3 test/owner-notify.test.py
 scripts/socket-isolation-test.sh
