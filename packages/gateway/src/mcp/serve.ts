@@ -1,4 +1,6 @@
 import { isPlexusServicePrincipal, ShellPlexusLedgerReader, validLedgerReadGrants, type PlexusLedgerConfig } from "./plexus-ledger.js";
+import { AuthorizationJournal } from "./authorization-journal.js";
+import { createOikumaPlexusHandler } from "./oikuma-plexus-profile.js";
 import { MaintenanceAdmission } from "./maintenance-admission.js";
 import { WorkspaceWorkerRouter, type WorkspaceWorkerRoute } from "./workspace-worker.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -255,6 +257,17 @@ export async function startMeshMcpServer(env = process.env): Promise<() => Promi
     new CloudflareAccessAuthenticator({ teamDomain, audience })
   );
   handlers.set(AGENT_MESH_PATH, meshHandler);
+
+  const oikumaAudience = env.AGENT_MESH_MCP_OIKUMA_AUDIENCE?.trim();
+  if (oikumaAudience) {
+    const authorization = new AuthorizationJournal(resolve(requiredEnv(env, "AGENT_MESH_MCP_OIKUMA_AUTH_JOURNAL")));
+    handlers.set("/oikuma", createOikumaPlexusHandler({
+      gateway, agents: [],
+      ...(plexusLedgerReader === undefined ? {} : { plexusLedgerReader }),
+      rateLimiter: new FixedWindowMeshMcpRateLimiter(),
+      resolvePrincipal: auth => authorization.resolvePrincipal(auth)
+    }, new CloudflareAccessAuthenticator({ teamDomain, audience: oikumaAudience })));
+  }
 
   const googleRunner = config.googleWorkspace === undefined
     ? undefined

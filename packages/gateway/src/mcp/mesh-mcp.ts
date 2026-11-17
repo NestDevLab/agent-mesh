@@ -105,6 +105,8 @@ export interface MeshMcpOptions {
 }
 
 export interface MeshMcpPrincipal {
+  /** Non-reusable server-owned authorization generation, when required by a profile. */
+  authorizationRevision?: number;
   /** Opaque identity used for audit and rate limiting; do not use an email address. */
   id: string;
   kind: "user" | "service";
