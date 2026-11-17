@@ -237,3 +237,21 @@ test('takeover of a crashed applying transaction rolls back a proven move', asyn
   await assert.rejects(journal.write(interrupted, 0), /invalid journal update/);
   assert.equal((await journal.get('tx')).epoch, 1);
 });
+
+test('lost same-target fence readback is reconciled without a second fence', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-fence-readback-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const journal = triggerJournal(root), triggers = [{ kind: 'fixture', id: 'one' }];
+  await journal.begin({ id: 'tx', triggers, dryRun: false });
+  await journal.write({ schema: 'agent-mesh.trigger-transaction.v1', id: 'tx', from: 'old', to: 'new', dryRun: false, status: 'applying', triggers: [{ ...triggers[0], before: 'v1', status: 'applying', operationId: 'tx:0' }] });
+  let state = { target: 'old', version: 'v1' }, failRead = false, moves = 0;
+  const adapter = {
+    read: async () => { if (failRead) { failRead = false; throw new Error('readback unavailable'); } return structuredClone(state); },
+    move: async args => { moves++; assert.equal(args.expectedVersion, state.version); state = { target: args.target, version: 'v2', lastOperationId: args.operationId }; failRead = true; return { status: 'applied', version: 'v2' }; }
+  };
+  const first = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
+  assert.equal(first.status, 'uncertain'); assert.equal(moves, 1);
+  const second = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
+  assert.equal(second.status, 'rolled-back'); assert.equal(moves, 1);
+  assert.equal(state.target, 'old'); assert.equal((await journal.get('tx')).epoch, 2);
+});
