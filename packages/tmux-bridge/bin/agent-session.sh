@@ -658,6 +658,19 @@ if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then
     _build_launch_options
 fi
 
+_mesh_ensure_group() {
+    local target="$1" session
+    session="$(mesh_graph_cmd show --json | node -e '
+let body = ""; process.stdin.on("data", chunk => body += chunk);
+process.stdin.on("end", () => {
+  const node = JSON.parse(body).nodes.find(row => row.tmuxTarget === process.argv[1] && row.runtimeUuid);
+  if (node) process.stdout.write(node.agent + ":" + node.runtimeUuid.toLowerCase());
+});' "$target")" || return 0
+    [[ -n "$session" ]] || return 0
+    timeout 10s python3 "$SCRIPT_DIR/mesh-groups.py" ensure --session "$session" --apply >/dev/null \
+        || echo "WARN: group assignment deferred to reconciliation" >&2
+}
+
 case "$cmd" in
     goal)
         exec node "$SCRIPT_DIR/agent-goal.mjs" --agent "$AGENT_NAME" "$@"
@@ -745,6 +758,7 @@ case "$cmd" in
             || { mtmux kill-session -t "$TARGET" 2>/dev/null || true; echo "ERROR: launch record failed for '$TARGET'; new target removed" >&2; exit 1; }
         mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$RESUME_CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "resumed session" "$SESSION_ID" \
             >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
+        _mesh_ensure_group "$TARGET"
         _print_attach_hint
         echo "$TARGET"
         ;;
@@ -763,6 +777,7 @@ case "$cmd" in
             _require_resumed_ready "$TARGET" false || exit 124
             mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
                 >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
+        _mesh_ensure_group "$TARGET"
             echo "$TARGET"; exit 0
         fi
 
@@ -785,6 +800,7 @@ case "$cmd" in
             || { mtmux kill-session -t "$TARGET" 2>/dev/null || true; echo "ERROR: launch record failed for '$TARGET'; new target removed" >&2; exit 1; }
         mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
             >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2
+        _mesh_ensure_group "$TARGET"
         _print_attach_hint
         echo "$TARGET"
         ;;

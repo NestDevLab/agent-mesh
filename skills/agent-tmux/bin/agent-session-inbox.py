@@ -231,8 +231,7 @@ def one_shot_print(pid):
     return '--sdk-url' not in options and options.get('--input-format') != 'stream-json'
 
 
-def hook(args):
-    payload = json.load(sys.stdin)
+def hook(args, payload):
     if not isinstance(payload, dict):
         return
     event = payload.get('hook_event_name', 'SessionStart')
@@ -430,6 +429,19 @@ def main():
     parser.add_argument('--retry-seconds', type=float, default=2)
     args = parser.parse_args()
     args.root = args.root.absolute()
+    payload = None
+    if args.mode == 'hook':
+        try:
+            payload = json.load(sys.stdin)
+            if isinstance(payload, dict) and payload.get('hook_event_name', 'SessionStart') == 'SessionStart':
+                session = payload.get('session_id')
+                if isinstance(session, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,254}', session):
+                    subprocess.Popen([sys.executable, str(Path(__file__).resolve().with_name('mesh-groups.py')),
+                                    'ensure', '--session', args.agent + ':' + session, '--apply'],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass  # Session start must remain available; reconciliation catches omissions.
     if args.agent == 'codex' or os.environ.get('AGENT_MESH_INBOX_DISABLED', '').lower() in {'1', 'true', 'yes'}:
         return
     if args.mode in {'hook', 'status'}:
@@ -439,7 +451,7 @@ def main():
         signal.setitimer(signal.ITIMER_REAL, 0.2)
         try:
             if args.mode == 'hook':
-                hook(args)
+                hook(args, payload)
             else:
                 inbox = mailbox_path(args.root, args.session)
                 active = watcher_active(inbox)

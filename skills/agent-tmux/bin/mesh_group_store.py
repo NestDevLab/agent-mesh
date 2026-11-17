@@ -272,6 +272,151 @@ class GroupStore:
                            ((group_id, position, session) for position, session in enumerate(destinations)))
             return {"group_id": group_id, "revision": revision, "destinations": list(destinations), "changed": True}
 
+    @contextmanager
+    def _assignment_transaction(self, apply):
+        # Preview uses an isolated database, including simulated earlier assignments.
+        with self._transaction(write=apply, initialize=apply) as source:
+            if apply:
+                yield source
+                return
+            db = sqlite3.connect(":memory:", isolation_level=None)
+            db.row_factory = sqlite3.Row
+            try:
+                if source is not None:
+                    source.backup(db)
+                else:
+                    for statement in _SCHEMA:
+                        db.execute(statement)
+                yield db
+            finally:
+                db.close()
+
+    @staticmethod
+    def _membership(db, session, sessions):
+        current, seen = session, set()
+        while current:
+            if current in seen:
+                raise ValueError("cycle in session ancestry")
+            seen.add(current)
+            parent = sessions.get(current, {}).get("parent") if current.startswith("codex:") else None
+            if not parent:
+                break
+            current = parent
+        # Only the root ancestor conveys inherited coverage.
+        rows = db.execute("SELECT group_id FROM members WHERE session_id = ? ORDER BY group_id",
+                          (session,)).fetchall()
+        if not rows and current != session:
+            rows = db.execute("SELECT group_id FROM members WHERE session_id = ? ORDER BY group_id",
+                              (current,)).fetchall()
+        return [row["group_id"] for row in rows], current
+
+    @staticmethod
+    def _ensure_membership(db, session, sessions, links, items):
+        _matched(session, _SESSION_ID, "session id")
+        if session not in sessions:
+            raise ValueError("session is not registered in the catalog")
+        groups, root = GroupStore._membership(db, session, sessions)
+        result = {"session_id": session, "strategy": "covered", "groups": groups, "changed": False}
+        if groups:
+            if root != session:
+                result["root_session_id"] = root
+            return result
+        if sessions[session].get("archived") is True:
+            return {**result, "strategy": "archived"}
+        targets = []
+        for ref in sorted({link["ref"] for link in links if link.get("session") == session
+                           and link.get("until") is None and link.get("role") in {"owns", "works-on"}}):
+            item = items.get(ref)
+            if not item or item.get("status") in {"done", "cancelled", "deleted", "closed", "dropped", "filed"}:
+                continue
+            _one_line(ref, 256, "ledger reference")
+            found = db.execute("SELECT g.* FROM groups g JOIN ledger_links l USING(group_id) "
+                               "WHERE l.ref = ? ORDER BY l.lead DESC, g.group_id", (ref,)).fetchall()
+            if found:
+                group = found[0]
+            else:
+                role = _matched(ref.lower(), _ROLE_KEY, "role key")
+                group = db.execute("SELECT * FROM groups WHERE role_key = ?", (role,)).fetchone()
+                if group is None:
+                    title = " ".join(item["title"].split())[:70]
+                    name = f"📌 {item.get('id') or ref.split(':', 1)[-1]}: {title}"
+                    _one_line(name, 160, "group name")
+                    group_id = "group_" + uuid4().hex
+                    db.execute("INSERT INTO groups (group_id, name, role_key, created_at) VALUES (?, ?, ?, ?)",
+                               (group_id, name, role, _now()))
+                    group = db.execute("SELECT * FROM groups WHERE group_id = ?", (group_id,)).fetchone()
+            group_id = group["group_id"]
+            # Never take a lead from another group, including during concurrent ensures.
+            lead = not db.execute("SELECT 1 FROM ledger_links WHERE ref = ? AND lead = 1", (ref,)).fetchone()
+            db.execute("INSERT INTO ledger_links VALUES (?, ?, ?) ON CONFLICT(group_id, ref) "
+                       "DO UPDATE SET lead = MAX(ledger_links.lead, excluded.lead)", (group_id, ref, int(lead)))
+            targets.append(group_id)
+        strategy = "practice"
+        if not targets:
+            strategy = "area"
+            for domain in sorted(set(sessions[session].get("domains", []))):
+                targets.extend(row[0] for row in db.execute(
+                    "SELECT group_id FROM ledger_links WHERE ref = ? AND lead = 1", ("area:" + domain,)))
+        if not targets:
+            strategy = "triage"
+            group = db.execute("SELECT group_id FROM groups WHERE role_key = 'mesh:triage'").fetchone()
+            if group is None:
+                group_id = "group_" + uuid4().hex
+                db.execute("INSERT INTO groups (group_id, name, role_key, created_at) VALUES (?, ?, ?, ?)",
+                           (group_id, "📥 Mesh triage", "mesh:triage", _now()))
+            else:
+                group_id = group[0]
+            targets = [group_id]
+        targets = sorted(set(targets))
+        for group_id in targets:
+            db.execute("INSERT OR IGNORE INTO members VALUES (?, ?, ?)", (group_id, session, _now()))
+        return {**result, "strategy": strategy, "groups": targets, "changed": True,
+                "target_groups": [dict(db.execute("SELECT group_id, name, role_key FROM groups WHERE group_id = ?",
+                                                  (key,)).fetchone()) for key in targets]}
+
+    def ensure_membership(self, actor, session, sessions, links, items, *, apply=False):
+        """Assign one registered session using the first applicable strategy."""
+        self._require_manager(actor)
+        with self._assignment_transaction(apply) as db:
+            return {**self._ensure_membership(db, session, sessions, links, items), "applied": apply}
+
+    def reconcile_membership(self, actor, sessions, links, items, *, apply=False):
+        """Reconcile all non-archived catalog rows, retaining individual errors."""
+        self._require_manager(actor)
+        with self._assignment_transaction(apply) as db:
+            candidates = sorted(key for key, row in sessions.items() if row.get("archived") is not True)
+            def uncovered():
+                return [key for key in candidates if not self._membership(db, key, sessions)[0]]
+            before = uncovered()
+            results, errors, counts = [], [], {}
+            # Roots first, so child membership is inherited even if its ID sorts first.
+            def depth(key):
+                seen = set()
+                while key in sessions and sessions[key].get("parent") and key.startswith("codex:"):
+                    if key in seen:
+                        raise ValueError("cycle in session ancestry")
+                    seen.add(key)
+                    key = sessions[key]["parent"]
+                return len(seen)
+            for session in sorted(candidates, key=lambda key: (depth(key), key)):
+                db.execute("SAVEPOINT assignment")
+                try:
+                    result = self._ensure_membership(db, session, sessions, links, items)
+                    counts[result["strategy"]] = counts.get(result["strategy"], 0) + 1
+                    results.append(result)
+                    db.execute("RELEASE assignment")
+                except (ValueError, sqlite3.Error) as error:
+                    db.execute("ROLLBACK TO assignment")
+                    db.execute("RELEASE assignment")
+                    errors.append({"session_id": session, "error": str(error)})
+            projected = uncovered()
+            triage = db.execute("SELECT COUNT(*) FROM members m JOIN groups g USING(group_id) "
+                                "WHERE g.role_key = 'mesh:triage'").fetchone()[0]
+            return {"applied": apply, "counts": counts, "sessions": len(candidates), "results": results,
+                    "errors": errors, "uncovered_before": len(before), "uncovered_after": len(projected if apply else before),
+                    "uncovered_sessions_before": before, "uncovered_sessions_after": projected if apply else before,
+                    "projected_uncovered_after": len(projected), "triage_size": triage}
+
     def create_group(self, actor, name, *, role_key=None):
         self._require_manager(actor)
         _one_line(name, 160, "group name")
