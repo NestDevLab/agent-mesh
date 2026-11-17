@@ -67,6 +67,29 @@ test("a registered module can initialize once and an idle run does not create ev
   assert.equal(after.lastSeq, before.lastSeq);
 });
 
+test("module advances past a full filtered page to reach later events", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "plexus-filtered-page-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const state = join(dir, "state"), config = join(dir, "modules.json"), fixture = join(dir, "fixture.mjs");
+  const script = `import { createHash } from 'node:crypto'; import { readFileSync } from 'node:fs';
+if (process.argv[2] === 'describe') console.log(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',namespaces:['example'],operations:['describe','process']}));
+else { const input=JSON.parse(readFileSync(0,'utf8')); console.log(JSON.stringify({schema:'agent-mesh.plexus-module.v1',name:'example',batchId:createHash('sha256').update(JSON.stringify(input.cursor)).digest('hex'),attributes:input.events.some(e=>e.type==='session.idle')?[{session:${JSON.stringify(session)},key:'example.saw_idle',value:true}]:[],events:[]})); }`;
+  await writeFile(fixture, script);
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, modules: [{ name: "example", command: [process.execPath, fixture] }] }));
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [graph, "--state", state, ...args])).stdout);
+  await call("add", "--agent", "codex", "--tmux-target", "test", "--cwd", "/synthetic", "--runtime-uuid", uuid, "--json");
+  await call("migrate", "--apply", "--json");
+  await call("module", "run", "--config", config, "--name", "example");
+  const cursor = (await call("show", "--json")).moduleStates[0].cursor;
+  const batch = { id: "many", cursor, nextCursor: cursor, attributes: [], events: Array.from({ length: 101 }, () => ({ type: "example.changed", session, data: {} })) };
+  await call("module", "apply", "--config", config, "--name", "example", "--input", JSON.stringify(batch));
+  await call("lifecycle", "record", "--session", session, "--type", "session.idle", "--id", "later", "--evidence", "fixture:later");
+  assert.equal((await call("module", "run", "--config", config, "--name", "example")).unchanged, undefined);
+  await call("module", "run", "--config", config, "--name", "example");
+  assert.equal((await call("show", "--json")).nodes[0].moduleAttributes.example.saw_idle, true);
+  assert.equal((await call("module", "run", "--config", config, "--name", "example")).unchanged, true);
+});
+
 test("lifecycle observations are idempotent across replay and compaction", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "plexus-life-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

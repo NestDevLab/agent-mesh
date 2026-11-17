@@ -417,7 +417,9 @@ try {
         const events = snapshot.feed.events.filter(item => !entry.namespaces.some(namespace => item.type.startsWith(`${namespace}.`)));
         const output = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph: snapshot.graph, cursor: snapshot.cursor, events });
         if (Object.keys(output).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
-        if (snapshot.cursor !== null && events.length === 0 && Array.isArray(output.attributes) && output.attributes.length === 0 && Array.isArray(output.events) && output.events.length === 0) {
+        // A page of filtered self-events may precede relevant events. Commit
+        // its cursor unless the observed scan has actually reached the head.
+        if (snapshot.cursor !== null && plexus.decodeCursor(snapshot.feed.cursor, "changes").seq === snapshot.graph.lastSeq && events.length === 0 && Array.isArray(output.attributes) && output.attributes.length === 0 && Array.isArray(output.events) && output.events.length === 0) {
           printResult({ module: entry.name, unchanged: true }, { json: true });
           break;
         }
