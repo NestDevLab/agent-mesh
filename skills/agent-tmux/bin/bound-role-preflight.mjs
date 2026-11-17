@@ -10,5 +10,7 @@ export async function prepareBoundRoleLaunch({ root, channel, session, generatio
   const proof = await revalidateStateProof({ root, channel, session, generation, statePreparation, includeRoleProfile: true });
   if (proof.profileSha256 !== expectedProfileSha256) throw new Error('role profile digest mismatch');
   const plan = await planRoleLaunch({ profile: proof.roleProfile, authority, probe, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
+  const final = await revalidateStateProof({ root, channel, session, generation, statePreparation });
+  if (final.sha256 !== proof.sha256 || final.profileSha256 !== proof.profileSha256) throw new Error('restart state changed during role preflight');
   return { schema: 'agent-mesh.bound-role-plan.v1', stateSha256: proof.sha256, profileSha256: proof.profileSha256, mcpChecked: plan.mcpToStart.length + plan.mcpUnavailable.length, plan };
 }

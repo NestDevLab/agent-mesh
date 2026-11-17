@@ -23,6 +23,8 @@ test('role plan binds a validated restart snapshot to caller-supplied authority'
   probes = 0;
   await assert.rejects(prepareBoundRoleLaunch({ ...args, expectedProfileSha256: 'b'.repeat(64) }), /digest mismatch/); assert.equal(probes, 0);
   await assert.rejects(prepareBoundRoleLaunch({ ...args, authority: { ...authority, plugins: [] } }), /exceeds authority/); assert.equal(probes, 0);
-  await writeFile(join(root, 'state.yaml'), content.replace('operator', 'changed'));
+  let changed = false;
+  const changingProbe = async () => { if (!changed) { changed = true; await writeFile(join(root, 'state.yaml'), content.replace('operator', 'changed')); } return true; };
+  await assert.rejects(prepareBoundRoleLaunch({ ...args, probe: changingProbe }), /digest mismatch/);
   await assert.rejects(prepareBoundRoleLaunch(args), /digest mismatch/); assert.equal(probes, 0);
 });
