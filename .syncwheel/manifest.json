@@ -30,8 +30,7 @@
       "grant-authority",
       "controller-activity-safety-refresh",
       "decision-owner-routing",
-      "plexus-modules",
-      "mandatory-membership"
+      "plexus-modules"
     ],
     "strategy": "cherry-pick"
   },
@@ -392,25 +391,6 @@
         "fec2006aa56031f484395b4654cebf971c697b20",
         "9d7d09838a81723bdb1b63acc300ed94aa8f4d8d",
         "e44def73ae5fe65a795f8ab222452f1a5d86ec0a"
-      ],
-      "state": "published",
-      "publication": {
-        "enabled": true
-      },
-      "meta": {}
-    },
-    {
-      "id": "mandatory-membership",
-      "branch": "pr/mandatory-membership",
-      "base": "origin/main",
-      "target_remote": "origin",
-      "target_branch": "main",
-      "integration_branch": "main-integration",
-      "commits": [
-        "7adc7d09918eb0ebe6532b487841d101f41330c1",
-        "80a4cd467cc7f5de1cc0c3076f6d4334ecbe88bc",
-        "0c9733d45bb68227ad41be86f66533f5a5ad0249",
-        "1cd7371a63191202e96ad6ffb81968fc0650c4df"
       ],
       "state": "published",
       "publication": {
