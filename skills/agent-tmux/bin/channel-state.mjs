@@ -46,21 +46,26 @@ export function acknowledge(state, id, receipt) {
   return next;
 }
 
-export function beginHandover(state) {
+export function beginHandover(state, handoverId) {
+  if (handoverId !== undefined && !identifier(handoverId)) throw new Error('invalid handover id');
   if (state.phase !== 'active') throw new Error('handover already in progress');
   if (state.wakeReservation) throw new Error('wake reservation unresolved');
   const next = copy(state);
   next.phase = 'handover';
+  if (handoverId !== undefined) next.handoverId = handoverId;
+  else delete next.handoverId;
   delete next.statePreparation;
   return next;
 }
 
 // Roll back only before the successor switch. An unresolved native state
 // preparation may still be writing, so its outcome must first be reconciled.
-export function abortHandover(state) {
+export function abortHandover(state, expected) {
+  if (!identifier(expected?.handoverId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation) throw new Error('handover identity changed');
   if (state.phase !== 'handover' || (state.statePreparation && (state.statePreparation.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation)) || state.queue.some(item => item.state === 'inflight') || state.wakeReservation || state.finalNotice) throw new Error('handover rollback unavailable or unresolved');
   const next = copy(state);
   next.phase = 'active';
+  delete next.handoverId;
   delete next.statePreparation;
   return next;
 }

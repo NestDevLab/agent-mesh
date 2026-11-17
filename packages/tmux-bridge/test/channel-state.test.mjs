@@ -118,18 +118,31 @@ test('bound native wake evidence observes only its exact draining backlog', asyn
 
 test('abort preserves queued messages and rejects unresolved preparation', () => {
   const original = createChannel('example', 'codex:old');
-  const pending = enqueue(beginHandover(original), 'msg-1', 'fixture');
-  const rolledBack = abortHandover(pending);
+  const expected = { handoverId: 'first-attempt', session: original.session, generation: 1 };
+  const pending = enqueue(beginHandover(original, 'first-attempt'), 'msg-1', 'fixture');
+  const rolledBack = abortHandover(pending, expected);
   assert.equal(rolledBack.phase, 'active');
   assert.equal(rolledBack.session, original.session);
   assert.equal(rolledBack.generation, original.generation);
   assert.deepEqual(rolledBack.queue, pending.queue);
-  assert.throws(() => abortHandover(original), /unavailable/);
+  assert.throws(() => abortHandover(original, expected), /identity/);
   const reserved = reserveStatePreparation(pending, 'prep');
-  assert.throws(() => abortHandover(reserved), /unresolved/);
+  assert.throws(() => abortHandover(reserved, expected), /unresolved/);
   const verified = completeStatePreparation(reserved, { schema: 'agent-mesh.handover-state.v1', session: original.session, nonce: 'prep', filename: 'fixture.yaml', sha256: 'a'.repeat(64), bytes: 1 });
-  const afterVerified = abortHandover(verified);
+  const afterVerified = abortHandover(verified, expected);
   assert.equal(afterVerified.statePreparation, undefined);
   assert.deepEqual(afterVerified.queue, pending.queue);
-  assert.throws(() => abortHandover({ ...verified, statePreparation: { ...verified.statePreparation, generation: 2 } }), /unresolved/);
+  assert.throws(() => abortHandover({ ...verified, statePreparation: { ...verified.statePreparation, generation: 2 } }, expected), /unresolved/);
+});
+
+
+test('an old abort cannot cancel a later handover in the same generation', () => {
+  const first = beginHandover(createChannel('example', 'codex:old'), 'first');
+  const expected = { handoverId: 'first', session: first.session, generation: first.generation };
+  const active = abortHandover(first, expected);
+  const second = beginHandover(active, 'second');
+  assert.equal(second.generation, first.generation);
+  assert.throws(() => abortHandover(second, expected), /identity changed/);
+  assert.throws(() => abortHandover(beginHandover(active), expected), /identity changed/);
+  assert.equal(abortHandover(second, { ...expected, handoverId: 'second' }).phase, 'active');
 });

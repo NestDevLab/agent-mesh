@@ -316,7 +316,7 @@ try {
             if ((graph.lifecycleReceipts || []).some(item => item.id === receiptId) || (graph.channels || []).some(item => item.id !== name && item.wakeReservation?.session === session && item.wakeReservation?.nativeQueueId === queueId)) throw new Error("wake identity already reserved or recorded");
             next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId, values.source === undefined ? 'start' : requiredSingleLine(values.source, '--source'));
           }
-          else if (subcommand === "begin-handover") next = { ...beginHandover(current), handoverStartedAt: new Date().toISOString() };
+          else if (subcommand === "begin-handover") next = { ...beginHandover(current, `handover-${randomUUID()}`), handoverStartedAt: new Date().toISOString() };
           else if (subcommand === "reserve-notice") {
             const target = requiredSingleLine(values.to, "--to");
             const match = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(target);
