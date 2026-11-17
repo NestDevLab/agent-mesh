@@ -451,7 +451,8 @@ def main():
                     raise ValueError('no live owner-bound supervisor')
                 print(json.dumps(active))
         except HookBudgetExpired:
-            print('agent-session-inbox: hook budget expired', file=sys.stderr, flush=True)
+            if os.environ.get('AGENT_MESH_INBOX_DIAGNOSTICS') == '1':
+                print('agent-session-inbox: hook budget expired', file=sys.stderr, flush=True)
             if args.mode == 'status':
                 raise SystemExit(1)
         except Exception:

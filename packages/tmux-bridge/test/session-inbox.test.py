@@ -54,7 +54,8 @@ class SessionInboxTest(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         stdout, stderr = io.StringIO(), io.StringIO()
-        with patch.object(module, 'hook', side_effect=module.HookBudgetExpired()), \
+        with patch.dict(os.environ, {'AGENT_MESH_INBOX_DIAGNOSTICS': '1'}), \
+             patch.object(module, 'hook', side_effect=module.HookBudgetExpired()), \
              patch.object(sys, 'argv', [str(SCRIPT), 'hook', '--root', str(self.root)]), \
              contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             module.main()
@@ -62,7 +63,7 @@ class SessionInboxTest(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), 'agent-session-inbox: hook budget expired\n')
 
     def hook(self, agent='claude', session=SESSION, event='SessionStart', owner=None, extra_env=None, payload=None):
-        env = {**os.environ, 'AGENT_MESH_HARNESS_PID': str(owner or os.getpid()), **(extra_env or {})}
+        env = {**os.environ, 'AGENT_MESH_INBOX_DIAGNOSTICS': '1', 'AGENT_MESH_HARNESS_PID': str(owner or os.getpid()), **(extra_env or {})}
         return subprocess.run([sys.executable, str(SCRIPT), 'hook', '--root', str(self.root), '--agent', agent],
                               input=json.dumps(payload if payload is not None else {'session_id': session, 'hook_event_name': event}),
                               env=env, text=True, capture_output=True, check=True)
@@ -268,7 +269,9 @@ for line in sys.stdin:
                  (['-n', '-p'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}),
                  (['-np'], {'CLAUDE_CODE_ENVIRONMENT_KIND': ''}))
         for flags, env in cases:
-            context = json.loads(self.hook(owner=self.fake_owner(*flags), extra_env=env).stdout)
+            result = self.hook(owner=self.fake_owner(*flags), extra_env=env)
+            self.assertTrue(result.stdout, f'no hook context for {flags}: {result.stderr}')
+            context = json.loads(result.stdout)
             self.assertIn('Do not launch or rearm', context['hookSpecificOutput']['additionalContext'])
 
     def test_codex_and_automation_disabled_without_side_effects(self):
