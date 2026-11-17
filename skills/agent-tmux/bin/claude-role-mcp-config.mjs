@@ -2,6 +2,7 @@
 const name = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 const names = value => Array.isArray(value) && value.length <= 256 && value.every(name) && new Set(value).size === value.length;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+const unresolvedPluginRoot = value => typeof value === 'string' ? value.includes('${CLAUDE_PLUGIN_ROOT}') : value !== null && typeof value === 'object' ? Object.values(value).some(unresolvedPluginRoot) : false;
 
 // Inventory must come from a trusted, private source and correspond to the
 // configuration probed. The result may contain secrets: never log it or pass
@@ -20,6 +21,9 @@ export function planClaudeMcpConfig({ launchPlan, inventory }) {
     let value;
     try { value = JSON.parse(JSON.stringify(inventory[key])); } catch { throw new Error('invalid MCP configuration'); }
     if (!object(value) || Object.keys(value).length === 0) throw new Error('invalid MCP configuration');
+    // Claude expands this placeholder in plugin manifests, but not when the
+    // same server is copied into an explicit strict MCP configuration.
+    if (unresolvedPluginRoot(value)) throw new Error('unresolved plugin root in MCP configuration');
     mcpServers[key] = value;
   }
   return { schema: 'agent-mesh.claude-mcp-candidate.v1', config: { mcpServers }, strictMcpConfig: true, isolation: 'unverified' };

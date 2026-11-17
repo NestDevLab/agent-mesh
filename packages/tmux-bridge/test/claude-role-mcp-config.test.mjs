@@ -26,4 +26,5 @@ test('role-authorized plugin MCP must be explicitly included in the inventory', 
   assert.throws(() => planClaudeMcpConfig({ launchPlan: plan, inventory }), /missing/);
   const candidate = planClaudeMcpConfig({ launchPlan: plan, inventory: { 'plugin:allowed': { command: 'fixture-plugin' } } });
   assert.deepEqual(Object.keys(candidate.config.mcpServers), ['plugin:allowed']);
+  assert.throws(() => planClaudeMcpConfig({ launchPlan: plan, inventory: { 'plugin:allowed': { args: ['${CLAUDE_PLUGIN_ROOT}/server'] } } }), /unresolved plugin root/);
 });
