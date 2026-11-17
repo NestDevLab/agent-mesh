@@ -62,11 +62,21 @@ export function beginHandover(state, handoverId) {
 // preparation may still be writing, so its outcome must first be reconciled.
 export function abortHandover(state, expected) {
   if (!identifier(expected?.handoverId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation) throw new Error('handover identity changed');
-  if (state.phase !== 'handover' || (state.statePreparation && (state.statePreparation.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation)) || state.queue.some(item => item.state === 'inflight') || state.wakeReservation || state.finalNotice) throw new Error('handover rollback unavailable or unresolved');
+  if (state.phase !== 'handover' || (state.statePreparation && (state.statePreparation.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation)) || state.queue.some(item => item.state === 'inflight') || state.wakeReservation || state.finalNotice || state.successorLaunch) throw new Error('handover rollback unavailable or unresolved');
   const next = copy(state);
   next.phase = 'active';
   delete next.handoverId;
   delete next.statePreparation;
+  return next;
+}
+
+// Persist before invoking a successor launcher. This is a reservation, not
+// proof of creation. It has no expiry and must not be retried automatically.
+export function reserveSuccessorLaunch(state, expected, launch) {
+  if (!identifier(expected?.handoverId) || state.handoverId !== expected.handoverId || state.session !== expected.session || !Number.isSafeInteger(expected.generation) || state.generation !== expected.generation) throw new Error('handover identity changed');
+  if (state.phase !== 'handover' || state.successorLaunch || state.wakeReservation || state.finalNotice || state.queue.some(item => item.state === 'inflight') || state.statePreparation?.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation || !identifier(launch?.id) || !/^[a-f0-9]{64}$/.test(launch?.profileSha256 || '')) throw new Error('successor launch unavailable or unresolved');
+  const next = copy(state);
+  next.successorLaunch = { id: launch.id, profileSha256: launch.profileSha256, handoverId: state.handoverId, session: state.session, generation: state.generation, status: 'requested' };
   return next;
 }
 
@@ -143,7 +153,7 @@ export function recordNoticeObservation(state, proof) {
 // and delivery evidence before applying them; the operational cutover stays disabled.
 export function switchHandover(state, session, verified) {
   if (state.phase !== 'handover' || !identifier(session) || session === state.session || verified !== true) throw new Error('unverified successor');
-  if (state.finalNotice || state.queue.some(item => item.state === 'inflight')) throw new Error('unresolved inflight delivery or notice');
+  if (state.successorLaunch || state.finalNotice || state.queue.some(item => item.state === 'inflight')) throw new Error('unresolved successor launch, inflight delivery or notice');
   if (state.statePreparation?.status !== 'verified' || state.statePreparation.session !== state.session || state.statePreparation.generation !== state.generation) throw new Error('state preparation unresolved');
   const next = copy(state);
   next.handover = { predecessor: state.session, previousGeneration: state.generation, successor: session, backlog: state.queue.filter(item => item.state === 'pending').map(item => item.id) };

@@ -37,7 +37,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, reserveSuccessorLaunch, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
 import { observeClaudeDelivery, assertClaudeDeliverySnapshotCurrent } from "./claude-delivery-observation.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof, revalidateStateProof } from "./handover-state-proof.mjs";
@@ -133,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "verify-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "verify-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "reserve-successor", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -317,6 +317,12 @@ try {
             next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId, values.source === undefined ? 'start' : requiredSingleLine(values.source, '--source'));
           }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current, `handover-${randomUUID()}`), handoverStartedAt: new Date().toISOString() };
+          else if (subcommand === "reserve-successor") {
+            if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
+            const launch = JSON.parse(requiredSingleLine(channelInput, "--input"));
+            if (!launch || typeof launch !== "object" || Array.isArray(launch) || Object.keys(launch).sort().join(",") !== "id,profileSha256") throw new Error("invalid successor launch reservation");
+            next = reserveSuccessorLaunch(current, { handoverId: requiredSingleLine(values.id, "--id"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) }, launch);
+          }
           else if (subcommand === "reserve-notice") {
             const target = requiredSingleLine(values.to, "--to");
             const match = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(target);

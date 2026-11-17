@@ -235,3 +235,25 @@ test('graph revalidates the bound restart file without advancing handover', asyn
   await assert.rejects(call(...args), /digest mismatch/);
   assert.equal((await call('channel', 'get', '--name', '#example')).channel.phase, 'handover');
 });
+
+test('successor launch reservation survives replay and cannot be duplicated', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'launch-reservation-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args])).stdout);
+  const uuid = '22222222-2222-4222-8222-222222222222', session = `codex:${uuid}`;
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', session);
+  await call('channel', 'begin-handover', '--name', 'example');
+  const graph = await call('show', '--json'), channel = graph.channels.find(row => row.id === 'example');
+  channel.statePreparation = { status: 'verified', session, generation: 1, id: 'prep', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 1 };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-prepared', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  const args = ['channel', 'reserve-successor', '--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--input', JSON.stringify({ id: 'launch-1', profileSha256: 'b'.repeat(64) })];
+  const reserved = await call(...args);
+  assert.equal(reserved.channel.successorLaunch.status, 'requested');
+  await assert.rejects(call(...args), /unresolved/);
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  const restored = (await call('channel', 'get', '--name', 'example')).channel;
+  assert.equal(restored.successorLaunch.id, 'launch-1');
+  assert.equal(restored.successorLaunch.handoverId, channel.handoverId);
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { acknowledge, beginDelivery, beginHandover, abortHandover, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
+import { acknowledge, beginDelivery, beginHandover, abortHandover, reserveSuccessorLaunch, createChannel, enqueue, switchHandover, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeQueued } from '../bin/channel-state.mjs';
 
 test('a wake reservation prevents handover and requires exact accepted queue identity', () => {
   const session = 'codex:22222222-2222-4222-8222-222222222222';
@@ -145,4 +145,19 @@ test('an old abort cannot cancel a later handover in the same generation', () =>
   assert.throws(() => abortHandover(second, expected), /identity changed/);
   assert.throws(() => abortHandover(beginHandover(active), expected), /identity changed/);
   assert.equal(abortHandover(second, { ...expected, handoverId: 'second' }).phase, 'active');
+});
+
+
+test('a successor launch reservation prevents abort and premature switch', () => {
+  const session = 'codex:old', expected = { handoverId: 'attempt', session, generation: 1 };
+  let channel = beginHandover(createChannel('example', session), 'attempt');
+  channel = reserveStatePreparation(channel, 'prep');
+  channel = completeStatePreparation(channel, { schema: 'agent-mesh.handover-state.v1', session, nonce: 'prep', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 1 });
+  const launch = { id: 'launch-1', profileSha256: 'b'.repeat(64) };
+  assert.throws(() => reserveSuccessorLaunch(channel, { ...expected, handoverId: 'stale' }, launch), /identity/);
+  const reserved = reserveSuccessorLaunch(channel, expected, launch);
+  assert.equal(reserved.successorLaunch.status, 'requested');
+  assert.throws(() => reserveSuccessorLaunch(reserved, expected, launch), /unresolved/);
+  assert.throws(() => abortHandover(reserved, expected), /unresolved/);
+  assert.throws(() => switchHandover(reserved, 'codex:new', true), /unresolved/);
 });
