@@ -202,7 +202,7 @@ export function registerPlexusLedgerTools(server: McpServer, options: MeshMcpOpt
       const operation = tool === "mesh_plexus_work_items" ? "items" : "ledger-sessions";
       const data = await options.plexusLedgerReader.read(operation, input, grant);
       if (operation === "items") {
-        const policy = hash({ principal: options.principal.id, grant });
+        const policy = hash({ principal: options.principal.id, grant, authorizationRevision: options.principal.authorizationRevision });
         const query = hash({ filter: input.filter ?? {}, sort: input.sort ?? null, include_closed: input.include_closed ?? false,
           ...(input.view === undefined ? {} : { view: input.view, fallback: input.fallback ?? "director", format: input.format ?? "json" }) });
         const revision = hash(data);
