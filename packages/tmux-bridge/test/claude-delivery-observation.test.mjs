@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { observeClaudeDelivery } from '../bin/claude-delivery-observation.mjs';
+import { observeClaudeDelivery, assertClaudeDeliverySnapshotCurrent } from '../bin/claude-delivery-observation.mjs';
 
 const id = '22222222-2222-4222-8222-222222222222', session = `claude:${id}`;
 const inbox = { schema: 'agent-mesh.monitor-inbox.v1', deliveryId: 'message-1', meshId: 'message-1', prompt: 'fixture' };
@@ -24,6 +24,11 @@ test('only a unique correlated user transcript record proves local inbox observa
   const proof = await observeClaudeDelivery({ root, ...options });
   assert.equal(proof.session, session); assert.equal(proof.generation, 2);
   assert.match(proof.evidence, /^claude-transcript:[a-f0-9]{64}$/);
+  assert.doesNotThrow(() => assertClaudeDeliverySnapshotCurrent(proof));
+  await writeFile(path + '.new', JSON.stringify(queued) + '\n', { mode: 0o600 });
+  await rename(path + '.new', path);
+  assert.throws(() => assertClaudeDeliverySnapshotCurrent(proof), /transcript changed after observation/);
+  await put([queued, user(inbox)]);
   await assert.rejects(observeClaudeDelivery({ root, ...options, payload: 'changed' }), /correlation mismatch/);
   await put([queued, user(inbox), user(inbox)]);
   await assert.rejects(observeClaudeDelivery({ root, ...options }), /not uniquely observed/);

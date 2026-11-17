@@ -38,7 +38,7 @@ import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
 import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
-import { observeClaudeDelivery } from "./claude-delivery-observation.mjs";
+import { observeClaudeDelivery, assertClaudeDeliverySnapshotCurrent } from "./claude-delivery-observation.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof, revalidateStateProof } from "./handover-state-proof.mjs";
 import { formatFinalNotice } from "./handover-notice.mjs";
@@ -168,6 +168,7 @@ try {
           const current = (graph.channels || []).find(item => item.id === name);
           const item = current?.queue?.find(row => row.id === id);
           if (!item || current.phase !== channel.phase || item.state !== 'inflight' || item.session !== proof.session || item.generation !== proof.generation || current.session !== proof.session || current.generation !== proof.generation || typeof item.payload !== 'string' || createHash('sha256').update(item.payload).digest('hex') !== proof.payloadSha256) throw new Error('delivery changed during recovery');
+          assertClaudeDeliverySnapshotCurrent(proof);
           let next = acknowledge(current, id, { status: 'accepted', messageId: id, session: proof.session, generation: proof.generation });
           if (next.phase === 'draining' && next.handover?.backlog?.includes(id)) next = observeDelivery(next, id, proof);
           return { graph, event: event('channel.updated', { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: next.queue.find(row => row.id === id).state } };
@@ -188,6 +189,7 @@ try {
           const current = (graph.channels || []).find(item => item.id === name);
           const item = current?.queue?.find(row => row.id === id);
           if (!item || typeof item.payload !== "string" || createHash("sha256").update(item.payload).digest("hex") !== proof.payloadSha256) throw new Error("delivery changed during observation");
+          assertClaudeDeliverySnapshotCurrent(proof);
           const next = observeDelivery(current, id, proof);
           return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: "observed" } };
         });

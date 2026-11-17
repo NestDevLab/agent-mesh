@@ -1,5 +1,5 @@
 /** Read-only observation of one managed inbox record in a local Claude transcript. */
-import { constants } from 'node:fs';
+import { constants, lstatSync, realpathSync } from 'node:fs';
 import { lstat, open, realpath, readdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -17,13 +17,14 @@ export async function observeClaudeDelivery({ root, session, generation, message
   const matches = entries.filter(entry => entry.isFile() && entry.name.toLowerCase() === `${session.slice(7).toLowerCase()}.jsonl`).map(entry => join(entry.parentPath, entry.name));
   if (matches.length !== 1 || await realpath(matches[0]) !== matches[0]) throw new Error('transcript identity unavailable or ambiguous');
   const path = matches[0], file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
-  let bytes;
+  let bytes, snapshotIdentity;
   try {
     const before = await file.stat();
     if (!before.isFile() || before.uid !== process.getuid() || before.nlink !== 1 || (before.mode & 0o022) !== 0 || before.size < 1 || before.size > 128 * 1024 * 1024) throw new Error('invalid transcript file');
     bytes = await file.readFile();
     const after = await file.stat(), current = await lstat(path);
     if (!current.isFile() || current.isSymbolicLink() || current.dev !== after.dev || current.ino !== after.ino || before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) throw new Error('transcript changed during observation');
+    snapshotIdentity = { path, dev: after.dev, ino: after.ino, size: after.size, mtimeMs: after.mtimeMs, ctimeMs: after.ctimeMs };
   } finally { await file.close(); }
   let text;
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); } catch { throw new Error('invalid transcript encoding'); }
@@ -52,5 +53,15 @@ export async function observeClaudeDelivery({ root, session, generation, message
   if (queued !== 1 || found !== 1) throw new Error('delivery not uniquely observed');
   const payloadSha256 = hash(payload), transcriptSha256 = hash(bytes);
   const evidence = `claude-transcript:${hash(JSON.stringify([session, generation, messageId, payloadSha256, transcriptSha256]))}`;
-  return { schema: 'agent-mesh.delivery-observation.v1', session, generation, messageId, payloadSha256, transcriptSha256, evidence };
+  return { schema: 'agent-mesh.delivery-observation.v1', session, generation, messageId, payloadSha256, transcriptSha256, evidence, snapshotIdentity };
+}
+
+// Narrows the snapshot-to-graph race; it cannot exclude a writer after this check.
+export function assertClaudeDeliverySnapshotCurrent(proof) {
+  const snapshot = proof?.snapshotIdentity;
+  if (!snapshot || typeof snapshot.path !== 'string' || !isAbsolute(snapshot.path)) throw new Error('transcript snapshot identity unavailable');
+  let current;
+  try { current = lstatSync(snapshot.path); if (realpathSync(snapshot.path) !== snapshot.path) throw new Error(); }
+  catch { throw new Error('transcript snapshot unavailable'); }
+  if (!current.isFile() || current.isSymbolicLink() || current.uid !== process.getuid() || current.nlink !== 1 || (current.mode & 0o022) !== 0 || current.dev !== snapshot.dev || current.ino !== snapshot.ino || current.size !== snapshot.size || current.mtimeMs !== snapshot.mtimeMs || current.ctimeMs !== snapshot.ctimeMs) throw new Error('transcript changed after observation');
 }

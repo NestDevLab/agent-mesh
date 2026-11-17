@@ -25,8 +25,11 @@ caller is responsible for verifying transport receipts before recording them.
 For a local Claude in-flight item, the waker may recover without resending only
 after a stable transcript independently proves the correlated enqueue and user
 message. The graph rechecks the session, generation, payload and phase before
-settling; missing or ambiguous evidence leaves the item unresolved. This does
-not establish delivery for cloud or Codex recipients.
+settling, and rechecks transcript file identity and metadata under the graph
+lock; missing, changed or ambiguous evidence leaves the item unresolved. This
+narrows a race but does not exclude a transcript writer after the check or
+provide an immutable audit copy. It does not establish delivery for cloud or
+Codex recipients.
 
 Handover completion is disabled until an adapter can verify that the old
 session wrote its state. A path or caller assertion is not sufficient proof.
