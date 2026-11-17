@@ -61,6 +61,7 @@ python3 -B test/sealed-plugin-snapshot.test.py
 python3 -B test/sealed-plugin-mount.test.py
 python3 -B test/claude-owned-process.test.py
 python3 -B test/claude-owned-restart-observer.test.py
+python3 -B test/reconcile-claude-restart.test.py
 python3 test/bridge-launch-record.test.py
 python3 test/comms.test.py
 python3 test/mesh-groups.test.py

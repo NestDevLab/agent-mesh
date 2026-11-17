@@ -51,6 +51,7 @@ const agentTmuxBundleFiles = [
   "bin/claude-owned-process.py",
   "bin/claude-launch-evidence.py",
   "bin/claude-owned-restart-observer.py",
+  "bin/reconcile-claude-restart.py",
   "bin/claude-owned-restart-observer.mjs",
   "bin/handover-state-proof.mjs",
   "bin/handover-notice.mjs",
