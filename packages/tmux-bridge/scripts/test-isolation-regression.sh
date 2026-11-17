@@ -57,6 +57,8 @@ cd "$BRIDGE_DIR"
 node --test test/*.test.mjs
 scripts/agent-result-test.sh
 python3 -B test/sealed-restart.test.py
+python3 -B test/claude-owned-process.test.py
+python3 -B test/claude-owned-restart-observer.test.py
 python3 test/bridge-launch-record.test.py
 python3 test/comms.test.py
 python3 test/mesh-groups.test.py
