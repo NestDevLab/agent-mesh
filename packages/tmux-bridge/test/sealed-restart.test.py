@@ -58,6 +58,14 @@ class SealedRestartTest(unittest.TestCase):
                 plan_script = f"import {{ prepareSealedRoleLaunch }} from '{preflight}'; import {{ roleProfileDigest }} from '{restart}'; const profile={{schema:'agent-mesh.role-profile.v1',role:'operator',permissions:[],mcp:['online','offline'],plugins:[]}}; const r=await prepareSealedRoleLaunch({{fd:Number(process.argv[1]),session:process.argv[2],channel:'fixture',expectedStateSha256:process.argv[3],expectedProfileSha256:roleProfileDigest(profile),authority:{{role:'operator',permissions:[],humanGatedPermissions:[],mcp:['online','offline'],plugins:[]}},probe:async name=>name==='online'}}); console.log(JSON.stringify({{checked:r.mcpChecked,available:r.plan.mcpToStart.length,unavailable:r.plan.mcpUnavailable.length}}));"
                 planned = subprocess.run(['node', '--input-type=module', '-e', plan_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
                 self.assertEqual(json.loads(planned.stdout), {'checked': 2, 'available': 1, 'unavailable': 1})
+                delivery = (MODULE.parent / 'sealed-restart-delivery.mjs').as_uri()
+                delivery_script = f"import {{ createHash }} from 'node:crypto'; import {{ readSealedRestartForDelivery }} from '{delivery}'; import {{ roleProfileDigest }} from '{restart}'; const p={{schema:'agent-mesh.role-profile.v1',role:'operator',permissions:[],mcp:['online','offline'],plugins:[]}}; const r=readSealedRestartForDelivery({{fd:Number(process.argv[1]),session:process.argv[2],channel:'fixture',expectedSha256:process.argv[3],expectedProfileSha256:roleProfileDigest(p)}}); console.log(createHash('sha256').update(r.text).digest('hex'));"
+                delivered = subprocess.run(['node', '--input-type=module', '-e', delivery_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
+                self.assertEqual(delivered.stdout.strip(), digest)
+                mismatch_script = delivery_script.replace('expectedProfileSha256:roleProfileDigest(p)', "expectedProfileSha256:'a'.repeat(64)")
+                mismatch = subprocess.run(['node', '--input-type=module', '-e', mismatch_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True)
+                self.assertNotEqual(mismatch.returncode, 0)
+                self.assertEqual(mismatch.stdout, '')
                 wrong = subprocess.run(['node', '--input-type=module', '-e', script, str(fd), session, 'a' * 64], pass_fds=(fd,), text=True, capture_output=True)
                 self.assertNotEqual(wrong.returncode, 0)
                 plain = os.open(path, os.O_RDONLY)
