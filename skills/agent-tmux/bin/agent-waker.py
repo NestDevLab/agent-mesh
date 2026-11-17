@@ -206,6 +206,21 @@ def observe_claude_channel_delivery(args: argparse.Namespace, message_id: str, r
         raise ValueError('invalid delivery observation')
 
 
+def start_codex_channel_wake(args: argparse.Namespace, item: dict[str, Any], channel: dict[str, Any]) -> str:
+    session = channel['session']
+    if not session.startswith('codex:') or not args.graph_state or not os.path.isabs(args.graph_state) or not os.path.isabs(args.wake_evidence_root):
+        raise ValueError('explicit private wake and graph roots required')
+    command = ['node', str(BIN / 'codex-wake-evidence.mjs'), '--apply', '--thread', session[6:],
+               '--queue-id', item['nativeQueueId'], '--correlation', item['id'], '--channel', args.channel,
+               '--generation', str(channel['generation']), '--evidence-root', args.wake_evidence_root,
+               '--graph-state', args.graph_state]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=45, check=True)
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or value.get('schema') != 'agent-mesh.wake-record.v1' or value.get('session') != session or value.get('settled') is not True or not re.fullmatch(r'codex-wake:[a-f0-9]{64}', str(value.get('evidence', ''))):
+        raise ValueError('wake proof not verified')
+    return value['evidence']
+
+
 def cloud_target(target: str, root: str | None) -> tuple[str, str, str]:
     match = re.fullmatch(r'claude-cloud:([a-z][a-z0-9-]{0,63}):((?:session|cse)_[A-Za-z0-9]{1,128})', target)
     if not match or not root:
@@ -286,6 +301,27 @@ def run_channel(args: argparse.Namespace) -> int:
                 if awaiting:
                     observe_claude_channel_delivery(args, awaiting['id'])
                     print(json.dumps({'job': args.job, 'outcome': 'acted', 'reason': 'delivery observed'}))
+                    return 0
+            if channel.get('phase') == 'draining' and channel.get('session', '').startswith('codex:') and getattr(args, 'wake_evidence_root', None):
+                backlog = channel.get('handover', {}).get('backlog', [])
+                awaiting = next((item for item in channel['queue'] if item.get('id') in backlog and item.get('state') == 'accepted'), None)
+                if awaiting:
+                    identity = {'channel': args.channel, 'session': channel['session'], 'generation': channel['generation'], 'id': awaiting['id'], 'queueId': awaiting.get('nativeQueueId')}
+                    if channel.get('wakeReservation') or state.get('wakeAttempt', {}).get('identity') == identity:
+                        print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'wake attempt unresolved; inspect before retry'}))
+                        return 3
+                    if not isinstance(identity['queueId'], str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', identity['queueId']):
+                        raise ValueError('native queue identity unavailable')
+                    state['wakeAttempt'] = {'identity': identity, 'status': 'attempted'}
+                    save_state(path, state)
+                    evidence = start_codex_channel_wake(args, awaiting, channel)
+                    current = channel_call(args, 'get')
+                    matched = [item for item in current['queue'] if item.get('id') == identity['id'] and item.get('session') == identity['session'] and item.get('generation') == identity['generation'] and item.get('state') == 'observed' and item.get('wakeEvidence') == evidence]
+                    if current.get('session') != identity['session'] or current.get('generation') != identity['generation'] or len(matched) != 1:
+                        raise ValueError('wake settlement not observed')
+                    state['wakeAttempt']['status'] = 'verified'
+                    save_state(path, state)
+                    print(json.dumps({'job': args.job, 'outcome': 'acted', 'reason': 'wake verified'}))
                     return 0
             pending = next((item for item in channel['queue'] if item.get('state') == 'pending'), None)
             if not pending:
@@ -400,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
     recipient.add_argument("--session", help="owning session UUID")
     recipient.add_argument("--channel", help="stable channel identifier")
     runner.add_argument("--graph-state", help="override graph state for isolated tests")
+    runner.add_argument("--wake-evidence-root", help="opt in to explicit Codex backlog wake with a private evidence root")
     runner.add_argument("--cloud-profile-root", help="private directory for scoped cloud account profiles")
     runner.add_argument("--managed-inbox-root", help="required for Claude sessions")
     runner.add_argument("--delivery-only", action="store_true", help="acknowledge the native queue, without waiting for a result")
@@ -408,6 +445,8 @@ def main(argv: list[str] | None = None) -> int:
     runner.add_argument("--producer-timeout", type=int, default=280)
     runner.add_argument("producer", nargs=argparse.REMAINDER, help="-- command that prints the JSON report")
     args = parser.parse_args(argv)
+    if args.wake_evidence_root and (not args.channel or not args.graph_state or not os.path.isabs(args.graph_state) or not os.path.isabs(args.wake_evidence_root) or args.resume):
+        parser.error('--wake-evidence-root requires --channel, absolute --graph-state, and no --resume')
     if args.channel and not args.delivery_only:
         parser.error("--channel requires --delivery-only")
     if args.resume and not args.channel and args.agent != "codex":

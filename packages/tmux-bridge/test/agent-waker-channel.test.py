@@ -18,6 +18,28 @@ uuid = '22222222-2222-4222-8222-222222222222'
 
 
 class ChannelWakerTest(unittest.TestCase):
+    def test_codex_backlog_wake_is_opt_in_and_uncertainty_is_not_retried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(Path(directory) / 'graph'), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False, wake_evidence_root=str(Path(directory) / 'evidence'))
+            channel = {'phase': 'draining', 'session': f'codex:{uuid}', 'generation': 2, 'handover': {'backlog': ['one']}, 'queue': [{'id': 'one', 'state': 'accepted', 'session': f'codex:{uuid}', 'generation': 2, 'nativeQueueId': 'queue-1'}]}
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', return_value=channel), patch.object(waker, 'start_codex_channel_wake', side_effect=ValueError('uncertain')) as start, patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                self.assertEqual(waker.run(args), 3)
+                self.assertEqual(start.call_count, 1)
+                deliver.assert_not_called()
+            self.assertEqual(json.loads(Path(args.state).read_text())['wakeAttempt']['status'], 'attempted')
+
+    def test_codex_backlog_wake_requires_graph_settlement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(state=str(Path(directory) / 'waker.json'), graph_state=str(Path(directory) / 'graph'), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False, wake_evidence_root=str(Path(directory) / 'evidence'))
+            evidence = 'codex-wake:' + 'a' * 64
+            channel = {'phase': 'draining', 'session': f'codex:{uuid}', 'generation': 2, 'handover': {'backlog': ['one']}, 'queue': [{'id': 'one', 'state': 'accepted', 'session': f'codex:{uuid}', 'generation': 2, 'nativeQueueId': 'queue-1'}]}
+            observed = {**channel, 'queue': [{**channel['queue'][0], 'state': 'observed', 'wakeEvidence': evidence}]}
+            with patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'channel_call', side_effect=[channel, observed]), patch.object(waker, 'start_codex_channel_wake', return_value=evidence), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 0)
+                deliver.assert_not_called()
+            self.assertEqual(json.loads(Path(args.state).read_text())['wakeAttempt']['status'], 'verified')
+
     def test_lost_claude_receipt_recovers_from_correlated_transcript_without_resend(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)

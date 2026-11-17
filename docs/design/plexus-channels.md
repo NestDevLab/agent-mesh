@@ -272,6 +272,13 @@ schemas v3 and v4 with the correlated-recovery source are rejected. Reservations
 remain unresolved until an independently verified consumption source exists.
 This is not a cloud or Claude delivery adapter; native cutover remains disabled.
 
+The channel waker can opt in to explicit Codex backlog wake with absolute
+private graph and evidence roots, and without resume. It persists an attempt
+before calling the producer, checks the graph settlement, and never retries an
+uncertain attempt automatically. A submission that already left the native
+queue remains unverified; this route does not provide complete wake coverage.
+The option is disabled unless explicitly supplied and does not enable timers.
+
 For a draining local Claude channel, `observe-claude-delivery` checks one
 managed inbox record in a stable local user transcript snapshot, binding its
 correlation, payload, session and generation before marking the backlog item
