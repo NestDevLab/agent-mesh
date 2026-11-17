@@ -368,7 +368,8 @@ _claude_trust_dialog_selection() {
 
 _claude_onboarding_visible() {
     local output="$1"
-    [[ "$output" == *"Choose the text style"* && "$output" == *"To change this later"* ]]
+    [[ ( "$output" == *"Choose the text style"* && "$output" == *"To change this later"* ) ||
+       ( "$output" == *"Detected a custom API key"* && "$output" == *"Do you want to use this API key?"* ) ]]
 }
 
 _wait_for_ready() {
