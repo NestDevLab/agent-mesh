@@ -160,12 +160,12 @@ test('lost rollback readback stays uncertain until the rollback is observed', as
     read: async ({ id }) => { if (failRead) { failRead = false; throw new Error('read unavailable'); } return structuredClone(state.get(id)); },
     move: async args => {
       moves++;
-      if (args.id === 'two') return { status: 'not-applied' };
+      if (args.id === 'two' && args.target === 'codex:new') return { status: 'not-applied' };
       const current = state.get(args.id);
       assert.equal(current.target, args.expectedTarget); assert.equal(current.version, args.expectedVersion);
       const next = { target: args.target, version: `v${moves + 1}`, lastOperationId: args.operationId };
       state.set(args.id, next);
-      if (args.operationId.includes(':rollback:')) failRead = true;
+      if (args.id === 'one' && args.operationId.includes(':rollback:')) failRead = true;
       return { status: 'applied', version: next.version };
     }
   };
@@ -174,5 +174,47 @@ test('lost rollback readback stays uncertain until the rollback is observed', as
   assert.equal(result.status, 'uncertain'); assert.equal(state.get('one').target, 'codex:old');
   assert.equal((await triggerJournal(root).get('tx')).status, 'uncertain');
   const recovered = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal: triggerJournal(root) });
-  assert.equal(recovered.status, 'rolled-back'); assert.equal(moves, 3);
+  assert.equal(recovered.status, 'rolled-back'); assert.equal(moves, 4);
+});
+
+
+test('recovery fences a delayed forward CAS before declaring rollback', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-fence-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let state = { target: 'old', version: 'v1' }, release, entered;
+  const reached = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const adapter = {
+    read: async () => structuredClone(state),
+    move: async args => {
+      if (args.operationId === 'tx:0') { entered(); await gate; }
+      if (state.target !== args.expectedTarget || state.version !== args.expectedVersion) return { status: 'not-applied' };
+      state = { target: args.target, version: 'v2', lastOperationId: args.operationId };
+      return { status: 'applied', version: state.version };
+    }
+  };
+  const journal = triggerJournal(root), triggers = [{ kind: 'fixture', id: 'one' }];
+  const writer = reconcileTriggers({ triggers, from: 'old', to: 'new', transactionId: 'tx', adapter, journal, dryRun: false }).catch(error => error);
+  await reached;
+  const receipt = (await journal.get('tx')).receipt;
+  receipt.status = 'uncertain'; receipt.triggers[0].status = 'uncertain';
+  await journal.write(receipt);
+  const recovered = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
+  assert.equal(recovered.status, 'rolled-back'); assert.equal(state.version, 'v2');
+  release(); await writer;
+  assert.equal(state.target, 'old'); assert.equal(state.lastOperationId, 'tx:rollback:0');
+  assert.equal((await journal.get('tx')).status, 'rolled-back');
+});
+
+test('recovery refuses an adapter which reuses a version for the fence', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'trigger-fence-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const journal = triggerJournal(root), triggers = [{ kind: 'fixture', id: 'one' }];
+  await journal.begin({ id: 'tx', triggers, dryRun: false });
+  await journal.write({ schema: 'agent-mesh.trigger-transaction.v1', id: 'tx', from: 'old', to: 'new', dryRun: false, status: 'uncertain', triggers: [{ ...triggers[0], before: 'v1', status: 'uncertain' }] });
+  let operation;
+  const adapter = { read: async () => ({ target: 'old', version: 'v1', lastOperationId: operation }), move: async args => { operation = args.operationId; return { status: 'applied', version: 'v1' }; } };
+  const result = await recoverUncertainTriggers({ transactionId: 'tx', adapter, journal });
+  assert.equal(result.status, 'uncertain');
+  await assert.rejects(journal.begin({ id: 'other', triggers, dryRun: false }), /overlapping/);
 });
