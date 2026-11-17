@@ -693,6 +693,7 @@ case "$cmd" in
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
             if _require_resumed_ready "$TARGET" false; then
+                _mesh_ensure_group "$TARGET"
                 _print_attach_hint
                 echo "$TARGET"; exit 0
             fi

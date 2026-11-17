@@ -431,6 +431,10 @@ def main():
     args.root = args.root.absolute()
     payload = None
     if args.mode == 'hook':
+        def assignment_expire(_signum, _frame):
+            raise TimeoutError('hook input budget expired')
+        assignment_signal = signal.signal(signal.SIGALRM, assignment_expire)
+        signal.setitimer(signal.ITIMER_REAL, 0.2)
         try:
             payload = json.load(sys.stdin)
             if isinstance(payload, dict) and payload.get('hook_event_name', 'SessionStart') == 'SessionStart':
@@ -440,8 +444,11 @@ def main():
                                     'ensure', '--session', args.agent + ':' + session, '--apply'],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
-        except (OSError, ValueError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, subprocess.TimeoutExpired, TimeoutError):
             pass  # Session start must remain available; reconciliation catches omissions.
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, assignment_signal)
     if args.agent == 'codex' or os.environ.get('AGENT_MESH_INBOX_DISABLED', '').lower() in {'1', 'true', 'yes'}:
         return
     if args.mode in {'hook', 'status'}:
