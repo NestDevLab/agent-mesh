@@ -53,6 +53,8 @@ const agentTmuxBundleFiles = [
   "bin/successor-launch-controller.mjs",
   "bin/bound-role-preflight.mjs",
   "bin/sealed-restart.py",
+  "bin/sealed-restart-validate.py",
+  "bin/sealed-restart-validate.mjs",
   "bin/handover-codex-observation.mjs",
   "bin/codex-compaction-evidence.mjs",
   "bin/codex-wake-evidence.mjs",
