@@ -64,6 +64,7 @@ const agentTmuxBundleFiles = [
   "bin/claude-role-plugin-config.mjs",
   "bin/plugin-tree-observation.mjs",
   "bin/sealed-plugin-snapshot.py",
+  "bin/sealed-plugin-mount.py",
   "bin/sealed-restart.py",
   "bin/sealed-restart-validate.py",
   "bin/sealed-restart-validate.mjs",

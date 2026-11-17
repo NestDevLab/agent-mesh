@@ -58,6 +58,7 @@ node --test test/*.test.mjs
 scripts/agent-result-test.sh
 python3 -B test/sealed-restart.test.py
 python3 -B test/sealed-plugin-snapshot.test.py
+python3 -B test/sealed-plugin-mount.test.py
 python3 -B test/claude-owned-process.test.py
 python3 -B test/claude-owned-restart-observer.test.py
 python3 test/bridge-launch-record.test.py
