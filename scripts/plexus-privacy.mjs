@@ -2,7 +2,7 @@
 const privatePatterns = [/\/(?:home|Users)\/[A-Za-z0-9_.-]+(?:\/|\b)/i];
 
 export function isPlexusMechanismFile(relativePath) {
-  return /^(?:docs\/design\/plexus[-.]|packages\/tmux-bridge\/README\.md$|(?:packages\/tmux-bridge\/(?:bin|examples|test)|skills\/agent-tmux\/bin)\/(?:plexus[-.]|channel-|claude-delivery-|cloud-(?:account|native)-|codex-(?:compaction|wake)-|module-batches|mesh-(?:graph|channel)|agent-waker|role-(?:launch|mcp)-|session-(?:sleep|handover)|(?:sleep|handover|restart)-))/.test(relativePath);
+  return /^(?:docs\/design\/plexus[-.]|packages\/tmux-bridge\/README\.md$|(?:packages\/tmux-bridge\/(?:bin|examples|test)|skills\/agent-tmux\/bin)\/(?:plexus[-.]|channel-|claude-(?:delivery|native)-|cloud-(?:account|native)-|codex-(?:compaction|wake|mcp|role|native)-|isolated-|namespace-|trigger-|native-|module-batches|mesh-(?:graph|channel)|agent-waker|role-(?:launch|mcp)-|session-(?:sleep|handover)|(?:sleep|handover|restart)-))/.test(relativePath);
 }
 
 export function containsPrivatePlexusPolicy(text, markers = []) {

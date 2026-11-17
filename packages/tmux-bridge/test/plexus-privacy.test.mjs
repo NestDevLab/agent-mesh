@@ -18,6 +18,8 @@ test('Plexus public mechanism paths and private references are classified', () =
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/codex-compaction-evidence.test.mjs'), true);
   assert.equal(isPlexusMechanismFile('skills/agent-tmux/bin/codex-compaction-evidence.mjs'), true);
   for (const path of ['packages/tmux-bridge/bin/codex-wake-evidence.mjs', 'packages/tmux-bridge/test/codex-wake-evidence.test.mjs', 'skills/agent-tmux/bin/codex-wake-evidence.mjs']) assert.equal(isPlexusMechanismFile(path), true, path);
+  for (const name of ['isolated-role-rollback.py', 'codex-mcp-startup-notifications.mjs', 'trigger-journal.mjs', 'namespace-exec-gate.py']) for (const root of ['packages/tmux-bridge/bin/', 'skills/agent-tmux/bin/']) assert.equal(isPlexusMechanismFile(root + name), true, root + name);
+  for (const name of ['isolated-role-rollback.test.py', 'codex-mcp-startup-notifications.test.mjs', 'trigger-cross-process.test.mjs', 'namespace-exec-gate.test.py', 'native-private-queue.test.mjs', 'claude-native-mailbox.integration.py']) assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/' + name), true, name);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/bin/restart-state.mjs'), true);
   assert.equal(isPlexusMechanismFile('packages/tmux-bridge/test/restart-state.test.mjs'), true);
   assert.equal(isPlexusMechanismFile('skills/agent-tmux/bin/restart-state.mjs'), true);
