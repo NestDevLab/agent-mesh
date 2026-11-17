@@ -20,6 +20,12 @@ ASSESSMENT = {'schema': 'agent-mesh.codex-role-start-assessment.v1', 'session': 
               'status': 'rollback-required', 'failures': ['unexpected-permission-request']}
 STOP = {'schema': 'agent-mesh.isolated-namespace-stop.v1', 'status': 'init-exited',
         'descendants': 'unverified', 'remoteEffects': 'unverified'}
+BINDING = {'handoverId': 'handover-1', 'launchId': 'launch-1', 'turnId': '33333333-3333-4333-8333-333333333333'}
+INVOCATION = {'schema': 'agent-mesh.successor-invocation.v1', 'status': 'outcome-unverified',
+              'handoverId': BINDING['handoverId'], 'launchId': BINDING['launchId'],
+              'nativeTurn': {'status': 'usage-limit', 'retry': 'not-authorized'}}
+OBSERVATION = {'schema': 'agent-mesh.codex-turn-outcome-observation.v1', 'threadId': SESSION[6:],
+               'turnId': BINDING['turnId'], 'status': 'usage-limit', 'retry': 'not-authorized'}
 
 
 class IsolatedRoleRollbackTest(unittest.TestCase):
@@ -34,6 +40,26 @@ class IsolatedRoleRollbackTest(unittest.TestCase):
         assessment = {**ASSESSMENT, 'status': 'observed-incomplete', 'failures': []}
         self.assertEqual(coordinator.apply(assessment)['status'], 'blocked-incomplete')
         self.assertEqual(calls, [])
+
+    def test_quota_must_match_entire_immutable_binding_before_stop(self):
+        calls = []
+        binding = dict(BINDING)
+        coordinator = module.IsolatedRoleRollback(SESSION, lambda: calls.append(True) or STOP, self.root, quota_binding=binding)
+        binding['turnId'] = 'changed'
+        for invocation, observation in (({**INVOCATION, 'launchId': 'other'}, OBSERVATION),
+                                        (INVOCATION, {**OBSERVATION, 'threadId': BINDING['turnId']}),
+                                        (INVOCATION, {**OBSERVATION, 'status': 'ambiguous'}),
+                                        ({**INVOCATION, 'status': 'outcome-uncertain'}, OBSERVATION)):
+            with self.assertRaises(ValueError):
+                coordinator.apply_quota(invocation, observation)
+        self.assertEqual(calls, [])
+        self.assertEqual(list(Path(self.root).iterdir()), [])
+        self.assertEqual(coordinator.apply_quota(INVOCATION, OBSERVATION)['status'], 'local-init-exited')
+        self.assertEqual(coordinator.apply_quota(INVOCATION, OBSERVATION)['handover'], 'blocked')
+        self.assertEqual(calls, [True])
+        restarted = module.IsolatedRoleRollback(SESSION, lambda: calls.append(True) or STOP, self.root, quota_binding=BINDING)
+        self.assertEqual(restarted.apply_quota(INVOCATION, OBSERVATION)['status'], 'stop-uncertain')
+        self.assertEqual(calls, [True])
 
     def test_wrong_session_or_invalid_assessment_never_stops(self):
         with self.assertRaises(ValueError):

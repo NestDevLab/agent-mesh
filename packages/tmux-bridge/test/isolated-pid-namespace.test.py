@@ -47,6 +47,37 @@ class IsolatedPidNamespaceTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 lease.release()
 
+    def test_quota_rollback_stops_only_owned_isolated_init(self):
+        spec = importlib.util.spec_from_file_location('rollback', BIN / 'isolated-role-rollback.py')
+        rollback = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(rollback)
+        session = 'codex:22222222-2222-4222-8222-222222222222'
+        binding = {'handoverId': 'handover-1', 'launchId': 'launch-1', 'turnId': '33333333-3333-4333-8333-333333333333'}
+        invocation = {'schema': 'agent-mesh.successor-invocation.v1', 'status': 'outcome-unverified',
+                      'handoverId': binding['handoverId'], 'launchId': binding['launchId'],
+                      'nativeTurn': {'status': 'usage-limit', 'retry': 'not-authorized'}}
+        observation = {'schema': 'agent-mesh.codex-turn-outcome-observation.v1', 'threadId': session[6:],
+                       'turnId': binding['turnId'], 'status': 'usage-limit', 'retry': 'not-authorized'}
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'started'
+            journal = Path(directory) / 'journal'
+            journal.mkdir(mode=0o700)
+            code = 'import pathlib,sys,time;pathlib.Path(sys.argv[1]).write_text("started");time.sleep(60)'
+            lease = module.IsolatedNamespace.prepare(directory, [sys.executable, '-c', code, str(marker)])
+            try:
+                lease.release()
+                self.wait_for(marker)
+                coordinator = rollback.IsolatedRoleRollback(session, lease.stop, str(journal), quota_binding=binding)
+                receipt = coordinator.apply_quota(invocation, observation)
+                self.assertEqual(receipt['status'], 'local-init-exited')
+                self.assertEqual(receipt['handover'], 'blocked')
+                self.assertEqual(receipt['namespaceStop']['descendants'], 'unverified')
+                self.assertEqual(receipt['namespaceStop']['remoteEffects'], 'unverified')
+                self.assertEqual(coordinator.apply_quota(invocation, observation), receipt)
+            finally:
+                if not lease._stopped:
+                    lease.stop()
+
     def test_release_and_stop_own_namespace_with_escaped_fixture(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
