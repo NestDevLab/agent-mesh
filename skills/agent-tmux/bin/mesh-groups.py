@@ -88,7 +88,7 @@ def require_cloud_registration(session_id):
     raise ValueError("an open cloud graph registration is required")
 
 
-def assignment_inputs(session=None):
+def assignment_inputs(session=None, *, store=None):
     """Read the authoritative graph/catalog and exact source-owned item metadata."""
     directory = Path(__file__).resolve().parent
     def run(command):
@@ -131,7 +131,10 @@ def assignment_inputs(session=None):
         if key in sessions and len(values) == 1 and None not in values:
             sessions[key]["parent"] = next(iter(values))
     links = graph.get("links", [])
-    refs = sorted({link["ref"] for link in links if (session is None or link.get("session") == session)
+    coverage = store.membership_coverage(GroupActor(manage=True), sessions) if store is not None else {}
+    needed = {key for key, row in sessions.items() if row.get("archived") is not True and not coverage.get(key)
+              and (session is None or key == session)}
+    refs = sorted({link["ref"] for link in links if link.get("session") in needed
                    and link.get("until") is None and link.get("role") in {"owns", "works-on"}
                    and link["ref"].split(":", 1)[0] not in {"area", "group", "session-link"}})
     items = {}
@@ -218,7 +221,7 @@ def dispatch(args):
     if args.command in {"ensure", "reconcile"}:
         if not actor.manage:
             raise ValueError("group management is not authorized")
-        sessions, links, items = assignment_inputs(getattr(args, "session", None))
+        sessions, links, items = assignment_inputs(getattr(args, "session", None), store=store)
         if args.command == "ensure":
             return store.ensure_membership(actor, args.session, sessions, links, items, apply=args.apply)
         return store.reconcile_membership(actor, sessions, links, items, apply=args.apply)

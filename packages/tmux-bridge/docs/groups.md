@@ -140,7 +140,8 @@ skipped; source query failures are errors, never evidence that an item is open.
 before children and reports strategy counts, `uncovered_before`,
 `uncovered_after`, their session lists, `projected_uncovered_after`, and
 `triage_size`. In preview, after counts describe the unchanged store; projected
-counts and triage size describe the simulated plan. It exits non-zero only on
+counts and `projected_triage_size` describe the simulated plan. `triage_size`
+always describes actual stored membership. It exits non-zero only on
 errors. Reconciliation includes cloud catalog sessions as well as local sessions.
 
 Bridge new/resume performs a best-effort ensure after graph registration.

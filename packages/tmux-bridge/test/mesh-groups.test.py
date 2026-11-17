@@ -62,6 +62,12 @@ class MeshGroupsTest(unittest.TestCase):
         self.assertEqual(sessions[root]["domains"], ["release"])
         result = self.store.reconcile_membership(self.admin, sessions, links, items, apply=True)
         self.assertEqual(result["counts"], {"practice": 1, "covered": 1})
+        # Existing coverage must not depend on an available ledger adapter.
+        responses[:] = [graph, {"sessions": [{"sessionId": root}, {"sessionId": child}]}]
+        with patch.object(cli.subprocess, "run", side_effect=run), patch.dict(os.environ, {"CODEX_STATE_DB": str(native)}):
+            _, _, items = cli.assignment_inputs(store=self.store)
+        self.assertEqual(items, {})
+        self.assertEqual(responses, [])
 
     def test_mandatory_session_start_dispatch_is_detached_and_fail_open(self):
         spec = importlib.util.spec_from_file_location("group_hook_test", BIN / "agent-session-inbox.py")
@@ -134,6 +140,8 @@ class MeshGroupsTest(unittest.TestCase):
         self.assertEqual(preview["uncovered_before"], 4)
         self.assertEqual(preview["uncovered_after"], 4)
         self.assertEqual(preview["projected_uncovered_after"], 0)
+        self.assertEqual(preview["triage_size"], 0)
+        self.assertEqual(preview["projected_triage_size"], 2)
         self.assertFalse(self.state.exists())
         result = self.store.reconcile_membership(self.admin, sessions, [], {}, apply=True)
         self.assertEqual(result["uncovered_after"], 0)

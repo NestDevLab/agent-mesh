@@ -237,6 +237,8 @@ class GroupStore:
                 break
             current = parent
         # Only the root ancestor conveys inherited coverage.
+        if db is None:
+            return [], current
         rows = db.execute("SELECT group_id FROM members WHERE session_id = ? ORDER BY group_id",
                           (session,)).fetchall()
         if not rows and current != session:
@@ -308,6 +310,12 @@ class GroupStore:
                 "target_groups": [dict(db.execute("SELECT group_id, name, role_key FROM groups WHERE group_id = ?",
                                                   (key,)).fetchone()) for key in targets]}
 
+    def membership_coverage(self, actor, sessions):
+        """Read existing and inherited coverage before consulting ledger sources."""
+        self._require_manager(actor)
+        with self._transaction() as db:
+            return {session: self._membership(db, session, sessions)[0] for session in sessions}
+
     def ensure_membership(self, actor, session, sessions, links, items, *, apply=False):
         """Assign one registered session using the first applicable strategy."""
         self._require_manager(actor)
@@ -322,6 +330,10 @@ class GroupStore:
             def uncovered():
                 return [key for key in candidates if not self._membership(db, key, sessions)[0]]
             before = uncovered()
+            def triage_size():
+                return db.execute("SELECT COUNT(*) FROM members m JOIN groups g USING(group_id) "
+                                  "WHERE g.role_key = 'mesh:triage'").fetchone()[0]
+            triage_before = triage_size()
             results, errors, counts = [], [], {}
             # Roots first, so child membership is inherited even if its ID sorts first.
             def depth(key):
@@ -344,12 +356,12 @@ class GroupStore:
                     db.execute("RELEASE assignment")
                     errors.append({"session_id": session, "error": str(error)})
             projected = uncovered()
-            triage = db.execute("SELECT COUNT(*) FROM members m JOIN groups g USING(group_id) "
-                                "WHERE g.role_key = 'mesh:triage'").fetchone()[0]
+            triage = triage_size()
             return {"applied": apply, "counts": counts, "sessions": len(candidates), "results": results,
                     "errors": errors, "uncovered_before": len(before), "uncovered_after": len(projected if apply else before),
                     "uncovered_sessions_before": before, "uncovered_sessions_after": projected if apply else before,
-                    "projected_uncovered_after": len(projected), "triage_size": triage}
+                    "projected_uncovered_after": len(projected), "triage_size": triage if apply else triage_before,
+                    "projected_triage_size": triage}
 
     def create_group(self, actor, name, *, role_key=None):
         self._require_manager(actor)
