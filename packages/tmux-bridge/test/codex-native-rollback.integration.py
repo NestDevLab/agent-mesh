@@ -110,7 +110,9 @@ with tempfile.TemporaryDirectory(prefix='permission-rollback-isolated-') as td:
         observed_before = beat.read_text()
         if observed_before == first:
             raise RuntimeError('fixture heartbeat was not active')
-        rollback = rollback_module.IsolatedRoleRollback('codex:' + newthread, new.stop)
+        journal = root / 'rollback-journal'
+        journal.mkdir(mode=0o700)
+        rollback = rollback_module.IsolatedRoleRollback('codex:' + newthread, new.stop, str(journal))
         decision = rollback.apply(assessed)
         if decision['status'] != 'local-init-exited' or decision['handover'] != 'blocked':
             raise RuntimeError('owned rollback did not verify namespace init exit')
