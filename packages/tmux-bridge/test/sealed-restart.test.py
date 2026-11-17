@@ -66,6 +66,20 @@ class SealedRestartTest(unittest.TestCase):
                 mismatch = subprocess.run(['node', '--input-type=module', '-e', mismatch_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True)
                 self.assertNotEqual(mismatch.returncode, 0)
                 self.assertEqual(mismatch.stdout, '')
+                coordinator = (MODULE.parent / 'successor-launch-controller.mjs').as_uri()
+                combined_script = f"""import {{ createHash }} from 'node:crypto';
+import {{ invokeSealedSuccessor }} from '{coordinator}';
+import {{ roleProfileDigest }} from '{restart}';
+const profile={{schema:'agent-mesh.role-profile.v1',role:'operator',permissions:[],mcp:['online','offline'],plugins:[]}};
+const binding={{handoverId:'attempt',launchId:'launch',session:process.argv[2],generation:1,stateSha256:process.argv[3],profileSha256:roleProfileDigest(profile)}};
+const authority={{role:'operator',permissions:[],humanGatedPermissions:[],mcp:['online','offline'],plugins:[]}};
+let received='', calls=0, marks=0;
+const opts={{binding,fd:Number(process.argv[1]),channel:'fixture',authority,probe:async name=>name==='online',verifyPolicy:async()=>({{approvalPolicy:'never',policyVerified:true,pluginPlanVerified:true}}),markInvoking:async b=>{{marks++;return {{channel:{{phase:'handover',handoverId:b.handoverId,session:b.session,generation:b.generation,successorLaunch:{{id:b.launchId,...b,status:'invoking'}}}}}};}},launch:async ({{delivery,plan}})=>{{calls++;received=createHash('sha256').update(delivery.text).digest('hex');if(plan.mcpToStart.join()!=='online'||plan.mcpUnavailable.join()!=='offline')throw Error('bad plan');}}}};
+const result=await invokeSealedSuccessor(opts);
+let rejected=false;try{{await invokeSealedSuccessor({{...opts,verifyPolicy:async()=>({{approvalPolicy:'on-request',policyVerified:true,pluginPlanVerified:true}})}})}}catch{{rejected=true}}
+console.log(JSON.stringify({{status:result.status,received,calls,marks,rejected}}));"""
+                combined = subprocess.run(['node', '--input-type=module', '-e', combined_script, str(fd), session, digest], pass_fds=(fd,), text=True, capture_output=True, check=True)
+                self.assertEqual(json.loads(combined.stdout), {'status': 'outcome-unverified', 'received': digest, 'calls': 1, 'marks': 1, 'rejected': True})
                 wrong = subprocess.run(['node', '--input-type=module', '-e', script, str(fd), session, 'a' * 64], pass_fds=(fd,), text=True, capture_output=True)
                 self.assertNotEqual(wrong.returncode, 0)
                 plain = os.open(path, os.O_RDONLY)

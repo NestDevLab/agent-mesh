@@ -16,3 +16,23 @@ export async function invokeReservedSuccessor({ binding, preflight, markInvoking
   catch { return { schema: 'agent-mesh.successor-invocation.v1', status: 'outcome-uncertain', handoverId: binding.handoverId, launchId: binding.launchId }; }
   return { schema: 'agent-mesh.successor-invocation.v1', status: 'outcome-unverified', handoverId: binding.handoverId, launchId: binding.launchId };
 }
+
+// The caller supplies an authenticated authority, policy verifier, graph port,
+// and launcher. No adapter can authenticate itself through this function.
+// A launcher return is not proof of recipient observation or completion.
+export async function invokeSealedSuccessor({ binding, fd, channel, authority, probe, verifyPolicy, markInvoking, launch }) {
+  if (typeof verifyPolicy !== 'function' || typeof launch !== 'function') throw new Error('trusted launch adapters required');
+  const { prepareSealedRoleLaunch } = await import('./bound-role-preflight.mjs');
+  const { readSealedRestartForDelivery } = await import('./sealed-restart-delivery.mjs');
+  let plan;
+  const preflight = async b => {
+    const prepared = await prepareSealedRoleLaunch({ fd, channel, session: b.session, expectedStateSha256: b.stateSha256, expectedProfileSha256: b.profileSha256, authority, probe });
+    const policy = await verifyPolicy({ binding: structuredClone(b), plan: structuredClone(prepared.plan) });
+    plan = prepared.plan;
+    return { schema: 'agent-mesh.successor-preflight.v1', status: 'ready', ...b, approvalPolicy: policy?.approvalPolicy, policyVerified: policy?.policyVerified, roleProfileVerified: true, mcpPreflightComplete: true, pluginPlanVerified: policy?.pluginPlanVerified, mcpChecked: prepared.mcpChecked };
+  };
+  return invokeReservedSuccessor({ binding, preflight, markInvoking, launch: async b => {
+    const delivery = readSealedRestartForDelivery({ fd, session: b.session, channel, expectedSha256: b.stateSha256, expectedProfileSha256: b.profileSha256 });
+    await launch({ binding: b, plan: structuredClone(plan), delivery });
+  } });
+}
