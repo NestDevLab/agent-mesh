@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { open, readFile, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { AuthInfo } from "@modelcontextprotocol/server";
 import { resolveCloudflareAccessPrincipal, type CloudflareAccessBinding } from "./cloudflare-access.js";
 import type { MeshMcpPrincipal } from "./mesh-mcp.js";
@@ -87,6 +88,8 @@ export class AuthorizationJournal {
       const output = await open(this.path, "a", 0o600);
       try { await output.writeFile(`${JSON.stringify(entry)}\n`); await output.sync(); }
       finally { await output.close(); }
+      const directory = await open(dirname(this.path), "r");
+      try { await directory.sync(); } finally { await directory.close(); }
       return entry.revision;
     } finally {
       await lock.close();

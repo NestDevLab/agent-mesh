@@ -73,10 +73,10 @@ test("signed unexpired requests deny in-flight revoke/restore and persisted asse
   const expiresAt = Math.floor(Date.now() / 1000) + 300;
   const token = await new SignJWT({ sub: identity.subject, email: selector, iss: issuer, aud: audience, exp: expiresAt })
     .setProtectedHeader({ alg: "ES256", kid: "auth-test" }).sign(privateKey);
-  const request = () => new Request("https://gateway.example.test/oikuma", { method: "POST",
+  const request = (args = {}) => new Request("https://gateway.example.test/oikuma", { method: "POST",
     headers: { "cf-access-jwt-assertion": token, "content-type": "application/json", accept: "application/json, text/event-stream",
       "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call", "mcp-name": "mesh_plexus_work_items" },
-    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "mesh_plexus_work_items", arguments: {},
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "mesh_plexus_work_items", arguments: args,
       _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientInfo": { name: "test", version: "1" },
         "io.modelcontextprotocol/clientCapabilities": {} } } }) });
   let hold = false, reads = 0, entered, release;
@@ -84,10 +84,12 @@ test("signed unexpired requests deny in-flight revoke/restore and persisted asse
   const options = { gateway: {}, agents: [], rateLimiter: new FixedWindowMeshMcpRateLimiter(),
     resolvePrincipal: input => journal.resolvePrincipal(input),
     plexusLedgerReader: { async read() { reads++; if (hold) { entered(); await new Promise(r => release = r); }
-      return { items: [{ ref: "work:TEST-1" }], refs: [], sessions: [], count: 1 }; } } };
+      return { items: [{ ref: "work:TEST-1" }, { ref: "work:TEST-1" }], refs: [], sessions: [], count: 1 }; } } };
   const create = opts => createOikumaPlexusHandler(opts, new CloudflareAccessAuthenticator({ teamDomain: issuer, audience }));
   const handler = create(options);
-  assert.equal((await handler.fetch(request())).status, 200);
+  const first = await (await handler.fetch(request({ limit: 1 }))).json();
+  const cursor = JSON.parse(first.result.content[0].text).next_cursor;
+  assert.ok(cursor);
   ready = new Promise(r => entered = r); hold = true;
   const pending = handler.fetch(request()); await ready;
   await journal.replace(1, { ...policy, bindings: [] });
@@ -95,6 +97,8 @@ test("signed unexpired requests deny in-flight revoke/restore and persisted asse
   const revoked = await pending;
   assert.equal(revoked.status, 403); assert.doesNotMatch(await revoked.text(), /TEST-1/);
   hold = false;
+  const stale = await (await handler.fetch(request({ limit: 1, cursor }))).json();
+  assert.equal(stale.result.isError, true, "restore must not revive an old cursor");
   assert.equal((await handler.fetch(request())).status, 200);
   await journal.replace(3, policy, [assertionDigest(token)]);
   assert.ok(expiresAt > Date.now() / 1000, "revocation must be qualified before expiry");
