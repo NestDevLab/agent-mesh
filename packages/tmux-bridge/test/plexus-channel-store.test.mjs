@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
 import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -257,4 +257,32 @@ test('successor launch reservation survives replay and cannot be duplicated', as
   assert.equal(restored.successorLaunch.id, 'launch-1');
   assert.equal(restored.successorLaunch.stateSha256, 'a'.repeat(64));
   assert.equal(restored.successorLaunch.handoverId, channel.handoverId);
+});
+
+
+test('crashed reservation owner leaves duplicate reservation blocked', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'launch-crash-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const state = join(root, 'graph'), worker = join(root, 'worker.mjs');
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args])).stdout);
+  const uuid = '22222222-2222-4222-8222-222222222222', session = `codex:${uuid}`;
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', session);
+  await call('channel', 'begin-handover', '--name', 'example');
+  await call('channel', 'enqueue', '--name', 'example', '--id', 'msg', '--input', 'fixture');
+  const graph = await call('show', '--json'), channel = graph.channels.find(row => row.id === 'example');
+  channel.statePreparation = { status: 'verified', session, generation: 1, id: 'prep', filename: 'state.yaml', sha256: 'a'.repeat(64), bytes: 1 };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-prepared', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  const args = ['channel', 'reserve-successor', '--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--input', JSON.stringify({ id: 'launch-1', profileSha256: 'b'.repeat(64) })];
+  await writeFile(worker, `import { execFileSync } from 'node:child_process'; execFileSync(process.execPath, ${JSON.stringify([bin, '--state', state, ...args])}); process.send('reserved'); setInterval(() => {}, 1000);`);
+  const child = fork(worker, [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  await new Promise((resolve, reject) => { child.once('message', value => value === 'reserved' ? resolve() : reject(Error('unexpected child message'))); child.once('error', reject); child.once('exit', () => reject(Error('child exited before reservation'))); });
+  const exited = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await exited;
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  const after = (await call('channel', 'get', '--name', 'example')).channel;
+  assert.equal(after.session, session); assert.equal(after.phase, 'handover');
+  assert.equal(after.successorLaunch.id, 'launch-1'); assert.equal(after.queue[0].state, 'pending');
+  await assert.rejects(call(...args), /unresolved/);
 });
