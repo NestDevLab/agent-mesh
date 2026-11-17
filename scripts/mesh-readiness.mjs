@@ -52,6 +52,7 @@ const agentTmuxBundleFiles = [
   "bin/handover-dry-run.mjs",
   "bin/successor-launch-controller.mjs",
   "bin/bound-role-preflight.mjs",
+  "bin/claude-role-mcp-config.mjs",
   "bin/sealed-restart.py",
   "bin/sealed-restart-validate.py",
   "bin/sealed-restart-validate.mjs",
