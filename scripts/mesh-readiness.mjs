@@ -76,6 +76,7 @@ const agentTmuxBundleFiles = [
   "bin/handover-codex-observation.mjs",
   "bin/codex-compaction-evidence.mjs",
   "bin/codex-wake-evidence.mjs",
+  "bin/codex-turn-outcome.mjs",
   "bin/restart-state.mjs",
   "bin/role-launch-profile.mjs",
   "bin/role-mcp-probe.mjs",
