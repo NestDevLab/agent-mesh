@@ -226,6 +226,15 @@ child that changes process group; neither case proves behavior for external
 services or other runtime configurations. The sandbox uses a read-only host
 filesystem with a private writable workspace and is for isolated fixtures only.
 
+The optional `codex-native-rollback.integration.py` exercise accepts an absolute
+Codex executable through `AGENT_MESH_TEST_CODEX_BIN`. It creates only temporary
+state, two dedicated network-isolated app servers and synthetic MCP/provider
+processes. A synthetic interactive approval request causes the test supervisor
+to stop the successor namespace, then check that the predecessor accepts a new
+turn. This does not wire rollback into handover, prove remote cleanup or permit
+interactive approvals in a live role. Without the variable the test reports a
+skip; an unavailable or incompatible runtime with the variable set is a failure.
+
 The pure handover model separates switching to a successor from observing the
 messages queued before the switch, then reserving the final notice for the
 predecessor. Provider queue acceptance is not recipient observation. The
