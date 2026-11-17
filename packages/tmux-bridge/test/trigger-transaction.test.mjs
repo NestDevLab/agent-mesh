@@ -4,12 +4,15 @@ import { reconcileTriggers } from '../bin/trigger-transaction.mjs';
 
 function fixture() {
   const state = new Map(['one', 'two'].map(id => [id, { target: 'codex:old', version: 'v1' }]));
-  const records = []; let counter = 1, calls = 0, refuse = false, lose = false;
+  const records = []; let counter = 1, calls = 0, refuse = false, lose = false, drift = false;
   const adapter = {
     read: async ({ id }) => structuredClone(state.get(id)),
     move: async ({ id, expectedTarget, expectedVersion, target, operationId }) => {
       calls++;
-      if (refuse && id === 'two') return { status: 'not-applied' };
+      if (refuse && id === 'two') {
+        if (drift) state.set(id, { target: 'codex:other', version: 'external' });
+        return { status: 'not-applied' };
+      }
       const old = state.get(id);
       if (old.target !== expectedTarget || old.version !== expectedVersion) return { status: 'not-applied' };
       const next = { target, version: `v${++counter}`, lastOperationId: operationId };
@@ -21,7 +24,7 @@ function fixture() {
   let reserved = false;
   const journal = { begin: async () => { if (reserved) throw new Error('transaction already reserved'); reserved = true; }, write: async receipt => records.push(structuredClone(receipt)) };
   const run = (dryRun = false) => reconcileTriggers({ triggers: ['one', 'two'].map(id => ({ kind: 'timer', id })), from: 'codex:old', to: 'codex:new', transactionId: 'fixture', adapter, journal, dryRun });
-  return { state, records, run, calls: () => calls, refuse: () => { refuse = true; }, lose: () => { lose = true; } };
+  return { state, records, run, calls: () => calls, refuse: () => { refuse = true; }, lose: () => { lose = true; }, drift: () => { drift = true; } };
 }
 
 test('dry run reads sources and records plan without moving triggers', async () => {
@@ -51,4 +54,12 @@ test('a lost response is uncertain and is never retried or falsely rolled back',
   await assert.rejects(f.run(), /already reserved/);
   assert.equal(receipt.triggers[1].status, 'uncertain');
   assert.equal(f.state.get('one').target, 'codex:new');
+});
+
+test('a refusal after an external change is not reported as a complete rollback', async () => {
+  const f = fixture(); f.refuse(); f.drift(); const receipt = await f.run();
+  assert.equal(receipt.status, 'uncertain');
+  assert.equal(receipt.triggers[0].status, 'rolled-back');
+  assert.equal(receipt.triggers[1].status, 'uncertain');
+  assert.equal(f.state.get('two').target, 'codex:other');
 });
