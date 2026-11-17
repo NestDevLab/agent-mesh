@@ -106,3 +106,46 @@ can use `GroupStore` and `GroupActor` from `mesh_group_store.py`; any remote
 adapter must authenticate the actor, bind the exact session ID and grant management
 authority independently before constructing `GroupActor`. Supplying a session ID,
 registering a member or holding a role does not authenticate a caller.
+
+## Mandatory membership
+
+Every non-archived catalog session must have a group. Unknown archive state is
+included. Codex spawn children can inherit coverage from their root ancestor;
+this does not add the child to a roster or grant conversation access.
+
+```sh
+agent-mesh group ensure --session codex:11111111-1111-4111-8111-111111111111 --json
+agent-mesh group ensure --session codex:11111111-1111-4111-8111-111111111111 --apply --json
+agent-mesh group reconcile --json
+agent-mesh group reconcile --apply --json
+```
+
+Both commands preview by default without initializing or changing the store.
+Assignment stops at the first applicable strategy:
+
+1. **Covered**: retain any existing membership, or a Codex child's root membership.
+2. **Practice**: for every open `owns` or `works-on` link to a non-closed ledger
+   item, use a group linked to that exact ref (prefer its lead). Otherwise reuse
+   the lowercased ref as role key or create `📌 <item id>: <item title>`, truncating
+   the title to 70 characters. Role keys must match
+   `[a-z0-9][a-z0-9_.:/-]{0,127}`. Link the exact ref; claim only a vacant lead.
+3. **Area**: join the group leading `area:<domain>` for each graph domain.
+4. **Triage**: reuse or create the group with role key `mesh:triage`.
+
+Assignments are serialized and idempotent. They never transfer an existing lead,
+remove memberships, rewrite graph links or update ledger items. Missing items are
+skipped; source query failures are errors, never evidence that an item is open.
+
+`ensure` reports the strategy and target groups. `reconcile` processes roots
+before children and reports strategy counts, `uncovered_before`,
+`uncovered_after`, their session lists, `projected_uncovered_after`, and
+`triage_size`. In preview, after counts describe the unchanged store; projected
+counts and `projected_triage_size` describe the simulated plan. `triage_size`
+always describes actual stored membership. It exits non-zero only on
+errors. Reconciliation includes cloud catalog sessions as well as local sessions.
+
+Bridge new/resume performs a best-effort ensure after graph registration.
+The inbox SessionStart hook launches the same ensure detached for Claude and
+Codex, including when native inbox delivery is disabled. Failures never prevent
+session startup; periodic reconciliation catches omissions and identities that
+were not registered at hook time.
