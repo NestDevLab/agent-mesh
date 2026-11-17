@@ -133,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "verify-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -155,6 +155,22 @@ try {
         printResult({ channel }, { json: true });
         break;
       }
+      if (subcommand === "verify-claude-delivery") {
+        const id = requiredSingleLine(values.id, "--id");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        const items = channel?.queue?.filter(item => item.id === id && ['accepted', 'observed'].includes(item.state) && item.session?.startsWith('claude:'));
+        const item = items?.length === 1 ? items[0] : undefined, saved = item?.deliveryProof;
+        if (!saved || typeof saved.evidence !== 'string' || !/^[0-9a-f]{64}$/.test(saved.transcriptSha256 || '') || !Number.isSafeInteger(saved.transcriptBytes)) throw new Error('Claude delivery proof unavailable');
+        const root = process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+        if (!isAbsolute(root)) throw new Error('invalid configured transcript root');
+        const proof = await observeClaudeDelivery({ root, session: item.session, generation: item.generation, messageId: id, payload: item.payload, snapshotBytes: saved.transcriptBytes });
+        assertClaudeDeliverySnapshotCurrent(proof);
+        if (proof.evidence !== saved.evidence || proof.transcriptSha256 !== saved.transcriptSha256) throw new Error('Claude delivery proof mismatch');
+        const latest = (loadGraph(stateDir).channels || []).find(row => row.id === name)?.queue?.find(row => row.id === id);
+        if (!latest || latest.session !== item.session || latest.generation !== item.generation || latest.payload !== item.payload || JSON.stringify(latest.deliveryProof) !== JSON.stringify(saved)) throw new Error('delivery changed during verification');
+        printResult({ channel: name, messageId: id, status: 'verified', evidence: proof.evidence }, { json: true });
+        break;
+      }
       if (subcommand === "recover-claude-delivery") {
         const id = requiredSingleLine(values.id, "--id");
         const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
@@ -171,6 +187,7 @@ try {
           assertClaudeDeliverySnapshotCurrent(proof);
           let next = acknowledge(current, id, { status: 'accepted', messageId: id, session: proof.session, generation: proof.generation });
           if (next.phase === 'draining' && next.handover?.backlog?.includes(id)) next = observeDelivery(next, id, proof);
+          next.queue.find(row => row.id === id).deliveryProof = { evidence: proof.evidence, transcriptSha256: proof.transcriptSha256, transcriptBytes: proof.transcriptBytes };
           return { graph, event: event('channel.updated', { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: next.queue.find(row => row.id === id).state } };
         });
         printResult(result, { json: true });
@@ -191,6 +208,7 @@ try {
           if (!item || typeof item.payload !== "string" || createHash("sha256").update(item.payload).digest("hex") !== proof.payloadSha256) throw new Error("delivery changed during observation");
           assertClaudeDeliverySnapshotCurrent(proof);
           const next = observeDelivery(current, id, proof);
+          next.queue.find(row => row.id === id).deliveryProof = { evidence: proof.evidence, transcriptSha256: proof.transcriptSha256, transcriptBytes: proof.transcriptBytes };
           return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: "observed" } };
         });
         printResult(result, { json: true });

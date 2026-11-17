@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { appendFile, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -198,6 +198,12 @@ test('local Claude delivery is observed only from a matching user transcript and
   await appendFile(path, JSON.stringify({ type: 'user', isMeta: true, sessionId: newId, message: { role: 'user', content: text } }) + '\n');
   const result = await call('channel', 'observe-claude-delivery', '--name', 'example', '--id', 'one');
   assert.equal(result.status, 'observed'); assert.match(result.evidence, /^claude-transcript:[a-f0-9]{64}$/);
+  await appendFile(path, JSON.stringify({ type: 'assistant', sessionId: newId }) + '\n');
+  assert.equal((await call('channel', 'verify-claude-delivery', '--name', 'example', '--id', 'one')).status, 'verified');
+  const original = await readFile(path, 'utf8');
+  await writeFile(path, original.replace('fixture', 'changed'));
+  await assert.rejects(call('channel', 'verify-claude-delivery', '--name', 'example', '--id', 'one'));
+  await writeFile(path, original);
   await rm(join(state, 'checkpoint.json'), { force: true });
   assert.equal((await call('channel', 'get', '--name', 'example')).channel.queue[0].state, 'observed');
 });

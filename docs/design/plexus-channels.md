@@ -285,6 +285,12 @@ has qualified the native transport and transcript shape in an isolated local
 fixture. This source does not prove execution, attention, finality or cloud
 delivery. Operational cutover remains disabled.
 
+The graph stores the observed prefix length and digest, without copying the
+transcript. `verify-claude-delivery` can recheck the same prefix after ordinary
+appends. If the prefix is changed, truncated or unavailable, verification
+fails; a digest alone is not an immutable copy or proof of later finality.
+Older observations without this metadata cannot be reverified by this command.
+
 A previously verified restart-state receipt can be revalidated against the
 current private file before a future cutover. Revalidation checks generation,
 session, digest, size and YAML, and rejects path replacement during the read.
