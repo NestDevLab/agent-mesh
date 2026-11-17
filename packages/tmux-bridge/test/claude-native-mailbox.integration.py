@@ -39,6 +39,18 @@ if len(sys.argv)>1:
  deadline=time.monotonic()+5
  while time.monotonic()<deadline and not inbox_mod.watcher_active(inbox):time.sleep(.05)
  native_result['watcherReady']=bool(inbox_mod.watcher_active(inbox))
+ graph_dir=root/'graph'
+ def graph_call(*parts,check=True):
+  result=subprocess.run([NODE,str(BASE/'mesh-graph.mjs'),'--state',str(graph_dir),*parts],capture_output=True,text=True,timeout=10)
+  if check and result.returncode:raise RuntimeError('fixture graph operation failed: '+result.stderr[-300:])
+  return result
+ target='claude:'+sid
+ graph_call('add','--agent','claude','--tmux-target','fixture','--cwd','/synthetic','--runtime-uuid',sid,'--json')
+ graph_call('migrate','--apply','--json')
+ graph_call('channel','create','--name','fixture','--session',target)
+ graph_call('channel','enqueue','--name','fixture','--id','fixture-1','--input','synthetic delivery')
+ graph_call('channel','begin-delivery','--name','fixture','--id','fixture-1','--session',target,'--generation','1')
+ native_result['prematureRecoveryRejected']=graph_call('channel','recover-claude-delivery','--name','fixture','--id','fixture-1',check=False).returncode!=0
  sender=native.replace('agent-inbox-native.py','agent-native-call.mjs')
  call=subprocess.run([NODE,sender,'--agent','claude','--session',sid,'--correlation-id','fixture-1','--message','synthetic delivery','--delivery-only','--managed-inbox-root',str(inbox_root),'--timeout','10'],capture_output=True,text=True,timeout=20)
  native_result['senderExit']=call.returncode
@@ -50,6 +62,9 @@ if len(sys.argv)>1:
  native_result['transportReceiptObserved']=m.receipt_seen(sid,m.delivery_message(sid,['AGENT_MESH_INBOX '+json.dumps(rec)]))
  time.sleep(2)
  native_result['cursorMatches']=json.loads(inbox.with_suffix('.cursor.json').read_text())['offset']==inbox.stat().st_size
+ recovered=graph_call('channel','recover-claude-delivery','--name','fixture','--id','fixture-1')
+ native_result['graphRecovery']=json.loads(recovered.stdout).get('status')
+ native_result['graphState']=json.loads(graph_call('channel','get','--name','fixture').stdout)['channel']['queue'][0]['state']
  import sqlite3
  db=sqlite3.connect(root/'comms'/'comms.sqlite');native_result['commsStatuses']=db.execute('select status,detail from deliveries').fetchall();db.close()
  p.stdin.close()
@@ -66,7 +81,7 @@ if len(sys.argv)>1:
  check=subprocess.run([NODE,'--input-type=module','-e',js,str(root/'config'/'projects'),sid],capture_output=True,text=True,timeout=5)
  out={'nativeDiscovery':native_result,'observerExit':check.returncode,'observer':check.stdout.strip(),'exitCode':p.returncode,'providerRequests':count[0],'transcripts':len(list((root/'config'/'projects').glob('*/'+sid+'.jsonl'))),'records':[{'type':x.get('type'),'operation':x.get('operation'),'hasMarker':'AGENT_MESH_INBOX ' in json.dumps(x)} for x in rows if 'AGENT_MESH_INBOX ' in json.dumps(x)]}
  print(json.dumps(out));server.shutdown()
- expected={'registrationFound':True,'watcherReady':True,'senderExit':0,'transportReceiptObserved':True,'cursorMatches':True,'watcherExit':0,'deadLetter':False}
+ expected={'registrationFound':True,'watcherReady':True,'prematureRecoveryRejected':True,'senderExit':0,'transportReceiptObserved':True,'cursorMatches':True,'graphRecovery':'accepted','graphState':'accepted','watcherExit':0,'deadLetter':False}
  for key,value in expected.items():
   if native_result.get(key)!=value:raise AssertionError('fixture condition failed: '+key)
  if native_result.get('senderResult',{}).get('status')!='queued':raise AssertionError('sender did not queue')
