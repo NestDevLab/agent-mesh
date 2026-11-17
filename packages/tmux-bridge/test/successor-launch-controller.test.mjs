@@ -42,3 +42,17 @@ test('a checkpoint for another bridge launch never invokes the launcher', async 
   await assert.rejects(invokeReservedSuccessor({ binding: bound, preflight, markInvoking: async b => ({ channel: { ...channel(b), successorLaunch: { ...channel(b).successorLaunch, bridgeLaunchId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' } } }), launch: async () => { calls++; } }), /checkpoint/);
   assert.equal(calls, 0);
 });
+
+test('a matching native quota observation is reported without settling or retrying', async () => {
+  const threadId = '11111111-1111-4111-8111-111111111111', turnId = '22222222-2222-4222-8222-222222222222';
+  const turnObservation = { schema: 'agent-mesh.codex-turn-outcome-observation.v1', threadId, turnId, status: 'usage-limit', retry: 'not-authorized' };
+  let calls = 0;
+  const invoke = obs => invokeReservedSuccessor({ binding, preflight, markInvoking: async b => ({ channel: channel(b) }), launch: async () => { calls++; return { threadId, turnId, turnObservation: obs }; } });
+  const matched = await invoke(turnObservation);
+  assert.equal(matched.status, 'outcome-unverified');
+  assert.deepEqual(matched.nativeTurn, { status: 'usage-limit', retry: 'not-authorized' });
+  const wrong = await invoke({ ...turnObservation, turnId: '33333333-3333-4333-8333-333333333333' });
+  assert.equal(wrong.status, 'outcome-unverified');
+  assert.equal(wrong.nativeTurn, undefined);
+  assert.equal(calls, 2);
+});

@@ -27,7 +27,7 @@ export function createCodexTurnOutcomeObserver() {
     pending.length = 0;
   }
   function snapshot() {
-    return { schema: 'agent-mesh.codex-turn-outcome-observation.v1', status: !binding || overflow ? 'unverified' : observed ?? 'unverified', retry: 'not-authorized' };
+    return { schema: 'agent-mesh.codex-turn-outcome-observation.v1', threadId: binding?.thread ?? null, turnId: binding?.turn ?? null, status: !binding || overflow ? 'unverified' : observed ?? 'unverified', retry: 'not-authorized' };
   }
   return { onNotification, bind, snapshot };
 }

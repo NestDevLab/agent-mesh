@@ -1,6 +1,7 @@
 /** One conservative launch attempt. Adapters must be bound to the same trusted host. */
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value);
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const uuid = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
 
 // markInvoking must durably serialize the exact reservation under the graph lock.
 // preflight and launch are trusted adapters; their values are not self-authenticating.
@@ -12,9 +13,19 @@ export async function invokeReservedSuccessor({ binding, preflight, markInvoking
   const result = await markInvoking(structuredClone(binding));
   const channel = result?.channel, reservation = channel?.successorLaunch;
   if (!channel || channel.phase !== 'handover' || channel.handoverId !== binding.handoverId || channel.session !== binding.session || channel.generation !== binding.generation || !reservation || reservation.status !== 'invoking' || reservation.id !== binding.launchId || reservation.profileSha256 !== binding.profileSha256 || reservation.stateSha256 !== binding.stateSha256 || reservation.handoverId !== binding.handoverId || reservation.session !== binding.session || reservation.generation !== binding.generation || (binding.successorSession !== undefined && reservation.successorSession !== binding.successorSession) || (binding.bridgeLaunchId !== undefined && reservation.bridgeLaunchId !== binding.bridgeLaunchId)) throw new Error('invocation checkpoint unavailable or mismatched');
-  try { await launch(structuredClone(binding)); }
+  let launchResult;
+  try { launchResult = await launch(structuredClone(binding)); }
   catch { return { schema: 'agent-mesh.successor-invocation.v1', status: 'outcome-uncertain', handoverId: binding.handoverId, launchId: binding.launchId }; }
-  return { schema: 'agent-mesh.successor-invocation.v1', status: 'outcome-unverified', handoverId: binding.handoverId, launchId: binding.launchId };
+  const receipt = { schema: 'agent-mesh.successor-invocation.v1', status: 'outcome-unverified', handoverId: binding.handoverId, launchId: binding.launchId };
+  // This comes from the caller's trusted native adapter; it is not an
+  // authorization or proof of completion and never settles the checkpoint.
+  const turn = launchResult?.turnObservation;
+  if (binding.session.startsWith('codex:') && uuid(launchResult?.threadId) && uuid(launchResult?.turnId) &&
+      turn?.schema === 'agent-mesh.codex-turn-outcome-observation.v1' && turn.threadId === launchResult.threadId &&
+      turn.turnId === launchResult.turnId && turn.status === 'usage-limit' && turn.retry === 'not-authorized') {
+    receipt.nativeTurn = { status: 'usage-limit', retry: 'not-authorized' };
+  }
+  return receipt;
 }
 
 // The caller supplies an authenticated authority, policy verifier, graph port,
@@ -34,7 +45,7 @@ export async function invokeSealedSuccessor({ binding, fd, channel, authority, p
   };
   return invokeReservedSuccessor({ binding, preflight, markInvoking, launch: async b => {
     const delivery = readSealedRestartForDelivery({ fd, session: b.session, channel, expectedSha256: b.stateSha256, expectedProfileSha256: b.profileSha256 });
-    await launch({ binding: b, plan: structuredClone(plan), delivery, frame: frameRestartDelivery(delivery) });
+    return await launch({ binding: b, plan: structuredClone(plan), delivery, frame: frameRestartDelivery(delivery) });
   } });
 }
 

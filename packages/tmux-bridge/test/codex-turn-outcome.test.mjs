@@ -9,7 +9,7 @@ test('binds a quota failure arriving before the turn-start response', () => {
   observer.onNotification(event());
   assert.equal(observer.snapshot().status, 'unverified');
   observer.bind(thread, turn);
-  assert.deepEqual(observer.snapshot(), { schema: 'agent-mesh.codex-turn-outcome-observation.v1', status: 'usage-limit', retry: 'not-authorized' });
+  assert.deepEqual(observer.snapshot(), { schema: 'agent-mesh.codex-turn-outcome-observation.v1', threadId: thread, turnId: turn, status: 'usage-limit', retry: 'not-authorized' });
   assert.ok(!JSON.stringify(observer.snapshot()).includes('private fixture'));
 });
 
