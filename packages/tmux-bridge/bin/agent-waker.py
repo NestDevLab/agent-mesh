@@ -193,6 +193,17 @@ def channel_call(args: argparse.Namespace, operation: str, *options: str) -> dic
     return value['channel']
 
 
+def observe_claude_channel_delivery(args: argparse.Namespace, message_id: str) -> None:
+    command = ['node', str(BIN / 'mesh-graph.mjs')]
+    if args.graph_state:
+        command += ['--state', args.graph_state]
+    command += ['channel', 'observe-claude-delivery', '--name', args.channel, '--id', message_id]
+    result = subprocess.run(command, text=True, capture_output=True, timeout=30, check=True)
+    value = json.loads(result.stdout)
+    if not isinstance(value, dict) or value.get('status') != 'observed' or value.get('channel') != args.channel or value.get('messageId') != message_id:
+        raise ValueError('invalid delivery observation')
+
+
 def cloud_target(target: str, root: str | None) -> tuple[str, str, str]:
     match = re.fullmatch(r'claude-cloud:([a-z][a-z0-9-]{0,63}):((?:session|cse)_[A-Za-z0-9]{1,128})', target)
     if not match or not root:
@@ -262,6 +273,13 @@ def run_channel(args: argparse.Namespace) -> int:
             if any(item.get('state') == 'inflight' for item in channel['queue']):
                 print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'unresolved delivery'}))
                 return 3
+            if channel.get('phase') == 'draining' and channel.get('session', '').startswith('claude:'):
+                backlog = channel.get('handover', {}).get('backlog', [])
+                awaiting = next((item for item in channel['queue'] if item.get('id') in backlog and item.get('state') == 'accepted'), None)
+                if awaiting:
+                    observe_claude_channel_delivery(args, awaiting['id'])
+                    print(json.dumps({'job': args.job, 'outcome': 'acted', 'reason': 'delivery observed'}))
+                    return 0
             pending = next((item for item in channel['queue'] if item.get('state') == 'pending'), None)
             if not pending:
                 print(json.dumps({'job': args.job, 'outcome': 'noop'}))

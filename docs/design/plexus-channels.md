@@ -269,9 +269,13 @@ managed inbox record in a stable local user transcript snapshot, binding its
 correlation, payload, session and generation before marking the backlog item
 observed. It requires a unique matching native enqueue preceding the user
 record; an enqueue-only record is insufficient. Native inbox user records can
-carry the `isMeta` flag and remain eligible when this correlation is proven. This source does not prove
-execution, attention, finality or cloud delivery; its real transport transcript
-shape still requires isolated qualification. Operational cutover remains disabled.
+carry the `isMeta` flag and remain eligible when this correlation is proven.
+The channel waker attempts observation for an accepted local Claude backlog item
+before dispatching another item. Missing evidence blocks the run without a
+resend; later runs may inspect the graph and transcript again. An opt-in test
+has qualified the native transport and transcript shape in an isolated local
+fixture. This source does not prove execution, attention, finality or cloud
+delivery. Operational cutover remains disabled.
 
 A previously verified restart-state receipt can be revalidated against the
 current private file before a future cutover. Revalidation checks generation,

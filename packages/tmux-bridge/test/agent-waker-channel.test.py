@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -17,6 +18,42 @@ uuid = '22222222-2222-4222-8222-222222222222'
 
 
 class ChannelWakerTest(unittest.TestCase):
+    def test_draining_claude_backlog_waits_for_observation_without_resending(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            state, sessions = tmp / 'graph', tmp / 'sessions'
+            project = sessions / 'project'
+            project.mkdir(parents=True, mode=0o700)
+            sessions.chmod(0o700)
+            successor = '33333333-3333-4333-8333-333333333333'
+            target = f'claude:{successor}'
+            def call(*parts):
+                proc = subprocess.run(['node', str(root / 'bin' / 'mesh-graph.mjs'), '--state', str(state), *parts], capture_output=True, text=True, check=True)
+                return json.loads(proc.stdout)
+            call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json')
+            call('migrate', '--apply', '--json')
+            call('channel', 'create', '--name', 'example', '--session', f'codex:{uuid}')
+            graph = call('show', '--json')
+            channel = graph['channels'][0]
+            channel.update(session=target, generation=2, phase='draining', handover={'predecessor': f'codex:{uuid}', 'previousGeneration': 1, 'successor': target, 'backlog': ['one']}, queue=[{'id': 'one', 'payload': 'fixture', 'state': 'accepted', 'session': target, 'generation': 2}])
+            event = {'schema': 'agent-mesh.session-graph-event.v1', 'id': 'fixture-draining', 'type': 'channel.updated', 'at': '2026-01-01T00:00:00Z', 'channel': channel, 'seq': graph['lastSeq'] + 1, 'host': 'local'}
+            with (state / 'events.jsonl').open('a') as stream:
+                stream.write(json.dumps(event) + '\n')
+            args = SimpleNamespace(state=str(tmp / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
+            record = {'schema': 'agent-mesh.monitor-inbox.v1', 'deliveryId': 'one', 'meshId': 'one', 'prompt': 'fixture'}
+            message = 'AGENT_MESH_INBOX ' + json.dumps(record)
+            transcript = project / (successor + '.jsonl')
+            transcript.write_text(json.dumps({'type': 'queue-operation', 'operation': 'enqueue', 'sessionId': successor, 'content': message}) + '\n')
+            transcript.chmod(0o600)
+            with patch.dict(os.environ, {'CLAUDE_SESSION_ROOT': str(sessions)}), patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps({'type': 'user', 'sessionId': successor, 'message': {'role': 'user', 'content': message}}) + '\n')
+                self.assertEqual(waker.run(args), 0)
+                self.assertEqual(waker.run(args), 0)
+                deliver.assert_not_called()
+            self.assertEqual(call('channel', 'get', '--name', 'example')['channel']['queue'][0]['state'], 'observed')
+
     def test_wake_reservation_survives_reload_and_blocks_handover(self):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory) / 'graph'
