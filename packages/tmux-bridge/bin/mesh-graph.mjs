@@ -133,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -153,6 +153,26 @@ try {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
         printResult({ channel }, { json: true });
+        break;
+      }
+      if (subcommand === "recover-claude-delivery") {
+        const id = requiredSingleLine(values.id, "--id");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        const pending = channel?.queue?.filter(item => item.id === id && item.state === "inflight" && item.session === channel.session && item.generation === channel.generation);
+        if (!['active', 'draining'].includes(channel?.phase) || pending?.length !== 1 || !channel.session.startsWith("claude:")) throw new Error("Claude delivery recovery unavailable");
+        const root = process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+        if (!isAbsolute(root)) throw new Error("invalid configured transcript root");
+        const proof = await observeClaudeDelivery({ root, session: channel.session, generation: channel.generation, messageId: id, payload: pending[0].payload });
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          const item = current?.queue?.find(row => row.id === id);
+          if (!item || current.phase !== channel.phase || item.state !== 'inflight' || item.session !== proof.session || item.generation !== proof.generation || current.session !== proof.session || current.generation !== proof.generation || typeof item.payload !== 'string' || createHash('sha256').update(item.payload).digest('hex') !== proof.payloadSha256) throw new Error('delivery changed during recovery');
+          let next = acknowledge(current, id, { status: 'accepted', messageId: id, session: proof.session, generation: proof.generation });
+          if (next.phase === 'draining' && next.handover?.backlog?.includes(id)) next = observeDelivery(next, id, proof);
+          return { graph, event: event('channel.updated', { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: next.queue.find(row => row.id === id).state } };
+        });
+        printResult(result, { json: true });
         break;
       }
       if (subcommand === "observe-claude-delivery") {

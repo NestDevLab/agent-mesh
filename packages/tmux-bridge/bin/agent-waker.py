@@ -193,14 +193,16 @@ def channel_call(args: argparse.Namespace, operation: str, *options: str) -> dic
     return value['channel']
 
 
-def observe_claude_channel_delivery(args: argparse.Namespace, message_id: str) -> None:
+def observe_claude_channel_delivery(args: argparse.Namespace, message_id: str, recovery: bool = False) -> None:
     command = ['node', str(BIN / 'mesh-graph.mjs')]
     if args.graph_state:
         command += ['--state', args.graph_state]
-    command += ['channel', 'observe-claude-delivery', '--name', args.channel, '--id', message_id]
+    operation = 'recover-claude-delivery' if recovery else 'observe-claude-delivery'
+    command += ['channel', operation, '--name', args.channel, '--id', message_id]
     result = subprocess.run(command, text=True, capture_output=True, timeout=30, check=True)
     value = json.loads(result.stdout)
-    if not isinstance(value, dict) or value.get('status') != 'observed' or value.get('channel') != args.channel or value.get('messageId') != message_id:
+    allowed = ('accepted', 'observed') if recovery else ('observed',)
+    if not isinstance(value, dict) or value.get('status') not in allowed or value.get('channel') != args.channel or value.get('messageId') != message_id:
         raise ValueError('invalid delivery observation')
 
 
@@ -270,7 +272,12 @@ def run_channel(args: argparse.Namespace) -> int:
             if channel.get('phase') not in ('active', 'draining'):
                 print(json.dumps({'job': args.job, 'outcome': 'queued', 'reason': 'handover'}))
                 return 0
-            if any(item.get('state') == 'inflight' for item in channel['queue']):
+            inflight = next((item for item in channel['queue'] if item.get('state') == 'inflight'), None)
+            if inflight and channel.get('session', '').startswith('claude:'):
+                observe_claude_channel_delivery(args, inflight['id'], recovery=True)
+                print(json.dumps({'job': args.job, 'outcome': 'acted', 'reason': 'delivery recovered'}))
+                return 0
+            if inflight:
                 print(json.dumps({'job': args.job, 'outcome': 'blocked', 'reason': 'unresolved delivery'}))
                 return 3
             if channel.get('phase') == 'draining' and channel.get('session', '').startswith('claude:'):

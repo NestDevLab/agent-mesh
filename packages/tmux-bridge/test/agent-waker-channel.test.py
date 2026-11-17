@@ -18,6 +18,38 @@ uuid = '22222222-2222-4222-8222-222222222222'
 
 
 class ChannelWakerTest(unittest.TestCase):
+    def test_lost_claude_receipt_recovers_from_correlated_transcript_without_resend(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tmp = Path(directory)
+            state, sessions = tmp / 'graph', tmp / 'sessions'
+            project = sessions / 'project'
+            project.mkdir(parents=True, mode=0o700)
+            sessions.chmod(0o700)
+            target = f'claude:{uuid}'
+            def call(*parts):
+                proc = subprocess.run(['node', str(root / 'bin' / 'mesh-graph.mjs'), '--state', str(state), *parts], capture_output=True, text=True, check=True)
+                return json.loads(proc.stdout)
+            call('add', '--agent', 'claude', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json')
+            call('migrate', '--apply', '--json')
+            call('channel', 'create', '--name', 'example', '--session', target)
+            call('channel', 'enqueue', '--name', 'example', '--id', 'one', '--input', 'fixture')
+            call('channel', 'begin-delivery', '--name', 'example', '--id', 'one', '--session', target, '--generation', '1')
+            record = {'schema': 'agent-mesh.monitor-inbox.v1', 'deliveryId': 'one', 'meshId': 'one', 'prompt': 'fixture'}
+            message = 'AGENT_MESH_INBOX ' + json.dumps(record)
+            transcript = project / (uuid + '.jsonl')
+            transcript.write_text(json.dumps({'type': 'queue-operation', 'operation': 'enqueue', 'sessionId': uuid, 'content': message}) + '\n')
+            transcript.chmod(0o600)
+            args = SimpleNamespace(state=str(tmp / 'waker.json'), graph_state=str(state), channel='example', job='test', producer=['fixture'], producer_timeout=1, managed_inbox_root=None, delivery_only=True, resume=False)
+            with patch.dict(os.environ, {'CLAUDE_SESSION_ROOT': str(sessions)}), patch.object(waker, 'run_producer', return_value=([], [])), patch.object(waker, 'deliver') as deliver, contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(waker.run(args), 3)
+                self.assertEqual(call('channel', 'get', '--name', 'example')['channel']['queue'][0]['state'], 'inflight')
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps({'type': 'user', 'sessionId': uuid, 'message': {'role': 'user', 'content': message}}) + '\n')
+                self.assertEqual(waker.run(args), 0)
+                self.assertEqual(waker.run(args), 0)
+                deliver.assert_not_called()
+            self.assertEqual(call('channel', 'get', '--name', 'example')['channel']['queue'][0]['state'], 'accepted')
+
     def test_draining_claude_backlog_waits_for_observation_without_resending(self):
         with tempfile.TemporaryDirectory() as directory:
             tmp = Path(directory)
