@@ -46,7 +46,7 @@ export class AuthorizationJournal {
     for (const [index, entry] of entries.entries()) {
       if (entry.revision !== index + 1 || !Number.isSafeInteger(entry.revision) ||
           !Array.isArray(entry.bindings) || typeof entry.ownerPrincipalId !== "string" || !entry.ownerPrincipalId ||
-          !Array.isArray(entry.revokedAssertions) || entry.revokedAssertions.some(hash => !/^[a-f0-9]{64}$/.test(hash)) ||
+          !Array.isArray(entry.revokedAssertions) || entry.revokedAssertions.some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash)) ||
           previous?.revokedAssertions.some(hash => !entry.revokedAssertions.includes(hash))) {
         throw new Error("Invalid authorization history.");
       }
@@ -76,7 +76,8 @@ export class AuthorizationJournal {
   async replace(expectedRevision: number, policy: AuthorizationPolicy, revokeAssertionDigests: string[] = []): Promise<number> {
     if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 ||
         !Array.isArray(policy.bindings) || typeof policy.ownerPrincipalId !== "string" || !policy.ownerPrincipalId ||
-        revokeAssertionDigests.some(hash => !/^[a-f0-9]{64}$/.test(hash))) throw new Error("Invalid authorization update.");
+        !Array.isArray(revokeAssertionDigests) ||
+        revokeAssertionDigests.some(hash => typeof hash !== "string" || !/^[a-f0-9]{64}$/.test(hash))) throw new Error("Invalid authorization update.");
     const lock = await open(`${this.path}.lock`, "wx", 0o600);
     try {
       const previous = (await this.entries()).at(-1);

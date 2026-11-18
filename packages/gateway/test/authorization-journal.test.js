@@ -53,6 +53,26 @@ test("assertion revocation survives policy restore and a fresh authority instanc
   assert.equal((await journal.resolvePrincipal({ ...auth, token: differentSyntheticAssertion })).authorizationRevision, 3);
 });
 
+test("invalid revocation digest updates leave the journal bytes unchanged", async t => {
+  const { path, journal } = await fixture(t);
+  await journal.replace(0, policy);
+  const before = await readFile(path);
+  const digest = assertionDigest(auth.token);
+  for (const invalid of [[[digest]], digest]) {
+    await assert.rejects(journal.replace(1, policy, invalid), { message: "Invalid authorization update." });
+    assert.deepEqual(await readFile(path), before);
+  }
+});
+
+test("nested revocation digests in stored history fail closed", async t => {
+  const { path, journal } = await fixture(t);
+  await journal.replace(0, policy);
+  const entry = JSON.parse(await readFile(path, "utf8"));
+  entry.revokedAssertions = [[assertionDigest(auth.token)]];
+  await writeFile(path, `${JSON.stringify(entry)}\n`);
+  await assert.rejects(new AuthorizationJournal(path).resolvePrincipal(auth), { message: "Invalid authorization history." });
+});
+
 test("partial history, revision reuse and concurrent writer admission fail closed", async t => {
   const { path, journal } = await fixture(t);
   await journal.replace(0, policy);
