@@ -17,7 +17,10 @@ const policy = { ownerPrincipalId, bindings: [{ kind: "user", selector,
   allowedWorkspaceIds: ["workspace.test"], allowedDomainIds: [],
   ledgerReadGrants: [{ workspace_id: "workspace.test", ledger_refs: ["work:TEST-1"], session_ids: [] }] }] };
 const identity = { subject: "test-user", kind: "user", selector };
-const auth = { token: "synthetic-assertion", clientId: identity.subject, scopes: [], extra: { cloudflareAccessIdentity: identity } };
+const syntheticAssertion = "synthetic-assertion";
+const differentSyntheticAssertion = "different-synthetic-assertion";
+const newSyntheticAssertion = "new-synthetic-assertion";
+const auth = { token: syntheticAssertion, clientId: identity.subject, scopes: [], extra: { cloudflareAccessIdentity: identity } };
 async function fixture(t) {
   const directory = await mkdtemp(join(tmpdir(), "mesh-auth-test-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -47,7 +50,7 @@ test("assertion revocation survives policy restore and a fresh authority instanc
   await journal.replace(1, policy, [assertionDigest(auth.token)]);
   await journal.replace(2, policy);
   await assert.rejects(new AuthorizationJournal(path).resolvePrincipal(auth), /unavailable/);
-  assert.equal((await journal.resolvePrincipal({ ...auth, token: "different-synthetic-assertion" })).authorizationRevision, 3);
+  assert.equal((await journal.resolvePrincipal({ ...auth, token: differentSyntheticAssertion })).authorizationRevision, 3);
 });
 
 test("partial history, revision reuse and concurrent writer admission fail closed", async t => {
@@ -106,7 +109,7 @@ test("signed unexpired requests deny in-flight revoke/restore and persisted asse
   assert.equal((await create({ ...options, resolvePrincipal: input => new AuthorizationJournal(path).resolvePrincipal(input) }).fetch(request())).status, 403);
   assert.equal(reads, before, "revoked assertion must not reach upstream");
   assert.equal((await create({ ...options, resolvePrincipal: async input => {
-    const principal = await journal.resolvePrincipal({ ...input, token: "new-synthetic-assertion" });
+    const principal = await journal.resolvePrincipal({ ...input, token: newSyntheticAssertion });
     delete principal.authorizationRevision; return principal;
   } }).fetch(request())).status, 403);
 });
