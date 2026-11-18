@@ -518,3 +518,44 @@ revision change invalidates outstanding cursors. Markdown responses include the 
 JSON page in `structuredContent`, including `next_cursor`. Exact ledger, session and group grants
 are applied before predicates and pagination. Group membership grants no visibility.
 Raw scalar ledger fields remain intact, and missing relationships remain explicit nulls.
+
+
+### User-only Plexus profile (candidate)
+
+The opt-in `/oikuma` profile requires both `AGENT_MESH_MCP_OIKUMA_AUDIENCE`
+and `AGENT_MESH_MCP_OIKUMA_AUTH_JOURNAL`. It accepts signed, unexpired user
+assertions for the dedicated audience and exposes only the two Plexus read tools.
+Service identities are denied. This change does not activate or deploy the route.
+
+The authorization journal is the sole binding, owner and grant authority for this
+profile; ordinary runtime bindings do not update it. Initialize and update it
+with `node packages/gateway/scripts/update-authorization.mjs JOURNAL < UPDATE.json`
+after building the gateway. The update document contains `expectedRevision`
+(initially 0), `policy: {bindings, ownerPrincipalId}`, and optional
+`revokeAssertionDigests` (SHA-256 hex digests, never assertions). Use synthetic
+values when documenting the policy. The parent directory must already exist,
+be private and writable only by the operator; the gateway needs read access.
+
+Every grant/binding change, revocation and restore appends a new revision under
+an exclusive writer lock and an exact revision comparison. Restore a previous
+policy by submitting its contents against the current revision; never restore,
+truncate, replace or rotate the journal with an older copy. Runtime configuration
+rollback must preserve it. No other policy writer is supported for this profile.
+A partial append, unexpected writer lock or revision conflict stops the update;
+inspect it without a blind retry or lock removal. Archive/back up the complete
+history independently of runtime releases. Journal loss or corruption requires
+operator recovery before this profile can serve again. The process rejects
+observed regression; arbitrary out-of-band storage rollback across a restart
+is outside this cooperative protocol and must be prevented by storage ownership.
+
+Authorization is checked before admission and again before any buffered bytes
+are released. A changed revision discards the result even when the policy was
+revoked and restored between observations. Cursor policy includes that revision.
+Local assertion revocation persists across policy restores and process instances,
+so an otherwise valid assertion is denied before its expiry without upstream
+reads. Revoked digests cannot be removed by the update API. This is gateway-local
+revocation; it does not claim online qualification of provider-side Access session
+revocation. Signature and expiry verification remain mandatory.
+
+Before enabling the profile, independently qualify that the upstream proxy does
+not expose `/oikuma` externally. No assertion or user payload may be logged.
