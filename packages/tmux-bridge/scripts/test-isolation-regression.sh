@@ -60,6 +60,7 @@ python3 test/bridge-launch-record.test.py
 python3 test/comms.test.py
 python3 test/mesh-groups.test.py
 python3 test/session-inbox.test.py
+python3 test/session-sleep.test.py
 python3 test/run-receipt.test.py
 python3 test/agent-waker.test.py
 python3 test/session-controller.test.py
