@@ -4,6 +4,7 @@ import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { roleProfileDigest } from '../bin/restart-state.mjs';
 import { prepareState, requestStateProof, verifyStateResponse, revalidateStateProof } from '../bin/handover-state-proof.mjs';
 import { beginHandover, completeStatePreparation, createChannel, enqueue, reserveStatePreparation } from '../bin/channel-state.mjs';
 
@@ -35,6 +36,10 @@ test('state proof binds correlated response to private file bytes', async (t) =>
   const prepared = { status: 'verified', session, generation: 1, id: nonce, filename, sha256: response.sha256, bytes: Buffer.byteLength(content) };
   const revalidate = (overrides = {}) => revalidateStateProof({ root, channel, session, generation: 1, statePreparation: prepared, ...overrides });
   assert.equal((await revalidate()).sha256, response.sha256);
+  const profile = { schema: 'agent-mesh.role-profile.v1', role: 'operator', permissions: [], mcp: [], plugins: [] };
+  assert.equal((await revalidate()).profileSha256, roleProfileDigest(profile));
+  assert.notEqual(roleProfileDigest(profile), roleProfileDigest({ ...profile, mcp: ['different'] }));
+  assert.equal(roleProfileDigest({ ...profile, mcp: ['z', 'a'] }), roleProfileDigest({ ...profile, mcp: ['a', 'z'] }));
   await assert.rejects(revalidate({ generation: 2 }), /receipt mismatch/);
   await assert.rejects(revalidate({ statePreparation: { ...prepared, bytes: prepared.bytes + 1 } }), /size mismatch/);
   await writeFile(join(root, filename), content.replace('operator', 'operatOr'), { mode: 0o600 });

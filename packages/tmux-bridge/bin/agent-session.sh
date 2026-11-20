@@ -63,6 +63,7 @@ LIMEN_CONFIG=""
 FORCE_CAPACITY="false"
 GOVERNED_CHILD="false"
 ALLOW_DESKTOP_THREAD="false"
+REQUIRE_NEW="false"
 ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
@@ -106,6 +107,10 @@ while [[ $# -gt 0 ]]; do
             GOVERNED_CHILD="true"
             shift
             ;;
+        --require-new)
+            REQUIRE_NEW="true"
+            shift
+            ;;
         --allow-desktop-thread)
             ALLOW_DESKTOP_THREAD="true"
             shift
@@ -128,6 +133,9 @@ CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
 source "$CONF"
 
 REQUESTED_CMD="${ARGS[0]:-}"
+if [[ "$REQUIRE_NEW" == "true" && "$REQUESTED_CMD" != "new" ]]; then
+    echo "ERROR: --require-new is only supported with new" >&2; exit 2
+fi
 AUTO_LIMEN_UNAVAILABLE="false"
 ROUTE_STATUS="not_requested"
 ROUTE_REASON=""
@@ -358,6 +366,12 @@ _claude_trust_dialog_selection() {
     fi
 }
 
+_claude_onboarding_visible() {
+    local output="$1"
+    [[ ( "$output" == *"Choose the text style"* && "$output" == *"To change this later"* ) ||
+       ( "$output" == *"Detected a custom API key"* && "$output" == *"Do you want to use this API key?"* ) ]]
+}
+
 _wait_for_ready() {
     local target="$1" max_wait="${2:-30}" elapsed=0 out selection verified
     local claude_trust_confirmed="false"
@@ -365,6 +379,10 @@ _wait_for_ready() {
     while [[ $elapsed -lt $max_wait ]]; do
         sleep 1; elapsed=$(( elapsed + 1 ))
         out=$(mtmux capture-pane -t "$target" -p 2>/dev/null)
+        if [[ "${AGENT_NAME:-}" == "claude" ]] && _claude_onboarding_visible "$out"; then
+            echo "ERROR: Claude onboarding is incomplete; refusing to send a prompt" >&2
+            return 2
+        fi
         # Auto-confirm cwd picker if the agent shows one
         if [[ "$AGENT_HAS_CWD_PICKER" == "true" ]] && echo "$out" | grep -q "$AGENT_PICKER_PATTERN"; then
             mtmux send-keys -t "$target" "" Enter
@@ -437,7 +455,9 @@ _require_resumed_ready() {
     [[ "${MESH_STRICT_READY:-0}" == "1" ]] || return 0
     pane="$(mtmux capture-pane -t "$target" -p 2>/dev/null || true)"
     command="$(mtmux display-message -p -t "$target" '#{pane_current_command}' 2>/dev/null || true)"
-    if [[ -z "$command" ]]; then
+    if [[ "${AGENT_NAME:-}" == "claude" ]] && _claude_onboarding_visible "$pane"; then
+        reason="claude_onboarding_incomplete"
+    elif [[ -z "$command" ]]; then
         reason="pane_unavailable"
     elif grep -qE 'Automatic reconnect could not restore this session|Reconnect failed — check the endpoint, then relaunch' <<<"$pane"; then
         reason="terminal_reconnect_failure"
@@ -585,6 +605,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
             ;;
     esac
     if mtmux has-session -t "$TARGET" 2>/dev/null; then
+        [[ "$REQUIRE_NEW" != "true" ]] || { echo "ERROR: target already exists" >&2; exit 3; }
         _print_attach_hint
         echo "$TARGET"
         exit 0
@@ -604,6 +625,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
     RUN_ID="mesh-${TARGET}-$(date +%s%N)"
     export MESH_GRAPH_ROLE_PROFILE="$SESSION_PROFILE"
     CHILD=("$0" --governed-child --agent "$AGENT_NAME")
+    [[ "$REQUIRE_NEW" == "true" ]] && CHILD+=(--require-new)
     [[ -n "$SESSION_TITLE" ]] && CHILD+=(--title "$SESSION_TITLE")
     [[ -n "$SESSION_APPROVAL_POLICY" ]] && CHILD+=(--approval-policy "$SESSION_APPROVAL_POLICY")
     [[ "$ALLOW_DESKTOP_THREAD" == "true" ]] && CHILD+=(--allow-desktop-thread)
@@ -756,6 +778,7 @@ case "$cmd" in
         TARGET=$(_tmux_target "$TMUX_NAME")
 
         if mtmux has-session -t "$TARGET" 2>/dev/null; then
+            [[ "$REQUIRE_NEW" != "true" ]] || { echo "ERROR: target already exists" >&2; exit 3; }
             if [[ -n "$SESSION_TITLE" ]]; then
                 echo "WARN: session '$TARGET' already exists; --title was not updated" >&2
             fi
@@ -780,7 +803,26 @@ case "$cmd" in
             title_file="$(mesh_pending_title_file "$TARGET")"
             ( umask 077; printf '%s' "$SESSION_TITLE" > "$title_file" )
         fi
-        mesh_launch_record_start "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "" "$ROUTE_STATUS" "$ROUTE_REASON" "$LAUNCHED_AT_MS" \
+        # This is the requested CLI identity, not evidence that the process
+        # actually started or that the runtime accepted it. Ambiguity is omitted.
+        REQUESTED_SESSION=""
+        if [[ "$AGENT_NAME" == claude ]]; then
+            SESSION_ID_COUNT=0
+            for ((i=0; i<${#PASSTHRU[@]}; i++)); do
+                case "${PASSTHRU[i]}" in
+                    --session-id)
+                        SESSION_ID_COUNT=$((SESSION_ID_COUNT + 1))
+                        REQUESTED_SESSION="${PASSTHRU[i+1]:-}" ;;
+                    --session-id=*)
+                        SESSION_ID_COUNT=$((SESSION_ID_COUNT + 1))
+                        REQUESTED_SESSION="${PASSTHRU[i]#--session-id=}" ;;
+                esac
+            done
+            if [[ "$SESSION_ID_COUNT" != 1 || ! "$REQUESTED_SESSION" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+                REQUESTED_SESSION=""
+            fi
+        fi
+        mesh_launch_record_start "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "" "$ROUTE_STATUS" "$ROUTE_REASON" "$LAUNCHED_AT_MS" "$REQUESTED_SESSION" \
             || { mtmux kill-session -t "$TARGET" 2>/dev/null || true; echo "ERROR: launch record failed for '$TARGET'; new target removed" >&2; exit 1; }
         mesh_graph_register_session "$AGENT_NAME" "$TARGET" "$CWD" "${MESH_GRAPH_ROLE_PROFILE:-$SESSION_PROFILE}" "$SESSION_TITLE" "new session" \
             >/dev/null || echo "WARN: graph registration failed for '$TARGET'" >&2

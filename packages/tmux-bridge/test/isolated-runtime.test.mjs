@@ -85,6 +85,21 @@ for (const locale of ["C", "C.UTF-8"]) for (const [label, screen, expected] of [
   else { assert.equal(response.status, 0, response.stderr); assert.equal(response.stdout.trim(), expected); }
 });
 
+test("Claude setup and API key confirmation are never mistaken for a ready session", async () => {
+  const source = await readFile(session, "utf8");
+  const functions = source.slice(source.indexOf("_claude_trust_dialog_visible()"), source.indexOf("_codex_resume_guard()"));
+  const setup = `AGENT_NAME=claude; AGENT_IDLE_PATTERN='Brewed for'; AGENT_PROMPT_CHAR='❯'; AGENT_ALIVE_PROCESS_PATTERN='^claude$'; MESH_STRICT_READY=1; mtmux() { case \"$1\" in capture-pane) cat;; display-message) printf 'claude\\n';; esac; };`;
+  for (const screen of [
+    "Welcome to Claude Code\nChoose the text style that looks best with your terminal\nTo change this later, run /theme\n❯ Auto\n",
+    "Detected a custom API key in your environment\nDo you want to use this API key?\n❯ No (recommended)\nEnter to confirm\n"
+  ]) {
+    const response = spawnSync("/bin/bash", ["-c", functions + '\n' + setup + '\n_require_resumed_ready fixture false'], { input: screen, encoding: "utf8" });
+    assert.equal(response.status, 124); assert.match(response.stderr, /claude_onboarding_incomplete/);
+    const waiting = spawnSync("/bin/bash", ["-c", functions + '\n' + setup + '\nAGENT_HAS_CWD_PICKER=false; sleep() { :; }; _wait_for_ready fixture 1'], { input: screen, encoding: "utf8" });
+    assert.equal(waiting.status, 2); assert.match(waiting.stderr, /onboarding is incomplete/);
+  }
+});
+
 const currentBegin = "[[R:0011223344556677]]", currentEnd = "[[/R:0011223344556677]]";
 const currentAnchor = "› [MESH:0011223344556677]\n";
 const currentTemplate = `  Final result markers: ${currentBegin} ... ${currentEnd}\n`;

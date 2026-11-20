@@ -16,6 +16,7 @@ import threading
 
 
 SESSION = re.compile(r'^codex:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$', re.I)
+IDENTIFIER = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 
 
 def _open_private_root(root):
@@ -57,7 +58,7 @@ def _write_once(directory_fd, name, record):
 
 
 class IsolatedRoleRollback:
-    def __init__(self, expected_session, stop_owned_successor, journal_root):
+    def __init__(self, expected_session, stop_owned_successor, journal_root, *, quota_binding=None):
         if not isinstance(expected_session, str) or not SESSION.fullmatch(expected_session) or expected_session != expected_session.lower() or not callable(stop_owned_successor):
             raise ValueError('invalid isolated successor binding')
         self._session = expected_session
@@ -66,6 +67,33 @@ class IsolatedRoleRollback:
         self._key = hashlib.sha256(expected_session.encode()).hexdigest()
         self._lock = threading.Lock()
         self._receipt = None
+        if quota_binding is not None:
+            if (not isinstance(quota_binding, dict) or set(quota_binding) != {'handoverId', 'launchId', 'turnId'}
+                    or any(not isinstance(quota_binding[k], str) or not IDENTIFIER.fullmatch(quota_binding[k]) for k in ('handoverId', 'launchId'))
+                    or not isinstance(quota_binding['turnId'], str)
+                    or not SESSION.fullmatch('codex:' + quota_binding['turnId'])
+                    or quota_binding['turnId'] != quota_binding['turnId'].lower()):
+                raise ValueError('invalid quota binding')
+        self._quota_binding = copy.deepcopy(quota_binding)
+
+    def apply_quota(self, invocation, observation):
+        """Stop only the caller's owned isolated successor; neither input authenticates itself."""
+        binding = self._quota_binding
+        if (binding is None or not isinstance(invocation, dict)
+                or invocation.get('schema') != 'agent-mesh.successor-invocation.v1'
+                or invocation.get('status') != 'outcome-unverified'
+                or invocation.get('handoverId') != binding['handoverId']
+                or invocation.get('launchId') != binding['launchId']
+                or invocation.get('nativeTurn') != {'status': 'usage-limit', 'retry': 'not-authorized'}
+                or not isinstance(observation, dict)
+                or observation.get('schema') != 'agent-mesh.codex-turn-outcome-observation.v1'
+                or observation.get('threadId') != self._session[6:]
+                or observation.get('turnId') != binding['turnId']
+                or observation.get('status') != 'usage-limit'
+                or observation.get('retry') != 'not-authorized'):
+            raise ValueError('invalid or mismatched quota observation')
+        return self.apply({'schema': 'agent-mesh.codex-role-start-assessment.v1', 'session': self._session,
+                           'status': 'rollback-required', 'failures': ['usage-limit']})
 
     def apply(self, assessment):
         if (not isinstance(assessment, dict) or assessment.get('schema') != 'agent-mesh.codex-role-start-assessment.v1'

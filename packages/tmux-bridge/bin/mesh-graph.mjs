@@ -37,7 +37,7 @@ import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
 import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
 import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
-import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
+import { createChannel, enqueue, beginHandover, reserveSuccessorLaunch, markSuccessorInvoking, cancelUninvokedSuccessor, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
 import { observeClaudeDelivery, assertClaudeDeliverySnapshotCurrent } from "./claude-delivery-observation.mjs";
 import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
 import { prepareState, requestStateProof, revalidateStateProof } from "./handover-state-proof.mjs";
@@ -133,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "verify-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "verify-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "observe-owned-restart", "reserve-successor", "invoke-successor", "cancel-successor", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -147,8 +147,32 @@ try {
   switch (command) {
     case "channel": {
       const name = requiredSingleLine(values.name, "--name");
-      const channelInput = values.input === "-" ? readBoundedChannelInput() : values.input;
+      const channelInput = values.input === "-" ? readBoundedChannelInput(subcommand === "observe-owned-restart" ? 2 * 1024 * 1024 : 65536) : values.input;
       assertPrivateChannelState(stateDir);
+      if (subcommand === "observe-owned-restart") {
+        // Observation only. The caller owns executable/role authority. No
+        // handover, settlement or process control occurs here. Frame stays on
+        // stdin, and only the graph checkpoint is passed to the child.
+        if (values.input !== "-") throw new Error("owned restart observation requires stdin");
+        const request = JSON.parse(channelInput);
+        if (!request || typeof request !== "object" || Array.isArray(request) || Object.hasOwn(request, "bridgeLaunchId")) throw new Error("bridge launch identity is derived from the checkpoint");
+        const result = withLock(stateDir, () => {
+          assertPrivateChannelState(stateDir);
+          const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+          if (!channel || channel.phase !== 'handover' || !channel.successorLaunch?.bridgeLaunchId) throw new Error('successor checkpoint unavailable');
+          const checkpoint = channel.successorLaunch;
+          const child = spawnSync('/usr/bin/python3', [join(dirname(fileURLToPath(import.meta.url)), 'claude-owned-restart-observer.py')], {
+            input: JSON.stringify({ request, checkpoint, nodeExecutable: process.execPath }), encoding: 'utf8', timeout: 20000, maxBuffer: 8192,
+          });
+          if (child.error || child.status !== 0 || !child.stdout) throw new Error('owned restart observation failed');
+          const proof = JSON.parse(child.stdout);
+          const current = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+          if (JSON.stringify(current?.successorLaunch) !== JSON.stringify(checkpoint)) throw new Error('successor checkpoint changed');
+          return proof;
+        });
+        printResult(result, { json: true });
+        break;
+      }
       if (subcommand === "get") {
         const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
         if (!channel) throw new Error("unknown channel");
@@ -288,6 +312,29 @@ try {
         printResult(result, { json: true });
         break;
       }
+      if (subcommand === "reserve-successor") {
+        const root = requiredSingleLine(values["state-root"], "--state-root");
+        if (!isAbsolute(root) || !/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid successor reservation parameters");
+        const expected = { handoverId: requiredSingleLine(values.id, "--id"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) };
+        const launch = JSON.parse(requiredSingleLine(channelInput, "--input"));
+        if (!launch || typeof launch !== "object" || Array.isArray(launch) || !["id,profileSha256", "id,profileSha256,successorSession"].includes(Object.keys(launch).sort().join(","))) throw new Error("invalid successor launch reservation");
+        assertPrivateChannelState(stateDir);
+        const prior = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        if (!prior || prior.phase !== "handover" || prior.handoverId !== expected.handoverId || prior.session !== expected.session || prior.generation !== expected.generation) throw new Error("handover identity changed");
+        const proof = await revalidateStateProof({ root, channel: name, session: prior.session, generation: prior.generation, statePreparation: prior.statePreparation });
+        if (launch.profileSha256 !== proof.profileSha256) throw new Error("launch profile does not match verified restart state");
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current || current.handoverId !== prior.handoverId || current.session !== prior.session || current.generation !== prior.generation || JSON.stringify(current.statePreparation) !== JSON.stringify(prior.statePreparation)) throw new Error("channel changed during successor preflight");
+          if (launch.successorSession && ((graph.nodes || []).some(node => plexus.sessionIdOf(node) === launch.successorSession) || (graph.channels || []).some(item => item.session === launch.successorSession || item.successorLaunch?.successorSession === launch.successorSession))) throw new Error("successor session already registered or reserved");
+          const next = reserveSuccessorLaunch(current, expected, launch.successorSession ? { ...launch, bridgeLaunchId: randomUUID() } : launch);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
+        });
+        printResult(result, { json: true });
+        break;
+      }
       const result = mutate(stateDir, graph => {
         assertPrivateChannelState(stateDir);
         if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
@@ -317,6 +364,11 @@ try {
             next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId, values.source === undefined ? 'start' : requiredSingleLine(values.source, '--source'));
           }
           else if (subcommand === "begin-handover") next = { ...beginHandover(current, `handover-${randomUUID()}`), handoverStartedAt: new Date().toISOString() };
+          else if (["invoke-successor", "cancel-successor"].includes(subcommand)) {
+            if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
+            const expected = { handoverId: requiredSingleLine(values.id, "--id"), launchId: requiredSingleLine(channelInput, "--input"), session: requiredSingleLine(values.session, "--session"), generation: Number(values.generation) };
+            next = subcommand === "invoke-successor" ? markSuccessorInvoking(current, expected) : cancelUninvokedSuccessor(current, expected);
+          }
           else if (subcommand === "reserve-notice") {
             const target = requiredSingleLine(values.to, "--to");
             const match = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(target);
@@ -1656,8 +1708,8 @@ function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
 }
 
-function readBoundedChannelInput() {
-  const max = 65536, chunks = [];
+function readBoundedChannelInput(max = 65536) {
+  const chunks = [];
   let total = 0;
   while (true) {
     const chunk = Buffer.allocUnsafe(Math.min(4096, max + 1 - total));

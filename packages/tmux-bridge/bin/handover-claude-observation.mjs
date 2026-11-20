@@ -54,7 +54,10 @@ export async function observeClaudeFinalNotice({ root, id, nonce, message }) {
     const toolUse = content.some(part => part?.type === 'tool_use');
     const parts = content.filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text);
     if (parts.length) answer += parts.join('\n');
-    if (native.stop_reason === 'end_turn' && !toolUse) completed = true;
+    // A later tool can be followed by an empty end_turn under the same native
+    // message id. The pre-tool text must not become final again in that case.
+    if (toolUse) { completed = false; answer = ''; }
+    else if (native.stop_reason === 'end_turn') completed = true;
     else if (native.stop_reason !== null && native.stop_reason !== undefined) completed = false;
   }
   if (!anchored || !completed || answer !== message) throw new Error('final notice not proven in transcript snapshot');

@@ -1,0 +1,30 @@
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import test from 'node:test';
+import { prepareBoundRoleLaunch } from '../bin/bound-role-preflight.mjs';
+import { roleProfileDigest } from '../bin/restart-state.mjs';
+
+test('role plan binds a validated restart snapshot to caller-supplied authority', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'bound-role-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const session = 'codex:22222222-2222-4222-8222-222222222222', channel = 'fixture';
+  const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: fixture\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: [read]\n  mcp: [online, offline]\n  plugins: [viewer]\n`;
+  await writeFile(join(root, 'state.yaml'), content, { mode: 0o600 });
+  const statePreparation = { status: 'verified', session, generation: 1, id: 'prep', filename: 'state.yaml', sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content) };
+  const profile = { schema: 'agent-mesh.role-profile.v1', role: 'operator', permissions: ['read'], mcp: ['online', 'offline'], plugins: ['viewer'] };
+  const authority = { role: 'operator', permissions: ['read'], humanGatedPermissions: [], mcp: ['online', 'offline'], plugins: ['viewer'] };
+  let probes = 0;
+  const args = { root, channel, session, generation: 1, statePreparation, expectedProfileSha256: roleProfileDigest(profile), authority, probe: async name => { probes++; return name === 'online'; } };
+  const result = await prepareBoundRoleLaunch(args);
+  assert.equal(result.mcpChecked, 2); assert.deepEqual(result.plan.mcpToStart, ['online']); assert.deepEqual(result.plan.mcpUnavailable, ['offline']);
+  assert.equal(result.profileSha256, args.expectedProfileSha256); assert.equal(result.stateSha256, statePreparation.sha256);
+  probes = 0;
+  await assert.rejects(prepareBoundRoleLaunch({ ...args, expectedProfileSha256: 'b'.repeat(64) }), /digest mismatch/); assert.equal(probes, 0);
+  await assert.rejects(prepareBoundRoleLaunch({ ...args, authority: { ...authority, plugins: [] } }), /exceeds authority/); assert.equal(probes, 0);
+  let changed = false;
+  const changingProbe = async () => { if (!changed) { changed = true; await writeFile(join(root, 'state.yaml'), content.replace('operator', 'changed')); } return true; };
+  await assert.rejects(prepareBoundRoleLaunch({ ...args, probe: changingProbe }), /digest mismatch/);
+  await assert.rejects(prepareBoundRoleLaunch(args), /digest mismatch/); assert.equal(probes, 0);
+});

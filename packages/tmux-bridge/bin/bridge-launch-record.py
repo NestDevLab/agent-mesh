@@ -80,7 +80,7 @@ def start(args: argparse.Namespace) -> int:
         model = args.model
     if effort is None:
         effort = args.effort
-    launch_id = str(uuid.uuid4())
+    launch_id = args.launch_id or str(uuid.uuid4())
     event = {
         "schema": SCHEMA,
         "event": "launch.started",
@@ -91,6 +91,8 @@ def start(args: argparse.Namespace) -> int:
         "agent": args.agent,
         "tmuxTarget": args.target,
         "threadId": args.thread_id,
+        "requestedSessionId": args.requested_session_id,
+        "tmuxSocket": args.tmux_socket,
         "profile": args.profile,
         "model": model,
         "effort": effort,
@@ -192,6 +194,16 @@ def show(args: argparse.Namespace) -> int:
     return 0
 
 
+def canonical_uuid(value: str) -> str:
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError('invalid requested session UUID') from exc
+    if str(parsed) != value:
+        raise argparse.ArgumentTypeError('requested session UUID must be canonical')
+    return value
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--state", type=Path, required=True)
@@ -201,7 +213,10 @@ def parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--agent", required=True)
     start_parser.add_argument("--target", required=True)
     start_parser.add_argument("--cwd", required=True)
+    start_parser.add_argument("--launch-id", type=canonical_uuid)
     start_parser.add_argument("--thread-id")
+    start_parser.add_argument("--requested-session-id", type=canonical_uuid)
+    start_parser.add_argument("--tmux-socket")
     start_parser.add_argument("--profile")
     start_parser.add_argument("--model")
     start_parser.add_argument("--effort")

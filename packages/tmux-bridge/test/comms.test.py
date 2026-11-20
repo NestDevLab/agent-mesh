@@ -177,6 +177,27 @@ c.observe_inbox(spec, gate.receipt['id'], True)
         with c.locked() as (db, _):
             self.assertEqual(c.status(db)['counts'], {'queued': 1})
 
+    def test_private_tmux_replay_uses_stdin_not_process_arguments(self):
+        spec = {'kind': 'tmux', 'runtime': 'claude', 'destination': 'fixture-target',
+                'message': 'fixture-private-payload', 'correlation': 'fixture',
+                'result_token': '', 'timeout': 10, 'socket': 'fixture', 'message_stdin': True}
+        c.change('queue', 'claude', 'test hold', 'test')
+        with c.locked() as (db, _):
+            self.assertEqual(c.admit(db, spec)['status'], 'queued')
+        calls = []
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs['input']))
+            return subprocess.CompletedProcess(argv, 0, '', '')
+        with patch.object(c.subprocess, 'run', side_effect=run):
+            result = c.change('on', 'claude', 'resume test', 'test')
+        self.assertEqual(result['counts'], {'delivered': 1})
+        self.assertEqual(calls[0][1], spec['message'])
+        self.assertIn('--message-stdin', calls[0][0])
+        self.assertNotIn(spec['message'], calls[0][0])
+        for invalid in ({**spec, 'message_stdin': False}, {**spec, 'correlation': ''}, {**spec, 'result_token': '1234'}, {**spec, 'kind': 'native'}):
+            with self.assertRaisesRegex(ValueError, 'stdin replay'):
+                c.validate(invalid)
+
     def test_off_rejects_without_storing_message(self):
         c.change('off', 'all', 'test off', 'test')
         with c.locked() as (db, _):
@@ -204,6 +225,43 @@ c.observe_inbox(spec, gate.receipt['id'], True)
             result = c.change('on', 'claude', 'resume', 'test')
         self.assertEqual(calls, ['b', 'c'])
         self.assertEqual(result['counts'], {'delivered': 2, 'expired': 1})
+
+    def test_uncertain_direct_tmux_send_blocks_same_target_without_replay(self):
+        first = {'kind': 'tmux', 'runtime': 'claude', 'destination': 'fixture', 'socket': 'fixture-socket',
+                 'message': 'first fixture', 'correlation': 'first', 'timeout': 10}
+        second = {**first, 'message': 'second fixture', 'correlation': 'second'}
+        with c.locked() as (db, _):
+            self.assertEqual(c.admit(db, first)['status'], 'send')
+            self.assertEqual(c.admit(db, second)['status'], 'queued')
+        with patch.object(c.subprocess, 'run') as run:
+            c.change('on', 'claude', 'fixture reconciliation', 'test')
+            run.assert_not_called()
+        with c.locked() as (db, _):
+            rows = db.execute('SELECT status FROM deliveries ORDER BY seq').fetchall()
+            self.assertEqual(rows, [('unknown',), ('queued',)])
+
+    def test_uncertain_legacy_tmux_without_socket_fails_closed(self):
+        first = {'kind': 'tmux', 'runtime': 'claude', 'destination': 'fixture',
+                 'message': 'first fixture', 'correlation': 'first', 'timeout': 10}
+        later = {**first, 'socket': 'known-socket', 'message': 'later fixture', 'correlation': 'later'}
+        with c.locked() as (db, _):
+            self.assertEqual(c.admit(db, first)['status'], 'send')
+            self.assertEqual(c.admit(db, later)['status'], 'queued')
+
+    def test_uncertain_direct_tmux_does_not_block_another_socket(self):
+        first = {'kind': 'tmux', 'runtime': 'claude', 'destination': 'fixture', 'socket': 'socket-one',
+                 'message': 'first fixture', 'correlation': 'first', 'timeout': 10}
+        other = {**first, 'socket': 'socket-two', 'message': 'other fixture', 'correlation': 'other'}
+        with c.locked() as (db, _):
+            self.assertEqual(c.admit(db, first)['status'], 'send')
+        c.change('queue', 'claude', 'hold fixture', 'test')
+        with c.locked() as (db, _):
+            self.assertEqual(c.admit(db, other)['status'], 'queued')
+        with patch.object(c.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '', '')) as run:
+            c.change('on', 'claude', 'release fixture', 'test')
+            self.assertEqual(run.call_count, 1)
+        with c.locked() as (db, _):
+            self.assertEqual(db.execute('SELECT status FROM deliveries ORDER BY seq').fetchall(), [('unknown',), ('delivered',)])
 
     def test_uncertain_enqueue_is_not_retried_or_overtaken(self):
         c.change('queue', 'claude', 'test', 'test')

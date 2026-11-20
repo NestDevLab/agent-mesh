@@ -97,6 +97,8 @@ def status(db):
 
 def validate(spec):
     spec = dict(spec)
+    if 'message_stdin' in spec and (spec['message_stdin'] is not True or spec.get('kind') != 'tmux' or not spec.get('correlation') or spec.get('result_token')):
+        raise ValueError('invalid stdin replay mode')
     if spec.get('kind') == 'native':
         spec.setdefault('resume', spec.get('runtime') == 'codex')
     if spec.get('kind') not in ('native', 'tmux', 'inbox') or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}', str(spec.get('runtime', ''))):
@@ -277,7 +279,11 @@ def command(spec):
     if spec['kind'] == 'tmux':
         args = [str(BIN/'agent-send.sh'), '--agent', spec['runtime'], '--quiet', '--submit-only']
         if spec.get('correlation'):
-            args += ['--correlation-id', spec['correlation'], '--result-token', spec['result_token']]
+            args += ['--correlation-id', spec['correlation']]
+            if spec.get('result_token'):
+                args += ['--result-token', spec['result_token']]
+        if spec.get('message_stdin'):
+            return args + ['--message-stdin', spec['destination'], str(spec.get('timeout', 120))]
         return args + [spec['destination'], spec['message'], str(spec.get('timeout', 120))]
     return [sys.executable, str(BIN/'agent-inbox-native.py'), '--replay']
 
@@ -291,6 +297,32 @@ def refresh(db):
         db.commit()
 
 
+def uncertain_tmux_before(db, spec, before_seq=None):
+    """Do not overtake an unresolved direct send to the same tmux target."""
+    if spec.get('kind') != 'tmux':
+        return False
+    sql = "SELECT payload FROM deliveries WHERE status='unknown' AND runtime=? AND destination=?"
+    params = [spec['runtime'], spec['destination']]
+    if before_seq is not None:
+        sql += ' AND seq<?'
+        params.append(before_seq)
+    for (payload,) in db.execute(sql, params):
+        try:
+            previous = json.loads(payload)
+        except (TypeError, ValueError):
+            return True
+        if not isinstance(previous, dict):
+            return True
+        if previous.get('kind') not in ('tmux', 'native', 'inbox'):
+            return True
+        if previous['kind'] != 'tmux':
+            continue
+        old_socket, new_socket = previous.get('socket'), spec.get('socket')
+        if not isinstance(old_socket, str) or not isinstance(new_socket, str) or not old_socket or not new_socket or old_socket == new_socket:
+            return True
+    return False
+
+
 def flush(db, fd):
     """Ordered per runtime. Persist unknown outcomes before any irreversible enqueue."""
     refresh(db)
@@ -302,12 +334,14 @@ def flush(db, fd):
     for seq, ident, runtime, payload in db.execute("SELECT seq,id,runtime,payload FROM deliveries WHERE status='queued' ORDER BY seq").fetchall():
         if effective(db, runtime) != 'on':
             continue
-        # An earlier uncertain send blocks that runtime; never retry it blindly.
-        if db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND seq<? AND status='unknown' AND detail LIKE 'queued dispatch%'", (runtime, seq)).fetchone():
+        # A prior uncertain replay blocks its runtime; a prior uncertain direct
+        # tmux send also blocks later messages to that same target and socket.
+        spec = json.loads(payload)
+        if (db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND seq<? AND status='unknown' AND detail LIKE 'queued dispatch%'", (runtime, seq)).fetchone()
+                or uncertain_tmux_before(db, spec, before_seq=seq)):
             continue
         if db.execute('SELECT status FROM deliveries WHERE id=?', (ident,)).fetchone()[0] != 'queued':
             continue  # Another dispatcher may have handled this row while our lock was released.
-        spec = json.loads(payload)
         db.execute("UPDATE deliveries SET status='unknown',detail='queued dispatch started; inspect before retry' WHERE id=?", (ident,))
         db.commit()
         token = os.urandom(32).hex()
@@ -323,7 +357,8 @@ def flush(db, fd):
         if observe_outside_lock:
             fcntl.flock(fd, fcntl.LOCK_UN)
         try:
-            result = subprocess.run(command(spec), input=encode(spec) if spec['kind'] == 'inbox' else None,
+            replay_input = encode(spec) if spec['kind'] == 'inbox' else spec['message'] if spec.get('message_stdin') else None
+            result = subprocess.run(command(spec), input=replay_input,
                                     text=True, capture_output=True, timeout=90, env=env, pass_fds=(reader,))
             if observe_outside_lock:
                 fcntl.flock(fd, fcntl.LOCK_EX)
@@ -370,6 +405,7 @@ def admit(db, spec):
         raise ValueError('comms queue full')
     now = time.time()
     pending = db.execute("SELECT 1 FROM deliveries WHERE runtime=? AND (status='queued' OR (status='unknown' AND detail LIKE 'queued dispatch%'))", (spec['runtime'],)).fetchone()
+    pending = pending or uncertain_tmux_before(db, spec)
     state = 'unknown' if exempt or (mode == 'on' and not pending) else 'queued'
     db.execute('INSERT INTO deliveries(id,runtime,digest,payload,origin,created,expires,status,destination,body_digest) VALUES (?,?,?,?,?,?,?,?,?,?)',
                (ident, spec['runtime'], digest, encode(spec), 'controller' if exempt else 'peer', now,

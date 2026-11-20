@@ -24,7 +24,7 @@ export function triggerJournal(root) {
       const info = fstatSync(fd);
       if (!info.isFile() || info.uid !== process.getuid() || info.nlink !== 1 || (info.mode & 0o077) !== 0 || info.size > 8 * 1024 * 1024) throw new Error('invalid journal file');
       const data = JSON.parse(readFileSync(fd, 'utf8'));
-      if (data?.schema !== 'agent-mesh.trigger-journal.v1' || !Array.isArray(data.entries) || new Set(data.entries.map(entry => entry?.id)).size !== data.entries.length || data.entries.some(entry => !token(entry?.id) || typeof entry.dryRun !== 'boolean' || !Array.isArray(entry.triggers) || entry.triggers.some(t => !token(t?.kind) || !token(t?.id)) || new Set(entry.triggers.map(key)).size !== entry.triggers.length || !statuses.has(entry.status))) throw new Error('invalid journal content');
+      if (data?.schema !== 'agent-mesh.trigger-journal.v1' || !Array.isArray(data.entries) || new Set(data.entries.map(entry => entry?.id)).size !== data.entries.length || data.entries.some(entry => !token(entry?.id) || typeof entry.dryRun !== 'boolean' || !Array.isArray(entry.triggers) || entry.triggers.some(t => !token(t?.kind) || !token(t?.id)) || new Set(entry.triggers.map(key)).size !== entry.triggers.length || !statuses.has(entry.status) || (entry.epoch !== undefined && (!Number.isSafeInteger(entry.epoch) || entry.epoch < 0)))) throw new Error('invalid journal content');
       return data;
     } finally { closeSync(fd); }
   };
@@ -56,13 +56,14 @@ export function triggerJournal(root) {
         if (data.entries.some(entry => entry.id === id)) throw new Error('transaction already reserved');
         const requested = new Set(triggers.map(key));
         if (data.entries.some(entry => !terminal.has(entry.status) && entry.triggers.some(trigger => requested.has(key(trigger))))) throw new Error('overlapping transaction unresolved');
-        data.entries.push({ id, dryRun, status: 'planning', triggers: structuredClone(triggers), receipt: null });
+        data.entries.push({ id, dryRun, status: 'planning', triggers: structuredClone(triggers), receipt: null, epoch: 0 });
+        return 0;
       });
     },
-    async write(receipt) {
+    async write(receipt, epoch = 0) {
       return transaction(data => {
         const entry = data.entries.find(item => item.id === receipt?.id);
-        if (!entry || terminal.has(entry.status) || receipt.schema !== 'agent-mesh.trigger-transaction.v1' || receipt.dryRun !== entry.dryRun || !statuses.has(receipt.status) || !Array.isArray(receipt.triggers) || JSON.stringify(receipt.triggers.map(key)) !== JSON.stringify(entry.triggers.map(key))) throw new Error('invalid journal update');
+        if (!entry || (entry.epoch ?? 0) !== epoch || terminal.has(entry.status) || receipt.schema !== 'agent-mesh.trigger-transaction.v1' || receipt.dryRun !== entry.dryRun || !statuses.has(receipt.status) || !Array.isArray(receipt.triggers) || JSON.stringify(receipt.triggers.map(key)) !== JSON.stringify(entry.triggers.map(key))) throw new Error('invalid journal update');
         entry.status = receipt.status; entry.receipt = structuredClone(receipt);
       });
     },
@@ -81,9 +82,16 @@ export function triggerJournal(root) {
       catch (error) { if (error.code === 'EEXIST') throw new Error('recovery lock held or requires reconciliation'); throw error; }
       try {
         fsyncSync(fd); syncRoot();
-        const journal = triggerJournal(root), entry = await journal.get(id);
-        if (!entry || entry.status !== 'uncertain' || !entry.receipt) throw new Error('transaction not recoverable');
-        return await callback(entry.receipt, receipt => journal.write(receipt));
+        const journal = triggerJournal(root);
+        const takeover = transaction(data => {
+          const entry = data.entries.find(item => item.id === id);
+          if (!entry || entry.dryRun || !['uncertain', 'applying', 'rolling-back'].includes(entry.status) || !entry.receipt) throw new Error('transaction not recoverable');
+          const epoch = (entry.epoch ?? 0) + 1;
+          if (!Number.isSafeInteger(epoch)) throw new Error('transaction epoch exhausted');
+          entry.epoch = epoch; entry.status = 'uncertain'; entry.receipt.status = 'uncertain';
+          return { epoch, receipt: structuredClone(entry.receipt) };
+        });
+        return await callback(takeover.receipt, receipt => journal.write(receipt, takeover.epoch));
       } finally {
         const owned = fstatSync(fd); closeSync(fd);
         const current = lstatSync(recoveryLock);

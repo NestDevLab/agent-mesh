@@ -54,6 +54,18 @@ export async function reconcileTriggers({ triggers, from, to, transactionId, ada
         if (observed?.target !== from || observed.version !== rollback.version || observed.lastOperationId !== rollbackId) { prior.status = 'uncertain'; receipt.status = 'uncertain'; await save(); return receipt; }
         prior.status = 'rolled-back'; prior.rollbackVersion = rollback.version; await save();
       }
+      // A definite refusal says only that this operation did not apply. It
+      // does not prove that another writer left this or a later trigger alone.
+      // Re-read every row before claiming that the original targets survived.
+      for (let j = 0; j < receipt.triggers.length; j++) {
+        const item = receipt.triggers[j]; let current;
+        try { current = await adapter.read(item); } catch { /* Observation is required. */ }
+        const version = j < i ? item.rollbackVersion : item.before;
+        const rollbackId = `${transactionId}:rollback:${j}`;
+        if (current?.target !== from || current.version !== version || (j < i && current.lastOperationId !== rollbackId)) {
+          item.status = 'uncertain'; receipt.status = 'uncertain'; await save(); return receipt;
+        }
+      }
       receipt.status = 'rolled-back'; await save(); return receipt;
     }
     let observed;

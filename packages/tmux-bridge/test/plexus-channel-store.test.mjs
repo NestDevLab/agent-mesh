@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { roleProfileDigest } from '../bin/restart-state.mjs';
 import { appendFile, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -234,4 +236,88 @@ test('graph revalidates the bound restart file without advancing handover', asyn
   await writeFile(join(files, filename), content.replace('operator', 'operatOr'), { mode: 0o600 });
   await assert.rejects(call(...args), /digest mismatch/);
   assert.equal((await call('channel', 'get', '--name', '#example')).channel.phase, 'handover');
+});
+
+async function successorFixture(root, session) {
+  const files = join(root, 'role-state'); await mkdir(files, { mode: 0o700 });
+  const content = `schema: agent-mesh.restart.v1\nsession: ${session}\nchannel: example\nharness: codex\nworking_directory: /workspace\nskills: []\ntriggers: []\ngoal: null\nrole_profile:\n  schema: agent-mesh.role-profile.v1\n  role: operator\n  permissions: []\n  mcp: []\n  plugins: []\n`;
+  await writeFile(join(files, 'state.yaml'), content, { mode: 0o600 });
+  const profile = { schema: 'agent-mesh.role-profile.v1', role: 'operator', permissions: [], mcp: [], plugins: [] };
+  return { files, sha256: createHash('sha256').update(content).digest('hex'), bytes: Buffer.byteLength(content), profileSha256: roleProfileDigest(profile) };
+}
+
+test('successor launch reservation survives replay and cannot be duplicated', async t => {
+  const state = await mkdtemp(join(tmpdir(), 'launch-reservation-'));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args])).stdout);
+  const uuid = '22222222-2222-4222-8222-222222222222', session = `codex:${uuid}`;
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', session);
+  await call('channel', 'begin-handover', '--name', 'example');
+  const graph = await call('show', '--json'), channel = graph.channels.find(row => row.id === 'example');
+  const fixture = await successorFixture(state, session);
+  channel.statePreparation = { status: 'verified', session, generation: 1, id: 'prep', filename: 'state.yaml', sha256: fixture.sha256, bytes: fixture.bytes };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-prepared', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  const args = ['channel', 'reserve-successor', '--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--state-root', fixture.files, '--input', JSON.stringify({ id: 'launch-1', profileSha256: fixture.profileSha256, successorSession: 'claude:33333333-3333-4333-8333-333333333333' })];
+  const wrong = [...args]; wrong[wrong.length - 1] = JSON.stringify({ id: 'launch-1', profileSha256: 'b'.repeat(64) });
+  await assert.rejects(call(...wrong), /does not match verified restart state/);
+  const path = join(fixture.files, 'state.yaml'), original = await readFile(path, 'utf8');
+  await writeFile(path, original.replace('role: operator', 'role: changed'));
+  await assert.rejects(call(...args), /digest mismatch/);
+  await writeFile(path, original);
+  const spoof = [...args]; spoof[spoof.length - 1] = JSON.stringify({ id: 'launch-1', profileSha256: fixture.profileSha256, successorSession: 'claude:33333333-3333-4333-8333-333333333333', bridgeLaunchId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+  await assert.rejects(call(...spoof), /invalid successor launch reservation/);
+  const reserved = await call(...args);
+  assert.match(reserved.channel.successorLaunch.bridgeLaunchId, /^[0-9a-f-]{36}$/);
+  assert.equal(reserved.channel.successorLaunch.status, 'requested');
+  await assert.rejects(call(...args), /unresolved|already registered or reserved/);
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  const restored = (await call('channel', 'get', '--name', 'example')).channel;
+  assert.equal(restored.successorLaunch.id, 'launch-1');
+  assert.equal(restored.successorLaunch.bridgeLaunchId, reserved.channel.successorLaunch.bridgeLaunchId);
+  assert.equal(restored.successorLaunch.stateSha256, fixture.sha256);
+  assert.equal(restored.successorLaunch.profileSha256, fixture.profileSha256);
+  assert.equal(restored.successorLaunch.handoverId, channel.handoverId);
+  const identity = ['--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--input', 'launch-1'];
+  const raced = await Promise.allSettled([call('channel', 'invoke-successor', ...identity), call('channel', 'cancel-successor', ...identity)]);
+  assert.equal(raced.filter(item => item.status === 'fulfilled').length, 1);
+  const current = (await call('channel', 'get', '--name', 'example')).channel;
+  if (current.successorLaunch) {
+    assert.equal(current.successorLaunch.status, 'invoking');
+    await assert.rejects(call('channel', 'cancel-successor', ...identity), /unresolved/);
+  } else {
+    assert.deepEqual(current.retiredLaunchIds, ['launch-1']);
+    await assert.rejects(call('channel', 'invoke-successor', ...identity), /unresolved/);
+    await assert.rejects(call(...args), /unresolved|already registered or reserved/);
+  }
+});
+
+
+test('crashed reservation owner leaves duplicate reservation blocked', { timeout: 15000 }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'launch-crash-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const state = join(root, 'graph'), worker = join(root, 'worker.mjs');
+  const call = async (...args) => JSON.parse((await exec(process.execPath, [bin, '--state', state, ...args])).stdout);
+  const uuid = '22222222-2222-4222-8222-222222222222', session = `codex:${uuid}`;
+  await call('add', '--agent', 'codex', '--tmux-target', 'fixture', '--cwd', '/synthetic', '--runtime-uuid', uuid, '--json');
+  await call('migrate', '--apply', '--json');
+  await call('channel', 'create', '--name', 'example', '--session', session);
+  await call('channel', 'begin-handover', '--name', 'example');
+  await call('channel', 'enqueue', '--name', 'example', '--id', 'msg', '--input', 'fixture');
+  const graph = await call('show', '--json'), channel = graph.channels.find(row => row.id === 'example');
+  const fixture = await successorFixture(root, session);
+  channel.statePreparation = { status: 'verified', session, generation: 1, id: 'prep', filename: 'state.yaml', sha256: fixture.sha256, bytes: fixture.bytes };
+  await appendFile(join(state, 'events.jsonl'), `${JSON.stringify({ schema: 'agent-mesh.session-graph-event.v1', id: 'fixture-prepared', type: 'channel.updated', at: new Date().toISOString(), channel, seq: graph.lastSeq + 1, host: 'local' })}\n`);
+  const args = ['channel', 'reserve-successor', '--name', 'example', '--id', channel.handoverId, '--session', session, '--generation', '1', '--state-root', fixture.files, '--input', JSON.stringify({ id: 'launch-1', profileSha256: fixture.profileSha256 })];
+  await writeFile(worker, `import { execFileSync } from 'node:child_process'; execFileSync(process.execPath, ${JSON.stringify([bin, '--state', state, ...args])}); process.send('reserved'); setInterval(() => {}, 1000);`);
+  const child = fork(worker, [], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  await new Promise((resolve, reject) => { child.once('message', value => value === 'reserved' ? resolve() : reject(Error('unexpected child message'))); child.once('error', reject); child.once('exit', () => reject(Error('child exited before reservation'))); });
+  const exited = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await exited;
+  await rm(join(state, 'checkpoint.json'), { force: true });
+  const after = (await call('channel', 'get', '--name', 'example')).channel;
+  assert.equal(after.session, session); assert.equal(after.phase, 'handover');
+  assert.equal(after.successorLaunch.id, 'launch-1'); assert.equal(after.queue[0].state, 'pending');
+  await assert.rejects(call(...args), /unresolved/);
 });
