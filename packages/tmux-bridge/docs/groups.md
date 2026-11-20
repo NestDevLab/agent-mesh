@@ -5,6 +5,20 @@ A group has an opaque, stable `group_id`, a display name and an optional stable
 provider and members. Each assigned role key belongs to one group. Creating a group does not create a session, acquire a role
 claim or change any existing claims.
 
+## Cloud delivery
+
+Cloud delivery through the trusted local CLI requires an open registered cloud
+session and an explicit private binding file supplied with `--cloud-bindings`.
+The JSON object maps each account scope to an object containing the exact
+`email` and `orgId` reported by the authenticated Claude CLI. Keep that file
+owned by the local user with mode 0600; do not put credentials in it. Delivery
+is blocked when the registration, account or binding cannot be verified. The
+provider queue receipt does not prove the member read or replied to a message.
+Cloud sessions cannot act as senders through this trusted local CLI; an
+authenticated inbound adapter is still required. Account checks and delivery
+are separate processes, so a concurrent account change must be prevented by
+the operator.
+
 ## Local API
 
 `agent-mesh group` returns JSON. Options follow the subcommand. Example:
