@@ -7,6 +7,7 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import { createHash } from "node:crypto";
+import { applyModuleBatch } from "./module-batches.mjs";
 import {
   LEDGER_VIEW_SCHEMA, LEDGER_VIEW_SORT, buildLedgerViewRows,
   ledgerViewProfileRevision, ledgerViewValue, validateLedgerViewProfile
@@ -18,7 +19,8 @@ export const LINK_SOURCES = /^(bridge-launch|hook|ledger-write|reconciler|operat
 export const ROLE_WEIGHTS = { owns: 1, "works-on": 1, coordinates: 0.8, reviews: 0.7, discusses: 0.6, observes: 0.3, mentioned: 0.2 };
 export const HALF_LIFE_DAYS = 7;
 export const TOUCH_COALESCE_MS = 10 * 60 * 1000;
-export const PLEXUS_EVENTS = new Set(["role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated"]);
+export const LIFECYCLE_EVENTS = new Set(["session.started", "session.woken", "session.idle", "session.compacted", "session.stopped", "session.handover"]);
+export const PLEXUS_EVENTS = new Set(["channel.updated", "role.changed", "link.opened", "link.touched", "link.closed", "link.resolved", "edge.ended", "session.renewed", "store.migrated", ...LIFECYCLE_EVENTS]);
 const HARNESSES = new Set(["codex", "claude"]);
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const SESSION_ID = /^(codex|claude):[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -84,6 +86,30 @@ export function applyPlexusEvent(state, item) {
   const effects = [];
   const openLinks = () => [...state.links.values()].filter((link) => link.until === null);
   switch (item.type) {
+    case "channel.updated":
+      if (!item.channel || item.channel.schema !== "agent-mesh.channel.v1" || typeof item.channel.id !== "string" || !Array.isArray(item.channel.queue)) throw new Error("invalid channel event");
+      if (!state.channels) state.channels = new Map();
+      state.channels.set(item.channel.id, item.channel);
+      break;
+    case "session.started":
+    case "session.woken":
+    case "session.idle":
+    case "session.compacted":
+    case "session.stopped":
+    case "session.handover":
+      parseGraphSessionId(item.session);
+      if (typeof item.evidence !== "string" || !item.evidence || item.evidence.length > 512 || /[\r\n\x00]/.test(item.evidence)) throw new Error("lifecycle event requires an evidence reference");
+      if (item.type === "session.handover") {
+        parseGraphSessionId(item.to);
+        if (item.to === item.session) throw new Error("handover target must differ");
+        if (item.channel !== undefined) {
+          if (!item.channel || item.channel.schema !== "agent-mesh.channel.v1" || item.channel.session !== item.to) throw new Error("invalid handover channel");
+          if (!state.channels) state.channels = new Map();
+          state.channels.set(item.channel.id, item.channel);
+        }
+      } else if (item.to !== undefined) throw new Error("unexpected lifecycle target");
+      effects.push({ kind: item.type, session: item.session, evidence: item.evidence, ...(item.to ? { to: item.to } : {}) });
+      break;
     case "role.changed":
       if (!state.roleClaims) state.roleClaims = new Map();
       if (item.previous) state.roleClaims.set(item.previous.id, item.previous);
@@ -777,6 +803,7 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
     nodes: new Map((snapshotGraph?.nodes || []).map((node) => [node.id, node])),
     links: new Map((snapshotGraph?.links || []).map((link) => [link.id, link])),
     edges: new Map((snapshotGraph?.edges || []).map((edge) => [edge.id, edge])),
+    moduleStates: new Map((snapshotGraph?.moduleStates || []).map(item => [item.name, item])),
     renewals: [...(snapshotGraph?.renewals || [])], migrated: snapshotGraph?.migrated === true,
   };
   const seen = new Set([...state.nodes.values()].map(sessionIdOf).filter(Boolean));
@@ -790,7 +817,7 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
       continue;
     }
     if (output.length >= limit) break;
-    const emitted = feedFor(state, seen, item);
+    const emitted = feedFor(state, seen, item, scope);
     applyReplay(state, item, emitted);
     scanned = item.seq;
     if (!emitted.length) continue;
@@ -808,6 +835,10 @@ export function changes(snapshotGraph, events, input = {}, scope = null) {
 }
 
 function applyReplay(state, item, emitted) {
+  if (item.type === "module.batch") {
+    if (!emitted) applyModuleBatch(state, item, sessionIdOf);
+    return;
+  }
   if (item.type === "node.upserted") {
     state.nodes.set(item.node.id, item.node);
     return;
@@ -824,8 +855,12 @@ function applyReplay(state, item, emitted) {
   if (PLEXUS_EVENTS.has(item.type) && !emitted) applyPlexusEvent(state, item);
 }
 
-function feedFor(state, seen, item) {
+function feedFor(state, seen, item, scope) {
   const out = [];
+  if (item.type === "module.batch") {
+    applyModuleBatch(state, item, sessionIdOf);
+    return item.batch.events.map((entry, index) => ({ type: entry.type, session: entry.session, ...(scope === null ? { data: entry.data } : {}), subject: `${item.id}:${index}` }));
+  }
   if (item.type === "node.upserted") {
     const id = sessionIdOf(item.node);
     const previous = state.nodes.get(item.node.id);
@@ -886,6 +921,8 @@ function feedFor(state, seen, item) {
       if (from && to) out.push({ type: effect.kind, edgeId: effect.edge.id, kind: effect.edge.type, from, to, subject: effect.edge.id });
     } else if (effect.kind === "session.renewed") {
       out.push({ type: "session.renewed", from: effect.from, to: effect.to, subject: effect.to });
+    } else if (LIFECYCLE_EVENTS.has(effect.kind)) {
+      out.push({ type: effect.kind, session: effect.session, ...(scope === null ? { evidence: effect.evidence } : {}), ...(effect.to ? { to: effect.to } : {}), subject: effect.session });
     }
   }
   return out;

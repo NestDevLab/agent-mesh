@@ -303,7 +303,7 @@ test("agent-spawn uses a routed native rendering and closes its lease after the 
   await mkdir(bin); await mkdir(agents);
   await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then echo '{"decision":"route","provider":"codex","model":"governed-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
   await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_ALIVE_PROCESS_PATTERN="^(fake-codex|sleep)$"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SESSION_CWD_EXTRACTOR='printf "?\\n"'\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
-  await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
+  await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 10\n`);
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "10", AGENT_MESH_AGENTS_DIR: agents };
   try {
@@ -315,8 +315,10 @@ test("agent-spawn uses a routed native rendering and closes its lease after the 
     assert.match(await readFile(launchArgs, "utf8"), /--effort high/);
     const opened = JSON.parse(await readFile(state, "utf8"));
     assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "governed-model", effort: "high", capacityCostBase: null });
-    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"));
-    await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 3_000);
+    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"), 8_000);
+    // The fixture sleeps for ten seconds; allow the observer to be scheduled
+    // on a loaded runner while still requiring the lease to complete.
+    await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 20_000);
     assert.equal((await runCommand("tmux", ["-L", socket, "has-session", "-t", target], env)).code, 0, "the tmux shell remains after the agent process exits");
     const events = await readFile(`${state}.events.ndjson`, "utf8");
     assert.match(events, /session_active/);

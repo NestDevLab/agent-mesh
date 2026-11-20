@@ -4,6 +4,7 @@
 import { commsLease } from "./comms-client.mjs";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
+import { readSync } from "node:fs";
 import { access, open, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,6 +13,8 @@ import { parseArgs } from "node:util";
 import { inspectClaudeSessionOwnership } from "./claude-session-ownership.mjs";
 import { goalCommand, liveClaudeSessions, typeClaudeGoal } from "./claude-goal.mjs";
 import { GOAL_RESUME_MODES, reconcileCodexGoal } from "./codex-goal.mjs";
+import { withCodexAppServer } from "./codex-app-server.mjs";
+import { loadClaudeAccountProfile, withClaudeAccount } from "./cloud-account-binding.mjs";
 
 let activeComms;
 let enqueueStarted = false;
@@ -24,12 +27,16 @@ const { values } = parseArgs({
     timeout: { type: "string", default: "120" },
     "delivery-only": { type: "boolean", default: false },
     cloud: { type: "boolean", default: false },
+    "cloud-profile": { type: "string" },
+    "cloud-scope": { type: "string" },
+    "cloud-profile-digest": { type: "string" },
     "steer-or-queue": { type: "boolean", default: false },
     resume: { type: "boolean", default: false },
     "no-resume": { type: "boolean", default: false },
     goal: { type: "string" },
     "goal-resume": { type: "string", default: "blocked" },
     message: { type: "string" },
+    "message-stdin": { type: "boolean", default: false },
     "managed-inbox-root": { type: "string" },
     help: { type: "boolean", short: "h", default: false }
   },
@@ -37,14 +44,15 @@ const { values } = parseArgs({
 });
 
 if (values.help) {
-  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> --message <TEXT> [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--goal TEXT (Codex, local Claude)] [--goal-resume blocked|any|off (Codex only)] [--delivery-only]");
+  console.log("Usage: agent-native-call.mjs --agent codex|claude --session <ID> --correlation-id <ID> (--message <TEXT> | --message-stdin) [--timeout <SECONDS>] [--resume (Codex only)] [--cloud --delivery-only (Claude cloud only)] [--steer-or-queue (Codex only)] [--goal TEXT (Codex, local Claude)] [--goal-resume blocked|any|off (Codex only)] [--delivery-only]");
   process.exit(0);
 }
 
 const agent = required(values.agent, "--agent");
 const sessionId = required(values.session, "--session");
 const correlationId = required(values["correlation-id"], "--correlation-id");
-const message = required(values.message, "--message");
+if (values["message-stdin"] && values.message !== undefined) fail("--message and --message-stdin are mutually exclusive", 2);
+const message = values["message-stdin"] ? required(readMessageStdin(), "--message-stdin") : required(values.message, "--message");
 const timeoutSeconds = Number(values.timeout);
 if (agent !== "codex" && agent !== "claude") fail(`native active-session calls are not implemented for agent ${agent}`, 2);
 if (values.resume && values["no-resume"]) fail("--resume and --no-resume are mutually exclusive", 2);
@@ -64,6 +72,8 @@ const goalOptions = agent === "codex" ? { objective: values.goal?.trim(), resume
 if (values.cloud && (agent !== "claude" || !values["delivery-only"] || values.resume || values["managed-inbox-root"])) {
   fail("--cloud requires --agent claude --delivery-only, without --resume or --managed-inbox-root", 2);
 }
+if ((!values.cloud && (values["cloud-profile"] || values["cloud-scope"] || values["cloud-profile-digest"])) || Boolean(values["cloud-profile"]) !== Boolean(values["cloud-scope"]) || (values["cloud-profile-digest"] && !values["cloud-profile"])) fail("cloud profile and scope must be supplied together for cloud transport", 2);
+const cloudProfile = values["cloud-profile"] ? await loadClaudeAccountProfile(values["cloud-profile"], values["cloud-scope"], values["cloud-profile-digest"]) : undefined;
 if (values.cloud ? !/^(session|cse)_[A-Za-z0-9]{1,128}$/.test(sessionId)
   : !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) {
   fail(values.cloud ? "--session must be an exact session_ or cse_ cloud ID" : "--session must be a complete UUID", 2);
@@ -83,6 +93,7 @@ const protocolMessage = values["delivery-only"] ? message : `${anchor} Use the r
 
 const comms = await commsLease({ kind: 'native', runtime: agent, destination: sessionId,
   correlation: correlationId, message: protocolMessage, inbox_root: values['managed-inbox-root'], resume, ...(values.cloud ? { cloud: true } : {}),
+  ...(cloudProfile ? { cloud_profile: values['cloud-profile'], cloud_scope: values['cloud-scope'], cloud_profile_digest: cloudProfile.digest } : {}),
   ...(values["steer-or-queue"] ? { steer_first: true } : {}),
   ...(goalOptions?.objective ? { goal: goalOptions.objective } : {}),
   ...(goalOptions?.resume && goalOptions.resume !== "blocked" ? { goal_resume: goalOptions.resume } : {}) });
@@ -96,10 +107,17 @@ if (comms.status !== 'send') {
 // Cloud follow-ups have a provider queue acknowledgement, but no local transcript.
 // All failures after invoking the provider retain the gate's unknown receipt.
 if (values.cloud) {
-  enqueueStarted = true;
-  const sent = await run(process.env.CLAUDE_BIN || "claude", [
-    "-p", "--cloud", sessionId, "--output-format", "json"
-  ], timeoutSeconds * 1000, message);
+  let sent;
+  if (cloudProfile) {
+    sent = await withClaudeAccount(cloudProfile.profile, async binding => {
+      enqueueStarted = true;
+      return run(binding.command, ["-p", "--cloud", sessionId, "--output-format", "json"], timeoutSeconds * 1000, message, { ...process.env, CLAUDE_CONFIG_DIR: binding.configDir });
+    });
+    await loadClaudeAccountProfile(values["cloud-profile"], values["cloud-scope"], cloudProfile.digest);
+  } else {
+    enqueueStarted = true;
+    sent = await run(process.env.CLAUDE_BIN || "claude", ["-p", "--cloud", sessionId, "--output-format", "json"], timeoutSeconds * 1000, message);
+  }
   let receipt;
   try { receipt = JSON.parse(sent.stdout); } catch { /* Unproven acceptance. */ }
   if (sent.code !== 0 || receipt?.ok !== true || receipt.session_id !== sessionId) {
@@ -124,6 +142,7 @@ let resumeDiagnostic = false;
 let transportAccepted = false;
 let deliveryMethod;
 let steeredTurnId;
+let nativeQueueId;
 try {
 if (agent === "codex") {
   if (values["steer-or-queue"]) {
@@ -150,16 +169,35 @@ if (agent === "codex") {
   }
   if (deliveryMethod !== "steer") {
     enqueueStarted = true;
-    const queued = await run(process.env.CODEX_BIN || "codex", [
-      "queue", "--thread", sessionId, "--message", protocolMessage, ...(resume ? ["--resume"] : [])
-    ], (timeoutSeconds + 15) * 1000);
-    if (queued.code !== 0) {
-      if (codexSessionIsNotDirectlyWritable(queued)) {
-        fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+    if (values["message-stdin"] && !values["steer-or-queue"]) {
+      try {
+        await withCodexAppServer({ clientName: "agent-mesh-channel-queue", timeout: (timeoutSeconds + 15) * 1000,
+          timeoutMessage: "queue outcome unknown; inspect before retrying" }, async (request) => {
+          const input = [{ type: "text", text: protocolMessage, text_elements: [] }];
+          const response = await request("thread/queue/add", { threadId: sessionId, clientUserMessageId: correlationId, input });
+          const entry = response?.queuedSubmission;
+          if (typeof entry?.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(entry.id) || entry.clientUserMessageId !== correlationId || JSON.stringify(entry.input) !== JSON.stringify(input)) throw new Error("queue receipt mismatch");
+          nativeQueueId = entry.id;
+          if (resume) {
+            try { await request("thread/resume", { threadId: sessionId }); }
+            catch { resumeDiagnostic = true; }
+          }
+        });
+      } catch {
+        fail("Codex queue outcome uncertain; inspect before retrying", 70);
       }
-      fail(safeError("Codex native queue failed", queued), 1);
+    } else {
+      const queued = await run(process.env.CODEX_BIN || "codex", [
+        "queue", "--thread", sessionId, "--message", protocolMessage, ...(resume ? ["--resume"] : [])
+      ], (timeoutSeconds + 15) * 1000);
+      if (queued.code !== 0) {
+        if (codexSessionIsNotDirectlyWritable(queued)) {
+          fail("Codex spawned sub-agent sessions are readable but do not accept direct queued turns.", 79);
+        }
+        fail(safeError("Codex native queue failed", queued), 1);
+      }
+      resumeDiagnostic = Boolean(resume && queued.stderr?.trim());
     }
-    resumeDiagnostic = Boolean(resume && queued.stderr?.trim());
     deliveryMethod = "queue";
   }
 } else {
@@ -185,6 +223,7 @@ const goal = goalOptions ? await applyGoal(agent, sessionId, goalOptions) : unde
 // Queue acknowledgement is transport proof, never proof that the turn ran.
 if (values["delivery-only"]) {
   console.log(JSON.stringify({ status: deliveryMethod === "steer" ? "steered" : "queued", agent, sessionId, correlationId,
+    ...(nativeQueueId ? { nativeQueueId } : {}),
     ...(values["steer-or-queue"] ? { deliveryMethod, ...(steeredTurnId ? { turnId: steeredTurnId } : {}) } : {}),
     ...(goal ? { goal } : {}),
     ...(resume && deliveryMethod === "queue" ? { resumeRequested: true, resumeVerified: false, resumeDiagnostic } : {}) }));
@@ -272,6 +311,20 @@ function finish(bodies, begin, end) {
   process.exit(0);
 }
 
+function readMessageStdin() {
+  const max = 65536, chunks = [];
+  let total = 0;
+  for (;;) {
+    const chunk = Buffer.allocUnsafe(Math.min(4096, max + 1 - total));
+    const count = readSync(0, chunk, 0, chunk.length, null);
+    if (!count) break;
+    total += count;
+    if (total > max) fail("stdin message too large", 2);
+    chunks.push(chunk.subarray(0, count));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
 function messageText(record, role) {
   const payload = record?.payload;
   if (record?.type === "event_msg") {
@@ -354,9 +407,9 @@ async function consumeTranscript(path, start) {
   }
 }
 
-function run(command, args, timeoutMs, input) {
+function run(command, args, timeoutMs, input, env = process.env) {
   return new Promise((resolveRun) => {
-    const child = execFile(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    const child = execFile(command, args, { timeout: timeoutMs, maxBuffer: 1024 * 1024, env }, (error, stdout, stderr) => {
       resolveRun({
         code: error && typeof error.code === "number" ? error.code : error ? 1 : 0,
         stdout: typeof stdout === "string" ? stdout : "",

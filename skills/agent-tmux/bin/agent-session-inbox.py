@@ -23,6 +23,10 @@ LOCK_SCHEMA = "agent-mesh.session-inbox-lock.v1"
 DUPLICATE = "AGENT_MESH_INBOX_DUPLICATE do-not-relaunch"
 
 
+class HookBudgetExpired(TimeoutError):
+    pass
+
+
 def process_identity(pid):
     """Use kernel start ticks as well as PID, so PID reuse is not ownership."""
     if not isinstance(pid, int) or pid <= 1:
@@ -453,7 +457,7 @@ def main():
         return
     if args.mode in {'hook', 'status'}:
         def expire(_signum, _frame):
-            raise TimeoutError('hook budget expired')
+            raise HookBudgetExpired('hook budget expired')
         previous = signal.signal(signal.SIGALRM, expire)
         signal.setitimer(signal.ITIMER_REAL, 0.2)
         try:
@@ -465,6 +469,11 @@ def main():
                 if not active:
                     raise ValueError('no live owner-bound supervisor')
                 print(json.dumps(active))
+        except HookBudgetExpired:
+            if os.environ.get('AGENT_MESH_INBOX_DIAGNOSTICS') == '1':
+                print('agent-session-inbox: hook budget expired', file=sys.stderr, flush=True)
+            if args.mode == 'status':
+                raise SystemExit(1)
         except Exception:
             if args.mode == 'status':
                 raise SystemExit(1)

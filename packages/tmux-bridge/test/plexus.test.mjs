@@ -47,6 +47,62 @@ const scopeA = {
   handleKey: "space-a-handle-key-0123456789",
 };
 
+test("module event payloads do not cross scoped feed boundaries", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-module-scope-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const start = (await query(state, "changes", { initial: "head" })).cursor;
+  const config = join(state, "modules.json");
+  await writeFile(config, JSON.stringify({ schemaVersion: 1, modules: [{ name: "example", command: ["example"] }] }));
+  const data = { nested: { session: `codex:${OTHER}`, value: "excluded-value" } };
+  const batch = { id: "a1", cursor: null, nextCursor: "one", attributes: [], events: [{ type: "example.changed", session: `codex:${CODEX}`, data }] };
+  await ok(state, ["module", "apply", "--config", config, "--name", "example", "--input", JSON.stringify(batch)]);
+  const local = await query(state, "changes", { sinceCursor: start });
+  const scoped = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+  assert.deepEqual(local.events.find((event) => event.type === "example.changed").data, data);
+  const event = scoped.events.find((entry) => entry.type === "example.changed");
+  assert.ok(event);
+  assert.equal(Object.hasOwn(event, "data"), false);
+  assert.equal(JSON.stringify(scoped).includes("excluded-value"), false);
+  assert.equal(JSON.stringify(scoped).includes(OTHER), false);
+});
+
+test("lifecycle feed exposes evidence locally but not to scoped consumers", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-life-scope-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const start = (await query(state, "changes", { initial: "head" })).cursor;
+  await ok(state, ["lifecycle", "record", "--session", `codex:${CODEX}`, "--type", "session.idle", "--id", "scope-example", "--evidence", "private:example"]);
+  const local = await query(state, "changes", { sinceCursor: start });
+  const scoped = await query(state, "changes", { sinceCursor: start, scope: scopeA });
+  assert.equal(local.events[0].evidence, "private:example");
+  assert.equal(scoped.events[0].type, "session.idle");
+  assert.ok(!("evidence" in scoped.events[0]));
+});
+
+test("observed wake events are session-bound and retries do not double count", async (t) => {
+  const state = await mkdtemp(join(tmpdir(), "plexus-wake-"));
+  t.after(() => rm(state, { recursive: true, force: true }));
+  await seed(state);
+  await ok(state, ["migrate", "--apply"]);
+  const cursor = (await query(state, "changes", { initial: "head" })).cursor;
+  const args = ["lifecycle", "record", "--session", `codex:${CODEX}`, "--type", "session.woken", "--id", "wake-example", "--evidence", "native:turn-example"];
+  assert.equal((await ok(state, args)).duplicate, false);
+  assert.equal((await ok(state, args)).duplicate, true);
+  assert.notEqual((await run(state, [...args.slice(0, -1), "native:other"])).code, 0);
+  const feed = await query(state, "changes", { sinceCursor: cursor });
+  const wake = feed.events.filter(event => event.type === "session.woken");
+  assert.equal(wake.length, 1);
+  assert.equal(wake[0].session, `codex:${CODEX}`);
+  assert.equal(wake[0].evidence, "native:turn-example");
+  assert.ok(wake[0].eventId && Number.isSafeInteger(wake[0].seq) && wake[0].at && wake[0].host);
+  const scoped = await query(state, "changes", { sinceCursor: cursor, scope: scopeA });
+  assert.equal(scoped.events.filter(event => event.type === "session.woken").length, 1);
+  assert.ok(!('evidence' in scoped.events.find(event => event.type === "session.woken")));
+});
+
 test("cloud registration has exact account-qualified identity and survives graph replay", async (t) => {
   const state = await mkdtemp(join(tmpdir(), "plexus-cloud-"));
   t.after(() => rm(state, { recursive: true, force: true }));

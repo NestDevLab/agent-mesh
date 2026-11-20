@@ -18,6 +18,7 @@ import {
   readFileSync,
   readSync,
   readlinkSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -25,7 +26,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { randomUUID, createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -34,6 +35,14 @@ import * as plexus from "./plexus.mjs";
 import { catalogList, catalogUpdate, roleOperation, parseCatalogSessionId } from "./session-catalog.mjs";
 
 import { linkTargets, successor, verifyLinks } from "./session-links.mjs";
+import { readModuleRegistry, describeModule, invokeModule } from "./plexus-modules.mjs";
+import { validateModuleBatch, applyModuleBatch } from "./module-batches.mjs";
+import { createChannel, enqueue, beginHandover, beginDelivery, acknowledge, observeDelivery, reserveWake, settleWake, reserveStatePreparation, completeStatePreparation, reserveFinalNotice, recordNoticeObservation } from "./channel-state.mjs";
+import { observeClaudeDelivery, assertClaudeDeliverySnapshotCurrent } from "./claude-delivery-observation.mjs";
+import { verifyCodexWakeEvidence } from "./codex-wake-evidence.mjs";
+import { prepareState, requestStateProof, revalidateStateProof } from "./handover-state-proof.mjs";
+import { formatFinalNotice } from "./handover-notice.mjs";
+import { observeLocalFinalNotice } from "./handover-notice-transport.mjs";
 
 const REGISTRY_SCHEMA = "agent-mesh.session-registry.v1";
 const ORIGINS = new Set(["human", "desktop-task", "bridge-worker", "subagent", "automation", "cloud"]);
@@ -61,6 +70,10 @@ const { values, positionals } = parseArgs({
   options: {
     state: { type: "string" },
     session: { type: "string" },
+    generation: { type: "string" },
+    "state-root": { type: "string" },
+    filename: { type: "string" },
+    "managed-inbox-root": { type: "string" },
     project: { type: "string" },
     archive: { type: "string" },
     ttl: { type: "string" },
@@ -93,6 +106,7 @@ const { values, positionals } = parseArgs({
     evidence: { type: "string" },
     input: { type: "string" },
     config: { type: "string" },
+    name: { type: "string" },
     sort: { type: "string" },
     filter: { type: "string", multiple: true },
     format: { type: "string" },
@@ -119,7 +133,7 @@ if (values.help || positionals.length === 0) {
 }
 const command = positionals[0];
 const subcommand = positionals[1];
-const SUBCOMMANDS = { links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
+const SUBCOMMANDS = { channel: ["create", "get", "enqueue", "begin-delivery", "acknowledge", "observe-claude-delivery", "recover-claude-delivery", "verify-claude-delivery", "reserve-wake", "settle-wake", "begin-handover", "prepare-state", "revalidate-state", "reserve-notice", "observe-notice", "finish-handover"], lifecycle: ["record"], module: ["list", "describe", "apply", "run", "conformance"], links: ["verify"], cloud: ["register", "get"], catalog: ["register", "update", "list", "backfill"], role: ["claim", "heartbeat", "check", "release", "run", "maintain", "list"], ledger: ["sync"], ref: ["add", "remove"], edge: ["end"], query: [...Object.keys(QUERIES), "view", "changes"] };
 if (SUBCOMMANDS[command]) {
   if (positionals.length !== 2) fail(`${command} requires exactly one operation: ${SUBCOMMANDS[command].join(", ")}`);
 } else if (command === "link" && positionals.length === 2) {
@@ -131,6 +145,308 @@ const stateDir = resolve(values.state || GRAPH_DIR);
 
 try {
   switch (command) {
+    case "channel": {
+      const name = requiredSingleLine(values.name, "--name");
+      const channelInput = values.input === "-" ? readBoundedChannelInput() : values.input;
+      assertPrivateChannelState(stateDir);
+      if (subcommand === "get") {
+        const channel = (loadGraph(stateDir).channels || []).find((item) => item.id === name);
+        if (!channel) throw new Error("unknown channel");
+        printResult({ channel }, { json: true });
+        break;
+      }
+      if (subcommand === "verify-claude-delivery") {
+        const id = requiredSingleLine(values.id, "--id");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        const items = channel?.queue?.filter(item => item.id === id && ['accepted', 'observed'].includes(item.state) && item.session?.startsWith('claude:'));
+        const item = items?.length === 1 ? items[0] : undefined, saved = item?.deliveryProof;
+        if (!saved || typeof saved.evidence !== 'string' || !/^[0-9a-f]{64}$/.test(saved.transcriptSha256 || '') || !Number.isSafeInteger(saved.transcriptBytes)) throw new Error('Claude delivery proof unavailable');
+        const root = process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects');
+        if (!isAbsolute(root)) throw new Error('invalid configured transcript root');
+        const proof = await observeClaudeDelivery({ root, session: item.session, generation: item.generation, messageId: id, payload: item.payload, snapshotBytes: saved.transcriptBytes });
+        assertClaudeDeliverySnapshotCurrent(proof);
+        if (proof.evidence !== saved.evidence || proof.transcriptSha256 !== saved.transcriptSha256) throw new Error('Claude delivery proof mismatch');
+        const latest = (loadGraph(stateDir).channels || []).find(row => row.id === name)?.queue?.find(row => row.id === id);
+        if (!latest || latest.session !== item.session || latest.generation !== item.generation || latest.payload !== item.payload || JSON.stringify(latest.deliveryProof) !== JSON.stringify(saved)) throw new Error('delivery changed during verification');
+        printResult({ channel: name, messageId: id, status: 'verified', evidence: proof.evidence }, { json: true });
+        break;
+      }
+      if (subcommand === "recover-claude-delivery") {
+        const id = requiredSingleLine(values.id, "--id");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        const pending = channel?.queue?.filter(item => item.id === id && item.state === "inflight" && item.session === channel.session && item.generation === channel.generation);
+        if (!['active', 'draining'].includes(channel?.phase) || pending?.length !== 1 || !channel.session.startsWith("claude:")) throw new Error("Claude delivery recovery unavailable");
+        const root = process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+        if (!isAbsolute(root)) throw new Error("invalid configured transcript root");
+        const proof = await observeClaudeDelivery({ root, session: channel.session, generation: channel.generation, messageId: id, payload: pending[0].payload });
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          const item = current?.queue?.find(row => row.id === id);
+          if (!item || current.phase !== channel.phase || item.state !== 'inflight' || item.session !== proof.session || item.generation !== proof.generation || current.session !== proof.session || current.generation !== proof.generation || typeof item.payload !== 'string' || createHash('sha256').update(item.payload).digest('hex') !== proof.payloadSha256) throw new Error('delivery changed during recovery');
+          assertClaudeDeliverySnapshotCurrent(proof);
+          let next = acknowledge(current, id, { status: 'accepted', messageId: id, session: proof.session, generation: proof.generation });
+          if (next.phase === 'draining' && next.handover?.backlog?.includes(id)) next = observeDelivery(next, id, proof);
+          next.queue.find(row => row.id === id).deliveryProof = { evidence: proof.evidence, transcriptSha256: proof.transcriptSha256, transcriptBytes: proof.transcriptBytes };
+          return { graph, event: event('channel.updated', { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: next.queue.find(row => row.id === id).state } };
+        });
+        printResult(result, { json: true });
+        break;
+      }
+      if (subcommand === "observe-claude-delivery") {
+        const id = requiredSingleLine(values.id, "--id");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        const pending = channel?.queue?.filter(item => item.id === id && item.state === "accepted" && item.session === channel.session && item.generation === channel.generation);
+        if (channel?.phase !== "draining" || !channel.handover?.backlog?.includes(id) || pending?.length !== 1 || !channel.session.startsWith("claude:")) throw new Error("Claude delivery observation unavailable");
+        const root = process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+        if (!isAbsolute(root)) throw new Error("invalid configured transcript root");
+        const proof = await observeClaudeDelivery({ root, session: channel.session, generation: channel.generation, messageId: id, payload: pending[0].payload });
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          const item = current?.queue?.find(row => row.id === id);
+          if (!item || typeof item.payload !== "string" || createHash("sha256").update(item.payload).digest("hex") !== proof.payloadSha256) throw new Error("delivery changed during observation");
+          assertClaudeDeliverySnapshotCurrent(proof);
+          const next = observeDelivery(current, id, proof);
+          next.queue.find(row => row.id === id).deliveryProof = { evidence: proof.evidence, transcriptSha256: proof.transcriptSha256, transcriptBytes: proof.transcriptBytes };
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, messageId: id, evidence: proof.evidence, status: "observed" } };
+        });
+        printResult(result, { json: true });
+        break;
+      }
+      if (subcommand === "observe-notice") {
+        const content = JSON.parse(requiredSingleLine(channelInput, "--input"));
+        if (!content || typeof content !== "object" || Array.isArray(content) || Object.keys(content).sort().join(",") !== "label,prefix") throw new Error("invalid notice content");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name), pending = channel?.finalNotice;
+        const target = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(pending?.successor || "");
+        const agent = pending?.session?.split(":")[0];
+        if (!pending || !["requested", "queued-unverified"].includes(pending.status) || !target || !["codex", "claude"].includes(agent)) throw new Error("local notice reservation unavailable");
+        const root = agent === "codex" ? process.env.CODEX_SESSION_ROOT || join(process.env.CODEX_HOME || join(homedir(), ".codex"), "sessions") : process.env.CLAUDE_SESSION_ROOT || join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+        if (!isAbsolute(root)) throw new Error("invalid configured transcript root");
+        const proof = await observeLocalFinalNotice({ session: pending.session, nonce: pending.id, target: { kind: "codex", id: target[1] }, label: content.label, prefix: content.prefix, transcriptRoot: root });
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current) throw new Error("unknown channel");
+          const next = recordNoticeObservation(current, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: next } };
+        });
+        printResult(result, { json: true });
+        break;
+      }
+      if (subcommand === "settle-wake") {
+        const session = requiredSingleLine(values.session, "--session");
+        const evidence = requiredSingleLine(channelInput, "--input");
+        const proof = await verifyCodexWakeEvidence({ evidenceRoot: requiredSingleLine(values["state-root"], "--state-root"), reference: evidence, session });
+        const sourceId = `codex-wake-${createHash("sha256").update(JSON.stringify([session, proof.queueId])).digest("hex")}`;
+        const receiptId = createHash("sha256").update(sourceId).digest("hex");
+        const digest = createHash("sha256").update(JSON.stringify({ type: "session.woken", session, evidence, to: null })).digest("hex");
+        const result = mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current || !(graph.lifecycleReceipts || []).some(item => item.id === receiptId && item.digest === digest)) throw new Error("recorded wake proof unavailable");
+          if (!current.wakeReservation && current.queue.some(item => item.id === proof.correlation && item.session === session && item.nativeQueueId === proof.queueId && item.wakeEvidence === evidence)) return { graph, result: { channel: current, duplicate: true } };
+          const next = settleWake(current, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
+        });
+        printResult(result, { json: true });
+        break;
+      }
+      if (subcommand === "revalidate-state") {
+        const root = requiredSingleLine(values["state-root"], "--state-root");
+        if (!isAbsolute(root)) throw new Error("absolute state root required");
+        const channel = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        if (!channel || channel.phase !== "handover" || channel.wakeReservation || channel.queue?.some(item => item.state === "inflight")) throw new Error("state revalidation unavailable");
+        const proof = await revalidateStateProof({ root, channel: name, session: channel.session, generation: channel.generation, statePreparation: channel.statePreparation });
+        assertPrivateChannelState(stateDir);
+        const current = (loadGraph(stateDir).channels || []).find(item => item.id === name);
+        if (!current || current.phase !== "handover" || current.session !== channel.session || current.generation !== channel.generation || current.wakeReservation || current.queue?.some(item => item.state === "inflight") || JSON.stringify(current.statePreparation) !== JSON.stringify(channel.statePreparation)) throw new Error("channel changed during state revalidation");
+        printResult({ schema: "agent-mesh.state-revalidation.v1", channel: name, session: channel.session, generation: channel.generation, filename: proof.filename, sha256: proof.sha256, bytes: proof.bytes, status: "verified-snapshot" }, { json: true });
+        break;
+      }
+      if (subcommand === "prepare-state") {
+        const root = requiredSingleLine(values["state-root"], "--state-root"), filename = requiredSingleLine(values.filename, "--filename");
+        if (!isAbsolute(root) || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(filename)) throw new Error("invalid state preparation path");
+        const info = lstatSync(root);
+        if (!info.isDirectory() || info.isSymbolicLink() || info.uid !== process.getuid() || (info.mode & 0o077) !== 0 || realpathSync(root) !== root) throw new Error("state root must be private and canonical");
+        const nonce = `handover-${randomUUID()}`;
+        const result = await prepareState({ reserve: () => mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current) throw new Error("unknown channel");
+          if (!/^(codex|claude):[0-9a-f-]{36}$/.test(current.session) || (current.session.startsWith("claude:") && (!values["managed-inbox-root"] || !isAbsolute(values["managed-inbox-root"])))) throw new Error("unsupported state preparation recipient");
+          const next = reserveStatePreparation(current, nonce);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, statePreparation: next.statePreparation } };
+        }), request: pending => requestStateProof({ session: pending.session, channel: name, root, filename, managedInboxRoot: values["managed-inbox-root"], nonce: pending.id }), complete: proof => mutate(stateDir, graph => {
+          assertPrivateChannelState(stateDir);
+          const current = (graph.channels || []).find(item => item.id === name);
+          if (!current) throw new Error("unknown channel");
+          const next = completeStatePreparation(current, proof);
+          return { graph, event: event("channel.updated", { channel: next }), result: { channel: name, statePreparation: next.statePreparation } };
+        }) });
+        printResult(result, { json: true });
+        break;
+      }
+      const result = mutate(stateDir, graph => {
+        assertPrivateChannelState(stateDir);
+        if (!graph.migrated || graph.unnumbered) throw new Error("channels require a migrated graph");
+        const current = (graph.channels || []).find((item) => item.id === name);
+        let next;
+        if (subcommand === "create") {
+          if (current) throw new Error("channel already exists");
+          const session = requiredSingleLine(values.session, "--session");
+          if (graph.nodes.filter(node => plexus.sessionIdOf(node) === session).length !== 1) throw new Error("unknown or ambiguous session");
+          next = createChannel(name, session);
+        } else {
+          if (!current) throw new Error("unknown channel");
+          if (subcommand === "enqueue") next = enqueue(current, requiredSingleLine(values.id, "--id"), channelInput);
+          else if (subcommand === "begin-delivery") {
+            if (values.generation !== undefined && !/^[1-9][0-9]*$/.test(values.generation)) throw new Error("invalid channel generation");
+            const messageId = requiredSingleLine(values.id, "--id");
+            next = beginDelivery(current, messageId, values.session === undefined ? undefined : requiredSingleLine(values.session, "--session"), values.generation === undefined ? undefined : Number(values.generation));
+            next.queue.find(item => item.id === messageId).dispatchReservedAtMs = Date.now();
+          }
+          else if (subcommand === "acknowledge") next = acknowledge(current, requiredSingleLine(values.id, "--id"), JSON.parse(requiredSingleLine(channelInput, "--input")));
+          else if (subcommand === "reserve-wake") {
+            if (!/^[1-9][0-9]*$/.test(values.generation || "")) throw new Error("invalid channel generation");
+            const session = requiredSingleLine(values.session, "--session"), queueId = requiredSingleLine(channelInput, "--input");
+            const sourceId = `codex-wake-${createHash("sha256").update(JSON.stringify([session, queueId])).digest("hex")}`;
+            const receiptId = createHash("sha256").update(sourceId).digest("hex");
+            if ((graph.lifecycleReceipts || []).some(item => item.id === receiptId) || (graph.channels || []).some(item => item.id !== name && item.wakeReservation?.session === session && item.wakeReservation?.nativeQueueId === queueId)) throw new Error("wake identity already reserved or recorded");
+            next = reserveWake(current, requiredSingleLine(values.id, "--id"), session, Number(values.generation), queueId, values.source === undefined ? 'start' : requiredSingleLine(values.source, '--source'));
+          }
+          else if (subcommand === "begin-handover") next = { ...beginHandover(current, `handover-${randomUUID()}`), handoverStartedAt: new Date().toISOString() };
+          else if (subcommand === "reserve-notice") {
+            const target = requiredSingleLine(values.to, "--to");
+            const match = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i.exec(target);
+            if (!match) throw new Error("successor native verification unavailable");
+            const content = JSON.parse(requiredSingleLine(channelInput, "--input"));
+            if (!content || typeof content !== "object" || Array.isArray(content) || Object.keys(content).sort().join(",") !== "label,prefix") throw new Error("invalid notice content");
+            const notice = formatFinalNotice({ target: { kind: "codex", id: match[1] }, label: content.label, prefix: content.prefix });
+            const matches = graph.nodes.filter(node => plexus.sessionIdOf(node) === target), node = matches[0], proof = node?.sessionLink;
+            const started = Date.parse(current.handoverStartedAt), checked = Date.parse(proof?.checkedAt);
+            if (matches.length !== 1 || node.status === "closed" || node.surface?.archived === true || proof?.status !== "ok" || proof.resolvedSession !== target || proof.source !== "codex-threads" || proof.link !== target || proof.lastKnown === true || !Number.isFinite(started) || !Number.isFinite(checked) || checked < started || checked > Date.now()) throw new Error("successor requires fresh verified link");
+            const writer = probeWriter({ harness: "codex", nativeId: match[1] });
+            if (writer?.agent !== "codex" || writer.sessionId !== match[1] || !Array.isArray(writer.writers) || writer.writers.length !== 1 || !Number.isSafeInteger(writer.writers[0]?.pid) || writer.writers[0].pid <= 0 || writer.writers[0].kind !== "codex") throw new Error("successor requires one verified writer");
+            next = reserveFinalNotice(current, `handover-${randomUUID()}`, target, createHash("sha256").update(notice).digest("hex"));
+          }
+          else if (subcommand === "finish-handover") {
+            const target = requiredSingleLine(values.to, "--to");
+            if (current.phase === "active" && current.session === target && current.handoverReceipt?.successor === target) return { graph, result: { channel: current, duplicate: true } };
+            const matches = graph.nodes.filter(node => plexus.sessionIdOf(node) === target);
+            const node = matches[0], proof = node?.sessionLink;
+            const started = Date.parse(current.handoverStartedAt), checked = Date.parse(proof?.checkedAt);
+            if (matches.length !== 1 || node.status === "closed" || node.surface?.archived === true || proof?.status !== "ok" || proof.resolvedSession !== target || proof.lastKnown === true || !Number.isFinite(started) || !Number.isFinite(checked) || checked < started || checked > Date.now()) throw new Error("successor requires fresh verified link");
+            // Current native link discovery can prove an unarchived Codex thread.
+            // Claude link observations explicitly leave remote reachability unverified.
+            if (!/^codex:[0-9a-f-]{36}$/.test(target) || proof.source !== "codex-threads" || proof.link !== target) throw new Error("successor native verification unavailable");
+            const writer = probeWriter({ harness: "codex", nativeId: target.slice(6) });
+            if (writer?.agent !== "codex" || writer.sessionId !== target.slice(6) || !Array.isArray(writer.writers) || writer.writers.length !== 1 || !Number.isSafeInteger(writer.writers[0]?.pid) || writer.writers[0].pid <= 0 || writer.writers[0].kind !== "codex") throw new Error("successor requires one verified writer");
+            // A caller assertion or a file path is not proof that the old
+            // session wrote its state; no verified adapter exists yet.
+            throw new Error("old-session state verification unavailable; cutover disabled");
+          }
+          else throw new Error("unknown channel operation");
+        }
+        if (current && JSON.stringify(current) === JSON.stringify(next)) return { graph, result: { channel: next, duplicate: true } };
+        return { graph, event: event("channel.updated", { channel: next }), result: { channel: next, duplicate: false } };
+      });
+      printResult(result, { json: true });
+      break;
+    }
+    case "lifecycle": {
+      if (subcommand !== "record") throw new Error("unknown lifecycle operation");
+      if (!plexus.LIFECYCLE_EVENTS.has(values.type)) throw new Error("invalid lifecycle type");
+      const session = requiredSingleLine(values.session, "--session");
+      const evidence = requiredSingleLine(values.evidence, "--evidence");
+      if (!OPAQUE_REF.test(evidence)) throw new Error("--evidence must be an opaque evidence reference");
+      const sourceId = requiredSingleLine(values.id, "--id");
+      if (!/^[A-Za-z0-9._:-]{1,128}$/.test(sourceId)) throw new Error("invalid lifecycle observation id");
+      const to = values.to;
+      if (values.type === "session.handover" ? typeof to !== "string" || to === session : to !== undefined) throw new Error("handover alone requires a distinct --to session");
+      const digest = createHash("sha256").update(JSON.stringify({ type: values.type, session, evidence, to: to ?? null })).digest("hex");
+      const receiptId = createHash("sha256").update(sourceId).digest("hex");
+      const result = mutate(stateDir, graph => {
+        if (!graph.migrated || graph.unnumbered) throw new Error("lifecycle events require a migrated graph");
+        if (graph.nodes.filter(node => plexus.sessionIdOf(node) === session).length !== 1 || (to && graph.nodes.filter(node => plexus.sessionIdOf(node) === to).length !== 1)) throw new Error("unknown or ambiguous session");
+        const prior = (graph.lifecycleReceipts || []).find(item => item.id === receiptId);
+        if (prior) {
+          if (prior.digest !== digest) throw new Error("observation id reused with different contents");
+          return { graph, result: { observation: sourceId, duplicate: true } };
+        }
+        return { graph, event: event(values.type, { session, evidence, ...(to ? { to } : {}), receiptId, digest }), result: { observation: sourceId, duplicate: false } };
+      });
+      printResult(result, { json: true });
+      break;
+    }
+    case "module": {
+      const configPath = values.config || join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "agent-mesh", "modules.json");
+      const entries = await readModuleRegistry(configPath);
+      if (subcommand === "list") printResult({ modules: entries.map(entry => ({ name: entry.name })) }, { json: true });
+      else if (subcommand === "describe") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        printResult(await describeModule(entry), { json: true });
+      } else if (subcommand === "conformance") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        const desc = await describeModule(entry);
+        if (!desc.operations.includes("process")) throw new Error("module does not support process");
+        const graph = { nodes: [{ id: "synthetic-node", agent: "codex", runtimeUuid: "22222222-2222-4222-8222-222222222222" }], moduleStates: [] };
+        const result = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", mode: "conformance", graph, cursor: null, events: [] });
+        if (Object.keys(result).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
+        validateModuleBatch(entry.name, entry.namespaces, { id: result.batchId, cursor: null, nextCursor: "synthetic-cursor", attributes: result.attributes, events: result.events }, graph, plexus.sessionIdOf);
+        printResult({ module: entry.name, conformance: "pass", scope: "synthetic protocol response only" }, { json: true });
+      } else if (subcommand === "run") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        const description = await describeModule(entry);
+        if (!description.operations.includes("process")) throw new Error("module does not support process");
+        // Feed replay can be large. Never hold the shared writer lock while
+        // scanning it; reject if the graph moved during observation instead.
+        const graph = loadGraph(stateDir);
+        if (!graph.migrated || graph.unnumbered) throw new Error("module runs require a migrated graph");
+        const cursor = graph.moduleStates?.find(item => item.name === entry.name)?.cursor ?? null;
+        const query = cursor === null ? { initial: "head" } : { sinceCursor: cursor };
+        const feed = runQuery(stateDir, "changes", { input: JSON.stringify(query) });
+        if (feed.reset) throw new Error("module cursor expired; reconciliation required");
+        const observed = loadGraph(stateDir);
+        if (observed.lastSeq !== graph.lastSeq || plexus.decodeCursor(feed.cursor, "changes").seq > graph.lastSeq) throw new Error("graph changed during module observation");
+        const snapshot = { graph, cursor, feed };
+        const events = snapshot.feed.events.filter(item => !entry.namespaces.some(namespace => item.type.startsWith(`${namespace}.`)));
+        const output = await invokeModule(entry, "process", { schema: "agent-mesh.plexus-module.v1", graph: snapshot.graph, cursor: snapshot.cursor, events });
+        if (Object.keys(output).some(key => !["schema", "name", "batchId", "attributes", "events"].includes(key))) throw new Error("invalid module process response");
+        // A page of filtered self-events may precede relevant events. Commit
+        // its cursor unless the observed scan has actually reached the head.
+        if (snapshot.cursor !== null && plexus.decodeCursor(snapshot.feed.cursor, "changes").seq === snapshot.graph.lastSeq && events.length === 0 && Array.isArray(output.attributes) && output.attributes.length === 0 && Array.isArray(output.events) && output.events.length === 0) {
+          printResult({ module: entry.name, unchanged: true }, { json: true });
+          break;
+        }
+        const batch = { id: output.batchId, cursor: snapshot.cursor, nextCursor: snapshot.feed.cursor, attributes: output.attributes, events: output.events };
+        const result = mutate(stateDir, graph => {
+          if (graph.lastSeq !== snapshot.graph.lastSeq) throw new Error("graph changed during module processing");
+          const checked = validateModuleBatch(entry.name, entry.namespaces, batch, graph, plexus.sessionIdOf);
+          if (checked.duplicate) return { graph, result: { module: entry.name, batchId: batch.id, duplicate: true } };
+          return { graph, event: event("module.batch", { module: entry.name, batch, digest: checked.digest }), result: { module: entry.name, batchId: batch.id, duplicate: false } };
+        });
+        printResult(result, { json: true });
+      } else if (subcommand === "apply") {
+        const entry = entries.find(item => item.name === values.name);
+        if (!entry) throw new Error("module is not registered");
+        const raw = values.input === "-" ? readFileSync(0, "utf8") : values.input;
+        if (typeof raw !== "string" || Buffer.byteLength(raw) > 1024 * 1024) throw new Error("invalid module input");
+        const batch = JSON.parse(raw);
+        const result = mutate(stateDir, graph => {
+          if (!graph.migrated || graph.unnumbered) throw new Error("module batches require a migrated graph");
+          const checked = validateModuleBatch(entry.name, entry.namespaces, batch, graph, plexus.sessionIdOf);
+          if (checked.duplicate) return { graph, result: { module: values.name, batchId: batch.id, duplicate: true } };
+          return { graph, event: event("module.batch", { module: values.name, batch, digest: checked.digest }), result: { module: values.name, batchId: batch.id, duplicate: false } };
+        });
+        printResult(result, { json: true });
+      } else throw new Error("unknown module operation");
+      break;
+    }
     case "links": {
       if (subcommand !== "verify") throw new Error("unknown links operation");
       const verify = graph => {
@@ -1108,7 +1424,7 @@ function readCheckpoint(statePath) {
   if (checkpoint.schema !== GRAPH_SCHEMA || checkpoint.graph?.schema !== GRAPH_SCHEMA ||
       !Array.isArray(checkpoint.graph.nodes) || !Array.isArray(checkpoint.graph.edges) ||
       // Older binaries rewrite the checkpoint without Plexus state; replaying from the file is the only safe answer.
-      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
+      !Array.isArray(checkpoint.graph.roleClaims) || !Array.isArray(checkpoint.graph.links) || !Array.isArray(checkpoint.graph.moduleStates) || !Array.isArray(checkpoint.graph.lifecycleReceipts) || !Array.isArray(checkpoint.graph.channels) || !Number.isSafeInteger(checkpoint.graph.lastSeq) ||
       !cursor || !Number.isSafeInteger(cursor.offset) || cursor.offset < 0 ||
       !Number.isSafeInteger(cursor.dev) || !Number.isSafeInteger(cursor.ino)) {
     return null;
@@ -1197,7 +1513,7 @@ function* readEventRecords(statePath, offset = 0) {
 function deriveGraph(events, base = null) {
   const nodes = new Map((base?.nodes || []).map((node) => [node.id, node]));
   const edges = new Map((base?.edges || []).map((edge) => [edge.id, edge]));
-  const state = { nodes, roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
+  const state = { nodes, channels: new Map((base?.channels || []).map(item => [item.id, item])), moduleStates: new Map((base?.moduleStates || []).map(item => [item.name, item])), lifecycleReceipts: new Map((base?.lifecycleReceipts || []).map(item => [item.id, item])), roleClaims: new Map((base?.roleClaims || []).map(c => [c.id, c])), links: new Map((base?.links || []).map((link) => [link.id, link])), edges, renewals: [...(base?.renewals || [])], migrated: base?.migrated === true };
   const baseSeq = base?.lastSeq || 0;
   let lastSeq = baseSeq;
   let unnumbered = base?.unnumbered === true;
@@ -1209,8 +1525,13 @@ function deriveGraph(events, base = null) {
       lastSeq = Math.max(lastSeq, item.seq);
     } else if (state.migrated) unnumbered = true;
     generatedAt = item.at || generatedAt;
+    if (item.type === "module.batch") {
+      applyModuleBatch(state, item, plexus.sessionIdOf);
+      continue;
+    }
     if (plexus.PLEXUS_EVENTS.has(item.type)) {
       plexus.applyPlexusEvent(state, item);
+      if (plexus.LIFECYCLE_EVENTS.has(item.type) && item.receiptId) state.lifecycleReceipts.set(item.receiptId, { id: item.receiptId, digest: item.digest });
       continue;
     }
     if (item.type === "node.upserted") {
@@ -1239,7 +1560,10 @@ function deriveGraph(events, base = null) {
     nodes: state.migrated ? plexus.projectNodeRefs(sortedNodes, links) : sortedNodes,
     edges: [...edges.values()].sort((left, right) => left.id.localeCompare(right.id)),
     links,
+    channels: [...state.channels.values()],
     renewals: state.renewals,
+    moduleStates: [...state.moduleStates.values()],
+    lifecycleReceipts: [...state.lifecycleReceipts.values()],
     roleClaims: [...state.roleClaims.values()],
     migrated: state.migrated,
     lastSeq,
@@ -1330,6 +1654,30 @@ function assertProjectionDirectory(path) {
 
 function ensureStateDir(statePath) {
   mkdirSync(statePath, { recursive: true, mode: 0o700 });
+}
+
+function readBoundedChannelInput() {
+  const max = 65536, chunks = [];
+  let total = 0;
+  while (true) {
+    const chunk = Buffer.allocUnsafe(Math.min(4096, max + 1 - total));
+    const count = readSync(0, chunk, 0, chunk.length, null);
+    if (!count) break;
+    total += count;
+    if (total > max) throw new Error("channel input too large");
+    chunks.push(chunk.subarray(0, count));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function assertPrivateChannelState(statePath) {
+  const root = lstatSync(statePath);
+  if (!root.isDirectory() || root.isSymbolicLink() || root.uid !== process.getuid() || (root.mode & 0o077) !== 0 || realpathSync(statePath) !== resolve(statePath)) throw new Error("channel graph directory must be private and canonical");
+  for (const name of ["events.jsonl", "graph.json", "checkpoint.json", "snapshot.json"]) {
+    const file = join(statePath, name);
+    const info = lstatSync(file, { throwIfNoEntry: false });
+    if (info && (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid() || info.nlink !== 1 || (info.mode & 0o077) !== 0)) throw new Error(`channel graph file must be private: ${name}`);
+  }
 }
 
 function acquireLock(statePath) {
