@@ -62,6 +62,12 @@ agent-mesh group import-graph --snapshot graph.json --source local-graph --role-
 agent-mesh group list --source-ref group:release-director
 ```
 
+To import a subset, repeat `--include-group group:<slug>` for every selected group
+on both preview and apply. The selection is included in the plan digest. The
+entire supplied graph is still checked for conflicting ownership and its relevant
+witnesses are bound to the plan; provide the complete snapshot, not a pre-filtered
+one. An absent selection imports all groups as before.
+
 Preview does not initialize or change the group database. It proposes one
 stable group per `group:<slug>` with open `discusses` links to canonical local
 sessions. To establish a lead for an area, an open `discusses` link must list
@@ -84,6 +90,30 @@ A changed witness invalidates the digest even when the projected group looks the
 same. For a live cutover, use a fresh snapshot and verify the reviewed digest
 against it before applying. The observed sequence is reported separately; the
 command cannot tell whether a supplied offline snapshot is current.
+
+For a live, single-host cutover on Linux, `mesh-group-import-live.py` obtains a
+fresh graph snapshot inside an existing `role run` graph guard and imports it
+before that guard is released. The worker fails closed without the guard proof
+or Linux parent-death protection. Both preview and apply require the exact
+active role claim and explicit graph and group state paths:
+
+```sh
+mesh-group-import-live.py --graph-state /path/to/graph --state /path/to/groups \
+  --session codex:11111111-1111-4111-8111-111111111111 \
+  --role operator --project sample --claim-id CLAIM \
+  --source local-graph --include-group group:sample
+# Repeat the same arguments with --apply --plan-digest REVIEWED_DIGEST.
+```
+
+The importer checks the plan and destination under the graph guard. A failed or
+interrupted invocation may have committed: inspect the import receipt and
+destination before retrying. This protects against cooperative graph writers
+during import; it does not synchronize later legacy writes, retire old links,
+or guarantee a complete migration. Arrange a separate writer handover.
+Every writer of that graph must first use the same Linux graph-lock protocol.
+Older writers can reap a live lock solely because it is old and are incompatible
+with a safe live cutover. An unmarked stale lock or an interrupted generic
+guarded child cannot be reaped automatically without proof of its owner.
 Using the same source and plan again is a no-op, even after someone changes
 group membership. A different plan for a source that was already imported needs
 an explicit reconciliation; it never overwrites groups. Verify imported groups

@@ -12,9 +12,14 @@ _SESSION = re.compile(rf"(?:codex|claude):{_UUID}")
 _LINK_ID = re.compile(rf"link-{_UUID}")
 
 
-def graph_import_plan(snapshot, source, role_bindings):
+def graph_import_plan(snapshot, source, role_bindings, include_groups=None):
     if not isinstance(source, str) or not _SLUG.fullmatch(source):
         raise ValueError("invalid graph source name")
+    if include_groups is not None and (not isinstance(include_groups, list) or not include_groups
+            or any(not isinstance(ref, str) or not ref.startswith("group:")
+                   or not _SLUG.fullmatch(ref[6:]) for ref in include_groups)
+            or len(set(include_groups)) != len(include_groups)):
+        raise ValueError("group selection must contain unique legacy group references")
     if (not isinstance(snapshot, dict) or snapshot.get("schema") != "agent-mesh.session-graph.v1"
             or snapshot.get("migrated") is not True or not isinstance(snapshot.get("links"), list)):
         raise ValueError("expected a migrated Agent Mesh graph snapshot with links")
@@ -110,11 +115,20 @@ def graph_import_plan(snapshot, source, role_bindings):
         ignored.add(f"open ownership for {ref} has no group evidence")
     if not rows:
         conflicts.add("snapshot contains no importable legacy groups")
+    selection = None if include_groups is None else sorted(include_groups)
+    if selection is not None:
+        for ref in set(selection) - groups.keys():
+            conflicts.add(f"selected group absent from graph: {ref}")
+        for ref in role_bindings.keys() - set(selection):
+            conflicts.add(f"role binding refers to an unselected group: {ref}")
+        rows = [row for row in rows if row["source_ref"] in selection]
     source_witnesses = [item for _, item in sorted(witnesses.items())
                         if item["role"] == "discusses" or item["ref"] in referenced_groups]
     plan = {"schema": "agent-mesh.group-import.v1", "source": source, "groups": rows,
             "source_witnesses": source_witnesses,
             "conflicts": sorted(conflicts), "ignored": sorted(ignored)}
+    if selection is not None:
+        plan["included_groups"] = selection
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return {**plan, "observed_source_seq": observed_seq,
             "plan_digest": sha256(canonical.encode("ascii")).hexdigest()}
