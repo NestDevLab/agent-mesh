@@ -460,9 +460,11 @@ AGENT_EFFORT_PASSTHRU_PATTERNS=()
 `);
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: state, MESH_LEASE_RENEW_MS: "20", AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
+  let launchedSession = false;
   try {
     const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
     assert.equal(launched.code, 0, launched.stderr);
+    launchedSession = true;
     assert.equal(launched.stdout.trim(), target);
     assert.match(await readFile(limenArgs, "utf8"), /--profile\ndeveloper/);
     assert.match(await readFile(launchArgs, "utf8"), /--model native-model --effort medium/);
@@ -473,7 +475,8 @@ AGENT_EFFORT_PASSTHRU_PATTERNS=()
     assert.equal(record.effort, "medium");
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
-    await rm(dir, { recursive: true, force: true });
+    if (launchedSession) await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed");
+    await rm(dir, { recursive: true, force: true, maxRetries: 3 });
   }
 });
 
