@@ -153,8 +153,8 @@ it accepts no message-origin exemption argument. No gateway restart is needed fo
 
 ## Commands
 
-Pick the target with `--agent codex` or `--agent claude` — everything else is
-identical.
+Limen selects the adapter for a new session. Commands for an existing session
+use its recorded adapter.
 
 ### Start / resume
 
@@ -164,27 +164,15 @@ variant.
 
 ```bash
 # New session in a directory (prints the tmux target on stdout):
-TARGET=$($BIN/agent-spawn.sh --profile "$ROLE" --limen-config "$POLICY" new /path/to/project)
+POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/governed-routing.json"
+TARGET=$("$BIN/agent-spawn.sh" --profile "$ROLE" --limen-config "$POLICY" new "$CWD")
 
-# New Codex session with a readable Codex Desktop title:
-TARGET=$($BIN/agent-session.sh --agent codex \
-  --title "agent-mesh: review tmux adapter" \
-  new /path/to/project mesh-codex-review)
+# Narrow the capability profile to an explicitly requested model and effort:
+TARGET=$("$BIN/agent-spawn.sh" --profile "$ROLE" --model "$MODEL" --effort "$EFFORT" \
+  --limen-config "$POLICY" new "$CWD")
 
-# Governed launches use exactly one routing form. A profile resolves through
-# Limen, launches, and owns the lease lifecycle:
-POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json"
-TARGET=$($BIN/agent-spawn.sh --agent codex \
-  --profile developer --limen-config "$POLICY" \
-  new "$PWD" mesh-codex-developer)
-
-# An exact persistent candidate uses the complete model+effort pair instead:
-TARGET=$($BIN/agent-spawn.sh --agent codex \
-  --profile "$ROLE" --model "$MODEL" --effort "$EFFORT" --limen-config "$POLICY" \
-  new "$PWD" mesh-codex-exact)
-
-# Resume an on-disk session by ID:
-TARGET=$($BIN/agent-session.sh --agent codex resume <SESSION_ID>)
+# Resume an on-disk session using its recorded provider and UUID:
+TARGET=$("$BIN/agent-session.sh" --agent "$PROVIDER" resume "$SESSION_ID")
 
 # Release a resumed target right after use. It blocks pane input first. When
 # only a Codex app-server writes the thread, the turn runs there, so the TUI

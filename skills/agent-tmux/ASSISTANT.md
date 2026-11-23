@@ -5,21 +5,15 @@ either type, same-type included.
 
 ```bash
 BIN="$AGENT_MESH_ROOT/packages/tmux-bridge/bin"
-POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json"
+POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/governed-routing.json"
 
 # New / resume (prints tmux target)
 # New work declares a capability profile. Limen selects the native provider.
 TARGET=$($BIN/agent-spawn.sh --profile "$ROLE" --limen-config "$POLICY" new /path/to/project)
-TARGET=$($BIN/agent-session.sh --agent claude resume <SESSION_ID>)
+TARGET=$("$BIN/agent-session.sh" --agent "$PROVIDER" resume "$SESSION_ID")
 
-# New Codex session with a readable Codex Desktop title
-TARGET=$($BIN/agent-session.sh --agent codex --title "agent-mesh: review" new /path/to/project)
-
-# Extra agent flags after `--` (e.g. Codex xhigh) — no need to bypass the bridge
-$BIN/agent-spawn.sh --profile "$ROLE" --limen-config "$POLICY" new "$DIR"
-
-# Send prompt, get reply
-$BIN/agent-send.sh --agent codex "$TARGET" "your prompt" [timeout]
+# Talk to the target using its recorded adapter.
+"$BIN/agent-send.sh" --agent "$PROVIDER" "$TARGET" "your prompt"
 
 # Delegate with source identity + optional return coordinates
 $BIN/mesh-send.sh --to codex --from claude-reviewer --from-agent claude --from-target mesh-claude-reviewer "your prompt" 300
