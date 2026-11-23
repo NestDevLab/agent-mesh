@@ -167,7 +167,8 @@ if [[ "$GOVERNED_CHILD" != "true" && "$REQUESTED_CMD" == "new" ]]; then
         [[ -r "$LIMEN_CONFIG" ]] || { echo "ERROR: governed Limen policy is unavailable" >&2; exit 69; }
     fi
 fi
-if [[ "$REQUESTED_CMD" == "resume" && ( -n "$SESSION_PROFILE" || -n "$LIMEN_CONFIG" || -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" ) ]]; then
+if [[ "$REQUESTED_CMD" == "resume" && ( -n "$SESSION_PROFILE" || -n "$LIMEN_CONFIG" \
+    || ( "$AGENT_NAME" == "codex" || "$AGENT_NAME" == "claude" ) && ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" ) ) ]]; then
     echo "ERROR: resume retains the recorded binding; use --agent and UUID without routing flags" >&2
     exit 2
 fi
@@ -588,6 +589,10 @@ if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" || -n "$SESSION_APPROVAL_POL
     exit 1
 fi
 if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_MODEL" && -z "$SESSION_EFFORT" || -z "$SESSION_MODEL" && -n "$SESSION_EFFORT" ) ]]; then
+    if [[ -z "$SESSION_MODEL" && "${AGENT_SUPPORTS_EFFORT:-false}" != "true" && "$NEUTRAL_LAUNCH" != "true" ]]; then
+        echo "ERROR: --effort is not supported by agent '$AGENT_NAME'" >&2
+        exit 2
+    fi
     echo "ERROR: exact persistent routing requires both --model and --effort" >&2
     exit 2
 fi
@@ -595,7 +600,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" ]]; then
     echo "ERROR: governed session starts require a Limen lease" >&2
     exit 2
 fi
-if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFILE" || -n "$SESSION_MODEL" ) ]]; then
+if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFILE" ) ]]; then
     [[ "$cmd" == "new" && -n "$LIMEN_CONFIG" && -n "$SESSION_PROFILE" ]] \
         || { echo "ERROR: governed new requires a Limen policy and capability profile" >&2; exit 2; }
     _governed_launch_flags "${PASSTHRU[@]}" \
@@ -660,7 +665,11 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFIL
     echo "ERROR: Limen governed launch rejected (exit=$GOVERNED_CODE); no session was launched" >&2
     exit "$GOVERNED_CODE"
 fi
-if [[ "$cmd" == "resume" && "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
+if [[ "$cmd" == "resume" && ( "$AGENT_NAME" == "codex" || "$AGENT_NAME" == "claude" ) ]]; then
+    if _passthru_overrides_knob model || _passthru_overrides_knob effort; then
+        echo "ERROR: resume retains the recorded model and effort" >&2
+        exit 2
+    fi
     CODEX_MESH_PIN=0
 fi
 if [[ "$cmd" == "new" || "$cmd" == "resume" ]]; then
