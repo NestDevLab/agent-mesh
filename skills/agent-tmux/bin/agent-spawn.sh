@@ -50,10 +50,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ -n "$PROFILE" && ( -n "$MODEL" || -n "$EFFORT" ) ]]; then
-    echo "ERROR: --profile cannot be combined with --model or --effort" >&2
-    exit 2
-fi
 if [[ ( -n "$MODEL" && -z "$EFFORT" ) || ( -z "$MODEL" && -n "$EFFORT" ) ]]; then
     echo "ERROR: exact persistent routing requires both --model and --effort" >&2
     exit 2

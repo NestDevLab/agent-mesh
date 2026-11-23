@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const EXIT_DEFER = 75;
+const providers = new Set(["codex", "claude"]);
 const classes = new Set(["L1", "L2", "L3"]);
 const priority = { L1: 0, L2: 1, L3: 2 };
 const safeLabel = /^[A-Za-z0-9_.:-]{1,96}$/;
@@ -35,7 +36,7 @@ export async function main(argv, io = process) {
 
 async function submit(options, io) {
   const request = admissionArgs(options);
-  const admission = await runLimen(options.limen, request);
+  const admission = await runLimen(options.limen, request, options.routeTimeoutMs);
   verifyRouteTarget(options, admission);
   if (admission.decision === "defer") {
     if (options.force) {
@@ -51,7 +52,7 @@ async function submit(options, io) {
     io.stderr.write(`${JSON.stringify({ status: "waiting_capacity", retryAt, decisionId: admission.decisionId, configHash: admission.configHash, workClass: options.workClass, reasons: admission.reasons })}\n`);
     return EXIT_DEFER;
   }
-  return deliver(options, io, admission);
+  return deliver(bindRoute(options, admission), io, admission);
 }
 
 async function drain(options, io) {
@@ -62,7 +63,7 @@ async function drain(options, io) {
     let dispatchStarted = false;
     try {
       await recordEvent(restored, "claimed", { attempts: job.attempts, eligibleWork: due.length });
-      const admission = await runLimen(restored.limen, admissionArgs(restored));
+      const admission = await runLimen(restored.limen, admissionArgs(restored), restored.routeTimeoutMs);
       verifyRouteTarget(restored, admission);
       if (admission.decision === "defer") {
         const retryAt = admission.retryAt ?? Date.now() + restored.retryMs;
@@ -74,7 +75,7 @@ async function drain(options, io) {
       await transition(options.state, job.id, { status: "dispatching", admission, updatedAt: Date.now() });
       await recordEvent(restored, "dispatching", { admission, attempts: job.attempts, eligibleWork: due.length });
       dispatchStarted = true;
-      const code = await deliver(restored, io, admission);
+      const code = await deliver(bindRoute(restored, admission), io, admission);
       await transition(options.state, job.id, { status: code === 0 || code === 4 || code === 124 ? "dispatched" : "failed", exitCode: code, updatedAt: Date.now() });
       outcomes.push({ runId: job.runId, status: code === 0 || code === 4 || code === 124 ? "dispatched" : "failed", exitCode: code });
     } catch (error) {
@@ -118,7 +119,7 @@ async function deliver(options, io, admission) {
     reason: dispatched ? "command_dispatched" : `command_exit_${result.code}`,
     eligibleWork: options.eligibleWork,
   }, io);
-  if (dispatched && options.lifecycle === "session") {
+  if (options.lifecycle === "session" && (dispatched || options.governed)) {
     await upsertSession(options.state, options, admission, "active");
     await recordEventAfterDispatch(options, "session_active", {
       admission,
@@ -130,7 +131,10 @@ async function deliver(options, io, admission) {
     // A target can disappear between launch returning and the detached monitor
     // receiving its first time slice. Reconcile that edge before returning so
     // its candidate lease is not left active merely because scheduling lagged.
-    if (!(await liveTarget(options))) return admission.unleased ? completeUnleasedSession(options, admission) : completeSession(options);
+    if (!(await liveTarget(options))) {
+      const completion = await (admission.unleased ? completeUnleasedSession(options, admission) : completeSession(options));
+      return dispatched ? completion : result.code;
+    }
     startMonitor(options, admission);
     return result.code;
   }
@@ -147,6 +151,13 @@ async function deliver(options, io, admission) {
 }
 
 function admissionArgs(options) {
+  if (options.governed) {
+    const args = ["route", "--governed", "--config", options.policy, "--profile", options.profile, "--run-id", options.runId, "--class", options.workClass];
+    for (const [flag, value] of [["--harness", options.harness], ["--project", options.project], ["--session", options.session], ["--model", options.model], ["--effort", options.effort]]) {
+      if (value) args.push(flag, value);
+    }
+    return args;
+  }
   if (options.profile) {
     const args = ["route", "--config", options.policy, "--profile", options.profile, "--harness", options.harness, "--run-id", options.runId, "--class", options.workClass];
     for (const [flag, value] of [["--project", options.project], ["--session", options.session]]) if (value) args.push(flag, value);
@@ -159,11 +170,24 @@ function admissionArgs(options) {
   return args;
 }
 
+function bindRoute(options, admission) {
+  if (!options.governed || options.provider) return options;
+  return { ...options, provider: admission.provider, harness: admission.provider };
+}
+
 function verifyRouteTarget(options, admission) {
-  if (admission.provider && admission.provider !== options.provider) {
+  if (options.provider && admission.provider && admission.provider !== options.provider) {
     throw new Error(`routed provider ${admission.provider} does not match target ${options.provider}`);
   }
   if (admission.decision === "defer") return;
+  if (options.governed) {
+    if (admission.mode !== "enforce" || !providers.has(admission.provider)) {
+      throw new Error("governed dispatch requires an enforced native-provider route");
+    }
+    if (!Number.isSafeInteger(admission.lease?.expiresAt) || admission.lease.expiresAt <= Date.now()) {
+      throw new Error("governed dispatch requires a current lease");
+    }
+  }
   if (options.lifecycle !== "session") return;
   if (isExact(options) && admission.decision === "admit" && (admission.lease === null || admission.lease === undefined)) {
     throw new LimenInfrastructureError("limen degraded admission: exact admit returned no candidate lease");
@@ -172,12 +196,12 @@ function verifyRouteTarget(options, admission) {
   if (options.profile && admission.decision !== "route") throw new Error("profile session admission did not return a route");
   if (isExact(options) && admission.decision !== "admit") throw new Error("exact session admission did not return an admission");
   if (!admission.lease || !binding.candidate || !safeLabel.test(String(binding.candidate.key || ""))) throw new Error("session admission did not return a candidate lease identity");
-  if (binding.candidate.provider && binding.candidate.provider !== options.provider) throw new Error("session admission candidate provider does not match target");
+  if (binding.candidate.provider && binding.candidate.provider !== binding.provider) throw new Error("session admission candidate provider does not match target");
   if (binding.candidate.model && binding.candidate.model !== binding.model) throw new Error("session admission candidate model does not match binding");
   if (binding.candidate.nativeModel && binding.candidate.nativeModel !== binding.nativeModel) throw new Error("session admission candidate native model does not match binding");
   if (binding.candidate.effort && binding.candidate.effort !== binding.effort) throw new Error("session admission candidate effort does not match binding");
   if (!safeLabel.test(String(binding.nativeModel || "")) || !safeLabel.test(String(binding.effort || ""))) throw new Error("session admission did not return a native model binding");
-  if (isExact(options) && (binding.model !== options.model || binding.effort !== options.effort)) throw new Error("exact session admission changed the requested candidate");
+  if (options.model && (binding.model !== options.model || binding.effort !== options.effort)) throw new Error("exact session admission changed the requested candidate");
 }
 
 function isExact(options) {
@@ -280,10 +304,10 @@ function routeEnvironment(options, admission) {
   };
 }
 
-async function runLimen(executable, args) {
+async function runLimen(executable, args, timeoutMs) {
   let result;
   try {
-    result = await execute(executable, args, { stdout: "pipe", stderr: "pipe" });
+    result = await execute(executable, args, { stdout: "pipe", stderr: "pipe", timeoutMs });
   } catch (error) {
     throw new LimenInfrastructureError(`limen unavailable: ${bounded(error)}`);
   }
@@ -306,27 +330,37 @@ function parse(args, command) {
   values.command = tail >= 0 ? args.slice(tail + 1) : [];
   for (let index = 0; index < flags.length;) {
     const flag = flags[index], value = flags[index + 1];
-    if (flag === "--force" || flag === "--unleased") {
-      values[flag === "--force" ? "force" : "unleased"] = true;
+    if (flag === "--force" || flag === "--unleased" || flag === "--governed") {
+      values[flag.slice(2)] = true;
       index += 1;
       continue;
     }
     if (!flag?.startsWith("--") || value === undefined) return null;
-    const key = { "--state": "state", "--events": "events", "--limen": "limen", "--policy": "policy", "--provider": "provider", "--harness": "harness", "--run-id": "runId", "--class": "workClass", "--project": "project", "--session": "session", "--target": "target", "--alive-pattern": "alivePattern", "--profile": "profile", "--lifecycle": "lifecycle", "--model": "model", "--effort": "effort", "--native-model": "nativeModel", "--eligible-work": "eligibleWork", "--retry-ms": "retryMs", "--renew-ms": "renewMs", "--limit": "limit", "--now": "now" }[flag];
+    const key = { "--state": "state", "--events": "events", "--limen": "limen", "--policy": "policy", "--provider": "provider", "--harness": "harness", "--run-id": "runId", "--class": "workClass", "--project": "project", "--session": "session", "--target": "target", "--alive-pattern": "alivePattern", "--profile": "profile", "--lifecycle": "lifecycle", "--model": "model", "--effort": "effort", "--native-model": "nativeModel", "--eligible-work": "eligibleWork", "--retry-ms": "retryMs", "--renew-ms": "renewMs", "--route-timeout-ms": "routeTimeoutMs", "--limit": "limit", "--now": "now" }[flag];
     if (!key) return null;
-    values[key] = ["retryMs", "renewMs", "limit", "now", "eligibleWork"].includes(key) ? Number(value) : value;
+    values[key] = ["retryMs", "renewMs", "routeTimeoutMs", "limit", "now", "eligibleWork"].includes(key) ? Number(value) : value;
     index += 2;
   }
   if (!values.state || !Number.isSafeInteger(values.limit) || values.limit < 1 || !Number.isSafeInteger(values.now) || values.now < 0 || !Number.isSafeInteger(values.eligibleWork) || values.eligibleWork < 0 || !Number.isSafeInteger(values.renewMs) || values.renewMs < 1) return null;
   values.events ||= `${values.state}.events.ndjson`;
   if (command === "drain") return values;
-  const validLimen = values.policy && values.runId && (values.provider === "codex" || values.provider === "claude") && (values.harness === "codex" || values.harness === "claude") && classes.has(values.workClass);
+  const validLimen = values.policy && values.runId && classes.has(values.workClass);
+  const pinned = providers.has(values.provider) && providers.has(values.harness);
+  if (values.governed) {
+    const validTimeout = values.routeTimeoutMs === undefined
+      || Number.isSafeInteger(values.routeTimeoutMs) && values.routeTimeoutMs > 0 && values.routeTimeoutMs <= 2_147_483_647;
+    const neutral = !values.provider && !values.harness;
+    const validBinding = neutral || (pinned && values.provider === values.harness);
+    const validExact = (!values.model && !values.effort) || (safeLabel.test(values.model || "") && safeLabel.test(values.effort || ""));
+    return command === "submit" && validLimen && validBinding && validExact && validTimeout && safeLabel.test(values.profile || "")
+      && values.lifecycle === "session" && values.session && values.target && values.command.length && !values.force && !values.unleased ? values : null;
+  }
   if (command === "monitor") {
     const profileForm = Boolean(values.profile);
     const exactForm = Boolean(values.model && values.effort);
-    return validLimen && values.session && values.target && profileForm !== exactForm && (!values.unleased || exactForm) && !values.force ? values : null;
+    return validLimen && pinned && values.session && values.target && profileForm !== exactForm && (!values.unleased || exactForm) && !values.force ? values : null;
   }
-  if (!validLimen || !values.command.length || (values.lifecycle && values.lifecycle !== "session")) return null;
+  if (!validLimen || !pinned || !values.command.length || (values.lifecycle && values.lifecycle !== "session")) return null;
   if (values.unleased) return null;
   if (values.force && values.lifecycle !== "session") return null;
   if (values.lifecycle === "session") {
@@ -438,7 +472,8 @@ async function recordEventAfterDispatch(options, status, details, io) {
 
 function execute(executable, args, streams) {
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { stdio: ["ignore", streams.stdout, streams.stderr], shell: false, ...(streams.env ? { env: { ...process.env, ...streams.env } } : {}) });
+    const signal = streams.timeoutMs ? AbortSignal.timeout(streams.timeoutMs) : undefined;
+    const child = spawn(executable, args, { stdio: ["ignore", streams.stdout, streams.stderr], shell: false, signal, ...(streams.env ? { env: { ...process.env, ...streams.env } } : {}) });
     let stdout = "", stderr = "";
     child.stdout?.on("data", chunk => { stdout += chunk; }); child.stderr?.on("data", chunk => { stderr += chunk; });
     child.on("error", reject); child.on("close", code => resolve({ code: code ?? 1, stdout, stderr }));
@@ -515,9 +550,9 @@ async function loadUnleasedProvenance(options, admission) {
 }
 
 async function liveTarget(options) {
-  const exists = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "has-session", "-t", options.target], { stdout: "ignore", stderr: "ignore" });
+  const exists = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "has-session", "-t", `=${options.target}`], { stdout: "ignore", stderr: "ignore" });
   if (exists.code !== 0) return false;
-  const pane = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "display-message", "-p", "-t", options.target, "#{pane_pid}"], { stdout: "pipe", stderr: "ignore" });
+  const pane = await execute("tmux", ["-L", process.env.MESH_TMUX_SOCKET || "mesh", "display-message", "-p", "-t", `=${options.target}:`, "#{pane_pid}"], { stdout: "pipe", stderr: "ignore" });
   const panePid = Number(pane.stdout.trim());
   if (pane.code !== 0 || !Number.isSafeInteger(panePid) || panePid < 1) return false;
   const processes = await execute("ps", ["-eo", "pid=,ppid=,comm="], { stdout: "pipe", stderr: "ignore" });

@@ -164,8 +164,7 @@ variant.
 
 ```bash
 # New session in a directory (prints the tmux target on stdout):
-TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
-TARGET=$($BIN/agent-session.sh --agent claude new /path/to/project)
+TARGET=$($BIN/agent-spawn.sh --profile "$ROLE" --limen-config "$POLICY" new /path/to/project)
 
 # New Codex session with a readable Codex Desktop title:
 TARGET=$($BIN/agent-session.sh --agent codex \
@@ -181,7 +180,7 @@ TARGET=$($BIN/agent-spawn.sh --agent codex \
 
 # An exact persistent candidate uses the complete model+effort pair instead:
 TARGET=$($BIN/agent-spawn.sh --agent codex \
-  --model gpt-5.6-terra --effort high --limen-config "$POLICY" \
+  --profile "$ROLE" --model "$MODEL" --effort "$EFFORT" --limen-config "$POLICY" \
   new "$PWD" mesh-codex-exact)
 
 # Resume an on-disk session by ID:
@@ -418,129 +417,42 @@ state=$($BIN/agent-wait.sh --agent claude "$TARGET" --timeout 300 --poll 8 --sta
 
 ### Profile and exact persistent routing
 
-Choose a named profile for planned work, then inspect it without reserving a
-run:
+Select a named capability profile for planned work. Read the governing policy
+path from the host configuration.
 
 ```bash
-limen route --dry-run --config /path/to/limen-policy.json \
-  --profile implementation.spec-defined --harness codex
+# Preview candidates. The preview does not acquire a lease.
+limen route --governed --dry-run --config "$POLICY" --profile "$ROLE" --class L2
+
+# Create one persistent session using the selected provider and its lease.
+TARGET=$("$BIN/agent-spawn.sh" --profile "$ROLE" --limen-config "$POLICY" new "$CWD")
 ```
 
-`--config` is mandatory. Do not infer a policy from a shell default: different
-policies can choose different candidate sets. Use `agent-spawn.sh`, not
-`agent-session.sh`, for a new governed launch: it delegates route, admission,
-lease, renewal, and completion to the existing dispatcher. A persistent session
-must select exactly one form: `--profile NAME`, or both `--model MODEL
---effort LEVEL`. Partial exact input and mixing `--profile` with either exact
-flag fail before launch.
-
-The profile form calls `limen route`; the exact form calls `limen admit` with
-the requested model and effort. The returned candidate identity and native
-binding are authoritative and remain attached to the session lifecycle. If
-Limen is unavailable, slow, or fails before dispatch, the launch keeps the
-existing fail-open behavior and reports **"no route obtained"**. An explicit
-exact admit without a lease is the same degraded/unavailable outcome; malformed
-candidate leases still fail closed. An explicit capacity defer is different: it
-is queued as `waiting_capacity` and exits 75; no prompt is launched.
-
-The routed answer is binding: in shadow, its first candidate wins. Never replace
-the returned native model or effort in the same call; correct the authored
-profile instead. The dispatcher rejects a routed provider that differs from the
-launch target. In particular, `architect` / `architecture.executable-specification`
-must use `--agent claude`, while `reviewer` / `review.adversarial` must use
-`--agent codex`.
-
-### Native same-runtime routing
-
-For a native child, resolve before creating the task. The command output is
-mandatory task context; preserve it verbatim so the chosen profile and route are
-auditable. If Limen is unavailable or slow, use the existing native behavior and
-report **"no route obtained"** — never pick a replacement model by hand.
+Use the provider recorded for the returned target when addressing that session.
+For an existing owner, use the recorded provider and UUID:
 
 ```bash
-# Codex -> Codex native task: retain this complete JSON output in the task.
-limen route --dry-run \
-  --config "${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json" \
-  --profile developer --harness codex
-
-# Claude -> Claude Agent: pass the returned nativeModel to Agent.model.
-# Claude receives nativeModel. Pass effort only when the configured binding
-# exposes a controllable effort; otherwise keep it as route metadata.
-limen route --dry-run \
-  --config "${XDG_CONFIG_HOME:-$HOME/.config}/limen/claude-shadow-policy-v2.json" \
-  --profile architect --harness claude
+"$BIN/agent-session.sh" --agent "$PROVIDER" resume "$SESSION_ID"
 ```
 
-For a governed persistent session, `--model <name>` and `--effort <level>` are
-one exact routing form, not independent overrides. Their per-agent mapping
-lives in `agents/<type>.conf`: Codex renders the returned `nativeModel` and
-effort natively; Claude renders `nativeModel` and only renders effort when its
-binding declares that control. If effort is not controllable, it remains in
-`MESH_LIMEN_ROUTE` and the child warns that it was not applied.
+An explicit provider for a new launch narrows the eligible route. An explicit
+`--model` and `--effort` pair can narrow a named profile to a capability-qualified
+candidate. The spawned adapter receives the native model and supported effort
+from the enforced response. A capacity defer exits 75 with reasons and precedes
+any adapter calls. Policy errors, observer failures and unavailable routing
+block the launch. The dispatcher uses the selected provider for lease renewal
+and completion.
 
-Capacity handling is explicit. Without `--force`, a Limen defer waits and is
-planner-drained at `retryAt`. With `--force`, only an exact pair may override a
-soft capacity defer; the dispatcher launches unleased, emits
-`capacity_overridden` with the requested candidate and original defer evidence,
-retains that provenance through terminal session events, and makes no renew or
-complete calls for that session. Hard policy/validation failures cannot be
-forced. `alternate` is planner-owned.
+Native same-runtime previews remain advisory until an enforced lease exists
+and the adapter can honor the binding. Reuse the existing owner or defer if
+that guarantee is unavailable. Resume uses the recorded binding and accepts
+no routing switches.
 
-`--approval-policy <policy>` (Codex only) is an opt-in knob for `new` and
-`resume` that maps to `codex -a/--ask-for-approval`. Accepted values are
-`untrusted`, `on-request`, and `never`; anything else is rejected before the
-session spawns. Use it when a driven run must not block on approval dialogs.
-`never` stops the prompts but keeps the sandbox, so sandbox-blocked commands
-fail back to the model instead of hanging the session. Claude has no safe
-mapping (only `--dangerously-skip-permissions`) and hard-errors.
-
-```bash
-TARGET=$($BIN/agent-session.sh --agent codex --approval-policy never \
-  new /path/to/project mesh-codex-unattended)
-```
-
-Codex has a configured bridge pin for fail-open launches and explicit overrides.
-Set `CODEX_MESH_MODEL` and/or `CODEX_MESH_EFFORT` to replace it, or
-`CODEX_MESH_PIN=0` to follow the Desktop config. Precedence (weakest to
-strongest): configured pin, environment override, `--model`/`--effort`, raw
-passthrough after `--`. The bridge renders only the strongest mapped value for
-each knob. If raw passthrough already sets that knob, it omits the mapped value
-entirely, so the process command line does not contain stale-looking duplicates.
-
-Anything after `--` is forwarded verbatim to the agent CLI, so per-session knobs
-no longer require a hand-rolled command (which is how sessions historically lost
-`--remote` and `--cd`):
-
-```bash
-# Raw flags replace the mapped value for the same knob:
-$BIN/agent-session.sh --agent codex new "$WORKTREE" mesh-codex-b1 \
-  --effort high -- -c model_reasoning_effort=low
-```
-
-### Verifying the effort a Codex session actually got
-
-Codex accepts `minimal|low|medium|high|xhigh|max|ultra`, but each model declares
-its own subset — `codex debug models` is the authority (`gpt-5.6-sol` and
-`gpt-5.6-terra` support everything up to `ultra`). The bridge passes the value
-through untouched; `max` and `ultra` reach the session on both the standalone
-and the `--remote` path.
-
-Read the effort back from the rollout's `turn_context`, but note the trap: a
-freshly spawned session writes **no rollout file until its first prompt is
-submitted**. Picking the newest file with `ls -t | head -1` therefore reads some
-*other* live session's rollout — which is how a session that really ran at `max`
-gets misread as clamped to `high`. Snapshot the directory first, send a prompt,
-then diff:
-
-```bash
-before=$(mktemp); ls ~/.codex/sessions/*/*/*/*.jsonl | sort > "$before"
-TARGET=$($BIN/agent-session.sh --agent codex new "$PWD" mesh-codex-probe \
-  -- -c model="gpt-5.6-sol" -c model_reasoning_effort=max)
-$BIN/agent-send.sh --agent codex "$TARGET" "Reply with exactly: ok"
-comm -13 "$before" <(ls ~/.codex/sessions/*/*/*/*.jsonl | sort) \
-  | xargs -r jq -c 'select(.type=="turn_context") | .payload | {model, effort}' \
-  | tail -1
-```
+Governed new accepts adapter-specific access and identity arguments for an
+explicit adapter. Supply model and effort before `--`, through Limen. The
+governed Codex adapter uses the local native subscription and supports
+`--approval-policy` for an explicit Codex target. Preserve the caller's
+authorized access profile.
 
 ### Model discovery and pin freshness
 

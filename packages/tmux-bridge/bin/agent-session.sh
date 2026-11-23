@@ -2,9 +2,8 @@
 # agent-session.sh — Create or resume an AI agent CLI session inside tmux.
 #
 # Usage:
-#   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] [--allow-desktop-thread] resume <SESSION_ID> [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent <NAME> [--profile <name> | --model <name> --effort <level>] [--limen-config <policy>] [--force] [--approval-policy <policy>] new    [CWD]        [TMUX_NAME] [-- <extra agent args>]
-#   agent-session.sh --agent codex --title <TITLE> new [CWD] [TMUX_NAME] [-- <extra agent args>]
+#   agent-session.sh --agent <NAME> [--approval-policy <policy>] [--allow-desktop-thread] resume <SESSION_ID> [TMUX_NAME]
+#   agent-spawn.sh [--agent <NAME>] --profile <name> [--model <name> --effort <level>] --limen-config <policy> new [CWD] [TMUX_NAME]
 #   agent-session.sh --agent <NAME> list [--json] [--limit <COUNT>]
 #   agent-session.sh --agent <NAME> inspect <SESSION_ID> [--json] [--graph-target <TMUX_NAME>]
 #   agent-session.sh --agent <NAME> transcript <SESSION_ID> [--json] [--cursor <OFFSET>] [--limit <COUNT>]
@@ -19,13 +18,12 @@
 #   agent-session.sh --agent <NAME> kill   <TMUX_NAME>
 #   agent-session.sh --agent <NAME> release <TMUX_NAME> [SESSION_ID]
 #
-# --agent defaults to "codex". Config files: ../agents/<name>.conf
+# New sessions without --agent use the provider selected by Limen.
+# An existing session is resumed using its recorded adapter and UUID.
 # Prints the tmux target name on stdout so callers can pipe into agent-send.sh.
 #
-# Everything after `--` is passed verbatim as extra flags to the agent CLI and
-# takes precedence over the first-class model/effort flags. Example (xhigh +
-# Codex Desktop visibility + correct cwd, all via the bridge):
-#   agent-session.sh --agent codex new "$PWD" mesh-codex-b1 -- -c model_reasoning_effort=xhigh
+# Governed new accepts only adapter-specific lifecycle and access flags after
+# `--`. Model and effort are validated by Limen.
 #
 # Codex launch titles:
 #   agent-session.sh --agent codex --title "agent-mesh: review API" new "$PWD" mesh-codex-api
@@ -53,7 +51,7 @@ source "$SCRIPT_DIR/_mesh-graph.sh"
 source "$SCRIPT_DIR/_mesh-launch-record.sh"
 
 # ── parse --agent flag ────────────────────────────────────────────────────────
-AGENT_NAME="codex"
+AGENT_NAME=""
 SESSION_TITLE=""
 SESSION_MODEL=""
 SESSION_EFFORT=""
@@ -67,7 +65,11 @@ ARGS=()
 PASSTHRU=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --agent) AGENT_NAME="$2"; shift 2 ;;
+        --agent)
+            [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ERROR: --agent requires an adapter" >&2; exit 2; }
+            AGENT_NAME="$2"
+            shift 2
+            ;;
         --title)
             [[ $# -ge 2 && -n "${2:-}" ]] \
                 || { echo "ERROR: --title requires a non-empty value" >&2; exit 1; }
@@ -122,43 +124,56 @@ while [[ $# -gt 0 ]]; do
 done
 set -- "${ARGS[@]:-}"
 
-CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
-[[ -f "$CONF" ]] || { echo "ERROR: no config for agent '$AGENT_NAME' ($CONF)" >&2; exit 1; }
-# shellcheck source=/dev/null
-source "$CONF"
-
 REQUESTED_CMD="${ARGS[0]:-}"
-AUTO_LIMEN_UNAVAILABLE="false"
+NEUTRAL_LAUNCH="false"
 ROUTE_STATUS="not_requested"
 ROUTE_REASON=""
-if [[ "$GOVERNED_CHILD" != "true" && ( "$REQUESTED_CMD" == "new" || "$REQUESTED_CMD" == "resume" ) ]]; then
-    if [[ -z "$SESSION_PROFILE" && -z "$SESSION_MODEL" && -z "$SESSION_EFFORT" && -n "${AGENT_DEFAULT_PROFILE:-}" ]]; then
-        SESSION_PROFILE="$AGENT_DEFAULT_PROFILE"
+if [[ "$REQUESTED_CMD" == "new" && -z "$AGENT_NAME" ]]; then
+    if [[ "$GOVERNED_CHILD" == "true" ]]; then
+        AGENT_NAME="$(node -e '
+const provider = JSON.parse(process.argv[1]).provider;
+if (provider !== "codex" && provider !== "claude") process.exit(2);
+process.stdout.write(provider);
+' "${MESH_LIMEN_ROUTE:-}")" || { echo "ERROR: invalid routed provider" >&2; exit 2; }
+    else
+        NEUTRAL_LAUNCH="true"
+    fi
+elif [[ "$REQUESTED_CMD" == "resume" && -z "$AGENT_NAME" ]]; then
+    echo "ERROR: resume requires the existing session's --agent and UUID" >&2
+    exit 2
+fi
+
+if [[ "$NEUTRAL_LAUNCH" != "true" ]]; then
+    AGENT_NAME="${AGENT_NAME:-codex}"
+    [[ "$AGENT_NAME" =~ ^[a-zA-Z0-9_-]+$ ]] || { echo "ERROR: invalid agent name" >&2; exit 2; }
+    CONF="$AGENTS_DIR/${AGENT_NAME}.conf"
+    [[ -f "$CONF" ]] || { echo "ERROR: no config for agent '$AGENT_NAME' ($CONF)" >&2; exit 1; }
+    if [[ "$GOVERNED_CHILD" == "true" && "$AGENT_NAME" == "codex" ]]; then
+        # Match the local native account used by Limen. A different app-server
+        # socket could belong to a different account.
+        CODEX_NO_REMOTE=1
+        CODEX_REMOTE_SOCK=""
+    fi
+    # shellcheck source=/dev/null
+    source "$CONF"
+fi
+
+if [[ "$GOVERNED_CHILD" != "true" && "$REQUESTED_CMD" == "new" ]]; then
+    if [[ -z "$SESSION_PROFILE" && ( "$NEUTRAL_LAUNCH" == "true" || "$AGENT_NAME" == "codex" || "$AGENT_NAME" == "claude" ) ]]; then
+        SESSION_PROFILE="${AGENT_DEFAULT_PROFILE:-developer}"
     fi
     if [[ -n "$SESSION_PROFILE" && -z "$LIMEN_CONFIG" ]]; then
-        LIMEN_POLICY_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}/limen"
-        for candidate in \
-            "$LIMEN_POLICY_ROOT/${AGENT_NAME}-shadow-policy-v2.json" \
-            "$LIMEN_POLICY_ROOT/${AGENT_NAME}-shadow-policy.json"; do
-            if [[ -r "$candidate" ]]; then
-                LIMEN_CONFIG="$candidate"
-                break
-            fi
-        done
-        if [[ -z "$LIMEN_CONFIG" ]]; then
-            AUTO_LIMEN_UNAVAILABLE="true"
-            ROUTE_STATUS="unavailable"
-            ROUTE_REASON="policy_not_found"
-            AGENT_LAUNCH_WARNING="${AGENT_LAUNCH_WARNING:+$AGENT_LAUNCH_WARNING; }no Limen policy found; no route was obtained"
-        fi
+        LIMEN_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/limen/governed-routing.json"
+        [[ -r "$LIMEN_CONFIG" ]] || { echo "ERROR: governed Limen policy is unavailable" >&2; exit 69; }
     fi
-    if [[ -n "$SESSION_MODEL" && -n "$SESSION_EFFORT" && -z "$LIMEN_CONFIG" ]]; then
-        ROUTE_STATUS="explicit"
-        ROUTE_REASON="caller_model_effort"
-    fi
+fi
+if [[ "$REQUESTED_CMD" == "resume" && ( -n "$SESSION_PROFILE" || -n "$LIMEN_CONFIG" || -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" ) ]]; then
+    echo "ERROR: resume retains the recorded binding; use --agent and UUID without routing flags" >&2
+    exit 2
 fi
 
 if [[ "$GOVERNED_CHILD" == "true" ]]; then
+    [[ "$REQUESTED_CMD" == "new" ]] || exit 2
     [[ -n "${MESH_LIMEN_ROUTE:-}" ]] \
         || { echo "ERROR: governed launch is missing its Limen route" >&2; exit 1; }
     ROUTE_LAUNCH_VALUES="$(node -e '
@@ -179,7 +194,7 @@ process.stdout.write(`${route.nativeModel}\t${route.effort}`);
 fi
 
 if [[ -n "$SESSION_TITLE" ]]; then
-    [[ "${AGENT_SUPPORTS_LAUNCH_TITLE:-false}" == "true" ]] \
+    [[ "$NEUTRAL_LAUNCH" == "true" || "${AGENT_SUPPORTS_LAUNCH_TITLE:-false}" == "true" ]] \
         || { echo "ERROR: --title is not supported by agent '$AGENT_NAME'" >&2; exit 1; }
     [[ "$SESSION_TITLE" != *$'\n'* && "$SESSION_TITLE" != *$'\r'* ]] \
         || { echo "ERROR: --title must be a single line" >&2; exit 1; }
@@ -524,8 +539,40 @@ print(json.dumps({"agent_type": agent_type, "sessions": sessions}))
 ' "$AGENT_NAME" | node "$SCRIPT_DIR/session-metadata.mjs" "${CATALOG_INSPECT:-}" "${LIST_LIMIT:-0}"
 }
 
+_governed_launch_flags() {
+    # Keep established access and identity flags for callers with a known
+    # adapter. Arbitrary configuration, provider, auth and model flags would
+    # bypass the admission binding.
+    while [[ $# -gt 0 ]]; do
+        case "$AGENT_NAME:$1" in
+            codex:--sandbox)
+                [[ "${2:-}" =~ ^(read-only|workspace-write|danger-full-access)$ ]] || return 1
+                shift 2 ;;
+            codex:--ask-for-approval)
+                [[ "${2:-}" =~ ^(untrusted|on-request|never)$ ]] || return 1
+                shift 2 ;;
+            claude:--session-id)
+                [[ "${2:-}" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || return 1
+                shift 2 ;;
+            claude:--permission-mode)
+                [[ "${2:-}" =~ ^(default|acceptEdits)$ ]] || return 1
+                shift 2 ;;
+            claude:--allowedTools)
+                shift
+                [[ "${1:-}" =~ ^(Read|Edit|Write|Bash|Glob|Grep)$ ]] || return 1
+                while [[ "${1:-}" =~ ^(Read|Edit|Write|Bash|Glob|Grep)$ ]]; do shift; done
+                ;;
+            *) return 1 ;;
+        esac
+    done
+}
+
 # ── commands ──────────────────────────────────────────────────────────────────
 cmd="${1:-}"; shift || true
+if [[ "$GOVERNED_CHILD" == "true" ]] && ! _governed_launch_flags "${PASSTHRU[@]}"; then
+    echo "ERROR: raw CLI arguments cannot override a governed route" >&2
+    exit 2
+fi
 
 if [[ -n "$SESSION_TITLE" && "$cmd" != "new" ]]; then
     echo "ERROR: --title is only supported with 'new'" >&2
@@ -540,61 +587,26 @@ if [[ ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" || -n "$SESSION_APPROVAL_POL
     echo "ERROR: --model, --effort, and --approval-policy are only supported with 'new' or 'resume'" >&2
     exit 1
 fi
-if [[ "$GOVERNED_CHILD" != "true" && -n "$SESSION_PROFILE" && ( -n "$SESSION_MODEL" || -n "$SESSION_EFFORT" ) ]]; then
-    echo "ERROR: --profile cannot be combined with --model or --effort" >&2
-    exit 1
-fi
 if [[ "$GOVERNED_CHILD" != "true" && ( -n "$SESSION_MODEL" && -z "$SESSION_EFFORT" || -z "$SESSION_MODEL" && -n "$SESSION_EFFORT" ) ]]; then
-    if [[ -z "$SESSION_MODEL" && "${AGENT_SUPPORTS_EFFORT:-false}" != "true" ]]; then
-        echo "ERROR: --effort is not supported by agent '$AGENT_NAME'; exact persistent routing also requires --model" >&2
-        exit 1
-    fi
     echo "ERROR: exact persistent routing requires both --model and --effort" >&2
-    exit 1
+    exit 2
 fi
-if [[ "$GOVERNED_CHILD" != "true" && -n "$LIMEN_CONFIG" && -z "$SESSION_PROFILE" && ( -z "$SESSION_MODEL" || -z "$SESSION_EFFORT" ) ]]; then
-    echo "ERROR: --limen-config requires --profile or the exact --model and --effort pair" >&2
-    exit 1
+if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" ]]; then
+    echo "ERROR: governed session starts require a Limen lease" >&2
+    exit 2
 fi
-if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" && ( -z "$SESSION_MODEL" || -z "$SESSION_EFFORT" ) ]]; then
-    echo "ERROR: --force requires the exact --model and --effort pair" >&2
-    exit 1
-fi
-if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" && -z "$LIMEN_CONFIG" ]]; then
-    echo "ERROR: --force requires --limen-config; a force override must be Limen-gated" >&2
-    exit 1
-fi
-if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n "$SESSION_PROFILE" || ( -n "$SESSION_MODEL" && -n "$SESSION_EFFORT" && -n "$LIMEN_CONFIG" ) ) ]]; then
-    [[ -n "$LIMEN_CONFIG" ]] \
-        || { echo "ERROR: governed persistent routing requires --limen-config; Limen policy selection must be explicit" >&2; exit 1; }
-    case "$cmd" in
-        resume)
-            SESSION_ID="${1:-}"
-            [[ -n "$SESSION_ID" ]] || { echo "ERROR: SESSION_ID required" >&2; exit 1; }
-            TARGET=$(_tmux_target "${2:-${TMUX_SESSION_PREFIX}-${AGENT_NAME}-${SESSION_ID:0:8}}")
-            CHILD_SESSION_ARGS=(resume "$SESSION_ID" "$TARGET")
-            ;;
-        new)
-            CWD="${1:-$PWD}"
-            TARGET=$(_tmux_target "${2:-}")
-            CHILD_SESSION_ARGS=(new "$CWD" "$TARGET")
-            ;;
-        *)
-            echo "ERROR: governed routing is only supported with 'new' or 'resume'" >&2
-            exit 1
-            ;;
-    esac
-    if mtmux has-session -t "$TARGET" 2>/dev/null; then
-        _print_attach_hint
-        echo "$TARGET"
-        exit 0
+if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFILE" || -n "$SESSION_MODEL" ) ]]; then
+    [[ "$cmd" == "new" && -n "$LIMEN_CONFIG" && -n "$SESSION_PROFILE" ]] \
+        || { echo "ERROR: governed new requires a Limen policy and capability profile" >&2; exit 2; }
+    _governed_launch_flags "${PASSTHRU[@]}" \
+        || { echo "ERROR: raw CLI arguments cannot override a governed route" >&2; exit 2; }
+    CWD="${1:-$PWD}"
+    TARGET=$(_tmux_target "${2:-${TMUX_SESSION_PREFIX}-run-$$}")
+    if mtmux has-session -t "=$TARGET" 2>/dev/null; then
+        echo "ERROR: target '$TARGET' already exists; address its existing owner" >&2
+        exit 2
     fi
-    # Checked here too: a refusal inside the governed child is lost behind the dispatcher.
-    if [[ "$cmd" == "resume" ]]; then
-        _codex_resume_guard "$SESSION_ID" "$TARGET" || exit $?
-        export MESH_RESUME_GUARDED="$SESSION_ID"
-    fi
-    LIMEN_TIMEOUT_SECONDS="${LIMEN_ROUTE_TIMEOUT_SECONDS:-5}"
+    LIMEN_TIMEOUT_SECONDS="${LIMEN_ROUTE_TIMEOUT_SECONDS:-20}"
     [[ "$LIMEN_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
         || { echo "ERROR: LIMEN_ROUTE_TIMEOUT_SECONDS must be a positive integer" >&2; exit 1; }
     CAPACITY_STATE="${MESH_CAPACITY_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/agent-mesh/capacity-queue.json}"
@@ -603,29 +615,31 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
         || { echo "ERROR: MESH_LEASE_RENEW_MS must be a positive integer" >&2; exit 1; }
     RUN_ID="mesh-${TARGET}-$(date +%s%N)"
     export MESH_GRAPH_ROLE_PROFILE="$SESSION_PROFILE"
-    CHILD=("$0" --governed-child --agent "$AGENT_NAME")
+    CHILD=("$0" --governed-child)
+    if [[ "$NEUTRAL_LAUNCH" != "true" ]]; then
+        CHILD+=(--agent "$AGENT_NAME")
+    fi
     [[ -n "$SESSION_TITLE" ]] && CHILD+=(--title "$SESSION_TITLE")
     [[ -n "$SESSION_APPROVAL_POLICY" ]] && CHILD+=(--approval-policy "$SESSION_APPROVAL_POLICY")
-    [[ "$ALLOW_DESKTOP_THREAD" == "true" ]] && CHILD+=(--allow-desktop-thread)
-    CHILD+=("${CHILD_SESSION_ARGS[@]}")
-    [[ ${#PASSTHRU[@]} -gt 0 ]] && CHILD+=(-- "${PASSTHRU[@]}")
-    AGENT_ALIVE_PATTERN="${AGENT_ALIVE_PROCESS_PATTERN:-^$AGENT_NAME$}"
-    DISPATCH=(node "$SCRIPT_DIR/mesh-capacity-dispatch.mjs" submit --state "$CAPACITY_STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_CONFIG" --provider "$AGENT_NAME" --harness "$AGENT_NAME" --run-id "$RUN_ID" --class "${LIMEN_WORK_CLASS:-L2}" --lifecycle session --session "$TARGET" --target "$TARGET" --renew-ms "$LEASE_RENEW_MS" --alive-pattern "$AGENT_ALIVE_PATTERN")
-    if [[ -n "$SESSION_PROFILE" ]]; then
-        DISPATCH+=(--profile "$SESSION_PROFILE")
-    else
-        DISPATCH+=(--model "$SESSION_MODEL" --effort "$SESSION_EFFORT")
+    CHILD+=(new "$CWD" "$TARGET")
+    [[ ${#PASSTHRU[@]} -eq 0 ]] || CHILD+=(-- "${PASSTHRU[@]}")
+    DISPATCH=(node "$SCRIPT_DIR/mesh-capacity-dispatch.mjs" submit --governed --state "$CAPACITY_STATE" --limen "${LIMEN_BIN:-limen}" --policy "$LIMEN_CONFIG" --profile "$SESSION_PROFILE" --run-id "$RUN_ID" --class "${LIMEN_WORK_CLASS:-L2}" --lifecycle session --session "$TARGET" --target "$TARGET" --renew-ms "$LEASE_RENEW_MS" --route-timeout-ms "$((LIMEN_TIMEOUT_SECONDS * 1000))")
+    if [[ "$NEUTRAL_LAUNCH" != "true" ]]; then
+        DISPATCH+=(--provider "$AGENT_NAME" --harness "$AGENT_NAME" --alive-pattern "${AGENT_ALIVE_PROCESS_PATTERN:-^$AGENT_NAME$}")
     fi
-    [[ "$FORCE_CAPACITY" == "true" ]] && DISPATCH+=(--force)
+    [[ -z "$SESSION_MODEL" ]] || DISPATCH+=(--model "$SESSION_MODEL" --effort "$SESSION_EFFORT")
     DISPATCH+=(-- "${CHILD[@]}")
     set +e
-    timeout "$LIMEN_TIMEOUT_SECONDS" "${DISPATCH[@]}"
+    LAUNCHED_TARGET="$("${DISPATCH[@]}")"
     GOVERNED_CODE=$?
     set -e
     if [[ "$GOVERNED_CODE" -eq 0 ]]; then
         # The dispatcher also exits 0 after closing the lease of a child that
         # exited 4/124 or lost its target, so success must be proven here.
-        mtmux has-session -t "$TARGET" 2>/dev/null && exit 0
+        if [[ "$LAUNCHED_TARGET" == "$TARGET" ]] && mtmux has-session -t "=$TARGET" 2>/dev/null; then
+            printf '%s\n' "$TARGET"
+            exit 0
+        fi
         echo "ERROR: governed launch reported success but target '$TARGET' does not exist; no session is available" >&2
         exit 1
     fi
@@ -633,23 +647,18 @@ if [[ "$GOVERNED_CHILD" != "true" && "$AUTO_LIMEN_UNAVAILABLE" != "true" && ( -n
     # Any dispatcher failure may happen after the governed child created the
     # target. Retain that one session before classifying the error so callers
     # never retry a launch that already occurred.
-    if mtmux has-session -t "$TARGET" 2>/dev/null; then
+    if [[ "$LAUNCHED_TARGET" == "$TARGET" ]] && mtmux has-session -t "=$TARGET" 2>/dev/null; then
         echo "WARN: Limen governed launch ended after target creation; retaining existing session" >&2
         _print_attach_hint
         echo "$TARGET"
         exit 0
     fi
-    if [[ "$FORCE_CAPACITY" == "true" ]]; then
-        echo "ERROR: --force requires an explicit soft Limen capacity defer; no override was launched" >&2
-        exit 2
+    if mtmux has-session -t "=$TARGET" 2>/dev/null; then
+        echo "ERROR: target '$TARGET' exists without this launch's confirmation; inspect its owner" >&2
+        exit 4
     fi
-    if [[ "$GOVERNED_CODE" -ne 69 && "$GOVERNED_CODE" -ne 124 ]]; then
-        echo "ERROR: Limen governed launch rejected (exit=$GOVERNED_CODE); no session was launched" >&2
-        exit 2
-    fi
-    echo "WARN: Limen governed launch unavailable (exit=$GOVERNED_CODE); starting with existing fail-open behavior" >&2
-    ROUTE_STATUS="unavailable"
-    ROUTE_REASON="limen_exit_$GOVERNED_CODE"
+    echo "ERROR: Limen governed launch rejected (exit=$GOVERNED_CODE); no session was launched" >&2
+    exit "$GOVERNED_CODE"
 fi
 if [[ "$cmd" == "resume" && "$AGENT_NAME" == "codex" && "${MESH_PRESERVE_SESSION_POLICY:-0}" == "1" ]]; then
     CODEX_MESH_PIN=0
@@ -767,11 +776,16 @@ case "$cmd" in
     new)
         CWD="${1:-$PWD}"
         # Resolve to an absolute path so both `tmux -c` and any agent --cd flag agree.
-        CWD="$(cd "$CWD" 2>/dev/null && pwd || echo "$CWD")"
+        CWD="$(cd "$CWD" 2>/dev/null && pwd)" \
+            || { echo "ERROR: session working directory unavailable" >&2; exit 3; }
         TMUX_NAME="${2:-}"
         TARGET=$(_tmux_target "$TMUX_NAME")
 
-        if mtmux has-session -t "$TARGET" 2>/dev/null; then
+        if mtmux has-session -t "=$TARGET" 2>/dev/null; then
+            if [[ "$GOVERNED_CHILD" == "true" ]]; then
+                echo "ERROR: target '$TARGET' already exists; address its existing owner" >&2
+                exit 2
+            fi
             if [[ -n "$SESSION_TITLE" ]]; then
                 echo "WARN: session '$TARGET' already exists; --title was not updated" >&2
             fi
@@ -789,7 +803,21 @@ case "$cmd" in
         # {CWD} placeholder lets an agent conf pin the working root (e.g. codex --cd).
         # Required in remote mode, where the agent's app-server ignores `tmux -c` and
         # would otherwise land in the server's own cwd. No-op for confs without {CWD}.
-        NEW_CMD="${AGENT_NEW_CMD//\{CWD\}/$CWD}$LAUNCH_OPTION_CMD$EXTRA_CMD"
+        PANE_CWD="$(printf '%q' "$CWD")"
+        NEW_CMD="${AGENT_NEW_CMD//\"\{CWD\}\"/$PANE_CWD}$LAUNCH_OPTION_CMD$EXTRA_CMD"
+        if [[ "$GOVERNED_CHILD" == "true" ]]; then
+            # The tmux server can retain earlier connection settings. Clear
+            # API auth selectors in the actual pane command, not only here.
+            SUBSCRIPTION_ENV="env -u OPENAI_API_KEY -u CODEX_API_KEY -u OPENAI_BASE_URL -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY"
+            SUBSCRIPTION_ENV+=" $(printf '%q' "HOME=$HOME") $(printf '%q' "MESH_LIMEN_ROUTE=$MESH_LIMEN_ROUTE")"
+            if [[ "$AGENT_NAME" == "codex" ]]; then
+                SUBSCRIPTION_ENV+=" $(printf '%q' "CODEX_HOME=${CODEX_HOME:-$HOME/.codex}")"
+                NEW_CMD+=" ${AGENT_SUBSCRIPTION_ARGS:-}"
+            elif [[ "$AGENT_NAME" == "claude" ]]; then
+                SUBSCRIPTION_ENV+=" $(printf '%q' "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-$HOME/.claude}")"
+            fi
+            NEW_CMD="$SUBSCRIPTION_ENV $NEW_CMD"
+        fi
         mtmux send-keys -t "$TARGET" "$NEW_CMD" Enter
         _wait_for_ready_or_warn "$TARGET"
         _require_resumed_ready "$TARGET" true
