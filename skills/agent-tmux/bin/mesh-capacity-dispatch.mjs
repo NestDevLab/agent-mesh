@@ -141,6 +141,7 @@ async function deliver(options, io, admission) {
   if (result.code === 0) {
     const complete = ["complete", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId];
     if (options.session) complete.push("--session", options.session);
+    if (options.project) complete.push("--project", options.project);
     const reconciled = await execute(options.limen, complete, { stdout: "pipe", stderr: "pipe" });
     if (reconciled.code !== 0) {
       await recordEventAfterDispatch(options, "completion_pending", { admission, reason: `limen_complete_exit_${reconciled.code}`, eligibleWork: options.eligibleWork }, io);
@@ -416,6 +417,7 @@ async function upsertSession(path, options, admission, status) {
       harness: options.harness,
       workClass: options.workClass,
       ...(options.profile ? { profile: options.profile } : {}),
+      ...(options.project ? { project: options.project } : {}),
       ...(binding.model ? { model: binding.model } : {}),
       ...(binding.nativeModel ? { nativeModel: binding.nativeModel } : {}),
       ...(binding.effort ? { effort: binding.effort } : {}),
@@ -483,6 +485,7 @@ function execute(executable, args, streams) {
 function startMonitor(options, admission) {
   const args = [process.argv[1], "monitor", "--state", options.state, "--events", options.events, "--limen", options.limen, "--policy", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--class", options.workClass, "--session", options.session, "--target", options.target || options.session, "--renew-ms", String(options.renewMs)];
   if (options.profile) args.push("--profile", options.profile);
+  if (options.project) args.push("--project", options.project);
   if (isExact(options)) args.push("--model", options.model, "--effort", options.effort);
   if (admission?.unleased) {
     args.push("--unleased");
@@ -497,6 +500,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const completionArgs = options => {
   const args = ["complete", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId];
   if (options.session) args.push("--session", options.session);
+  if (options.project) args.push("--project", options.project);
   return args;
 };
 
@@ -582,6 +586,7 @@ async function liveTarget(options) {
 }
 
 async function monitor(options, io) {
+  let expiresAt;
   while (true) {
     if (options.unleased) {
       if (!(await liveTarget(options))) return completeUnleasedSession(options);
@@ -589,9 +594,12 @@ async function monitor(options, io) {
       continue;
     }
     if (await liveTarget(options)) {
-      const renewal = await execute(options.limen, ["renew", "--config", options.policy, "--provider", options.provider, "--harness", options.harness, "--run-id", options.runId, "--session", options.session], { stdout: "pipe", stderr: "pipe" });
+      const renew = completionArgs(options);
+      renew[0] = "renew";
+      const renewal = await execute(options.limen, renew, { stdout: "pipe", stderr: "pipe" });
       const output = parseJson(renewal.stdout);
-      if (renewal.code === 0 && output?.status === "renewed") {
+      if (renewal.code === 0 && output?.status === "renewed" && Number.isSafeInteger(output.expiresAt) && output.expiresAt > Date.now()) {
+        expiresAt = output.expiresAt;
         await transitionSession(options.state, options.runId, { status: "active", expiresAt: output.expiresAt, updatedAt: Date.now() });
         await recordEvent(options, "lease_renewed", { admission: output, reason: "lease_renewed" });
       } else if (output?.status === "expired") {
@@ -606,7 +614,8 @@ async function monitor(options, io) {
       const outcome = await completeSession(options);
       if (outcome === 0 || outcome === 2) return outcome;
     }
-    await delay(options.renewMs);
+    const remaining = expiresAt === undefined ? options.renewMs : expiresAt - Date.now();
+    await delay(Math.min(options.renewMs, Math.max(10, Math.floor(remaining / 3))));
   }
 }
 

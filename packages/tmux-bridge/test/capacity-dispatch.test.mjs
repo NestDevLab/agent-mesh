@@ -298,17 +298,18 @@ node -e 'const r=JSON.parse(process.env.MESH_LIMEN_ROUTE); if (r.model !== "gpt-
 test("agent-spawn uses a routed native rendering and closes its lease after the agent process disappears", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-route-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), state = join(dir, "queue.json"), limen = join(bin, "limen"), codex = join(bin, "fake-codex"), launchArgs = join(dir, "codex-args.txt");
+  const observedRoute = join(dir, "route-args.txt");
   const socket = `mesh-route-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-route-${process.pid}`, finish = join(dir, "finish");
   await mkdir(bin); await mkdir(agents);
-  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then echo '{"decision":"route","mode":"enforce","provider":"codex","model":"governed-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":4102444800000}'; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
+  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then printf '%s\\n' "$@" > '${observedRoute}'; echo '{"decision":"route","mode":"enforce","provider":"codex","model":"governed-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then expiration=$(( $(date +%s%3N) + 900 )); printf '{"status":"renewed","expiresAt":%s}\\n' "$expiration"; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
   await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_ALIVE_PROCESS_PATTERN="^(fake-codex|sleep)$"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SESSION_CWD_EXTRACTOR='printf "?\\n"'\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
   await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nif [ -n "$OPENAI_API_KEY" ]; then printf "unexpected credential\\n" >> '${launchArgs}'; fi\nprintf 'FAKE>\\n'\nwhile [ ! -f '${finish}' ]; do sleep 0.1; done\n`);
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const fixtureValue = ["dummy", "fixture"].join("-");
-  const env = { ...process.env, OPENAI_API_KEY: fixtureValue, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "10", AGENT_MESH_AGENTS_DIR: agents };
+  const env = { ...process.env, OPENAI_API_KEY: fixtureValue, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "5000", AGENT_MESH_AGENTS_DIR: agents };
   try {
-    const launched = await runCommand(spawnBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target, "--", "--sandbox", "read-only"], env);
+    const launched = await runCommand(spawnBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--project", "strict-project", "--limen-config", "policy", "new", dir, target, "--", "--sandbox", "read-only"], env);
     assert.equal(launched.code, 0, launched.stderr);
     assert.equal(launched.stdout.trim(), target);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
@@ -318,7 +319,8 @@ test("agent-spawn uses a routed native rendering and closes its lease after the 
     assert.doesNotMatch(await readFile(launchArgs, "utf8"), /unexpected credential/);
     const opened = JSON.parse(await readFile(state, "utf8"));
     assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "governed-model", effort: "high", capacityCostBase: null });
-    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"));
+    assert.match(await readFile(observedRoute, "utf8"), /--project\nstrict-project/);
+    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).match(/"status":"lease_renewed"/g)?.length >= 2);
     await writeFile(finish, "");
     await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 3_000);
     assert.equal((await runCommand("tmux", ["-L", socket, "has-session", "-t", target], env)).code, 0, "the tmux shell remains after the agent process exits");

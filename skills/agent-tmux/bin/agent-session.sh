@@ -57,6 +57,7 @@ SESSION_MODEL=""
 SESSION_EFFORT=""
 SESSION_APPROVAL_POLICY=""
 SESSION_PROFILE=""
+SESSION_PROJECT=""
 LIMEN_CONFIG=""
 FORCE_CAPACITY="false"
 GOVERNED_CHILD="false"
@@ -92,6 +93,11 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 && -n "${2:-}" ]] \
                 || { echo "ERROR: --profile requires a non-empty value" >&2; exit 1; }
             SESSION_PROFILE="$2"
+            shift 2
+            ;;
+        --project)
+            [[ ${2:-} =~ ^[a-zA-Z0-9_.:-]{1,96}$ ]]                 || { echo "ERROR: --project requires a Limen project scope" >&2; exit 2; }
+            SESSION_PROJECT="$2"
             shift 2
             ;;
         --limen-config)
@@ -600,7 +606,7 @@ if [[ "$GOVERNED_CHILD" != "true" && "$FORCE_CAPACITY" == "true" ]]; then
     echo "ERROR: governed session starts require a Limen lease" >&2
     exit 2
 fi
-if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFILE" ) ]]; then
+if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFILE" || -n "$SESSION_PROJECT" ) ]]; then
     [[ "$cmd" == "new" && -n "$LIMEN_CONFIG" && -n "$SESSION_PROFILE" ]] \
         || { echo "ERROR: governed new requires a Limen policy and capability profile" >&2; exit 2; }
     _governed_launch_flags "${PASSTHRU[@]}" \
@@ -632,6 +638,7 @@ if [[ "$GOVERNED_CHILD" != "true" && ( -n "$LIMEN_CONFIG" || -n "$SESSION_PROFIL
     if [[ "$NEUTRAL_LAUNCH" != "true" ]]; then
         DISPATCH+=(--provider "$AGENT_NAME" --harness "$AGENT_NAME" --alive-pattern "${AGENT_ALIVE_PROCESS_PATTERN:-^$AGENT_NAME$}")
     fi
+    [[ -z "$SESSION_PROJECT" ]] || DISPATCH+=(--project "$SESSION_PROJECT")
     [[ -z "$SESSION_MODEL" ]] || DISPATCH+=(--model "$SESSION_MODEL" --effort "$SESSION_EFFORT")
     DISPATCH+=(-- "${CHILD[@]}")
     set +e
