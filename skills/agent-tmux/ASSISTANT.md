@@ -5,21 +5,15 @@ either type, same-type included.
 
 ```bash
 BIN="$AGENT_MESH_ROOT/packages/tmux-bridge/bin"
-POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/codex-shadow-policy-v2.json"
+POLICY="${XDG_CONFIG_HOME:-$HOME/.config}/limen/governed-routing.json"
 
 # New / resume (prints tmux target)
-# Unqualified Codex launches use the Limen `developer` profile by default.
-TARGET=$($BIN/agent-session.sh --agent codex  new /path/to/project)
-TARGET=$($BIN/agent-session.sh --agent claude resume <SESSION_ID>)
+# New work declares a capability profile. Limen selects the native provider.
+TARGET=$($BIN/agent-spawn.sh --profile "$ROLE" --limen-config "$POLICY" new /path/to/project)
+TARGET=$("$BIN/agent-session.sh" --agent "$PROVIDER" resume "$SESSION_ID")
 
-# New Codex session with a readable Codex Desktop title
-TARGET=$($BIN/agent-session.sh --agent codex --title "agent-mesh: review" new /path/to/project)
-
-# Extra agent flags after `--` (e.g. Codex xhigh) — no need to bypass the bridge
-$BIN/agent-session.sh --agent codex new "$DIR" mesh-codex-b1 -- -c model_reasoning_effort=xhigh
-
-# Send prompt, get reply
-$BIN/agent-send.sh --agent codex "$TARGET" "your prompt" [timeout]
+# Talk to the target using its recorded adapter.
+"$BIN/agent-send.sh" --agent "$PROVIDER" "$TARGET" "your prompt"
 
 # Delegate with source identity + optional return coordinates
 $BIN/mesh-send.sh --to codex --from claude-reviewer --from-agent claude --from-target mesh-claude-reviewer "your prompt" 300
@@ -57,14 +51,9 @@ $BIN/agent-link.mjs --mode bidirectional --state /path/to/link-state.json \
 # Discover all agents + live sessions
 $BIN/mesh-list-agents.sh
 
-# Governed persistent session: choose exactly one routing form.
-$BIN/agent-spawn.sh --agent codex --profile developer --limen-config "$POLICY" new "$PWD"
-$BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
+# An explicitly requested model and effort may narrow the profile.
+$BIN/agent-spawn.sh --profile "$ROLE" --model "$MODEL" --effort "$EFFORT" \
   --limen-config "$POLICY" new "$PWD"
-
-# Optional bounded override: exact pair only, and only after a soft capacity defer.
-$BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
-  --limen-config "$POLICY" --force new "$PWD"
 ```
 
 ## Decision tree
@@ -77,7 +66,7 @@ $BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
 3. Native task control unavailable or an MCP reply tool returns "Session not
    found" → fall back here and state why
 4. Fresh persistent CLI session needed →
-   `agent-session.sh --agent <type> new <dir>`
+   `agent-spawn.sh --profile "$ROLE" --limen-config "$POLICY" new "$CWD"`
 5. Talk to an already-running mesh agent → `mesh-send.sh --to <name>`
 
 ## Important
@@ -87,8 +76,7 @@ $BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
   Enter` directly.
 - Native Codex Desktop tasks are user-visible peers. Create one only after an
   explicit user request; use native subagents for hidden same-turn worker fan-out.
-- Codex sessions auto-attach to the desktop app-server when its socket is live
-  (visible in Codex Desktop / mobile). `CODEX_NO_REMOTE=1` forces standalone.
+- Governed Codex starts use the local native subscription. Existing Desktop sessions keep their own native delivery path.
 - For Codex Desktop title hygiene, pass `--title "<short title>"` to
   `agent-session.sh ... new`; it is prepended once to the first real prompt.
 - Timeouts are checkpoints: `progress` = pane changed recently, `stalled` = it
@@ -107,6 +95,4 @@ $BIN/agent-spawn.sh --agent codex --model gpt-5.6-terra --effort high \
 - **Name children to show nesting**; pass `--from` for provenance.
 - **Approvals are transitive**: a spawned agent that commits/pushes/deploys/sends
   is still bound by the user's git/safety rules — pass them down explicitly.
-- A partial `--model`/`--effort` pair or mixing it with `--profile` is rejected.
-  A normal Limen defer waits; `--force` can only create an explicitly unleased
-  exact session after a soft capacity defer, with no lease renewal/completion.
+- An exact model and effort pair narrows an eligible profile. Start only with an enforced lease. On defer, inspect the reasons and retry time before rescheduling.

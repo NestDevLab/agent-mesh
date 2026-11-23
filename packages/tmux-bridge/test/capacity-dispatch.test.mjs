@@ -63,7 +63,7 @@ test("exact model and effort admission preserves native binding and session life
   await writeFile(limen, `#!/bin/sh
 printf '%s\\n' "$@" >> '${seenArgs}'
 if [ "$1" = admit ]; then
-  echo '{"decision":"admit","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"exact-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
+  echo '{"decision":"admit","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"exact-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
   exit 0
 fi
 if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi
@@ -271,10 +271,10 @@ test("profile routing records a candidate lease and closes a disappeared session
   await writeFile(limen, `#!/bin/sh
 if [ "$1" = route ]; then
   printf '%s\\n' "$@" > '${seenRoute}'
-  echo '{"decision":"route","provider":"codex","model":"gpt-5.6-terra","nativeModel":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'
+  echo '{"decision":"route","mode":"enforce","provider":"codex","model":"gpt-5.6-terra","nativeModel":"gpt-5.6-terra","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}}'
   exit 0
 fi
-if [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi
+if [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":4102444800000}'; exit 0; fi
 if [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"gpt-5.6-terra","effort":"high","capacityCostBase":null}}'; exit 0; fi
 exit 2
 `);
@@ -298,24 +298,30 @@ node -e 'const r=JSON.parse(process.env.MESH_LIMEN_ROUTE); if (r.model !== "gpt-
 test("agent-spawn uses a routed native rendering and closes its lease after the agent process disappears", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-route-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), state = join(dir, "queue.json"), limen = join(bin, "limen"), codex = join(bin, "fake-codex"), launchArgs = join(dir, "codex-args.txt");
+  const observedRoute = join(dir, "route-args.txt");
   const socket = `mesh-route-${process.pid}-${Date.now()}`;
-  const target = `mesh-codex-route-${process.pid}`;
+  const target = `mesh-codex-route-${process.pid}`, finish = join(dir, "finish");
   await mkdir(bin); await mkdir(agents);
-  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then echo '{"decision":"route","provider":"codex","model":"governed-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
+  await writeFile(limen, `#!/bin/sh\nif [ "$1" = route ]; then printf '%s\\n' "$@" > '${observedRoute}'; echo '{"decision":"route","mode":"enforce","provider":"codex","model":"governed-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}}'; exit 0; fi\nif [ "$1" = renew ]; then expiration=$(( $(date +%s%3N) + 900 )); printf '{"status":"renewed","expiresAt":%s}\\n' "$expiration"; exit 0; fi\nif [ "$1" = complete ]; then echo '{"status":"completed","candidate":{"key":"0123456789abcdef0123456789abcdef","model":"governed-model","effort":"high","capacityCostBase":null}}'; exit 0; fi\nexit 2\n`);
   await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_ALIVE_PROCESS_PATTERN="^(fake-codex|sleep)$"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_SESSION_CWD_EXTRACTOR='printf "?\\n"'\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
-  await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
+  await writeFile(codex, `#!/bin/sh\nprintf '%s\\n' "$*" > '${launchArgs}'\nif [ -n "$OPENAI_API_KEY" ]; then printf "unexpected credential\\n" >> '${launchArgs}'; fi\nprintf 'FAKE>\\n'\nwhile [ ! -f '${finish}' ]; do sleep 0.1; done\n`);
   await chmod(limen, 0o700); await chmod(codex, 0o700);
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "10", AGENT_MESH_AGENTS_DIR: agents };
+  const fixtureValue = ["dummy", "fixture"].join("-");
+  const env = { ...process.env, OPENAI_API_KEY: fixtureValue, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "5000", AGENT_MESH_AGENTS_DIR: agents };
   try {
-    const launched = await runCommand(spawnBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, target], env);
+    const launched = await runCommand(spawnBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--project", "strict-project", "--limen-config", "policy", "new", dir, target, "--", "--sandbox", "read-only"], env);
     assert.equal(launched.code, 0, launched.stderr);
     assert.equal(launched.stdout.trim(), target);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
     assert.match(await readFile(launchArgs, "utf8"), /--model native-model/);
     assert.match(await readFile(launchArgs, "utf8"), /--effort high/);
+    assert.match(await readFile(launchArgs, "utf8"), /--sandbox read-only/);
+    assert.doesNotMatch(await readFile(launchArgs, "utf8"), /unexpected credential/);
     const opened = JSON.parse(await readFile(state, "utf8"));
     assert.deepEqual(opened.sessions[0].candidate, { key: "0123456789abcdef0123456789abcdef", model: "governed-model", effort: "high", capacityCostBase: null });
-    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).includes("lease_renewed"));
+    assert.match(await readFile(observedRoute, "utf8"), /--project\nstrict-project/);
+    await waitFor(async () => (await readFile(`${state}.events.ndjson`, "utf8")).match(/"status":"lease_renewed"/g)?.length >= 2);
+    await writeFile(finish, "");
     await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed", 3_000);
     assert.equal((await runCommand("tmux", ["-L", socket, "has-session", "-t", target], env)).code, 0, "the tmux shell remains after the agent process exits");
     const events = await readFile(`${state}.events.ndjson`, "utf8");
@@ -327,16 +333,20 @@ test("agent-spawn uses a routed native rendering and closes its lease after the 
   }
 });
 
-test("Claude keeps an unsupported effort as route metadata without passing a fake effort flag", async () => {
+test("neutral launch selects the returned Claude adapter and records unsupported effort as metadata", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-claude-exact-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), state = join(dir, "queue.json"), limen = join(bin, "limen"), claude = join(bin, "fake-claude");
   const launchArgs = join(dir, "claude-args.txt"), routeFile = join(dir, "claude-route.json");
   const socket = `mesh-claude-exact-${process.pid}-${Date.now()}`, target = `mesh-claude-exact-${process.pid}`;
   await mkdir(bin); await mkdir(agents);
   await writeFile(limen, `#!/bin/sh
-if [ "$1" = admit ]; then echo '{"decision":"admit","provider":"claude","model":"requested-model","nativeModel":"native-claude","effort":"high","decisionId":"claude-exact-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-claude","effort":"high","capacityCostBase":null}}}'; exit 0; fi
-if [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":999}'; exit 0; fi
-if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi
+if [ "$1" = route ]; then
+  for arg in "$@"; do [ "$arg" != --harness ] || exit 2; done
+  echo '{"decision":"route","mode":"enforce","provider":"claude","model":"requested-model","nativeModel":"native-claude","effort":"high","decisionId":"claude-exact-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-claude","effort":"high","capacityCostBase":null}}}'; exit 0; fi
+if [ "$1" = renew ]; then echo '{"status":"renewed","expiresAt":4102444800000}'; exit 0; fi
+if [ "$1" = complete ]; then
+  [ "$5" = claude ] && [ "$7" = claude ] || exit 2
+  echo '{"status":"completed"}'; exit 0; fi
 exit 2
 `);
   await writeFile(join(agents, "claude.conf"), `AGENT_BIN="fake-claude"
@@ -367,7 +377,7 @@ sleep 0.5
   await chmod(limen, 0o700); await chmod(claude, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_CAPACITY_STATE: state, MESH_TMUX_SOCKET: socket, MESH_LEASE_RENEW_MS: "20", AGENT_MESH_AGENTS_DIR: agents };
   try {
-    const launched = await runCommand(spawnBin, ["--agent", "claude", "--model", "requested-model", "--effort", "high", "--limen-config", "policy", "new", dir, target], env);
+    const launched = await runCommand(spawnBin, ["--profile", "architect", "--model", "requested-model", "--effort", "high", "--limen-config", "policy", "new", dir, target], env);
     assert.equal(launched.code, 0, launched.stderr);
     assert.equal(launched.stdout.trim(), target);
     await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
@@ -383,14 +393,14 @@ sleep 0.5
   }
 });
 
-test("agent-session remains fail-open when Limen is unavailable before launch", async () => {
+test("agent-session makes no adapter call when Limen is unavailable", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-fail-open-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), config = join(dir, "config");
   const launchArgs = join(dir, "codex-args.txt"), launchEvents = join(dir, "launch-events.jsonl");
   const socket = `mesh-fail-open-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-fail-open-${process.pid}`;
   await mkdir(bin); await mkdir(agents); await mkdir(join(config, "limen"), { recursive: true });
-  await writeFile(join(config, "limen", "codex-shadow-policy-v2.json"), "{}\n");
+  await writeFile(join(config, "limen", "governed-routing.json"), "{}\n");
   await writeFile(join(agents, "codex.conf"), `AGENT_BIN="fake-codex"\nAGENT_SUBMIT_KEY="Enter"\nAGENT_PROMPT_CHAR="FAKE>"\nAGENT_WORKING_PATTERN="WORKING"\nAGENT_IDLE_PATTERN="FAKE>"\nAGENT_RESUME_CMD="fake-codex"\nAGENT_HAS_CWD_PICKER="false"\nAGENT_PICKER_PATTERN=""\nAGENT_NEW_CMD="fake-codex"\nAGENT_SESSION_DIR="${dir}"\nAGENT_DEFAULT_PROFILE="developer"\nAGENT_SUPPORTS_MODEL="true"\nAGENT_MODEL_ARGS=(--model "{VALUE}")\nAGENT_MODEL_PASSTHRU_PATTERNS=()\nAGENT_SUPPORTS_EFFORT="true"\nAGENT_EFFORT_ARGS=(--effort "{VALUE}")\nAGENT_EFFORT_PASSTHRU_PATTERNS=()\n`);
   const codex = join(bin, "fake-codex");
   await writeFile(codex, `#!/bin/sh\nprintf '%s|%s\\n' "$*" "\${MESH_LIMEN_ROUTE:-}" > '${launchArgs}'\nprintf 'FAKE>\\n'\nsleep 2\n`);
@@ -398,17 +408,10 @@ test("agent-session remains fail-open when Limen is unavailable before launch", 
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: join(bin, "missing-limen"), MESH_LIMEN_ROUTE: "", MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
   try {
     const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
-    assert.equal(launched.code, 0, launched.stderr);
-    assert.equal(launched.stdout.trim(), target);
-    assert.match(launched.stderr, /Limen governed launch unavailable/);
-    await waitFor(async () => (await readFile(launchArgs, "utf8")).length > 0);
-    assert.doesNotMatch(await readFile(launchArgs, "utf8"), /\{\"provider\"/);
-    const record = JSON.parse((await readFile(launchEvents, "utf8")).trim());
-    assert.equal(record.origin, "tmux-bridge");
-    assert.equal(record.profile, "developer");
-    assert.equal(record.route.status, "unavailable");
-    assert.equal(record.model, null);
-    assert.equal(record.effort, null);
+    assert.equal(launched.code, 69, launched.stderr);
+    assert.equal(launched.stdout, "");
+    await assert.rejects(readFile(launchArgs, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(launchEvents, "utf8"), { code: "ENOENT" });
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
     await rm(dir, { recursive: true, force: true });
@@ -424,11 +427,11 @@ test("agent-session routes an unqualified Codex launch through the developer pro
   const socket = `mesh-default-route-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-default-route-${process.pid}`;
   await mkdir(bin); await mkdir(agents); await mkdir(join(config, "limen"), { recursive: true });
-  await writeFile(join(config, "limen", "codex-shadow-policy-v2.json"), "{}\n");
+  await writeFile(join(config, "limen", "governed-routing.json"), "{}\n");
   await writeFile(limen, `#!/bin/sh
 printf '%s\n' "$@" >> '${limenArgs}'
 if [ "$1" = route ]; then
-  echo '{"decision":"route","provider":"codex","model":"policy-model","nativeModel":"native-model","effort":"medium","decisionId":"route-default","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"policy-model","nativeModel":"native-model","effort":"medium","capacityCostBase":null}}}'
+  echo '{"decision":"route","mode":"enforce","provider":"codex","model":"policy-model","nativeModel":"native-model","effort":"medium","decisionId":"route-default","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"policy-model","nativeModel":"native-model","effort":"medium","capacityCostBase":null}}}'
   exit 0
 fi
 if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi
@@ -460,9 +463,11 @@ AGENT_EFFORT_PASSTHRU_PATTERNS=()
 `);
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: state, MESH_LEASE_RENEW_MS: "20", AGENT_MESH_AGENTS_DIR: agents, XDG_CONFIG_HOME: config, MESH_LAUNCH_RECORD_FILE: launchEvents };
+  let launchedSession = false;
   try {
     const launched = await runCommand(sessionBin, ["--agent", "codex", "new", dir, target], env);
     assert.equal(launched.code, 0, launched.stderr);
+    launchedSession = true;
     assert.equal(launched.stdout.trim(), target);
     assert.match(await readFile(limenArgs, "utf8"), /--profile\ndeveloper/);
     assert.match(await readFile(launchArgs, "utf8"), /--model native-model --effort medium/);
@@ -473,19 +478,28 @@ AGENT_EFFORT_PASSTHRU_PATTERNS=()
     assert.equal(record.effort, "medium");
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
-    await rm(dir, { recursive: true, force: true });
+    if (launchedSession) await waitFor(async () => JSON.parse(await readFile(state, "utf8")).sessions[0]?.status === "completed");
+    await rm(dir, { recursive: true, force: true, maxRetries: 3 });
   }
 });
 
-test("agent-session treats an exact admit without a lease as degraded and launches once", async () => {
+test("agent-session denies absent and expired leases and advisory routes", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-degraded-admit-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launches = join(dir, "launches");
   const socket = `mesh-degraded-admit-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-degraded-admit-${process.pid}`;
   await mkdir(bin); await mkdir(agents);
   await writeFile(limen, `#!/bin/sh
-if [ "$1" = admit ]; then
-  echo '{"decision":"admit","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"degraded-1","configHash":"cfg","lease":null}'
+if [ "$1" = route ] && [ "$ROUTE_CASE" = expired ]; then
+  echo '{"decision":"route","mode":"enforce","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","lease":{"expiresAt":1,"candidate":{"key":"0123456789abcdef0123456789abcdef"}}}'
+  exit 0
+fi
+if [ "$1" = route ] && [ "$ROUTE_CASE" = advisory ]; then
+  echo '{"decision":"route","mode":"shadow","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef"}}}'
+  exit 0
+fi
+if [ "$1" = route ]; then
+  echo '{"decision":"route","mode":"enforce","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"degraded-1","configHash":"cfg","lease":null}'
   exit 0
 fi
 exit 2
@@ -516,13 +530,17 @@ while :; do sleep 1; done
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: join(dir, "queue.json"), AGENT_MESH_AGENTS_DIR: agents };
   try {
-    const launched = await runCommand(sessionBin, ["--agent", "codex", "--model", "requested-model", "--effort", "high", "--limen-config", "policy", "new", dir, target], env);
-    assert.equal(launched.code, 0, launched.stderr);
-    assert.equal(launched.stdout.trim(), target);
-    assert.match(launched.stderr, /limen degraded admission: exact admit returned no candidate lease/);
-    assert.match(launched.stderr, /Limen governed launch unavailable \(exit=69\)/);
-    await waitFor(async () => (await readFile(launches, "utf8")).trim().length > 0);
-    assert.equal((await readFile(launches, "utf8")).trim().split("\n").length, 1);
+    for (const [routeCase, expected] of [
+      ["missing", /limen exit\/payload mismatch/],
+      ["expired", /requires a current lease/],
+      ["advisory", /requires an enforced native-provider route/],
+    ]) {
+      const launched = await runCommand(sessionBin, ["--agent", "codex", "--model", "requested-model", "--effort", "high", "--limen-config", "policy", "new", dir, target], { ...env, ROUTE_CASE: routeCase });
+      assert.equal(launched.code, 2, launched.stderr);
+      assert.equal(launched.stdout, "");
+      assert.match(launched.stderr, expected);
+    }
+    await assert.rejects(readFile(launches, "utf8"), { code: "ENOENT" });
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
     await rm(dir, { recursive: true, force: true });
@@ -538,7 +556,7 @@ test("agent-session retains one governed target after post-launch completion fai
   await writeFile(limen, `#!/bin/sh
 printf '%s\n' "$1" >> '${commands}'
 if [ "$1" = route ]; then
-  echo '{"decision":"route","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
+  echo '{"decision":"route","mode":"enforce","provider":"codex","model":"requested-model","nativeModel":"native-model","effort":"high","decisionId":"route-1","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"requested-model","nativeModel":"native-model","effort":"high","capacityCostBase":null}}}'
   exit 0
 fi
 if [ "$1" = complete ]; then exit 3; fi
@@ -586,18 +604,18 @@ exit 0
   }
 });
 
-test("agent-session force reconciliation precedes post-launch rejection", async () => {
+test("agent-session does not force through a strict capacity defer", async () => {
   const dir = await mkdtemp(join(tmpdir(), "mesh-session-force-post-launch-"));
   const bin = join(dir, "bin"), agents = join(dir, "agents"), limen = join(bin, "limen"), launches = join(dir, "launches"), commands = join(dir, "limen-commands");
   const state = join(dir, "queue.json"), events = `${state}.events.ndjson`;
   const socket = `mesh-force-post-launch-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-force-post-launch-${process.pid}`;
-  const defer = { schemaVersion: 1, decision: "defer", retryAt: null, decisionId: "a".repeat(64), configHash: "b".repeat(64), workClass: "L2", reasons: ["over_pace"], provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high", candidate: { key: "0123456789abcdef0123456789abcdef", model: "requested-model", effort: "high", capacityCostBase: null } };
+  const defer = { schemaVersion: 1, decision: "defer", retryAt: null, decisionId: "a".repeat(64), configHash: "b".repeat(64), workClass: "L2", reasons: ["ROUTE_REASON"], provider: "codex", model: "requested-model", nativeModel: "native-model", effort: "high", candidate: { key: "0123456789abcdef0123456789abcdef", model: "requested-model", effort: "high", capacityCostBase: null } };
   await mkdir(bin); await mkdir(agents);
   await writeFile(limen, `#!/bin/sh
 printf '%s\n' "$1" >> '${commands}'
-if [ "$1" = admit ]; then
-  echo '${JSON.stringify(defer)}'
+if [ "$1" = route ]; then
+  printf '%s\n' '${JSON.stringify(defer)}' | sed "s/ROUTE_REASON/$MOCK_ROUTE_REASON/"
   exit 75
 fi
 exit 2
@@ -630,16 +648,19 @@ exit 0
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, MESH_CAPACITY_STATE: state, AGENT_MESH_AGENTS_DIR: agents };
   try {
-    const launched = await runCommand(sessionBin, ["--agent", "codex", "--model", "requested-model", "--effort", "high", "--force", "--limen-config", "policy", "new", dir, target], env);
-    assert.equal(launched.code, 0, launched.stderr);
-    const outputTargets = launched.stdout.trim().split("\n");
-    assert.ok(outputTargets.length > 0 && outputTargets.every(line => line === target), launched.stdout);
-    assert.match(launched.stderr, /governed launch ended after target creation; retaining existing session/);
-    assert.doesNotMatch(launched.stderr, /no override was launched/);
-    assert.deepEqual((await readFile(commands, "utf8")).trim().split("\n"), ["admit"]);
-    assert.equal((await readFile(launches, "utf8")).trim().split("\n").length, 1);
-    const sessions = await runCommand("tmux", ["-L", socket, "list-sessions", "-F", "#{session_name}"], env);
-    assert.deepEqual(sessions.stdout.trim().split("\n").filter(name => name === target), [target]);
+    const flags = ["--agent", "codex", "--model", "requested-model", "--effort", "high", "--limen-config", "policy"];
+    const forced = await runCommand(sessionBin, [...flags, "--force", "new", dir, target], env);
+    assert.equal(forced.code, 2, forced.stderr);
+    assert.match(forced.stderr, /starts require a Limen lease/);
+    await assert.rejects(readFile(commands, "utf8"), { code: "ENOENT" });
+
+    for (const reason of ["over_pace", "provider_disabled", "provider_unavailable"]) {
+      const deferred = await runCommand(sessionBin, [...flags, "new", dir, target], { ...env, MOCK_ROUTE_REASON: reason });
+      assert.equal(deferred.code, 75, deferred.stderr);
+      assert.match(deferred.stderr, new RegExp(reason));
+    }
+    assert.deepEqual((await readFile(commands, "utf8")).trim().split("\n"), ["route", "route", "route"]);
+    await assert.rejects(readFile(launches, "utf8"), { code: "ENOENT" });
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
     await rm(dir, { recursive: true, force: true });
@@ -680,6 +701,10 @@ AGENT_EFFORT_PASSTHRU_PATTERNS=()
   await chmod(limen, 0o700); await chmod(codex, 0o700);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, LIMEN_BIN: limen, MESH_TMUX_SOCKET: socket, AGENT_MESH_AGENTS_DIR: agents };
   try {
+    const overridden = await runCommand(sessionBin, ["--agent", "codex", "--profile", "developer", "--limen-config", "policy", "new", dir, `mesh-model-override-${process.pid}`, "--", "-c", "model_provider=paid"], env);
+    assert.equal(overridden.code, 2, overridden.stderr);
+    assert.match(overridden.stderr, /cannot override a governed route/);
+
     const rejectedPayload = await runCommand(sessionBin, ["--agent", "codex", "--profile", "implementation.spec-defined", "--limen-config", "policy", "new", dir, `mesh-hard-payload-${process.pid}`], env);
     assert.equal(rejectedPayload.code, 2, rejectedPayload.stderr);
     assert.match(rejectedPayload.stderr, /no session was launched/);
@@ -687,7 +712,7 @@ AGENT_EFFORT_PASSTHRU_PATTERNS=()
 
     const rejectedPolicy = await runCommand(sessionBin, ["--agent", "codex", "--model", "gpt-5.6-luna", "--effort", "xhigh", "--force", "--limen-config", "policy", "new", dir, `mesh-hard-policy-${process.pid}`], env);
     assert.equal(rejectedPolicy.code, 2, rejectedPolicy.stderr);
-    assert.match(rejectedPolicy.stderr, /no override was launched/);
+    assert.match(rejectedPolicy.stderr, /starts require a Limen lease/);
     await assert.rejects(stat(launchArgs));
   } finally {
     await runCommand("tmux", ["-L", socket, "kill-server"], env);
@@ -741,7 +766,7 @@ test("mesh send prefers the dedicated broker policy before queueing L3 work", as
   const dir = await mkdtemp(join(tmpdir(), "mesh-capacity-policy-"));
   const config = join(dir, "config"), state = join(dir, "state"), bin = join(dir, "bin");
   const policy = join(config, "limen", "codex-broker-policy-v2.json");
-  const shadowPolicy = join(config, "limen", "codex-shadow-policy-v2.json");
+  const shadowPolicy = join(config, "limen", "governed-routing.json");
   const legacyPolicy = join(config, "limen", "codex-shadow-policy.json");
   const registry = join(dir, "registry.json"), limen = join(bin, "limen"), tmux = join(bin, "tmux");
   const argsFile = join(dir, "limen-args.txt");
@@ -841,10 +866,10 @@ test("agent-session fails closed when a governed launch leaves no live target", 
   const socket = `mesh-no-target-${process.pid}-${Date.now()}`;
   const target = `mesh-codex-no-target-${process.pid}`;
   await mkdir(bin); await mkdir(agents); await mkdir(join(config, "limen"), { recursive: true });
-  await writeFile(join(config, "limen", "codex-shadow-policy-v2.json"), "{}\n");
+  await writeFile(join(config, "limen", "governed-routing.json"), "{}\n");
   await writeFile(limen, `#!/bin/sh
 if [ "$1" = route ]; then
-  echo '{"decision":"route","provider":"codex","model":"policy-model","nativeModel":"native-model","effort":"medium","decisionId":"route-gone","configHash":"cfg","lease":{"expiresAt":999,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"policy-model","nativeModel":"native-model","effort":"medium","capacityCostBase":null}}}'
+  echo '{"decision":"route","mode":"enforce","provider":"codex","model":"policy-model","nativeModel":"native-model","effort":"medium","decisionId":"route-gone","configHash":"cfg","lease":{"expiresAt":4102444800000,"candidate":{"key":"0123456789abcdef0123456789abcdef","model":"policy-model","nativeModel":"native-model","effort":"medium","capacityCostBase":null}}}'
   exit 0
 fi
 if [ "$1" = complete ]; then echo '{"status":"completed"}'; exit 0; fi

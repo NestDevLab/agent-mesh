@@ -100,13 +100,13 @@ test("resume of a thread an app-server serves points to codex queue", async () =
   assert.equal(direct.code, 4, direct.stderr);
   assert.match(direct.stderr, new RegExp(`codex queue --thread ${f.id} --message <text> --resume`));
 
-  // the governed parent must report the refusal itself, before any Limen dispatch
+  // A new profile cannot replace the recorded binding during resume.
   const policy = join(f.home, "policy.json");
   await writeFile(policy, "{}\n");
   const governed = await run(f, ["--agent", "codex", "--profile", "developer", "--limen-config", policy, "resume", f.id],
     { ...env, LIMEN_BIN: "/bin/false" });
-  assert.equal(governed.code, 4, governed.stderr);
-  assert.match(governed.stderr, new RegExp(`codex queue --thread ${f.id} --message <text> --resume`));
+  assert.equal(governed.code, 2, governed.stderr);
+  assert.match(governed.stderr, /resume retains the recorded binding/);
   assert.doesNotMatch(governed.stderr, /Limen governed launch/);
 });
 
